@@ -63,28 +63,16 @@ from worktrail.orchestrator import spawnlib  # noqa: E402
 
 _HERE = Path(__file__).resolve().parent
 
-# `dashboard`/`policy`/`run_record`/`tier_accuracy` now live in
-# `worktrail.router` (extracted from devkit-pm-go). Production code
-# deliberately never imports across the orchestrator/router boundary (live.py's
-# "cross-plugin note": tier_map/fallback_chain are threaded through as plain
-# data, not a policy.py import) -- but this E2E TEST legitimately needs to
-# prove the two halves of the routing seam compose correctly, so it imports
-# router directly, test-only. Requires the router sub-phase of the extraction
-# (`worktrail.router`) to be present; see AGENTS.md. `@_NEEDS_ROUTER` below
-# skips (not fails) every class here, under pytest OR `python3 <this file>.py`
-# direct execution -- true between the Phase 1a and Phase 1c PRs landing.
-try:
-    from worktrail.router import dashboard  # noqa: E402
-    from worktrail.router import policy as policy_mod  # noqa: E402
-    from worktrail.router import run_record as run_record_mod  # noqa: E402
-    from worktrail.router import tier_accuracy as tier_accuracy_mod  # noqa: E402
-    _ROUTER_AVAILABLE = True
-except ImportError:
-    dashboard = policy_mod = run_record_mod = tier_accuracy_mod = None
-    _ROUTER_AVAILABLE = False
-_NEEDS_ROUTER = unittest.skipUnless(
-    _ROUTER_AVAILABLE, "worktrail.router not yet present (pending Phase 1c)"
-)
+# `dashboard`/`policy`/`run_record`/`tier_accuracy` live in `worktrail.router`
+# (extracted from devkit-pm-go). Production code deliberately never imports
+# across the orchestrator/router boundary (live.py's "cross-plugin note":
+# tier_map/fallback_chain are threaded through as plain data, not a policy.py
+# import) -- but this E2E TEST legitimately needs to prove the two halves of
+# the routing seam compose correctly, so it imports router directly, test-only.
+from worktrail.router import dashboard
+from worktrail.router import policy as policy_mod
+from worktrail.router import run_record as run_record_mod
+from worktrail.router import tier_accuracy as tier_accuracy_mod
 
 _Proc = namedtuple("_Proc", "returncode stdout stderr")
 
@@ -234,7 +222,6 @@ def _gate_capacity_cache(test: unittest.TestCase) -> None:
 # Happy-path journey (Acceptance Criteria bullet 1 + malformed-entry handling)
 # --------------------------------------------------------------------------- #
 
-@_NEEDS_ROUTER
 class E2ERoutedDispatchJourneyTest(unittest.TestCase):
     """A go-policy routing table + tier-stamped tasks -> per-task resolution
     matches the documented precedence, journal entries carry agent labels, the
@@ -377,7 +364,6 @@ class E2ERoutedDispatchJourneyTest(unittest.TestCase):
 # AC-016: backward compatibility
 # --------------------------------------------------------------------------- #
 
-@_NEEDS_ROUTER
 class E2EBackwardCompatTest(unittest.TestCase):
     """AC-016: with no routing: policy and no task tier metadata, every existing
     orchestrator cassette/golden test still passes unchanged."""
@@ -420,7 +406,6 @@ class E2EBackwardCompatTest(unittest.TestCase):
 # AC-021/AC-022: dashboard additive JSON, rendered text unchanged
 # --------------------------------------------------------------------------- #
 
-@_NEEDS_ROUTER
 class E2EDashboardAdditiveJSONTest(unittest.TestCase):
     """AC-021: a category_items entry carries a planned-agent field.
     AC-022: printing the dashboard's rendered text is unchanged in structure --
@@ -467,7 +452,6 @@ class E2EDashboardAdditiveJSONTest(unittest.TestCase):
 # AC-025/AC-024/AC-028: fallback chain (legacy single entry + full exhaustion)
 # --------------------------------------------------------------------------- #
 
-@_NEEDS_ROUTER
 class E2EFallbackChainTest(unittest.TestCase):
     def setUp(self):
         _gate_capacity_cache(self)
@@ -578,7 +562,6 @@ class E2EFallbackChainTest(unittest.TestCase):
 # AC-029: usage report degrades gracefully on a pool-label-less journal
 # --------------------------------------------------------------------------- #
 
-@_NEEDS_ROUTER
 class E2EPoolUsageDegradationTest(unittest.TestCase):
     def test_pre_spec_journal_no_agent_labels_usage_report_no_crash(self):
         """AC-029: a spawn with no `last_agent` at all (mirrors a pre-TASK-007
@@ -613,7 +596,6 @@ class E2EPoolUsageDegradationTest(unittest.TestCase):
 # AC-035: dispatch-time resolution is invariant to the Tier-Accuracy Report
 # --------------------------------------------------------------------------- #
 
-@_NEEDS_ROUTER
 class E2ETierAccuracyDispatchInvarianceTest(unittest.TestCase):
     def test_resolve_routing_identical_regardless_of_tier_accuracy_report(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -670,7 +652,6 @@ class E2ETierAccuracyDispatchInvarianceTest(unittest.TestCase):
 # AC-036: the Tier-Accuracy aggregation is offline, end to end
 # --------------------------------------------------------------------------- #
 
-@_NEEDS_ROUTER
 class E2ETierAccuracyOfflineTest(unittest.TestCase):
     def test_aggregation_matches_hand_computed_stats_with_network_blocked(self):
         with tempfile.TemporaryDirectory() as tmp:

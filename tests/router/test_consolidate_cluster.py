@@ -1,0 +1,585 @@
+#!/usr/bin/env python3
+"""
+Tests for consolidate_cluster.py (spec 018, change
+2026-07-14--consolidate-cluster-action, TASK-CHG-002).
+
+Covers AC-002 through AC-005 with `tempfile`-backed `queue/`/`picked/`
+fixture directories and real `work_queue.py` subprocess invocations
+(mirroring `test_cluster_dashboard_e2e.py`'s fixture style).
+
+Run with:
+    python3 -m pytest plugins/developer-kit-project-management/skills/devkit-pm-go/scripts/test_consolidate_cluster.py -q
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from typing import Dict, List, Optional
+
+import yaml
+
+from worktrail.router import consolidate_cluster as cc
+
+
+# --------------------------------------------------------------------------- #
+# Fixture construction
+# --------------------------------------------------------------------------- #
+
+
+def _write_brief(
+    dirpath: Path,
+    filename: str,
+    *,
+    focus: str = "",
+    suggested_approach: Optional[List[str]] = None,
+) -> str:
+    """Write a realistic queued-brief .md file; return its stem (brief id)."""
+    lines = ["---", f"id: {filename[:-3]}", f'focus: "{focus}"', "status: queued", "---", ""]
+    lines.append("## Focus")
+    lines.append("")
+    lines.append(focus)
+    lines.append("")
+    if suggested_approach:
+        lines.append("## Suggested approach")
+        lines.append("")
+        lines.extend(f"{i}. {b}" for i, b in enumerate(suggested_approach, 1))
+        lines.append("")
+    path = dirpath / filename
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path.stem
+
+
+class ConsolidateClusterTestCase(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self._tmp.name)
+        self.wq_base = self.tmp_path / "wq"
+        self.queue_dir = self.wq_base / "queue"
+        self.picked_dir = self.wq_base / "picked"
+        self.queue_dir.mkdir(parents=True)
+        self.picked_dir.mkdir()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _env(self) -> Dict[str, str]:
+        env = dict(os.environ)
+        env["WORK_QUEUE_DIR"] = str(self.wq_base)
+        return env
+
+    def _wq_claim(self, identifier: str) -> Dict:
+        """Real `work_queue.py claim` subprocess call -- used to simulate an
+        out-of-band race between the dashboard snapshot and preview/execute."""
+        r = subprocess.run(
+            [sys.executable, "-m", "worktrail.workqueue.work_queue", "claim", identifier, "--json"],
+            capture_output=True,
+            text=True,
+            env=self._env(),
+        )
+        return json.loads(r.stdout)
+
+    def _wq_list_json(self) -> str:
+        r = subprocess.run(
+            [sys.executable, "-m", "worktrail.workqueue.work_queue", "list", "--json"],
+            capture_output=True,
+            text=True,
+            env=self._env(),
+        )
+        self.assertEqual(r.returncode, 0, msg=r.stderr)
+        return r.stdout
+
+    def _frontmatter(self, path: Path) -> Dict[str, str]:
+        return cc._parse_frontmatter(path.read_text(encoding="utf-8"))
+
+
+# --------------------------------------------------------------------------- #
+# resolvable_members() / build_preview()
+# --------------------------------------------------------------------------- #
+
+
+class ResolvableMembersAndPreview(ConsolidateClusterTestCase):
+    def test_all_members_resolvable_when_nothing_changed(self):
+        """Baseline for AC-005: all member ids still present in queue_dir are
+        returned in resolvable_members, excluded_members is empty."""
+        m1 = _write_brief(self.queue_dir, "20260701-100000-alpha.md", focus="Alpha work")
+        m2 = _write_brief(self.queue_dir, "20260701-100100-beta.md", focus="Beta work")
+        m3 = _write_brief(self.queue_dir, "20260701-100200-gamma.md", focus="Gamma work")
+
+        preview = cc.build_preview([m1, m2, m3], self.queue_dir)
+
+        self.assertEqual(sorted(preview["resolvable_members"]), sorted([m1, m2, m3]))
+        self.assertEqual(preview["excluded_members"], [])
+        self.assertFalse(preview["withdrawn"])
+        self.assertIsNotNone(preview["draft"])
+
+    def test_out_of_band_claim_excludes_member(self):
+        """AC-005: a member claimed out-of-band (real work_queue.py claim)
+        between cluster formation and build_preview() is excluded."""
+        m1 = _write_brief(self.queue_dir, "20260701-100000-alpha.md", focus="Alpha work")
+        m2 = _write_brief(self.queue_dir, "20260701-100100-beta.md", focus="Beta work")
+        m3 = _write_brief(self.queue_dir, "20260701-100200-gamma.md", focus="Gamma work")
+
+        claim_result = self._wq_claim(m2)
+        self.assertEqual(claim_result["status"], "claimed")
+
+        preview = cc.build_preview([m1, m2, m3], self.queue_dir)
+
+        self.assertIn(m2, preview["excluded_members"])
+        self.assertNotIn(m2, preview["resolvable_members"])
+        self.assertIn(m1, preview["resolvable_members"])
+        self.assertIn(m3, preview["resolvable_members"])
+
+    def test_withdrawn_when_resolvable_drops_below_two(self):
+        """AC-005, REQ-CHG-005: when the out-of-band claim(s) above drop
+        resolvable membership below 2, build_preview() withdraws (no draft)."""
+        m1 = _write_brief(self.queue_dir, "20260701-100000-alpha.md", focus="Alpha work")
+        m2 = _write_brief(self.queue_dir, "20260701-100100-beta.md", focus="Beta work")
+
+        claim_result = self._wq_claim(m2)
+        self.assertEqual(claim_result["status"], "claimed")
+
+        preview = cc.build_preview([m1, m2], self.queue_dir)
+
+        self.assertTrue(preview["withdrawn"])
+        self.assertIsNone(preview["draft"])
+        self.assertEqual(preview["resolvable_members"], [m1])
+
+    def test_draft_merges_focus_and_suggested_approach_from_real_members(self):
+        """REQ-CHG-002: draft_consolidated_brief() merges focus: text and
+        Suggested approach bullets from >=2 real fixture brief files."""
+        m1 = _write_brief(
+            self.queue_dir,
+            "20260701-100000-alpha.md",
+            focus="Fix the alpha widget alignment bug",
+            suggested_approach=["Inspect the CSS grid rules", "Add a regression test"],
+        )
+        m2 = _write_brief(
+            self.queue_dir,
+            "20260701-100100-beta.md",
+            focus="Fix the beta widget spacing bug",
+            suggested_approach=["Audit the spacing tokens"],
+        )
+
+        draft = cc.draft_consolidated_brief([m1, m2], self.queue_dir)
+
+        self.assertIn("Fix the alpha widget alignment bug", draft["focus"])
+        self.assertIn("Fix the beta widget spacing bug", draft["focus"])
+        self.assertIn("Inspect the CSS grid rules", draft["suggested_approach"])
+        self.assertIn("Add a regression test", draft["suggested_approach"])
+        self.assertIn("Audit the spacing tokens", draft["suggested_approach"])
+        self.assertEqual(sorted(draft["member_ids"]), sorted([m1, m2]))
+        self.assertTrue(draft["title"])
+
+
+class FullFidelityConsolidation(ConsolidateClusterTestCase):
+    """Regression coverage for the lossy flat-merge bug: a flat focus/bullets
+    merge silently dropped Key artifacts, Open questions, and route info,
+    and `_extract_suggested_approach` truncated soft-wrapped bullets at
+    their first line. `draft_consolidated_brief` must now preserve a
+    member's full body verbatim (via the `members` field), and
+    `_extract_suggested_approach`'s standalone bullets must survive a
+    line-wrapped continuation too."""
+
+    def _write_raw_brief(self, filename: str, frontmatter_extra: str, body: str) -> str:
+        path = self.queue_dir / filename
+        content = (
+            "---\n"
+            f"id: {filename[:-3]}\n"
+            'focus: "synthetic fidelity test"\n'
+            "status: queued\n"
+            f"{frontmatter_extra}"
+            "---\n\n"
+            f"{body}\n"
+        )
+        path.write_text(content, encoding="utf-8")
+        return path.stem
+
+    def test_key_artifacts_and_open_questions_survive_into_consolidated_body(self):
+        m1 = self._write_raw_brief(
+            "20260701-100000-alpha.md",
+            "recommended-route: F\nchange-kind: bugfix\n",
+            "## Focus\n\nFix the alpha widget\n\n"
+            "## Key artifacts\n\n"
+            "`alpha.py` (`AlphaWidget.render`), `test_alpha.py`\n\n"
+            "## Open questions\n\nShould this also cover the legacy widget path?\n",
+        )
+        m2 = self._write_raw_brief(
+            "20260701-100100-beta.md",
+            "recommended-route: H\nchange-kind: delta\n",
+            "## Focus\n\nFix the beta widget\n\n"
+            "## Key artifacts\n\n`beta.py` (`BetaWidget.render`)\n",
+        )
+
+        draft = cc.draft_consolidated_brief([m1, m2], self.queue_dir)
+        _, content = cc._build_consolidated_brief_content(draft)
+
+        # Route/kind reach the mechanically-derived summary table.
+        self.assertIn("| 1 |", content)
+        self.assertIn("| F | bugfix |", content)
+        self.assertIn("| H | delta |", content)
+
+        # Full per-member body -- previously dropped entirely by the flat
+        # focus/bullets merge -- survives verbatim (nested one level deeper).
+        self.assertIn("### Key artifacts", content)
+        self.assertIn("`AlphaWidget.render`", content)
+        self.assertIn("`BetaWidget.render`", content)
+        self.assertIn("### Open questions", content)
+        self.assertIn("Should this also cover the legacy widget path?", content)
+
+    def test_wrapped_bullet_continuation_survives(self):
+        m1 = self._write_raw_brief(
+            "20260701-100000-alpha.md",
+            "",
+            "## Focus\n\nFix the alpha widget\n\n"
+            "## Suggested approach\n\n"
+            "1. Inspect the CSS grid rules across every breakpoint\n"
+            "   that the responsive layout system defines\n"
+            "2. Add a regression test\n",
+        )
+        m2 = self._write_raw_brief(
+            "20260701-100100-beta.md",
+            "",
+            "## Focus\n\nFix the beta widget\n\n"
+            "## Suggested approach\n\n1. Audit the spacing tokens\n",
+        )
+
+        draft = cc.draft_consolidated_brief([m1, m2], self.queue_dir)
+
+        # draft["suggested_approach"] (the flat, backward-compatible field):
+        # the continuation line is merged onto its bullet, not dropped.
+        self.assertIn(
+            "Inspect the CSS grid rules across every breakpoint that the responsive "
+            "layout system defines",
+            draft["suggested_approach"],
+        )
+
+        # The rendered body embeds each member's original text verbatim, so
+        # the continuation line is never even at risk of the extraction
+        # bug -- it survives in its original (still valid markdown) form.
+        _, content = cc._build_consolidated_brief_content(draft)
+        self.assertIn("across every breakpoint", content)
+        self.assertIn("that the responsive layout system defines", content)
+
+
+# --------------------------------------------------------------------------- #
+# execute_consolidation()
+# --------------------------------------------------------------------------- #
+
+
+class ExecuteConsolidationDecline(ConsolidateClusterTestCase):
+    def test_declined_performs_zero_writes(self):
+        """AC-002, AC-004: confirmed=False writes nothing to queue_dir/
+        picked_dir and never invokes the work_queue CLI."""
+        m1 = _write_brief(self.queue_dir, "20260701-100000-alpha.md", focus="Alpha work")
+        m2 = _write_brief(self.queue_dir, "20260701-100100-beta.md", focus="Beta work")
+        draft = cc.draft_consolidated_brief([m1, m2], self.queue_dir)
+
+        queue_before = sorted(f.name for f in self.queue_dir.iterdir())
+        picked_before = sorted(f.name for f in self.picked_dir.iterdir())
+
+        calls: List[List[str]] = []
+        real_run = subprocess.run
+
+        def _spy_run(args, *a, **kw):
+            calls.append(args)
+            return real_run(args, *a, **kw)
+
+        subprocess.run = _spy_run
+        try:
+            result = cc.execute_consolidation(
+                False, [m1, m2], draft, self.queue_dir, self.picked_dir
+            )
+        finally:
+            subprocess.run = real_run
+
+        self.assertEqual(result["status"], "declined")
+        self.assertEqual(calls, [])
+        self.assertEqual(sorted(f.name for f in self.queue_dir.iterdir()), queue_before)
+        self.assertEqual(sorted(f.name for f in self.picked_dir.iterdir()), picked_before)
+
+    def test_declined_list_json_snapshot_byte_identical(self):
+        """AC-004: a work_queue.py list --json snapshot before and after a
+        confirmed=False call is byte-for-byte identical."""
+        m1 = _write_brief(self.queue_dir, "20260701-100000-alpha.md", focus="Alpha work")
+        m2 = _write_brief(self.queue_dir, "20260701-100100-beta.md", focus="Beta work")
+        draft = cc.draft_consolidated_brief([m1, m2], self.queue_dir)
+
+        before = self._wq_list_json()
+        cc.execute_consolidation(False, [m1, m2], draft, self.queue_dir, self.picked_dir)
+        after = self._wq_list_json()
+
+        self.assertEqual(before, after)
+
+
+class ExecuteConsolidationConfirm(ConsolidateClusterTestCase):
+    def test_confirmed_writes_one_brief_and_stamps_superseded(self):
+        """AC-003: confirmed=True with N resolvable members results in
+        exactly one new brief in queue_dir; each member ends up in picked_dir
+        with status: done, carries a ## Superseded note referencing the new
+        brief's id, and is not deleted."""
+        m1 = _write_brief(
+            self.queue_dir,
+            "20260701-100000-alpha.md",
+            focus="Alpha work",
+            suggested_approach=["Do the alpha thing"],
+        )
+        m2 = _write_brief(
+            self.queue_dir,
+            "20260701-100100-beta.md",
+            focus="Beta work",
+            suggested_approach=["Do the beta thing"],
+        )
+        draft = cc.draft_consolidated_brief([m1, m2], self.queue_dir)
+
+        result = cc.execute_consolidation(
+            True, [m1, m2], draft, self.queue_dir, self.picked_dir
+        )
+
+        self.assertEqual(result["status"], "written")
+        self.assertEqual(sorted(result["members_completed"]), sorted([m1, m2]))
+        self.assertEqual(result["members_skipped"], [])
+
+        new_brief_files = list(self.queue_dir.glob("*.md"))
+        self.assertEqual(len(new_brief_files), 1)
+        new_brief_path = new_brief_files[0]
+        self.assertEqual(str(new_brief_path), result["new_brief_path"])
+        new_fm = self._frontmatter(new_brief_path)
+        self.assertEqual(new_fm.get("status"), "queued")
+        new_brief_id = new_fm.get("id")
+        self.assertIsNotNone(new_brief_id)
+
+        for member_id in (m1, m2):
+            picked_path = self.picked_dir / f"{member_id}.md"
+            self.assertTrue(picked_path.exists(), msg=f"{member_id} missing from picked/")
+            fm = self._frontmatter(picked_path)
+            self.assertEqual(fm.get("status"), "done")
+            body = picked_path.read_text(encoding="utf-8")
+            self.assertIn("## Superseded", body)
+            self.assertIn(new_brief_id, body)
+
+        # No deletion: each member's file still exists on disk in picked_dir
+        # (already asserted above via .exists()).
+
+    def test_race_lost_member_recorded_in_members_skipped(self):
+        """AC-005's execute-time half: a member claimed out-of-band
+        immediately before execute_consolidation is recorded in
+        members_skipped, not members_completed, and the remaining members
+        are still processed normally (batch is not aborted)."""
+        m1 = _write_brief(self.queue_dir, "20260701-100000-alpha.md", focus="Alpha work")
+        m2 = _write_brief(self.queue_dir, "20260701-100100-beta.md", focus="Beta work")
+        draft = cc.draft_consolidated_brief([m1, m2], self.queue_dir)
+
+        claim_result = self._wq_claim(m1)  # race m1 away before execute
+        self.assertEqual(claim_result["status"], "claimed")
+
+        result = cc.execute_consolidation(
+            True, [m1, m2], draft, self.queue_dir, self.picked_dir
+        )
+
+        self.assertEqual(result["status"], "written")
+        self.assertIn(m1, result["members_skipped"])
+        self.assertNotIn(m1, result["members_completed"])
+        self.assertIn(m2, result["members_completed"])
+
+        m2_picked = self.picked_dir / f"{m2}.md"
+        self.assertTrue(m2_picked.exists())
+        self.assertEqual(self._frontmatter(m2_picked).get("status"), "done")
+
+    def test_empty_resolvable_ids_no_zero_provenance_brief(self):
+        """Edge case: confirmed=True with an empty resolvable_ids list does
+        not write a consolidated brief with zero provenance, and returns a
+        result distinguishable from a normal 'written' outcome."""
+        draft = {"title": "Consolidated", "focus": "", "suggested_approach": [], "member_ids": []}
+
+        result = cc.execute_consolidation(True, [], draft, self.queue_dir, self.picked_dir)
+
+        self.assertEqual(result["members_completed"], [])
+        self.assertNotEqual(result["status"], "written")
+        self.assertEqual(list(self.queue_dir.glob("*.md")), [])
+
+    def test_new_brief_status_is_queued(self):
+        """Edge case: the consolidated brief's status: frontmatter field is
+        queued immediately after execute_consolidation writes it (claimable,
+        not accidentally already-done/picked)."""
+        m1 = _write_brief(self.queue_dir, "20260701-100000-alpha.md", focus="Alpha work")
+        m2 = _write_brief(self.queue_dir, "20260701-100100-beta.md", focus="Beta work")
+        draft = cc.draft_consolidated_brief([m1, m2], self.queue_dir)
+
+        result = cc.execute_consolidation(
+            True, [m1, m2], draft, self.queue_dir, self.picked_dir
+        )
+
+        new_brief_path = Path(result["new_brief_path"])
+        fm = self._frontmatter(new_brief_path)
+        self.assertEqual(fm.get("status"), "queued")
+
+
+# --------------------------------------------------------------------------- #
+# Write verification (root-cause bug regression: --draft contract mismatch,
+# unescaped focus quotes, slug collisions -- see the linked root-cause brief
+# 20260716-171900-consolidate-cluster-draft-arg-and-yaml-escape-bugs)
+# --------------------------------------------------------------------------- #
+
+
+class BuildConsolidatedBriefContent(unittest.TestCase):
+    def test_focus_with_embedded_quote_round_trips(self):
+        """Bug #2: a focus containing a literal `"` (pulled verbatim from a
+        source brief's title) must not break the frontmatter's YAML."""
+        draft = {
+            "title": 'Consolidated: failed in "Wait for Postgres"',
+            "focus": 'failed in "Wait for Postgres" step',
+            "suggested_approach": [],
+            "member_ids": ["m1", "m2"],
+        }
+        _, content = cc._build_consolidated_brief_content(draft)
+
+        ok, err = cc.validate_brief_text(content, required=("id", "status", "focus"))
+        self.assertTrue(ok, msg=err)
+        # Real YAML parsing (not this module's intentionally-naive local
+        # `_parse_frontmatter`, which doesn't unescape `\"`) confirms the
+        # round-trip a downstream reader like work_queue.py actually sees.
+        raw_yaml = content.split("---", 2)[1]
+        fm = yaml.safe_load(raw_yaml)
+        self.assertEqual(fm["focus"], 'failed in "Wait for Postgres" step')
+
+    def test_different_member_sets_with_same_generic_title_get_different_ids(self):
+        """Bug #3: two unrelated clusters whose auto-generated titles both
+        slugify to the same generic stem must not collide on brief id."""
+        draft_a = {"title": "Consolidated", "focus": "a", "suggested_approach": [], "member_ids": ["m1", "m2"]}
+        draft_b = {"title": "Consolidated", "focus": "b", "suggested_approach": [], "member_ids": ["m3", "m4"]}
+
+        id_a, _ = cc._build_consolidated_brief_content(draft_a)
+        id_b, _ = cc._build_consolidated_brief_content(draft_b)
+
+        self.assertNotEqual(id_a, id_b)
+
+    def test_same_member_set_is_deterministic(self):
+        draft = {"title": "Consolidated", "focus": "a", "suggested_approach": [], "member_ids": ["m2", "m1"]}
+        id_1, _ = cc._build_consolidated_brief_content(draft)
+        id_2, _ = cc._build_consolidated_brief_content(draft)
+        # same second (patched-free here, real clock) -- compare the slug+hash
+        # suffix portion only, which is order-independent of member_ids.
+        self.assertEqual(id_1.rsplit("-", 1)[-1], id_2.rsplit("-", 1)[-1])
+
+
+class ExecuteConsolidationValidatesBeforeMutating(ConsolidateClusterTestCase):
+    def test_broken_draft_aborts_before_any_member_mutation(self):
+        """A draft that would build empty/invalid content (e.g. the
+        `--draft` wrapper-vs-bare-dict contract mismatch, unwrapped upstream
+        into `{}`) must fail validation and return before claiming or
+        marking any member done -- never strand claimed members with
+        nothing to supersede them."""
+        m1 = _write_brief(self.queue_dir, "20260701-100000-alpha.md", focus="Alpha work")
+        m2 = _write_brief(self.queue_dir, "20260701-100100-beta.md", focus="Beta work")
+        broken_draft: Dict = {}  # mirrors the wrapper-unwrap bug's effective payload
+
+        result = cc.execute_consolidation(True, [m1, m2], broken_draft, self.queue_dir, self.picked_dir)
+
+        self.assertEqual(result["status"], "write-verification-failed")
+        self.assertIsNone(result["new_brief_path"])
+        self.assertEqual(result["members_completed"], [])
+        self.assertEqual(result["members_skipped"], [])
+        # neither member was touched: still sitting, unclaimed, in queue_dir/
+        self.assertTrue((self.queue_dir / "20260701-100000-alpha.md").exists())
+        self.assertTrue((self.queue_dir / "20260701-100100-beta.md").exists())
+        self.assertEqual(list(self.picked_dir.glob("*.md")), [])
+        # and no broken consolidated brief was written either
+        remaining = [f for f in self.queue_dir.glob("*.md")]
+        self.assertEqual(len(remaining), 2)  # just the two original members
+
+
+class ResolveDraftPayload(unittest.TestCase):
+    """Bug #1: `execute --draft` must accept either `preview --json`'s full
+    wrapper or a bare draft dict -- the natural pipe
+    (`preview --json | ... | execute --draft <that output>`) passes the
+    whole wrapper, and previously that silently produced an empty brief."""
+
+    def test_accepts_bare_draft_dict(self):
+        draft = {"title": "t", "focus": "f", "suggested_approach": [], "member_ids": ["m1", "m2"]}
+        resolved = cc._resolve_draft_payload(json.dumps(draft))
+        self.assertEqual(resolved, draft)
+
+    def test_unwraps_full_preview_payload(self):
+        draft = {"title": "t", "focus": "f", "suggested_approach": [], "member_ids": ["m1", "m2"]}
+        wrapper = {"resolvable_members": ["m1", "m2"], "excluded_members": [], "withdrawn": False, "draft": draft}
+        resolved = cc._resolve_draft_payload(json.dumps(wrapper))
+        self.assertEqual(resolved, draft)
+
+    def test_withdrawn_wrapper_with_null_draft_raises_clear_error(self):
+        wrapper = {"resolvable_members": [], "excluded_members": ["m1"], "withdrawn": True, "draft": None}
+        with self.assertRaises(ValueError) as ctx:
+            cc._resolve_draft_payload(json.dumps(wrapper))
+        self.assertIn("member_ids", str(ctx.exception))
+
+    def test_invalid_json_raises_clear_error(self):
+        with self.assertRaises(ValueError):
+            cc._resolve_draft_payload("{not json")
+
+    def test_non_object_json_raises_clear_error(self):
+        with self.assertRaises(ValueError):
+            cc._resolve_draft_payload("[1, 2, 3]")
+
+    def test_empty_member_ids_raises_clear_error(self):
+        draft = {"title": "t", "focus": "f", "suggested_approach": [], "member_ids": []}
+        with self.assertRaises(ValueError):
+            cc._resolve_draft_payload(json.dumps(draft))
+
+
+class MainCliDraftContract(ConsolidateClusterTestCase):
+    def test_execute_with_full_preview_payload_writes_real_brief(self):
+        """End-to-end regression for the documented SKILL.md usage
+        (`execute <members...> --draft '<preview JSON>' --confirm`), which
+        passes the FULL preview payload, not the bare inner draft."""
+        m1 = _write_brief(self.queue_dir, "20260701-100000-alpha.md", focus="Alpha work")
+        m2 = _write_brief(self.queue_dir, "20260701-100100-beta.md", focus="Beta work")
+        preview = cc.build_preview([m1, m2], self.queue_dir)
+        self.assertFalse(preview["withdrawn"])
+
+        code = cc.main(
+            [
+                "execute",
+                m1,
+                m2,
+                "--draft",
+                json.dumps(preview),
+                "--confirm",
+                "--json",
+                "--queue-dir",
+                str(self.queue_dir),
+                "--picked-dir",
+                str(self.picked_dir),
+            ]
+        )
+
+        self.assertEqual(code, 0)
+        new_brief_files = [f for f in self.queue_dir.glob("*.md") if f.stem not in (m1, m2)]
+        self.assertEqual(len(new_brief_files), 1)
+        fm = self._frontmatter(new_brief_files[0])
+        self.assertTrue(fm.get("focus"))
+
+    def test_execute_with_withdrawn_draft_exits_nonzero(self):
+        code = cc.main(
+            [
+                "execute",
+                "m1",
+                "--draft",
+                json.dumps({"resolvable_members": [], "excluded_members": ["m1"], "withdrawn": True, "draft": None}),
+                "--confirm",
+                "--json",
+                "--queue-dir",
+                str(self.queue_dir),
+                "--picked-dir",
+                str(self.picked_dir),
+            ]
+        )
+        self.assertEqual(code, 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

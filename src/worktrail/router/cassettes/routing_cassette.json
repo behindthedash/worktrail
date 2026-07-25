@@ -1,0 +1,171 @@
+{
+  "description": "GO v2 routing cassette — golden scenarios from autonomous-ai-engineer-v2.md §16.1. Each scenario asserts only the keys present in `expect`: `route`, `risk`, `confidence`, `ambiguous_between` are exact-match golden assertions; `secondary_includes` and `gates_include` assert membership; prose fields (reason, question wording) are deliberately unasserted (flexible assertions, §16.3).",
+  "scenarios": [
+    {
+      "id": "raw-idea",
+      "request": "I have an idea — what if contributors could earn badges for code reviews?",
+      "expect": {"route": "A", "confidence": "high", "gates_include": ["no_implementation_without_approval"]}
+    },
+    {
+      "id": "epic-creation",
+      "request": "Plan an epic: a donor management platform with several features delivered across phases",
+      "expect": {"route": "B", "confidence": "high"}
+    },
+    {
+      "id": "new-feature-planning",
+      "request": "Plan a new feature: allow users to export reports as CSV",
+      "expect": {"route": "C", "confidence": "high"}
+    },
+    {
+      "id": "approved-feature-implementation",
+      "request": "Implement spec 003-payments — the spec is approved",
+      "state": {"active_specs": 1, "pending_tasks": true},
+      "expect": {"route": "D", "confidence": "high"}
+    },
+    {
+      "id": "clear-bug",
+      "request": "Bug: the donation receipt shows the wrong date",
+      "expect": {"route": "F", "confidence": "high", "risk": "low"}
+    },
+    {
+      "id": "behavior-change-spec-revision",
+      "request": "Change the spec: receipts should now be sent weekly instead of daily",
+      "expect": {"route": "G", "confidence": "high"}
+    },
+    {
+      "id": "resume-valid-handoff",
+      "request": "sdd-workflow handoff",
+      "expect": {"route": "E", "confidence": "high"}
+    },
+    {
+      "id": "resume-stale-handoff",
+      "request": "Resume the handoff brief from two weeks ago — the repo may have drifted since",
+      "expect": {"route": "E", "confidence": "high"}
+    },
+    {
+      "id": "ci-failure-repair",
+      "request": "PR #214 checks are failing — fix the CI",
+      "expect": {"route": "E", "secondary_includes": ["F"]}
+    },
+    {
+      "id": "auth-protected-ui-change",
+      "request": "Add a new admin settings feature behind login",
+      "expect": {"route": "C", "risk": "high", "gates_include": ["pause_before_merge"]}
+    },
+    {
+      "id": "authorization-defect",
+      "request": "Bug: the viewer role can edit other organizations' records — permissions are not enforced",
+      "expect": {"route": "F", "risk": "high", "gates_include": ["pause_before_merge"]}
+    },
+    {
+      "id": "database-migration",
+      "request": "Implement the schema migration for the new donors table from spec 004-donors",
+      "state": {"active_specs": 1, "pending_tasks": true},
+      "expect": {"route": "D", "risk": "high"}
+    },
+    {
+      "id": "behavior-preserving-refactor",
+      "request": "Refactor the email module to extract a shared client — no behavior change",
+      "expect": {"route": "H", "confidence": "high"}
+    },
+    {
+      "id": "tech-debt",
+      "request": "Address the technical debt in the upload pipeline",
+      "expect": {"route": "H", "confidence": "high"}
+    },
+    {
+      "id": "parallel-worktree-task",
+      "request": "Continue the work in the existing worktree for 005-search",
+      "expect": {"route": "E"}
+    },
+    {
+      "id": "overlapping-active-pr",
+      "request": "There's an open PR overlapping my branch — reconcile them before continuing",
+      "expect": {"route": "E"}
+    },
+    {
+      "id": "missing-specification",
+      "request": "Implement dark mode for the dashboard",
+      "state": {"active_specs": 0},
+      "expect": {"route": "D", "confidence": "low"}
+    },
+    {
+      "id": "ambiguous-fix-vs-spec-change",
+      "request": "Change the export to use semicolons instead of commas — the current output is wrong",
+      "expect": {"ambiguous_between": ["F", "G"], "confidence": "low"}
+    },
+    {
+      "id": "destructive-operation-approval",
+      "request": "Implement a migration to drop the legacy_users table per spec 006-cleanup",
+      "state": {"active_specs": 1, "pending_tasks": true},
+      "expect": {"route": "D", "risk": "critical", "gates_include": ["require_human_approval", "never_automerge"]}
+    },
+    {
+      "id": "auto-merge-eligible",
+      "request": "Fix the typo in the README docs",
+      "expect": {"route": "F", "risk": "low", "gates_exactly": []}
+    },
+    {
+      "id": "must-not-auto-merge",
+      "request": "Add retry support for failed payments in the billing webhook",
+      "expect": {"risk": "critical", "gates_include": ["never_automerge", "require_human_approval"]}
+    },
+    {
+      "id": "workflow-change",
+      "request": "Update the SDD workflow skill's routing logic and add cassette coverage for the new route",
+      "expect": {"route": "J", "confidence": "high", "gates_include": ["routing_cassette_required"]}
+    },
+    {
+      "id": "orchestrator-dependency-fanout-merge-status-fix",
+      "request": "specs-parallel-orchestrator fans out dependent tasks concurrently with their predecessors and records PRs as MERGED when they are still open",
+      "expect": {"route": "J", "confidence": "medium", "gates_include": ["routing_cassette_required"]}
+    },
+    {
+      "id": "bare-go-dashboard-fallback",
+      "request": "go",
+      "expect": {"route": "E", "confidence": "low"}
+    },
+    {
+      "id": "unknown-failure-investigation",
+      "request": "Investigate why the nightly job sometimes fails",
+      "expect": {"route": "I", "confidence": "high"}
+    },
+    {
+      "id": "fleet-audit-brief-is-investigation-not-defect-repair",
+      "request": "This is a 'Needs investigation' item. Do not fix findings in this brief. Recommend per-repo follow-up briefs.",
+      "expect": {"route": "I", "confidence": "high"}
+    },
+    {
+      "id": "investigate-mention-with-known-cause-stays-defect-repair",
+      "request": "The crash is caused by a missing null check. Fix it; no need to investigate further.",
+      "expect": {"route": "F", "confidence": "medium"}
+    },
+    {
+      "id": "classify-py-self-reference-is-workflow-evolution",
+      "request": "classify.py never scores Route I (Investigation) as a candidate, causing medium-confidence misroutes into spec-authoring/defect-repair pipelines for explicitly investigation-framed requests",
+      "expect": {"route": "J", "confidence": "medium", "gates_include": ["routing_cassette_required"]}
+    },
+    {
+      "id": "handoff-recommended-route-overrides-low-signal-guess",
+      "request": "Extend the unit test suite for a platform component",
+      "handoff_route": "H",
+      "expect": {"route": "H", "confidence": "medium", "route_source": "handoff-recommended-override"}
+    },
+    {
+      "id": "handoff-recommended-route-yields-to-high-confidence-classifier",
+      "request": "I have an idea — what if contributors could earn badges for code reviews?",
+      "handoff_route": "H",
+      "expect": {"route": "A", "confidence": "high", "route_source": "classifier"}
+    },
+    {
+      "id": "existing-ci-is-broken",
+      "request": "CI is broken on this branch; fix the failing checks",
+      "expect": {"route": "E", "confidence": "high"}
+    },
+    {
+      "id": "new-ci-gate-can-fail-pr",
+      "request": "Add a new CI job that fails the PR when generated files drift",
+      "expect": {"route": "C", "confidence": "low"}
+    }
+  ]
+}
