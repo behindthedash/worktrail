@@ -1,0 +1,60 @@
+======================================================================
+ORCHESTRATION   spec=001-url-shortener   max_workers=3
+(replay cassette (15 entries))
+======================================================================
+PR group plan:
+  [base     ] TASK-001, TASK-002   reqs=REQ-001
+  [feature-1] TASK-003, TASK-004   stacks-on=['base']   reqs=REQ-002
+  [feature-2] TASK-005   stacks-on=['base']   reqs=REQ-003
+  tail (serialized): 
+
+TICK 1: parallel batch -> TASK-001, TASK-002
+  + git worktree add -b 001-url-shortener/task-001 /repos/app-worktrees/001-url-shortener-task-001 <base>
+        implement claimed      -> reviewing   (retry=0)
+        review    reviewing    -> cleaning    (retry=0) [PASSED]
+        cleanup   cleaning     -> done        (retry=0)
+  = TASK-001 done (sha d8f37a6b0dc0a2cdf4d64774147e63e133710bea)
+  + git worktree add -b 001-url-shortener/task-002 /repos/app-worktrees/001-url-shortener-task-002 <base>
+        implement claimed      -> reviewing   (retry=0)
+        review    reviewing    -> cleaning    (retry=0) [PASSED]
+        cleanup   cleaning     -> done        (retry=0)
+  = TASK-002 done (sha 59a650530363c682dfd5372b1e09ca7489df80e1)
+
+TICK 2: parallel batch -> TASK-003, TASK-005
+  + git worktree add -b 001-url-shortener/task-003 /repos/app-worktrees/001-url-shortener-task-003 <base>
+        implement claimed      -> reviewing   (retry=0)
+        review    reviewing    -> cleaning    (retry=0) [PASSED]
+        cleanup   cleaning     -> done        (retry=0)
+  = TASK-003 done (sha db401110c18cfae6a1e2d043af72647d8419bfb8)
+  + git worktree add -b 001-url-shortener/task-005 /repos/app-worktrees/001-url-shortener-task-005 <base>
+        implement claimed      -> reviewing   (retry=0)
+        review    reviewing    -> cleaning    (retry=0) [PASSED]
+        cleanup   cleaning     -> done        (retry=0)
+  = TASK-005 done (sha 0da614ac88252405d9d8da6ac07bb2c254c616e9)
+
+TICK 3: parallel batch -> TASK-004
+  + git worktree add -b 001-url-shortener/task-004 /repos/app-worktrees/001-url-shortener-task-004 <base>
+        implement claimed      -> reviewing   (retry=0)
+        review    reviewing    -> cleaning    (retry=0) [PASSED]
+        cleanup   cleaning     -> done        (retry=0)
+  = TASK-004 done (sha ef0bcd2)
+
+INTEGRATION (merge order from group DAG):
+  merge [base] on 001-url-shortener/base
+        git worktree remove /repos/app-worktrees/001-url-shortener-task-001
+        git worktree remove /repos/app-worktrees/001-url-shortener-task-002
+  merge [feature-1] on 001-url-shortener/feature-1
+        git worktree remove /repos/app-worktrees/001-url-shortener-task-003
+        git worktree remove /repos/app-worktrees/001-url-shortener-task-004
+  merge [feature-2] on 001-url-shortener/feature-2
+        git worktree remove /repos/app-worktrees/001-url-shortener-task-005
+
+TAIL (serialized on final integration branch):
+
+PR PLAN (one PR per group):
+  PR 001-url-shortener/base         -> dev                tasks=TASK-001, TASK-002
+  PR 001-url-shortener/feature-1    -> base (stacked)     tasks=TASK-003, TASK-004
+  PR 001-url-shortener/feature-2    -> base (stacked)     tasks=TASK-005
+  final PR (e2e+cleanup)             -> dev                tasks=
+
+SUMMARY: 5/5 tasks done; 3 group PRs + 1 final PR; ticks=3.

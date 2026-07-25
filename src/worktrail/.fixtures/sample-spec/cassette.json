@@ -1,0 +1,278 @@
+{
+  "entries": [
+    {
+      "report": {
+        "critical_issues": 0,
+        "head_sha": "001imp",
+        "major_issues": 0,
+        "notes": "scripted",
+        "review_status": null,
+        "status": "success",
+        "tests": "passed"
+      },
+      "role": "implement",
+      "task": "TASK-001"
+    },
+    {
+      "report": {
+        "critical_issues": 0,
+        "head_sha": "001rev",
+        "major_issues": 0,
+        "notes": "scripted",
+        "review_status": "PASSED",
+        "status": "success",
+        "tests": "passed"
+      },
+      "role": "review",
+      "task": "TASK-001"
+    },
+    {
+      "report": {
+        "critical_issues": 0,
+        "head_sha": "001cle",
+        "major_issues": 0,
+        "notes": "scripted",
+        "review_status": null,
+        "status": "success",
+        "tests": "passed"
+      },
+      "role": "cleanup",
+      "task": "TASK-001"
+    },
+    {
+      "report": {
+        "critical_issues": 0,
+        "head_sha": "002imp",
+        "major_issues": 0,
+        "notes": "scripted",
+        "review_status": null,
+        "status": "success",
+        "tests": "passed"
+      },
+      "role": "implement",
+      "task": "TASK-002"
+    },
+    {
+      "report": {
+        "critical_issues": 0,
+        "head_sha": "002rev",
+        "major_issues": 0,
+        "notes": "scripted",
+        "review_status": "PASSED",
+        "status": "success",
+        "tests": "passed"
+      },
+      "role": "review",
+      "task": "TASK-002"
+    },
+    {
+      "report": {
+        "critical_issues": 0,
+        "head_sha": "002cle",
+        "major_issues": 0,
+        "notes": "scripted",
+        "review_status": null,
+        "status": "success",
+        "tests": "passed"
+      },
+      "role": "cleanup",
+      "task": "TASK-002"
+    },
+    {
+      "report": {
+        "critical_issues": 0,
+        "head_sha": "003imp",
+        "major_issues": 0,
+        "notes": "scripted",
+        "review_status": null,
+        "status": "success",
+        "tests": "passed"
+      },
+      "role": "implement",
+      "task": "TASK-003"
+    },
+    {
+      "report": {
+        "critical_issues": 0,
+        "head_sha": "003rev",
+        "major_issues": 0,
+        "notes": "scripted",
+        "review_status": "PASSED",
+        "status": "success",
+        "tests": "passed"
+      },
+      "role": "review",
+      "task": "TASK-003"
+    },
+    {
+      "report": {
+        "critical_issues": 0,
+        "head_sha": "003cle",
+        "major_issues": 0,
+        "notes": "scripted",
+        "review_status": null,
+        "status": "success",
+        "tests": "passed"
+      },
+      "role": "cleanup",
+      "task": "TASK-003"
+    },
+    {
+      "report": {
+        "critical_issues": 0,
+        "head_sha": "005imp",
+        "major_issues": 0,
+        "notes": "scripted",
+        "review_status": null,
+        "status": "success",
+        "tests": "passed"
+      },
+      "role": "implement",
+      "task": "TASK-005"
+    },
+    {
+      "report": {
+        "critical_issues": 0,
+        "head_sha": "005rev",
+        "major_issues": 0,
+        "notes": "scripted",
+        "review_status": "PASSED",
+        "status": "success",
+        "tests": "passed"
+      },
+      "role": "review",
+      "task": "TASK-005"
+    },
+    {
+      "report": {
+        "critical_issues": 0,
+        "head_sha": "005cle",
+        "major_issues": 0,
+        "notes": "scripted",
+        "review_status": null,
+        "status": "success",
+        "tests": "passed"
+      },
+      "role": "cleanup",
+      "task": "TASK-005"
+    },
+    {
+      "report": {
+        "critical_issues": 0,
+        "head_sha": "004imp",
+        "major_issues": 0,
+        "notes": "scripted",
+        "review_status": null,
+        "status": "success",
+        "tests": "passed"
+      },
+      "role": "implement",
+      "task": "TASK-004"
+    },
+    {
+      "report": {
+        "critical_issues": 0,
+        "head_sha": "004rev",
+        "major_issues": 0,
+        "notes": "scripted",
+        "review_status": "PASSED",
+        "status": "success",
+        "tests": "passed"
+      },
+      "role": "review",
+      "task": "TASK-004"
+    },
+    {
+      "report": {
+        "critical_issues": 0,
+        "head_sha": "004cle",
+        "major_issues": 0,
+        "notes": "scripted",
+        "review_status": null,
+        "status": "success",
+        "tests": "passed"
+      },
+      "role": "cleanup",
+      "task": "TASK-004"
+    },
+    {
+      "report": {
+        "critical_issues": 0,
+        "head_sha": "006imp",
+        "major_issues": 0,
+        "notes": "scripted",
+        "review_status": null,
+        "status": "success",
+        "tests": "passed"
+      },
+      "role": "implement",
+      "task": "TASK-006"
+    },
+    {
+      "report": {
+        "critical_issues": 0,
+        "head_sha": "006rev",
+        "major_issues": 0,
+        "notes": "scripted",
+        "review_status": "PASSED",
+        "status": "success",
+        "tests": "passed"
+      },
+      "role": "review",
+      "task": "TASK-006"
+    },
+    {
+      "report": {
+        "critical_issues": 0,
+        "head_sha": "006cle",
+        "major_issues": 0,
+        "notes": "scripted",
+        "review_status": null,
+        "status": "success",
+        "tests": "passed"
+      },
+      "role": "cleanup",
+      "task": "TASK-006"
+    },
+    {
+      "report": {
+        "critical_issues": 0,
+        "head_sha": "007imp",
+        "major_issues": 0,
+        "notes": "scripted",
+        "review_status": null,
+        "status": "success",
+        "tests": "passed"
+      },
+      "role": "implement",
+      "task": "TASK-007"
+    },
+    {
+      "report": {
+        "critical_issues": 0,
+        "head_sha": "007rev",
+        "major_issues": 0,
+        "notes": "scripted",
+        "review_status": "PASSED",
+        "status": "success",
+        "tests": "passed"
+      },
+      "role": "review",
+      "task": "TASK-007"
+    },
+    {
+      "report": {
+        "critical_issues": 0,
+        "head_sha": "007cle",
+        "major_issues": 0,
+        "notes": "scripted",
+        "review_status": null,
+        "status": "success",
+        "tests": "passed"
+      },
+      "role": "cleanup",
+      "task": "TASK-007"
+    }
+  ],
+  "spec_id": "001-url-shortener"
+}
