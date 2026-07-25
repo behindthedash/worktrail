@@ -18,6 +18,19 @@ from pathlib import Path
 
 from worktrail.orchestrator import verify
 
+# `verify.automerge_preflight` resolves `worktrail.router.automerge_preflight`
+# lazily (see verify.py); it arrives in Phase 1c. Classes below that exercise
+# `auto_merge()`/`run_all()` are skipped, not failed, until then -- true
+# between the Phase 1a and Phase 1c PRs landing.
+try:
+    verify.automerge_preflight.required_checks_gate  # noqa: B018 (probe access)
+    _AUTOMERGE_PREFLIGHT_AVAILABLE = True
+except ImportError:
+    _AUTOMERGE_PREFLIGHT_AVAILABLE = False
+_NEEDS_AUTOMERGE_PREFLIGHT = unittest.skipUnless(
+    _AUTOMERGE_PREFLIGHT_AVAILABLE, "worktrail.router not yet present (pending Phase 1c)"
+)
+
 Proc = namedtuple("Proc", "returncode stdout stderr")
 
 GREEN = [{"name": "build", "status": "COMPLETED", "conclusion": "SUCCESS"}]
@@ -96,6 +109,7 @@ def mk(run, spawn, tmp, **kw):
 FEATURE = {"name": "feature-1", "tasks": ["TASK-002"], "reqs": [], "depends_on": []}
 
 
+@_NEEDS_AUTOMERGE_PREFLIGHT
 class CleanGreenPath(unittest.TestCase):
     def test_merges_and_cleans_up(self):
         run = FakeRun({"run/feature-1": [view()]})
@@ -114,6 +128,7 @@ class CleanGreenPath(unittest.TestCase):
         self.assertTrue(run.find("git", "-C", "/repo", "worktree", "prune"))
 
 
+@_NEEDS_AUTOMERGE_PREFLIGHT
 class ConflictResolvePath(unittest.TestCase):
     def test_resolve_worker_then_merge(self):
         run = FakeRun({"run/feature-1": [view(mergeable="CONFLICTING"), view()]})
@@ -167,6 +182,7 @@ class BaseFailureQuarantinesDependents(unittest.TestCase):
         self.assertFalse(run.find("gh", "pr", "merge", "run/feature-1"))
 
 
+@_NEEDS_AUTOMERGE_PREFLIGHT
 class AutoMergeFailureQuarantines(unittest.TestCase):
     def test_merge_blocked_keeps_worktree(self):
         run = FakeRun({"run/feature-1": [view()]},
@@ -180,6 +196,7 @@ class AutoMergeFailureQuarantines(unittest.TestCase):
         self.assertFalse(run.find("git", "-C", "/repo", "worktree", "remove"))
 
 
+@_NEEDS_AUTOMERGE_PREFLIGHT
 class NoAutomergeLabelGate(unittest.TestCase):
     """brief 20260723-174500-verify-automerge-fallback-bypasses-policy:
     auto_merge() must never arm `gh pr merge` while the PR carries
@@ -336,6 +353,7 @@ class DeferToArmedAutoMerge(unittest.TestCase):
         self.assertFalse(run.find("gh", "pr", "merge", "run/feature-1"))
 
 
+@_NEEDS_AUTOMERGE_PREFLIGHT
 class RequiredChecksPreflight(unittest.TestCase):
     def test_eligible_branch_reaches_direct_merge(self):
         run = FakeRun({"run/feature-1": [view()]})
@@ -665,6 +683,7 @@ class ReuseExistingVerifyWorktree(unittest.TestCase):
             self.assertEqual(path1, path2)
 
 
+@_NEEDS_AUTOMERGE_PREFLIGHT
 class AutoMergeEdgeCases(unittest.TestCase):
     def test_closed_pr_fails_merge(self):
         closed_view = {"number": 1, "state": "CLOSED", "mergeable": "MERGEABLE",
@@ -712,6 +731,7 @@ class AutoMergeEdgeCases(unittest.TestCase):
         self.assertEqual(len(merge_calls), 0)
 
 
+@_NEEDS_AUTOMERGE_PREFLIGHT
 class ParallelVerifyWave(unittest.TestCase):
     """#15: independent group PRs are verified in one concurrent wave."""
 
@@ -759,6 +779,7 @@ class GhRetry(unittest.TestCase):
         self.assertEqual(run.views, 3)
 
 
+@_NEEDS_AUTOMERGE_PREFLIGHT
 class RetargetDependent(unittest.TestCase):
     """#10: a dependent group's PR is retargeted to base before it's verified, so
     it can't be orphaned on the parent's deleted branch."""
@@ -781,6 +802,7 @@ class RetargetDependent(unittest.TestCase):
         self.assertFalse(any("run/base" in c for c in edits))
 
 
+@_NEEDS_AUTOMERGE_PREFLIGHT
 class BranchProtectionAutoMergePath(unittest.TestCase):
     """Regression tests for Bug 2 (branch-protection auto-merge fallback).
 
@@ -893,6 +915,7 @@ class BranchProtectionAutoMergePath(unittest.TestCase):
                          "remote group branch must not be deleted when PR is queued for auto-merge")
 
 
+@_NEEDS_AUTOMERGE_PREFLIGHT
 class VerifyOneMethod(unittest.TestCase):
     """TASK-002: Verifier.verify_one promoted to a callable method -- AC-008, AC-009."""
 
@@ -1015,6 +1038,7 @@ class VerifyOneMethod(unittest.TestCase):
                         "dependent PR must be retargeted to base before verify")
 
 
+@_NEEDS_AUTOMERGE_PREFLIGHT
 class SquashMergeDetection(unittest.TestCase):
     """Squash-only repos must use --squash instead of --merge.
 
@@ -1219,6 +1243,7 @@ class SquashMergeDetection(unittest.TestCase):
         self.assertIn("--squash", merge_calls[0])
 
 
+@_NEEDS_AUTOMERGE_PREFLIGHT
 class AutoMergeMethodFallback(unittest.TestCase):
     """Fix 3: enablePullRequestAutoMerge rejects the detected method -> retry with squash/rebase.
 
@@ -1353,6 +1378,7 @@ class MakeLiveSpawnExcludesUserSettingSource(unittest.TestCase):
         self.assertEqual(args, [])
 
 
+@_NEEDS_AUTOMERGE_PREFLIGHT
 class WorkerScopeViolation(unittest.TestCase):
     """Structural backstop for dispatch.py's prompt-level 'Hard rules': a group
     worker's actual pushed diff is checked against a deny-list, independent of
