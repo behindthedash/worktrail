@@ -1,0 +1,77 @@
+======================================================================
+ORCHESTRATION   spec=025-feature   max_workers=3
+(placeholder spawn; no live agents)
+======================================================================
+PR group plan:
+  [base     ] TASK-001   reqs=REQ-001
+  [feature-1] TASK-002, TASK-004   stacks-on=['base']   reqs=REQ-002
+  [feature-2] TASK-003, TASK-005   stacks-on=['base']   reqs=REQ-003
+  [feature-3] TASK-006   stacks-on=['base']   reqs=REQ-004
+  tail (serialized): TASK-007, TASK-008
+
+TICK 1: parallel batch -> TASK-001
+  + git worktree add -b 025-feature/task-001 /repos/app-worktrees/025-feature-task-001 <base>
+        implement claimed      -> reviewing   (retry=0)
+        review    reviewing    -> cleaning    (retry=0) [PASSED]
+        cleanup   cleaning     -> done        (retry=0)
+  = TASK-001 done (sha 001cle)
+
+TICK 2: parallel batch -> TASK-002, TASK-003, TASK-006
+  + git worktree add -b 025-feature/task-002 /repos/app-worktrees/025-feature-task-002 <base>
+        implement claimed      -> reviewing   (retry=0)
+        review    reviewing    -> cleaning    (retry=0) [PASSED]
+        cleanup   cleaning     -> done        (retry=0)
+  = TASK-002 done (sha 002cle)
+  + git worktree add -b 025-feature/task-003 /repos/app-worktrees/025-feature-task-003 <base>
+        implement claimed      -> reviewing   (retry=0)
+        review    reviewing    -> fixing      (retry=1) [FAILED]
+        fix       fixing       -> reviewing   (retry=1)
+        review    reviewing    -> cleaning    (retry=0) [PASSED]
+        cleanup   cleaning     -> done        (retry=0)
+  = TASK-003 done (sha 003cle)
+  + git worktree add -b 025-feature/task-006 /repos/app-worktrees/025-feature-task-006 <base>
+        implement claimed      -> reviewing   (retry=0)
+        review    reviewing    -> cleaning    (retry=0) [PASSED]
+        cleanup   cleaning     -> done        (retry=0)
+  = TASK-006 done (sha 006cle)
+
+TICK 3: parallel batch -> TASK-004, TASK-005
+  + git worktree add -b 025-feature/task-004 /repos/app-worktrees/025-feature-task-004 <base>
+        implement claimed      -> reviewing   (retry=0)
+        review    reviewing    -> cleaning    (retry=0) [PASSED]
+        cleanup   cleaning     -> done        (retry=0)
+  = TASK-004 done (sha 004cle)
+  + git worktree add -b 025-feature/task-005 /repos/app-worktrees/025-feature-task-005 <base>
+        implement claimed      -> reviewing   (retry=0)
+        review    reviewing    -> cleaning    (retry=0) [PASSED]
+        cleanup   cleaning     -> done        (retry=0)
+  = TASK-005 done (sha 005cle)
+
+INTEGRATION (merge order from group DAG):
+  merge [base] on 025-feature/base
+        git worktree remove /repos/app-worktrees/025-feature-task-001
+  merge [feature-1] on 025-feature/feature-1
+        git worktree remove /repos/app-worktrees/025-feature-task-002
+        git worktree remove /repos/app-worktrees/025-feature-task-004
+  merge [feature-2] on 025-feature/feature-2
+        git worktree remove /repos/app-worktrees/025-feature-task-003
+        git worktree remove /repos/app-worktrees/025-feature-task-005
+  merge [feature-3] on 025-feature/feature-3
+        git worktree remove /repos/app-worktrees/025-feature-task-006
+
+TAIL (serialized on final integration branch):
+  TASK-007 implement claimed      -> reviewing   (retry=0)
+  TASK-007 review    reviewing    -> cleaning    (retry=0) [PASSED]
+  TASK-007 cleanup   cleaning     -> done        (retry=0)
+  TASK-008 implement claimed      -> reviewing   (retry=0)
+  TASK-008 review    reviewing    -> cleaning    (retry=0) [PASSED]
+  TASK-008 cleanup   cleaning     -> done        (retry=0)
+
+PR PLAN (one PR per group):
+  PR 025-feature/base               -> dev                tasks=TASK-001
+  PR 025-feature/feature-1          -> base (stacked)     tasks=TASK-002, TASK-004
+  PR 025-feature/feature-2          -> base (stacked)     tasks=TASK-003, TASK-005
+  PR 025-feature/feature-3          -> base (stacked)     tasks=TASK-006
+  final PR (e2e+cleanup)             -> dev                tasks=TASK-007, TASK-008
+
+SUMMARY: 8/8 tasks done; 4 group PRs + 1 final PR; ticks=3.

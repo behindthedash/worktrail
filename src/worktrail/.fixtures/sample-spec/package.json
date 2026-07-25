@@ -1,0 +1,15 @@
+{
+  "name": "url-shortener-sample",
+  "private": true,
+  "type": "module",
+  "description": "Live-run target for the parallel-orchestrator sample spec (docs/specs/001-url-shortener). Implemented by worker agents during a recorded live run.",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0"
+  }
+}

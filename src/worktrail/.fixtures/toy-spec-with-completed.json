@@ -1,0 +1,17 @@
+{
+  "spec_id": "025-feature",
+  "scenario": {
+    "_comment": "Spec with pre-completed tasks to test skip-completed-tasks feature",
+    "fail_review_once": ["TASK-005"]
+  },
+  "tasks": [
+    {"id": "TASK-001", "status": "completed", "deps": [], "files": ["db/schema.sql"], "kind": "impl", "reqs": ["REQ-001"]},
+    {"id": "TASK-002", "deps": ["TASK-001"], "files": ["src/orders/service.ts"], "kind": "impl", "reqs": ["REQ-002"]},
+    {"id": "TASK-003", "status": "done", "deps": ["TASK-001"], "files": ["src/payments/service.ts"], "kind": "impl", "reqs": ["REQ-003"]},
+    {"id": "TASK-004", "deps": ["TASK-002"], "files": ["src/orders/api.ts"], "kind": "impl", "reqs": ["REQ-002"]},
+    {"id": "TASK-005", "deps": ["TASK-003"], "files": ["src/payments/api.ts"], "kind": "impl", "reqs": ["REQ-003"]},
+    {"id": "TASK-006", "deps": ["TASK-001"], "files": ["src/notify/service.ts"], "kind": "impl", "reqs": ["REQ-004"]},
+    {"id": "TASK-007", "deps": ["TASK-002", "TASK-003", "TASK-004", "TASK-005", "TASK-006"], "files": ["test/e2e.spec.ts"], "kind": "e2e", "reqs": []},
+    {"id": "TASK-008", "deps": ["TASK-007"], "files": [], "kind": "cleanup", "reqs": []}
+  ]
+}
