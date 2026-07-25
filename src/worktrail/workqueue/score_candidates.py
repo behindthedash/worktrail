@@ -1,0 +1,381 @@
+#!/usr/bin/env python3
+"""
+Candidate scorer for the handoff skill's Create-time auto-detect step, and for
+the go front door's Consume-time batch detection.
+
+Capture mode (default): scans queue/ and picked/ (excluding status: done) for
+briefs related to a newly-written brief, scores each using same-repo boost +
+token overlap on focus + shared paths/identifiers in body, excludes blocked-by
+pairs, caps to the top 3 above the minimum threshold, and emits JSON:
+
+    {"auto_link": [...], "confirm": [...]}
+
+where each entry is {"path": ..., "id": ..., "focus": ...}.
+
+Briefs that are same-repo AND above the high-confidence threshold go to
+auto_link; all others above the minimum threshold go to confirm.
+
+Batch mode (--mode batch): scans queue/ ONLY (a brief someone else already
+picked can't be batched) for briefs that could be folded into the same working
+session as the brief about to be claimed. Same-repo is REQUIRED, `related`-
+linked briefs are included unconditionally, a shared `target-spec` earns a
+boost, and the score floor is stricter than capture mode (batching commits the
+session to actually doing the work; a loose textual echo isn't enough). Emits:
+
+    {"batch": [{"path": ..., "id": ..., "focus": ..., "reason": ...}, ...]}
+
+with reason one of "related-link" | "same-target-spec" | "score", capped at
+BATCH_TOP_N companions.
+
+Stdlib-only; no yaml dependency; no import of work_queue.py.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+# Scoring thresholds — conservative defaults per spec
+MIN_OVERLAP = 0.15  # minimum total score to include a candidate
+HIGH_CONFIDENCE = 0.45  # total-score threshold for same-repo auto-link
+SAME_REPO_BOOST = 0.20  # added to score when candidate shares the new brief's repo
+TOP_N = 3  # max combined candidates across auto_link + confirm
+
+# Batch-mode thresholds (Consume-time; stricter than capture mode)
+BATCH_MIN = 0.45  # score floor for a companion with no structural signal
+TARGET_SPEC_BOOST = 0.25  # added when both briefs name the same target-spec
+BATCH_TOP_N = 3  # max companions per batch (keeps one run/PR reviewable)
+
+_FM_RE = re.compile(r"^---\r?\n(.*?)\n---\r?\n", re.DOTALL)
+
+
+# ---------------------------------------------------------------------------
+# Minimal YAML frontmatter parser (stdlib-only, handles handoff brief schema)
+# ---------------------------------------------------------------------------
+
+
+def _parse_fm(content: str) -> Dict[str, Any]:
+    """Parse the YAML frontmatter of a handoff brief without yaml library.
+
+    Handles scalar values, null, and block-sequence lists (- item).
+    Returns {} on parse failure or missing frontmatter.
+    """
+    m = _FM_RE.match(content)
+    if not m:
+        return {}
+    block = m.group(1)
+    result: Dict[str, Any] = {}
+    lines = block.split("\n")
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            i += 1
+            continue
+        kv = re.match(r"^([a-zA-Z][a-zA-Z0-9_-]*):\s*(.*)", line)
+        if not kv:
+            i += 1
+            continue
+        key = kv.group(1)
+        val = kv.group(2).strip()
+        if not val:
+            # Possible block-sequence list
+            items: List[str] = []
+            i += 1
+            while i < len(lines) and re.match(r"^\s+-", lines[i]):
+                item_m = re.match(r"^\s+-\s+(.*)", lines[i])
+                if item_m:
+                    items.append(item_m.group(1).strip())
+                i += 1
+            result[key] = items
+            continue
+        if val in ("null", "~"):
+            result[key] = None
+        elif val.startswith('"') and val.endswith('"') and len(val) >= 2:
+            result[key] = val[1:-1]
+        elif val.startswith("'") and val.endswith("'") and len(val) >= 2:
+            result[key] = val[1:-1]
+        else:
+            result[key] = val
+        i += 1
+    return result
+
+
+def _read_brief(path: Path):
+    """Return (frontmatter_dict, body_text) or (None, None) on error."""
+    try:
+        content = path.read_text(encoding="utf-8")
+    except OSError:
+        return None, None
+    fm = _parse_fm(content)
+    m = _FM_RE.match(content)
+    body = content[m.end() :] if m else content
+    return fm, body
+
+
+# ---------------------------------------------------------------------------
+# Scoring helpers
+# ---------------------------------------------------------------------------
+
+
+def _tokenize(text: str) -> set:
+    """Return lowercase alphanumeric tokens of length >= 3 from text."""
+    if not text:
+        return set()
+    return {t.lower() for t in re.findall(r"[a-zA-Z][a-zA-Z0-9]{2,}", text)}
+
+
+def _overlap_coefficient(a: set, b: set) -> float:
+    """Overlap coefficient: |A ∩ B| / min(|A|, |B|)."""
+    if not a or not b:
+        return 0.0
+    return len(a & b) / min(len(a), len(b))
+
+
+def _normalize_repo(val: Any) -> Optional[str]:
+    """Return None for absent/null repos so they never match each other."""
+    if val is None or val in ("null", "~", ""):
+        return None
+    return str(val)
+
+
+def _id_matches(identifier: str, stem: str) -> bool:
+    """True if identifier resolves to this brief stem (mirrors resolve() forms)."""
+    if not identifier:
+        return False
+    # Exact filename or stem
+    if identifier in (stem + ".md", stem):
+        return True
+    # Prefix match (e.g. "20260604-161500" matches "20260604-161500-ggb-...")
+    if stem.startswith(identifier):
+        return True
+    # Suffix/contains match (slug without date-time prefix)
+    if stem.endswith(identifier):
+        return True
+    return False
+
+
+def _is_blocked_by_pair(
+    new_fm: Dict[str, Any],
+    new_stem: str,
+    cand_fm: Dict[str, Any],
+    cand_stem: str,
+) -> bool:
+    """True if either brief has a blocked-by entry pointing at the other."""
+
+    def _deps(fm: Dict[str, Any]) -> List[str]:
+        raw = fm.get("blocked-by") or []
+        if isinstance(raw, str):
+            return [raw]
+        if isinstance(raw, list):
+            return [str(x) for x in raw if x]
+        return []
+
+    for dep in _deps(new_fm):
+        if _id_matches(dep, cand_stem):
+            return True
+    for dep in _deps(cand_fm):
+        if _id_matches(dep, new_stem):
+            return True
+    return False
+
+
+def _md_files(d: Path) -> List[Path]:
+    if not d.is_dir():
+        return []
+    return [f for f in d.iterdir() if f.is_file() and f.suffix == ".md"]
+
+
+# ---------------------------------------------------------------------------
+# Main scoring entry point
+# ---------------------------------------------------------------------------
+
+
+def score_candidates(new_brief_path: Path, base_dir: Path) -> Dict[str, Any]:
+    """Score non-done queue/picked briefs against new_brief_path.
+
+    Returns {"auto_link": [...], "confirm": [...]} where each entry is
+    {"path": str, "id": str, "focus": str}.
+    """
+    new_fm, new_body = _read_brief(new_brief_path)
+    if new_fm is None:
+        return {"auto_link": [], "confirm": []}
+
+    new_stem = new_brief_path.stem
+    new_focus = str(new_fm.get("focus") or "")
+    new_repo = _normalize_repo(new_fm.get("repo"))
+    new_focus_tokens = _tokenize(new_focus)
+    new_body_tokens = _tokenize(new_body or "")
+
+    scored: List[Dict[str, Any]] = []
+
+    for subdir in ("queue", "picked"):
+        for f in _md_files(base_dir / subdir):
+            if f.resolve() == new_brief_path.resolve():
+                continue  # skip self
+
+            cand_fm, cand_body = _read_brief(f)
+            if cand_fm is None:
+                continue  # malformed — skip leniently (AC-017)
+
+            if cand_fm.get("status") == "done":
+                continue  # exclude done briefs (AC-012)
+
+            if _is_blocked_by_pair(new_fm, new_stem, cand_fm, f.stem):
+                continue  # exclude blocked-by pairs (AC-016)
+
+            cand_focus = str(cand_fm.get("focus") or "")
+            cand_focus_tokens = _tokenize(cand_focus)
+            cand_body_tokens = _tokenize(cand_body or "")
+
+            focus_score = _overlap_coefficient(new_focus_tokens, cand_focus_tokens)
+            body_score = _overlap_coefficient(new_body_tokens, cand_body_tokens)
+            base_score = focus_score * 0.7 + body_score * 0.3
+
+            cand_repo = _normalize_repo(cand_fm.get("repo"))
+            same_repo = cand_repo is not None and cand_repo == new_repo
+
+            total_score = base_score + (SAME_REPO_BOOST if same_repo else 0.0)
+
+            if total_score < MIN_OVERLAP:
+                continue  # below minimum threshold (AC-013, AC-017)
+
+            scored.append(
+                {
+                    "path": str(f),
+                    "id": f.stem,
+                    "focus": cand_focus,
+                    "same_repo": same_repo,
+                    "base_score": base_score,
+                    "total_score": total_score,
+                }
+            )
+
+    # Sort by total_score descending, cap to TOP_N (AC-013)
+    scored.sort(key=lambda c: c["total_score"], reverse=True)
+    scored = scored[:TOP_N]
+
+    auto_link = []
+    confirm = []
+    for c in scored:
+        entry = {"path": c["path"], "id": c["id"], "focus": c["focus"]}
+        if c["same_repo"] and c["total_score"] >= HIGH_CONFIDENCE:
+            auto_link.append(entry)  # AC-014: same-repo high-confidence auto-link
+        else:
+            confirm.append(entry)
+
+    return {"auto_link": auto_link, "confirm": confirm}
+
+
+def _coerce_id_list(val: Any) -> List[str]:
+    if isinstance(val, list):
+        return [str(x) for x in val if x]
+    if isinstance(val, str) and val:
+        return [val]
+    return []
+
+
+def batch_candidates(brief_path: Path, base_dir: Path) -> Dict[str, Any]:
+    """Find queue/ briefs foldable into the same session as brief_path.
+
+    Same-repo is required (no repo on the brief -> no candidates). Inclusion:
+    `related`-linked in either direction (unconditional), same non-null
+    `target-spec` (after boost), or total score >= BATCH_MIN. blocked-by pairs
+    are excluded in either direction — a dependency is sequencing, not a batch.
+    Returns {"batch": [{"path", "id", "focus", "reason"}, ...]} capped at
+    BATCH_TOP_N, related-link entries first, then by score.
+    """
+    fm, body = _read_brief(brief_path)
+    if fm is None:
+        return {"batch": []}
+
+    repo = _normalize_repo(fm.get("repo"))
+    if repo is None:
+        return {"batch": []}  # can't establish "same repo" — don't guess
+
+    stem = brief_path.stem
+    target_spec = _normalize_repo(fm.get("target-spec"))
+    related_ids = _coerce_id_list(fm.get("related"))
+    focus_tokens = _tokenize(str(fm.get("focus") or ""))
+    body_tokens = _tokenize(body or "")
+
+    scored: List[Dict[str, Any]] = []
+    for f in _md_files(base_dir / "queue"):
+        if f.resolve() == brief_path.resolve():
+            continue
+        cand_fm, cand_body = _read_brief(f)
+        if cand_fm is None:
+            continue
+        if _is_blocked_by_pair(fm, stem, cand_fm, f.stem):
+            continue
+        if _normalize_repo(cand_fm.get("repo")) != repo:
+            continue
+
+        related_link = any(_id_matches(rid, f.stem) for rid in related_ids) or any(
+            _id_matches(rid, stem) for rid in _coerce_id_list(cand_fm.get("related"))
+        )
+        cand_spec = _normalize_repo(cand_fm.get("target-spec"))
+        spec_match = target_spec is not None and cand_spec == target_spec
+
+        cand_focus = str(cand_fm.get("focus") or "")
+        base_score = (
+            _overlap_coefficient(focus_tokens, _tokenize(cand_focus)) * 0.7
+            + _overlap_coefficient(body_tokens, _tokenize(cand_body or "")) * 0.3
+        )
+        total = base_score + SAME_REPO_BOOST + (TARGET_SPEC_BOOST if spec_match else 0.0)
+
+        if not (related_link or spec_match or total >= BATCH_MIN):
+            continue
+        reason = "related-link" if related_link else ("same-target-spec" if spec_match else "score")
+        scored.append(
+            {
+                "path": str(f),
+                "id": f.stem,
+                "focus": cand_focus,
+                "reason": reason,
+                "_related": related_link,
+                "_score": total,
+            }
+        )
+
+    scored.sort(key=lambda c: (not c["_related"], -c["_score"]))
+    return {
+        "batch": [
+            {k: v for k, v in c.items() if not k.startswith("_")} for c in scored[:BATCH_TOP_N]
+        ]
+    }
+
+
+def main(argv=None) -> int:
+    p = argparse.ArgumentParser(
+        description="Score related-brief candidates for a handoff brief"
+    )
+    p.add_argument("brief_path", help="Path to the brief to score against")
+    p.add_argument(
+        "--queue-dir",
+        required=True,
+        help="Base queue directory (contains queue/ and picked/ subdirs)",
+    )
+    p.add_argument(
+        "--mode",
+        choices=("capture", "batch"),
+        default="capture",
+        help="capture: create-time auto-link candidates (default); "
+        "batch: consume-time same-session companions from queue/ only",
+    )
+    args = p.parse_args(argv)
+    if args.mode == "batch":
+        result = batch_candidates(Path(args.brief_path), Path(args.queue_dir))
+    else:
+        result = score_candidates(Path(args.brief_path), Path(args.queue_dir))
+    print(json.dumps(result))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
