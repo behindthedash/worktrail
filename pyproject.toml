@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "worktrail"
+version = "0.1.0"
+description = "Spec-format-agnostic task orchestration: parallel worktree fan-out, a route classifier, and a work-queue handoff system"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+
+[project.scripts]
+worktrail-orchestrate = "worktrail.orchestrator.orchestrate:main"
+worktrail-live = "worktrail.orchestrator.live:main"
+worktrail-integrate = "worktrail.orchestrator.integrate:main"
+worktrail-verify = "worktrail.orchestrator.verify:main"
+worktrail-task-lifecycle = "worktrail.taskformats.devkit.cli:main"
+worktrail-classify = "worktrail.router.classify:main"
+worktrail-dashboard = "worktrail.router.dashboard:main"
+worktrail-work-queue = "worktrail.workqueue.work_queue:main"
+worktrail-drain = "worktrail.drain.drain:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
