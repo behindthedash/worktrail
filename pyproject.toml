@@ -27,6 +27,9 @@ worktrail-task-lifecycle = "worktrail.taskformats.devkit.cli:main"
 worktrail-classify = "worktrail.router.classify:main"
 worktrail-dashboard = "worktrail.router.dashboard:main"
 worktrail-work-queue = "worktrail.workqueue.work_queue:main"
+worktrail-score-candidates = "worktrail.workqueue.score_candidates:main"
+worktrail-dist-tag-watch = "worktrail.workqueue.dist_tag_watch:main"
+worktrail-backfill-recommended-route = "worktrail.workqueue.backfill_recommended_route:main"
 worktrail-drain = "worktrail.drain.drain:main"
 
 [tool.setuptools.packages.find]
