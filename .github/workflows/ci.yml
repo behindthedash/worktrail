@@ -1,0 +1,29 @@
+name: "CI: Lint, Test & Build"
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-test-build:
+    name: "Lint, Test & Build"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install package
+        run: pip install -e ".[dev]"
+      - name: Test
+        run: pytest -q
+      - name: Golden regression (orchestrator)
+        run: python3 -m worktrail.orchestrator.orchestrate check
+      - name: Build
+        run: pip install build && python3 -m build
