@@ -1,0 +1,437 @@
+#!/usr/bin/env python3
+"""Tests for the live.py resilience/speed helpers:
+
+  - _review_exempt (#16)             review fast-path opt-in
+  - _parse_model_map (#20)           per-role model overrides
+  - RunLock (#4)                     single-owner run lock
+  - set_task_status_completed (#14)  surgical frontmatter write-back
+  - add_stacked_worktree (#7)        idempotent on a pre-existing branch
+  - salvage_report (#11)             recover an implement/fix commit on bad report
+  - cleanup_task_in_python (#14)     deterministic cleanup, no spawn
+
+Git-touching tests build a throwaway repo under a temp dir. Run:
+    python3 scripts/test_resilience_helpers.py
+"""
+
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from worktrail.orchestrator import coordinator  # noqa: E402
+from worktrail.orchestrator import live  # noqa: E402
+from worktrail.orchestrator import spawnlib  # noqa: E402
+
+
+def _git(repo, *args):
+    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True)
+
+
+def _init_repo(root: Path, task_md: str | None = None) -> Path:
+    repo = root / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    _git(repo, "config", "user.email", "t@t")
+    _git(repo, "config", "user.name", "T")
+    (repo / "README.md").write_text("x\n")
+    if task_md is not None:
+        td = repo / "docs" / "specs" / "001-x" / "tasks"
+        td.mkdir(parents=True)
+        (td / "TASK-001.md").write_text(task_md)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "init")
+    return repo
+
+
+def _write_sibling_task_file(repo, sibling_spec_id, sibling_task_id, status="completed"):
+    """Materialize a sibling spec's task file so `resolve_external_dependency`
+    reports the reference as satisfied (read-only filesystem check, no git)."""
+    td = Path(repo) / "docs" / "specs" / sibling_spec_id / "tasks"
+    td.mkdir(parents=True, exist_ok=True)
+    (td / f"{sibling_task_id}.md").write_text(
+        f"---\nid: {sibling_task_id}\nstatus: {status}\n---\nbody\n"
+    )
+
+
+class FrontierFileNormalize(unittest.TestCase):
+    """#8: collision detection compares NORMALISED paths so the same file spelled
+    two ways doesn't slip two tasks into one parallel batch."""
+
+    def test_differently_spelled_same_file_collides(self):
+        tasks = [
+            {
+                "id": "TASK-001",
+                "status": "pending",
+                "deps": [],
+                "files": ["src/a.ts"],
+                "kind": "impl",
+            },
+            {
+                "id": "TASK-002",
+                "status": "pending",
+                "deps": [],
+                "files": ["./src/a.ts"],
+                "kind": "impl",
+            },
+        ]
+        front = coordinator.runnable_frontier(tasks, max_workers=4)
+        self.assertEqual(len(front), 1)  # same file -> only one may run this tick
+
+    def test_disjoint_files_both_run(self):
+        tasks = [
+            {
+                "id": "TASK-001",
+                "status": "pending",
+                "deps": [],
+                "files": ["src/a.ts"],
+                "kind": "impl",
+            },
+            {
+                "id": "TASK-002",
+                "status": "pending",
+                "deps": [],
+                "files": ["src/b.ts"],
+                "kind": "impl",
+            },
+        ]
+        front = coordinator.runnable_frontier(tasks, max_workers=4)
+        self.assertEqual(len(front), 2)
+
+
+class ReviewExempt(unittest.TestCase):
+    def test_opt_out_values(self):
+        for v in ("skip", "false", "no", "none", "off", "SKIP"):
+            self.assertTrue(live._review_exempt({"review": v}), v)
+
+    def test_docs_kind_exempt(self):
+        self.assertTrue(live._review_exempt({"kind": "docs"}))
+
+    def test_default_is_reviewed(self):
+        self.assertFalse(live._review_exempt({}))
+        self.assertFalse(live._review_exempt({"review": "yes", "kind": "impl"}))
+
+
+class ParseModelMap(unittest.TestCase):
+    def test_parses_pairs(self):
+        self.assertEqual(
+            live._parse_model_map("implement=sonnet,review=haiku"),
+            {"implement": "sonnet", "review": "haiku"},
+        )
+
+    def test_empty_is_none(self):
+        self.assertIsNone(live._parse_model_map(None))
+        self.assertIsNone(live._parse_model_map(""))
+        self.assertIsNone(live._parse_model_map(" , "))
+
+    def test_skips_malformed(self):
+        self.assertEqual(
+            live._parse_model_map("implement=sonnet,garbage,=x,y="), {"implement": "sonnet"}
+        )
+
+    def test_codex_default_role_models_use_mini_model(self):
+        self.assertEqual(
+            live._effective_role_models("codex", None),
+            {
+                "implement": "gpt-5.4-mini",
+                "review": "gpt-5.4-mini",
+                "fix": "gpt-5.4-mini",
+                "cleanup": "gpt-5.4-mini",
+                "ci-fix": "gpt-5.4-mini",
+            },
+        )
+
+    def test_explicit_role_models_win_for_codex(self):
+        role_models = {"implement": "custom-model"}
+        self.assertIs(live._effective_role_models("codex", role_models), role_models)
+
+    def test_detect_default_agent_prefers_overrides_then_codex_host(self):
+        with patch.dict(os.environ, {"GO_AGENT_CLI": "claude", "CODEX_CI": "1"}, clear=True):
+            self.assertEqual(live._detect_default_agent(), "claude")
+        with patch.dict(os.environ, {"ORCH_AGENT": "claude", "CODEX_THREAD_ID": "t"}, clear=True):
+            self.assertEqual(live._detect_default_agent(), "claude")
+        with patch.dict(os.environ, {"CODEX_CI": "1"}, clear=True):
+            self.assertEqual(live._detect_default_agent(), "codex")
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(live._detect_default_agent(), "claude")
+
+    def test_detect_default_agent_uses_explicit_opencode_parent_marker(self):
+        with patch.dict(os.environ, {"OPENCODE_PARENT": "1"}, clear=True):
+            self.assertEqual(live._detect_default_agent(), "opencode")
+        with patch.dict(os.environ, {"OPENCODE_PARENT": "1", "GO_AGENT_CLI": "claude"}, clear=True):
+            self.assertEqual(live._detect_default_agent(), "claude")
+
+
+class DefaultModelSelection(unittest.TestCase):
+    def test_claude_defaults_to_sonnet(self):
+        self.assertEqual(spawnlib.default_model_for_agent("claude"), "sonnet")
+        self.assertEqual(
+            live.LiveSpawn("001-x", "docs/specs/001-x/", agent="claude").model, "sonnet"
+        )
+
+    def test_codex_defaults_to_mini_and_explicit_override_still_wins(self):
+        self.assertEqual(spawnlib.default_model_for_agent("codex"), "gpt-5.4-mini")
+        self.assertEqual(
+            live.LiveSpawn("001-x", "docs/specs/001-x/", agent="codex").model,
+            "gpt-5.4-mini",
+        )
+        self.assertEqual(
+            live.LiveSpawn("001-x", "docs/specs/001-x/", agent="codex", model="sonnet").model,
+            "sonnet",
+        )
+
+    def test_opencode_defaults_to_sonnet_family(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(
+                spawnlib.default_model_for_agent("opencode"), "deepseek/deepseek-v4-flash"
+            )
+            self.assertEqual(
+                live.LiveSpawn("001-x", "docs/specs/001-x/", agent="opencode").model,
+                "deepseek/deepseek-v4-flash",
+            )
+
+    def test_opencode_model_override_remains_supported(self):
+        with patch.dict(os.environ, {"ORCH_OPENCODE_MODEL": "provider/custom"}, clear=True):
+            self.assertEqual(spawnlib.default_model_for_agent("opencode"), "provider/custom")
+
+
+class RunLockTest(unittest.TestCase):
+    def test_second_acquire_blocks_then_releases(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            jp = Path(tmp) / "run-008.json"
+            lock1 = live.RunLock(jp).acquire()
+            try:
+                with self.assertRaises(live.RunLockHeld):
+                    live.RunLock(jp).acquire()
+            finally:
+                lock1.release()
+            # released -> re-acquirable
+            lock2 = live.RunLock(jp).acquire()
+            lock2.release()
+
+
+class SetTaskStatus(unittest.TestCase):
+    def test_flips_only_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / "TASK-001.md"
+            f.write_text("---\nid: TASK-001\nstatus: pending\ntitle: x\n---\n\nbody line\n")
+            self.assertTrue(live.set_task_status_completed(f))
+            txt = f.read_text()
+            self.assertIn("status: completed", txt)
+            self.assertIn("id: TASK-001", txt)
+            self.assertIn("body line", txt)
+            self.assertNotIn("status: pending", txt)
+
+    def test_idempotent_when_already_completed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / "TASK-001.md"
+            f.write_text("---\nstatus: completed\n---\nbody\n")
+            self.assertFalse(live.set_task_status_completed(f))
+
+    def test_appends_when_no_status_field(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / "TASK-001.md"
+            f.write_text("---\nid: TASK-001\n---\nbody\n")
+            self.assertTrue(live.set_task_status_completed(f))
+            self.assertIn("status: completed", f.read_text())
+
+
+class AddStackedWorktreeIdempotent(unittest.TestCase):
+    def test_reuses_existing_branch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _init_repo(Path(tmp))
+            wt_base = Path(tmp) / "wt"
+            wt_base.mkdir()
+            task = {"id": "TASK-001", "deps": []}
+            wt1 = wt_base / "001-x-task-001"
+            live.add_stacked_worktree(repo, "001-x", task, {"TASK-001": task}, wt1)
+            self.assertTrue(wt1.exists())
+            # free the branch (dir gone, branch remains -- the resume hazard)
+            _git(repo, "worktree", "remove", str(wt1), "--force")
+            wt2 = wt_base / "001-x-task-001-again"
+            # must NOT crash on `add -b <existing branch>`; reuses the branch
+            live.add_stacked_worktree(repo, "001-x", task, {"TASK-001": task}, wt2)
+            self.assertTrue(wt2.exists())
+            head = subprocess.run(
+                ["git", "-C", str(wt2), "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            self.assertEqual(head, "001-x/task-001")
+
+    def test_rejects_retained_branch_that_predates_current_base(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _init_repo(Path(tmp))
+            wt_base = Path(tmp) / "wt"
+            wt_base.mkdir()
+            task = {"id": "TASK-001", "deps": []}
+            wt1 = wt_base / "001-x-task-001"
+            live.add_stacked_worktree(repo, "001-x", task, {"TASK-001": task}, wt1)
+            _git(repo, "worktree", "remove", str(wt1), "--force")
+
+            (repo / "README.md").write_text("new base\n")
+            _git(repo, "add", "README.md")
+            _git(repo, "commit", "-q", "-m", "advance base")
+
+            with self.assertRaises(live.WorktreeAddError) as ctx:
+                live.add_stacked_worktree(
+                    repo,
+                    "001-x",
+                    task,
+                    {"TASK-001": task},
+                    wt_base / "001-x-task-001-again",
+                )
+            self.assertIn("stale", str(ctx.exception))
+
+
+class AddStackedWorktreeCrossSpecFallback(unittest.TestCase):
+    """TASK-006/AC-017: a satisfied external dependency whose branch was
+    already merged to base (no worktree branch materialized) must not raise
+    `WorktreeAddError` -- `add_stacked_worktree` falls back to the base ref,
+    same as it does for an already-integrated same-spec dependency."""
+
+    def test_falls_back_to_base_ref_without_raising(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _init_repo(Path(tmp))
+            sibling_spec = "098-x"
+            _write_sibling_task_file(repo, sibling_spec, "TASK-036")
+            # No `098-x/task-036` branch is ever created: the sibling's work
+            # was already merged to base under this naming convention.
+            task = {
+                "id": "TASK-002",
+                "deps": [],
+                "external_deps": [f"{sibling_spec}/TASK-036"],
+            }
+            wt = Path(tmp) / "wt"
+            live.add_stacked_worktree(repo, "001-x", task, {"TASK-002": task}, wt)  # must not raise
+            self.assertTrue(wt.exists())
+            head = subprocess.run(
+                ["git", "-C", str(wt), "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            self.assertEqual(head, "001-x/task-002")
+
+
+class SalvageReport(unittest.TestCase):
+    def _worktree(self, tmp):
+        repo = _init_repo(Path(tmp))
+        wt = Path(tmp) / "wt"
+        live.add_stacked_worktree(
+            repo,
+            "001-x",
+            {"id": "TASK-001", "deps": []},
+            {"TASK-001": {"id": "TASK-001", "deps": []}},
+            wt,
+        )
+        return repo, wt
+
+    def test_no_new_commit_is_not_salvageable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, wt = self._worktree(tmp)
+            pre = live._git(wt, "rev-parse", "HEAD").stdout.strip()
+            self.assertIsNone(live.salvage_report("implement", {"id": "TASK-001"}, wt, pre))
+
+    def test_commit_present_is_salvaged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, wt = self._worktree(tmp)
+            pre = live._git(wt, "rev-parse", "HEAD").stdout.strip()
+            (wt / "f.txt").write_text("work\n")
+            _git(wt, "add", "f.txt")
+            _git(wt, "commit", "-q", "-m", "did the work")
+            rep = live.salvage_report("implement", {"id": "TASK-001"}, wt, pre)
+            assert rep is not None
+            self.assertEqual(rep["status"], "success")
+            self.assertTrue(rep["head_sha"])
+
+    def test_review_role_never_salvaged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, wt = self._worktree(tmp)
+            pre = "deadbeef"
+            self.assertIsNone(live.salvage_report("review", {"id": "TASK-001"}, wt, pre))
+
+
+class ReviewerIndependence(unittest.TestCase):
+    """#6: the review role gets an appended 'independent reviewer' system prompt
+    and may use a different model; other roles keep the DEFAULT system prompt
+    (preserving prompt-cache reuse, #19)."""
+
+    def setUp(self):
+        self._orig = live.spawnlib.spawn_claude_p
+        self.captured = {}
+
+        def fake(
+            prompt,
+            wt,
+            *,
+            model=None,
+            timeout=None,
+            extra_args=None,
+            resume_session_id=None,
+            fallback_agent=None,
+            log=None,
+        ):
+            self.captured = {"extra_args": extra_args, "model": model}
+            return (
+                '```json\n{"task":"TASK-001","step":"review","status":"success",'
+                '"review_status":"PASSED"}\n```'
+            )
+
+        live.spawnlib.spawn_claude_p = fake
+
+    def tearDown(self):
+        live.spawnlib.spawn_claude_p = self._orig
+
+    def test_review_gets_append_system_prompt_and_role_model(self):
+        ls = live.LiveSpawn(
+            "001-x",
+            "docs/specs/001-x/",
+            agent="claude",
+            model="haiku",
+            role_models={"review": "sonnet"},
+        )
+        ls("review", {"id": "TASK-001", "files": ["a.py"]}, Path("/tmp/wt"))
+        self.assertIsNotNone(self.captured["extra_args"])
+        self.assertIn("--append-system-prompt", self.captured["extra_args"])
+        self.assertEqual(self.captured["model"], "sonnet")  # role override
+
+    def test_implement_keeps_default_system_prompt(self):
+        ls = live.LiveSpawn("001-x", "docs/specs/001-x/", agent="claude", model="haiku")
+        ls("implement", {"id": "TASK-001", "files": ["a.py"]}, Path("/tmp/wt"))
+        # --append-system-prompt must NOT be present for non-review roles (cache reuse)
+        args = self.captured["extra_args"] or []
+        self.assertNotIn("--append-system-prompt", args)
+        self.assertEqual(self.captured["model"], "haiku")
+
+
+class CleanupInPython(unittest.TestCase):
+    def test_flips_status_and_commits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _init_repo(
+                Path(tmp), task_md="---\nid: TASK-001\nstatus: reviewing\n---\nbody\n"
+            )
+            wt = Path(tmp) / "wt"
+            live.add_stacked_worktree(
+                repo,
+                "001-x",
+                {"id": "TASK-001", "deps": []},
+                {"TASK-001": {"id": "TASK-001", "deps": []}},
+                wt,
+            )
+            rep = live.cleanup_task_in_python(wt, "docs/specs/001-x", "TASK-001")
+            self.assertEqual(rep["status"], "success")
+            tf = wt / "docs" / "specs" / "001-x" / "tasks" / "TASK-001.md"
+            self.assertIn("status: completed", tf.read_text())
+            # change was committed -> worktree clean
+            porcelain = subprocess.run(
+                ["git", "-C", str(wt), "status", "--porcelain"], capture_output=True, text=True
+            ).stdout.strip()
+            self.assertEqual(porcelain, "")
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
