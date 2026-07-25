@@ -1,0 +1,257 @@
+#!/usr/bin/env python3
+"""Unit tests for overlap_check.py — stdlib unittest, no pytest needed."""
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+from worktrail.router.overlap_check import (
+    _feature_summary_from_spec,
+    _summary_from_problem_statement,
+    _user_request_excerpt,
+    _spec_title,
+    extract_spec_summary,
+    scan,
+)
+
+
+def _write(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
+
+
+class TestFeatureSummaryExtraction(unittest.TestCase):
+
+    def test_reads_feature_summary_field(self):
+        text = "**Feature Summary**: Allows donors to search nonprofits by cause.\n"
+        self.assertEqual(
+            _feature_summary_from_spec(text),
+            "Allows donors to search nonprofits by cause.",
+        )
+
+    def test_reads_unbolded_feature_summary(self):
+        text = "Feature Summary: Simple summary here.\n"
+        self.assertEqual(_feature_summary_from_spec(text), "Simple summary here.")
+
+    def test_ignores_template_placeholder(self):
+        text = "**Feature Summary**: ${FEATURE_SUMMARY}\n"
+        self.assertIsNone(_feature_summary_from_spec(text))
+
+    def test_returns_none_when_absent(self):
+        text = "# Some spec\n\nNo summary field here.\n"
+        self.assertIsNone(_feature_summary_from_spec(text))
+
+    def test_problem_statement_fallback(self):
+        text = (
+            "## Business Context\n\n"
+            "### Problem Statement\n\n"
+            "Donors struggle to find nonprofits aligned with their values. "
+            "They have no search tools.\n\n"
+            "### Target Users\n"
+        )
+        result = _summary_from_problem_statement(text)
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertIn("Donors struggle", result)
+
+    def test_problem_statement_returns_first_sentence(self):
+        text = (
+            "### Problem Statement\n\n"
+            "First sentence. Second sentence.\n"
+        )
+        result = _summary_from_problem_statement(text)
+        self.assertEqual(result, "First sentence.")
+
+    def test_problem_statement_skips_placeholder(self):
+        text = "### Problem Statement\n\n[What problem does this feature solve?]\n"
+        result = _summary_from_problem_statement(text)
+        self.assertIsNone(result)
+
+
+class TestUserRequestExcerpt(unittest.TestCase):
+
+    def test_reads_user_request(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            spec_dir = Path(tmp) / "001-test"
+            _write(spec_dir / "user-request.md",
+                   "# User Request\n\n**Original Input**: Add donor search.\n\nKey requirements here.")
+            result = _user_request_excerpt(spec_dir)
+            self.assertIsNotNone(result)
+            assert result is not None
+            self.assertIn("Key requirements", result)
+
+    def test_returns_none_when_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            spec_dir = Path(tmp) / "001-test"
+            spec_dir.mkdir()
+            self.assertIsNone(_user_request_excerpt(spec_dir))
+
+    def test_truncates_at_max_chars(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            spec_dir = Path(tmp) / "001-test"
+            _write(spec_dir / "user-request.md", "x" * 500)
+            result = _user_request_excerpt(spec_dir, max_chars=50)
+            assert result is not None
+            self.assertLessEqual(len(result), 50)
+
+
+class TestSpecTitle(unittest.TestCase):
+
+    def test_title_from_filename(self):
+        f = Path("2025-01-15--donor-search-filter.md")
+        self.assertEqual(_spec_title(f, "003-donor-search-filter"), "Donor Search Filter")
+
+    def test_title_from_spec_id_fallback(self):
+        self.assertEqual(_spec_title(None, "003-donor-search"), "Donor Search")
+
+    def test_title_from_spec_id_no_prefix(self):
+        self.assertEqual(_spec_title(None, "abc-feature"), "Feature")
+
+
+class TestExtractSpecSummary(unittest.TestCase):
+
+    def _make_spec(self, tmp: str, spec_id: str, spec_content: str,
+                   user_request: str = "") -> Path:
+        spec_dir = Path(tmp) / spec_id
+        _write(spec_dir / "2025-01-01--feature.md", spec_content)
+        if user_request:
+            _write(spec_dir / "user-request.md", user_request)
+        return spec_dir
+
+    def test_returns_feature_summary_when_present(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            spec_dir = self._make_spec(
+                tmp, "001-donor-search",
+                "**Feature Summary**: Donors can search nonprofits by cause.\n"
+                "## Business Context\n",
+            )
+            result = extract_spec_summary(spec_dir)
+            self.assertIsNotNone(result)
+            assert result is not None
+            self.assertEqual(result["feature_summary"],
+                             "Donors can search nonprofits by cause.")
+            self.assertEqual(result["spec_id"], "001-donor-search")
+
+    def test_falls_back_to_problem_statement(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            spec_dir = self._make_spec(
+                tmp, "002-payments",
+                "## Business Context\n\n### Problem Statement\n\n"
+                "Users cannot pay online. Manual invoices cause delays.\n\n"
+                "### Target Users\n",
+            )
+            result = extract_spec_summary(spec_dir)
+            self.assertIsNotNone(result)
+            assert result is not None
+            self.assertIn("Users cannot pay", result["feature_summary"])
+
+    def test_falls_back_to_user_request(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            spec_dir = self._make_spec(
+                tmp, "003-profile",
+                "## Business Context\n\n### Problem Statement\n\n"
+                "[What problem does this feature solve?]\n",
+                user_request="Add user profile editing.",
+            )
+            result = extract_spec_summary(spec_dir)
+            self.assertIsNotNone(result)
+            assert result is not None
+            self.assertIn("user profile", result["feature_summary"])
+
+    def test_returns_none_for_empty_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            spec_dir = Path(tmp) / "001-empty"
+            spec_dir.mkdir()
+            result = extract_spec_summary(spec_dir)
+            self.assertIsNone(result)
+
+    def test_user_request_only_folder_is_scanned(self):
+        """Unspec'd backlog stubs (user-request.md, no spec doc) must be visible
+        to the overlap gate — they're the easiest specs to duplicate."""
+        with tempfile.TemporaryDirectory() as tmp:
+            spec_dir = Path(tmp) / "004-backlog-stub"
+            spec_dir.mkdir()
+            _write(spec_dir / "user-request.md", "Bulk-export donor receipts.")
+            result = extract_spec_summary(spec_dir)
+            self.assertIsNotNone(result)
+            assert result is not None
+            self.assertIn("donor receipts", result["feature_summary"])
+
+    def test_unreadable_spec_file_degrades_not_crashes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            spec_dir = Path(tmp) / "005-bad"
+            spec_dir.mkdir()
+            (spec_dir / "2026-01-01--bad.md").write_bytes(b"\xff\xfe broken")
+            result = extract_spec_summary(spec_dir)
+            self.assertIsNotNone(result)  # degraded row, no UnicodeDecodeError
+
+    def test_includes_stage_field(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            spec_dir = self._make_spec(
+                tmp, "001-test",
+                "**Feature Summary**: Test feature.\n",
+            )
+            result = extract_spec_summary(spec_dir)
+            self.assertIsNotNone(result)
+            assert result is not None
+            self.assertIn("stage", result)
+
+
+class TestScan(unittest.TestCase):
+
+    def test_scan_empty_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(scan(Path(tmp)), [])
+
+    def test_scan_missing_dir(self):
+        self.assertEqual(scan(Path("/nonexistent/path")), [])
+
+    def test_scan_finds_specs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for i, name in enumerate(["001-auth", "002-payments", "003-profile"]):
+                d = root / name
+                d.mkdir()
+                (d / f"2025-01-0{i+1}--spec.md").write_text(
+                    f"**Feature Summary**: Summary for {name}.\n"
+                )
+            results = scan(root)
+            self.assertEqual(len(results), 3)
+            ids = [r["spec_id"] for r in results]
+            self.assertIn("001-auth", ids)
+            self.assertIn("002-payments", ids)
+
+    def test_scan_skips_non_spec_dirs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # shared files (not NNN- prefixed) should be skipped
+            (root / "architecture.md").write_text("# Arch")
+            (root / "ontology.md").write_text("# Ontology")
+            # a real spec
+            spec = root / "001-auth"
+            spec.mkdir()
+            (spec / "2025-01-01--auth.md").write_text("**Feature Summary**: Auth feature.\n")
+            results = scan(root)
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0]["spec_id"], "001-auth")
+
+    def test_scan_json_output(self):
+        """Verify JSON is well-formed and has expected keys."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            spec = root / "001-auth"
+            spec.mkdir()
+            (spec / "2025-01-01--auth.md").write_text(
+                "**Feature Summary**: Auth feature.\n"
+            )
+            results = scan(root)
+            # Serialize and deserialize to verify JSON-safe
+            payload = json.loads(json.dumps({"specs": results}))
+            self.assertEqual(len(payload["specs"]), 1)
+            keys = payload["specs"][0].keys()
+            for k in ("spec_id", "stage", "title", "feature_summary", "user_request_excerpt"):
+                self.assertIn(k, keys)
+
+
+if __name__ == "__main__":
+    unittest.main()

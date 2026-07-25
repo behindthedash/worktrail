@@ -1,0 +1,69 @@
+#!/usr/bin/env python3
+"""Build provider-preserving commands for dispatching an installed skill."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import subprocess
+from typing import Sequence
+
+SUPPORTED_AGENTS = ("claude", "codex", "opencode")
+_SKILL_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$")
+
+
+def _validate_skill_name(name: str) -> str:
+    if not _SKILL_NAME.fullmatch(name):
+        raise ValueError(f"invalid skill name: {name!r}")
+    return name
+
+
+def _prompt(agent: str, skill: str, args: str) -> str:
+    if agent in {"claude", "opencode"}:
+        return f"/{skill} {args}".rstrip()
+    return f"Use the installed skill {skill!r}. Execute it with these arguments: {args}".rstrip()
+
+
+def build_command(agent: str, skill: str, args: str = "", *, model: str | None = None,
+                  extra_args: Sequence[str] = ()) -> list[str]:
+    """Return an argv list that preserves the requested provider identity."""
+    if agent not in SUPPORTED_AGENTS:
+        raise ValueError(f"unsupported agent: {agent!r}")
+    skill = _validate_skill_name(skill)
+    prompt = _prompt(agent, skill, args)
+    if agent == "claude":
+        command = ["claude", "-p", prompt]
+        if model:
+            command += ["--model", model]
+    elif agent == "opencode":
+        command = ["opencode", "run", "--format", "json"]
+        if model:
+            command += ["--model", model]
+        command.append(prompt)
+    else:
+        command = ["codex", "exec", "--json", "-s", "workspace-write"]
+        if model:
+            command += ["--model", model]
+        command.append(prompt)
+    return command + list(extra_args)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--agent", required=True, choices=SUPPORTED_AGENTS)
+    parser.add_argument("--skill", required=True)
+    parser.add_argument("--args", default="")
+    parser.add_argument("--model")
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--dry-run", action="store_true")
+    parsed = parser.parse_args(argv)
+    command = build_command(parsed.agent, parsed.skill, parsed.args, model=parsed.model)
+    if parsed.dry_run:
+        print(json.dumps(command) if parsed.json else " ".join(command))
+        return 0
+    return subprocess.run(command, check=False).returncode
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
