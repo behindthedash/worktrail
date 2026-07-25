@@ -1,0 +1,377 @@
+#!/usr/bin/env python3
+"""GO v2 route classifier — deterministic, stdlib-only.
+
+Maps a free-text engineering request (plus optional repo-state signals) onto the
+v2 route model A-J, a risk level, autonomy gates, and a confidence grade.
+
+Routes (see references/v2-design.md §2.2):
+  A idea-discovery      B epic-planning       C feature-planning
+  D implementation      E continue-resume     F defect-repair
+  G spec-change         H refactor-debt       I investigation
+  J workflow-evolution
+
+Output is structured JSON so the conductor (SKILL.md) and the routing cassette
+(test_classify.py + cassettes/routing_cassette.json) can assert it exactly.
+
+Usage:
+  classify.py --request "text" [--state '{"active_specs":1,...}']
+              [--handoff-route F] --json
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+from typing import Any, Dict, List, Optional, Tuple
+
+ROUTE_NAMES = {
+    "A": "idea-discovery",
+    "B": "epic-planning",
+    "C": "feature-planning",
+    "D": "implementation",
+    "E": "continue-resume",
+    "F": "defect-repair",
+    "G": "spec-change",
+    "H": "refactor-debt",
+    "I": "investigation",
+    "J": "workflow-evolution",
+}
+
+# Signal tables: (compiled regex, weight, label). Case-insensitive throughout.
+# Spec-id citation (e.g. `003-payments`) — named because the D-demotion
+# precondition keys on it; a positional ROUTE_SIGNALS["D"][1][0] lookup silently
+# broke whenever the D signal list was reordered.
+_SPEC_ID_RE = re.compile(r"\b\d{3}-[a-z0-9][a-z0-9-]*\b")
+
+
+def _sig(pattern: str, weight: int, label: str) -> Tuple[re.Pattern, int, str]:
+    return (re.compile(pattern, re.IGNORECASE), weight, label)
+
+
+ROUTE_SIGNALS: Dict[str, List[Tuple[re.Pattern, int, str]]] = {
+    "J": [
+        _sig(r"\bgo\s+(skill|v2|front[- ]?door|conductor)\b", 4, "go-skill"),
+        _sig(r"\bfront[- ]?door\b", 3, "front-door"),
+        _sig(r"\borchestrator\b", 3, "orchestrator"),
+        _sig(r"\bcassette\b", 4, "cassette"),
+        _sig(r"\bskill\.md\b|\ba\s+skill\b|\bthe\s+\S+\s+skill\b", 3, "skill-file"),
+        _sig(r"\bplugin\b", 3, "plugin"),
+        _sig(r"\bagent prompt\b|\bsubagent (contract|prompt)\b", 3, "agent-prompt"),
+        _sig(r"\brouting (logic|rules?)\b|\bclassifier\b", 4, "routing-logic"),
+        _sig(r"\bclassify\.py\b", 5, "classify-py"),
+        _sig(r"\bworkflow itself\b|\bthe (autonomous )?workflow\b", 3, "workflow-self"),
+    ],
+    "E": [
+        _sig(r"\bcontinue\b|\bresume\b|\bpick (it |this )?up\b|\bcarry on\b", 3, "resume-verb"),
+        _sig(r"\bleft off\b|\bunfinished\b|\bpartially (complete|done)\b|\bhalf[- ]done\b", 3, "unfinished"),
+        _sig(r"\bwhere (was|am) i\b|\bwhat'?s next\b|\bstatus\b", 2, "whereami"),
+        _sig(r"\bhandoff\b", 4, "handoff"),
+        _sig(r"\bfinish\b.*\b(work|task|spec|feature|branch|pr)\b", 3, "finish-work"),
+        _sig(r"\banother agent\b|\bprevious (session|agent|run)\b", 3, "other-agent"),
+        _sig(r"\bworktree\b|\bmy branch\b|\bopen pr\b|\bexisting (branch|pr)\b", 2, "existing-work"),
+    ],
+    "F": [
+        _sig(r"\bbug\b|\bdefect\b|\bregression\b", 3, "bug-word"),
+        _sig(r"\bbroken\b|\bstopped working\b|\bdoesn'?t work\b|\bnot working\b", 3, "broken"),
+        _sig(r"\bcrash(es|ed|ing)?\b|\b5\d\d\b|\bexception\b|\bstack trace\b", 3, "crash"),
+        _sig(r"\bfix\b", 2, "fix-verb"),
+        _sig(r"\bfails?\b|\bfailing\b|\berrors?\b", 2, "fails"),
+        _sig(r"\bwrong(ly)?\b|\bincorrect(ly)?\b|\bshould (be|return|show)\b.*\bbut\b", 3, "violates-expectation"),
+    ],
+    "I": [
+        _sig(r"\binvestigat\w*\b|\bdiagnos\w*\b|\blook into\b|\bdig into\b", 4, "investigate-verb"),
+        _sig(r"\broot[- ]cause\b", 3, "root-cause"),
+        _sig(r"\bwhy (does|is|did|are|do)\b", 3, "why-question"),
+        _sig(r"\bintermittent(ly)?\b|\bsometimes\b|\bflaky\b|\brandomly\b", 3, "nondeterministic"),
+        _sig(r"\bnot sure\b|\bno idea\b|\bunknown\b|\bcan'?t (tell|figure)\b", 3, "unknown-cause"),
+        _sig(r"\baudit\w*\b", 3, "audit"),
+        _sig(r"\bdo(?:es)?\s*not\s+fix\b|\bdon'?t fix\b|\bwithout fixing\b", 3, "no-fix"),
+        _sig(r"\brecommend(?:ed|ation)?\b.{0,40}\b(follow[- ]?up|next (?:route|action|step))\b", 3, "recommend-next"),
+    ],
+    "G": [
+        _sig(r"\bchange the (spec|specification|behaviou?r|contract)\b", 4, "change-spec"),
+        _sig(r"\binstead of\b|\brather than\b", 2, "instead-of"),
+        _sig(r"\bshould now\b|\bfrom now on\b|\bno longer\b", 3, "new-rule"),
+        _sig(r"\bdeprecate\b|\bsunset\b|\bretire\b", 3, "deprecate"),
+        _sig(r"\bupdate the spec\b|\brevise the spec\b|\bspec(ification)? change\b", 4, "spec-update"),
+        _sig(r"\bchange\b.*\bfrom\b.*\bto\b", 3, "from-to"),
+    ],
+    "H": [
+        _sig(r"\brefactor(ing)?\b", 4, "refactor-word"),
+        _sig(r"\btech(nical)? debt\b", 4, "tech-debt"),
+        _sig(r"\bclean[- ]?up\b|\btidy\b", 3, "cleanup"),
+        _sig(r"\bsimplify\b|\bextract\b|\bconsolidate\b|\breorganiz(e|ation)\b|\bmoderniz(e|ation)\b", 2, "restructure"),
+        _sig(r"\b(no|without( any)?|preserv\w+) behaviou?r(al)?( change)?\b", 4, "behavior-preserving"),
+        _sig(r"\bperformance\b.*\b(improv|optimi|speed)\w*\b|\boptimi[sz]e\b", 2, "performance"),
+    ],
+    "D": [
+        _sig(r"\bimplement\b|\bbuild (it|out|the)\b|\bship\b|\bcode (it|up)\b", 3, "implement-verb"),
+        (_SPEC_ID_RE, 3, "spec-id"),
+        _sig(r"\bapproved (spec|feature|epic|plan)\b|\bspec is (ready|approved|done)\b", 4, "approved-spec"),
+        _sig(r"\bstart (the )?(implementation|coding)\b", 3, "start-impl"),
+    ],
+    "C": [
+        _sig(r"\bnew feature\b|\bfeature\b", 2, "feature-word"),
+        _sig(r"\badd\b|\bsupport\b|\benable\b|\ballow (users?|admins?|people)\b", 2, "add-capability"),
+        _sig(r"\bplan\b", 2, "plan-verb"),
+        _sig(r"\bspec( |-)?(out|up)?\b.*\bfor\b|\bwrite a spec\b", 3, "spec-authoring"),
+        _sig(r"\busers? (should|can|need)\b", 2, "user-capability"),
+    ],
+    "B": [
+        _sig(r"\bepic\b", 4, "epic-word"),
+        _sig(r"\broadmap\b|\bmulti[- ]phase\b|\bphased\b", 3, "phased"),
+        _sig(r"\bplatform\b|\bsuite\b|\bsystem for\b|\bend[- ]to[- ]end (capability|solution)\b", 3, "platform-scale"),
+        _sig(r"\bseveral features\b|\bmultiple features\b|\bbreak (this |it )?down into features\b", 4, "multi-feature"),
+    ],
+    "A": [
+        _sig(r"\bidea\b|\bbrainstorm\b", 3, "idea-word"),
+        _sig(r"\bwhat if\b|\bcould we\b|\bwould it make sense\b|\bwondering\b", 3, "speculative"),
+        _sig(r"\bexplore\b|\bthinking about\b|\bkick around\b", 3, "explore-verb"),
+        _sig(r"\bproblem\s*:\s|\bpain point\b|\bstruggl\w+ with\b", 2, "problem-statement"),
+        _sig(r"\bnot sure (what|how|if) we (want|need|should)\b", 3, "undefined-outcome"),
+    ],
+}
+
+# CI/PR-repair signals force Route E (repair existing delivery) with F secondary.
+CI_REPAIR = [
+    _sig(
+        r"\bci\b\s+(?:(?:is|was|keeps?|remains?)\s+)?(?:currently\s+)?"
+        r"(?:fail\w*|red\b|broken\b)|"
+        r"\b(?:fix|repair)\w*\b.{0,40}\b(?:the\s+)?ci\b",
+        6,
+        "ci-repair",
+    ),
+    _sig(r"\bchecks? (are |is )?(failing|red)\b", 4, "checks-failing"),
+    _sig(r"\bpr\s*#?\d+\b.*\b(fail|fix|repair|red|broken|conflict)\w*", 4, "pr-repair"),
+    _sig(r"\bmerge conflict\b", 4, "merge-conflict"),
+    _sig(r"\bpipeline\b.*\b(fail|red|broken)\w*", 4, "pipeline-failing"),
+]
+
+# Risk signals (highest matching tier wins).
+RISK_SIGNALS = [
+    ("critical", _sig(r"\bbilling\b|\bpayments?\b|\bstripe\b|\binvoic\w+\b", 0, "billing")),
+    ("critical", _sig(r"\bsecrets?\b|\bcredentials?\b|\bapi[- _]?keys?\b|\btokens? rotation\b", 0, "secrets")),
+    ("critical", _sig(r"\bdrop\b.{0,40}\b(table|column|database)\b|\bdelete (all|every|production)\b|\bwipe\b|\btruncate\b", 0, "destructive-data")),
+    ("critical", _sig(r"\bdisable (auth|authorization|authentication|security)\b|\bbypass (auth|permission)\w*\b", 0, "auth-weakening")),
+    ("high", _sig(r"\bauth(entication|orization)?\b|\blogin\b|\bpermissions?\b|\broles?\b|\baccess control\b", 0, "authz")),
+    ("high", _sig(r"\bmigrations?\b|\bschema change\b|\balter table\b", 0, "migration")),
+    ("high", _sig(r"\bpii\b|\bpersonal data\b|\bpasswords?\b|\bencryption\b", 0, "sensitive-data")),
+    ("medium", _sig(r"\bapi\b|\bendpoints?\b|\bcontracts?\b|\bpublic interface\b|\bdatabase\b|\bschema\b", 0, "interface")),
+    ("low", _sig(r"\bdocs?\b|\bdocumentation\b|\breadme\b|\bcomments?\b|\btypo\b", 0, "docs-only")),
+]
+
+# Protected operations: never auto-merge regardless of policy (v2-design §2.14).
+PROTECTED_SIGNALS = [
+    _sig(r"\bbilling\b|\bpayments?\b|\bstripe\b", 0, "billing"),
+    _sig(r"\bsecrets?\b|\bcredentials?\b|\bapi[- _]?keys?\b", 0, "secrets"),
+    _sig(r"\bdrop\b.{0,40}\b(table|column|database)\b|\bdelete (all|every|production)\b|\bwipe\b|\btruncate\b", 0, "destructive-migration"),
+    _sig(r"\bdisable (auth|authorization|authentication|security)\b|\bbypass (auth|permission)\w*\b", 0, "auth-weakening"),
+    _sig(r"\bmajor (dependency|version) (upgrade|bump)\b", 0, "major-dep-upgrade"),
+]
+
+# Pairs where misrouting materially changes the outcome -> ask one question.
+MATERIAL_PAIRS = {frozenset(p) for p in (("F", "G"), ("A", "C"), ("B", "C"), ("C", "D"))}
+TIE_THRESHOLD = 2
+
+RISK_ORDER = ["low", "medium", "high", "critical"]
+
+
+def _score_routes(text: str) -> Tuple[Dict[str, int], Dict[str, List[str]]]:
+    scores: Dict[str, int] = {r: 0 for r in ROUTE_NAMES}
+    hits: Dict[str, List[str]] = {r: [] for r in ROUTE_NAMES}
+    for route, signals in ROUTE_SIGNALS.items():
+        for rx, weight, label in signals:
+            if rx.search(text):
+                scores[route] += weight
+                hits[route].append(label)
+    return scores, hits
+
+
+def _ci_repair_hits(text: str) -> List[str]:
+    return [label for rx, _w, label in CI_REPAIR if rx.search(text)]
+
+
+def classify_risk(text: str) -> Tuple[str, List[str]]:
+    best = "low"
+    labels: List[str] = []
+    for tier, (rx, _w, label) in RISK_SIGNALS:
+        if rx.search(text):
+            labels.append(f"{tier}:{label}")
+            if RISK_ORDER.index(tier) > RISK_ORDER.index(best):
+                best = tier
+    return best, labels
+
+
+def protected_operations(text: str) -> List[str]:
+    return [label for rx, _w, label in PROTECTED_SIGNALS if rx.search(text)]
+
+
+def classify(request: str,
+             state: Optional[Dict[str, Any]] = None,
+             handoff_route: Optional[str] = None) -> Dict[str, Any]:
+    """Classify a request. `state` keys (all optional): active_specs (int),
+    pending_tasks (bool), open_prs (int), handoff_queue (int), worktrees (int)."""
+    text = (request or "").strip()
+    state = state or {}
+    reason_parts: List[str] = []
+
+    # 0. Explicit override: "route:X ..." pins the route.
+    m = re.match(r"^\s*route\s*:\s*([A-J])\b", text, re.IGNORECASE)
+    forced = m.group(1).upper() if m else None
+
+    scores, hits = _score_routes(text)
+
+    handoff_route_norm = (handoff_route.upper()
+                           if handoff_route and handoff_route.upper() in ROUTE_NAMES
+                           else None)
+
+    # CI/PR repair overrides bug wording: existing delivery is the controlling
+    # artifact, so repair routes through E (restore state) with F secondary.
+    ci_hits = _ci_repair_hits(text)
+    if ci_hits:
+        scores["E"] = max(scores["E"] + 6, scores["F"] + 4)
+        hits["E"].extend(ci_hits)
+
+    # State preconditions.
+    if state.get("active_specs", 0) == 0 and not _SPEC_ID_RE.search(text):
+        # No pending spec on disk and no spec id cited -> implementation demoted.
+        if scores["D"] > 0:
+            scores["D"] -= 2
+            reason_parts.append("D demoted: no active spec in state and none cited")
+    if state.get("handoff_queue", 0) > 0 and "handoff" in text.lower():
+        scores["E"] += 2
+
+    risk, risk_labels = classify_risk(text)
+    protected = protected_operations(text)
+
+    # Pick the route.
+    ambiguous_between: List[str] = []
+    question = None
+    if forced:
+        route = forced
+        confidence = "high"
+        reason_parts.append(f"explicit override route:{forced}")
+    else:
+        ranked = sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))
+        (top_route, top_score), (second_route, second_score) = ranked[0], ranked[1]
+        if top_score == 0:
+            # No signals at all: resume/dashboard is the safe default ("go").
+            route = "E"
+            confidence = "low"
+            reason_parts.append("no signals; defaulting to dashboard/menu (E)")
+        else:
+            route = top_route
+            margin = top_score - second_score
+            if (margin < TIE_THRESHOLD
+                    and frozenset((top_route, second_route)) in MATERIAL_PAIRS):
+                ambiguous_between = sorted([top_route, second_route])
+                question = _ambiguity_question(top_route, second_route)
+                confidence = "low"
+                reason_parts.append(
+                    f"material tie {top_route}({top_score}) vs {second_route}({second_score})")
+            elif margin >= 4 and top_score >= 3:
+                confidence = "high"
+            elif margin >= 2:
+                confidence = "medium"
+            else:
+                confidence = "low" if top_score < 3 else "medium"
+            reason_parts.append(
+                f"{top_route} signals: {hits[top_route]} (score {top_score}, runner-up {second_route}={second_score})")
+
+    # Handoff-recommended-route override. Auto mode has no human present to
+    # catch a bad low/medium-confidence guess, so an explicit brief
+    # recommendation beats the organic pick outright at low/medium confidence.
+    # A high-confidence disagreement is left alone: that's a strong enough
+    # organic signal to be worth a fresh look rather than a silent override
+    # (repo state may have drifted since the brief was written). This runs
+    # after the pick above (not as a score boost) so the override decision is
+    # never distorted by its own thumb on the scale.
+    route_source = "classifier"
+    if (not forced and handoff_route_norm and confidence in ("low", "medium")
+            and route != handoff_route_norm):
+        reason_parts.append(
+            f"overrode organic route {route} (confidence {confidence}) "
+            f"with brief recommended-route {handoff_route_norm}")
+        route = handoff_route_norm
+        confidence = "medium"
+        ambiguous_between = []
+        question = None
+        route_source = "handoff-recommended-override"
+
+    # Secondary routes.
+    secondary: List[str] = []
+    if ci_hits and route == "E":
+        secondary.append("F")
+    for r, s in scores.items():
+        if r != route and s >= 4 and r not in secondary and r not in ambiguous_between:
+            secondary.append(r)
+    secondary = sorted(set(secondary))
+
+    # Gates (bounded autonomy).
+    gates: List[str] = []
+    if protected:
+        gates.append("require_human_approval")
+        gates.append("never_automerge")
+    elif risk == "critical":
+        gates.append("require_human_approval")
+    elif risk == "high":
+        gates.append("pause_before_merge")
+    if route == "J":
+        gates.append("routing_cassette_required")
+    if route == "A":
+        gates.append("no_implementation_without_approval")
+
+    return {
+        "route": route,
+        "route_name": ROUTE_NAMES[route],
+        "secondary": secondary,
+        "risk": risk,
+        "risk_signals": risk_labels,
+        "protected_operations": protected,
+        "gates": gates,
+        "confidence": confidence,
+        "ambiguous_between": ambiguous_between,
+        "question": question,
+        "reason": "; ".join(reason_parts),
+        "scores": {r: s for r, s in scores.items() if s > 0},
+        "route_source": route_source,
+    }
+
+
+def _ambiguity_question(a: str, b: str) -> str:
+    pair = frozenset((a, b))
+    if pair == frozenset(("F", "G")):
+        return ("Is the current behavior violating the documented/expected behavior "
+                "(bug fix), or are we intentionally changing what the accepted "
+                "behavior should be (spec change)?")
+    if pair == frozenset(("A", "C")):
+        return ("Is this still an open idea to explore, or a defined feature ready "
+                "to be specified?")
+    if pair == frozenset(("B", "C")):
+        return ("Should this be planned as one feature, or decomposed into an epic "
+                "with multiple independently valuable features?")
+    if pair == frozenset(("C", "D")):
+        return ("Do you want a specification first, or is this approved to go "
+                "straight to implementation?")
+    return f"Route {a} or route {b}?"
+
+
+def main(argv=None) -> int:
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--request", default="", help="the user's request text")
+    p.add_argument("--state", default=None,
+                   help="JSON object of repo-state signals (active_specs, pending_tasks, ...)")
+    p.add_argument("--handoff-route", default=None,
+                   help="recommended-route letter from a handoff brief")
+    p.add_argument("--json", action="store_true", help="emit JSON (default)")
+    args = p.parse_args(argv)
+
+    state = json.loads(args.state) if args.state else None
+    result = classify(args.request, state=state, handoff_route=args.handoff_route)
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
