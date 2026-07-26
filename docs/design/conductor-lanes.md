@@ -28,7 +28,8 @@ All facts below come from reading this repo at `44f2fd3`, not from the briefs' s
 | V10 | `TaskSource.mark_status()` exists in the Protocol and in `devkit/source.py:345` but **has no caller anywhere in `src/`**. | `grep -rn "mark_status" src/` → only `base.py:45`, `source.py:345` |
 | V11 | OpenSpec change layout: `proposal.md`, `design.md`, `specs/` deltas, and **one `tasks.md`** holding a hierarchically-numbered checklist (`1.1`, `1.2`, `2.1`…). `/opsx:archive` moves the change to `changes/archive/[date-name]/` and merges deltas into the living specs. | `Fission-AI/OpenSpec` README, fetched 2026-07-25 |
 | V12 | No repo under `~/projects/` has an `openspec/` directory yet; adoption is prospective. | `find ~/projects -maxdepth 2 -name openspec -type d` → empty |
-| V13 | Corpus reality: **163 spec dirs on disk, only 12 with any open task** (datalena 10 of 102, developer-kit 2 of 27, ggb 0 of 30, devops 0 of 4). 151 are completed history. | frontmatter scan of `docs/specs/*/tasks/TASK-*.md`, 2026-07-25 |
+| V13 | Corpus reality: 163 spec dirs on disk; only **12 have any open task** (datalena 10, developer-kit 2). | frontmatter scan of `docs/specs/*/tasks/TASK-*.md`, 2026-07-25 |
+| V14 | **52 spec dirs have no `tasks/` at all**, in three distinct states: **47** hold only a `user-request.md` (intake captured, no spec authored — datalena 44, ggb 2, developer-kit 1); **5** have an authored spec but no tasks (datalena `085-agentic-experience-frontend`, Status: Draft; ggb 4); **1** is explicitly dead (`014-dashboard-builder`, `**Superseded-By**: 051-dashboard-builder`). | directory + marker scan, 2026-07-25 |
 
 ## 2. The reframe
 
@@ -164,18 +165,35 @@ RunPlan (§4.4). No OpenSpec custom schema. No archive-behavior coupling.
 ## 5. Decisions
 
 **D1 — Migrate the existing corpus (not freeze).** Decided 2026-07-25, overriding the freeze
-recommendation. Scoped by V13 into two jobs that must not be conflated:
+recommendation. Per V13+V14 the corpus is **four** cohorts, not two, and conflating them would
+silently archive 52 dirs that are not history:
 
 | Cohort | Count | Treatment |
 |---|---|---|
-| **Open specs** (≥1 non-completed task) | 12 | Real migration. Transform to `openspec/changes/<id>/` — `spec.md`→`proposal.md`, `technical-plan.md`→`design.md`, `tasks/TASK-*.md`→ one numbered `tasks.md`, task frontmatter (`deps`/`files`) dropped into a seed RunPlan so compile has ground truth instead of re-inferring. These will actually be executed, so they must round-trip. |
-| **Completed specs** | 151 | Mechanical, deterministic, **no LLM**: relocate to `openspec/changes/archive/<date>-<name>/` preserving content verbatim. They will never be executed again; they are knowledge, and OpenSpec's archive is the correct home for them (V11). |
+| **Open** — ≥1 non-completed task | 12 | Real migration. `spec.md`→`proposal.md`, `technical-plan.md`→`design.md`, `tasks/TASK-*.md`→ one numbered `tasks.md`; task frontmatter (`deps`/`files`) becomes a **seed RunPlan** so compile has ground truth instead of re-inferring. These get executed, so they must round-trip. |
+| **Completed** — has tasks, all done | ~98 | Mechanical, deterministic, **no LLM**: relocate to `openspec/changes/archive/<date>-<name>/`, content verbatim. Never executed again; OpenSpec's archive is their correct home (V11). |
+| **Authored, untasked** — spec written, no `tasks/` | 5 | Real migration, same transform as *Open*, but lands as an **unstarted** `openspec/changes/<id>/` with a `tasks.md` the conductor's compile step generates on first run. This is live backlog (e.g. datalena `085`, ggb ×4) — archiving it would lose committed intent. |
+| **Intake-only** — `user-request.md`, no spec | 47 | **Triage required — see below.** Neither archive nor change. |
+| **Superseded** | 1 | Drop; the `**Superseded-By**` marker already points at the live successor (`014`→`051`). Verify the successor exists before dropping. |
 
-Hidden fork inside D1, resolved by recommendation: **do not** attempt to reconstruct
-`openspec/specs/` (the living spec) from 151 historical change docs. That would be 151 LLM passes
-producing a spec derived from *change history* rather than from *code as it is now* — high cost,
-low fidelity. Living specs accrue naturally as future changes archive into them. Flagged here so it
-can be overridden deliberately rather than by omission.
+**The intake-only cohort is the one judgment-heavy part of D1.** OpenSpec has no artifact for "a
+request with no proposal", so there is no mechanical mapping. Worse, these cannot be classified by
+inspection: datalena `001`–`045` are an earlier era's intake records, and an unknown share of them
+describe capability that **shipped under a later spec number** (the one verifiable instance,
+`014`→`051`, is explicit; the rest are not marked). Recommended handling, cheapest-first:
+
+1. Mechanical pre-pass — drop anything carrying a `Superseded-By` marker.
+2. Per-item triage against the code, not against the doc: *shipped* → archive as a historical
+   record; *still wanted* → seed `openspec/changes/<id>/proposal.md` from the `user-request.md`
+   verbatim, no LLM rewrite; *dead* → drop with the reason recorded.
+3. Do **not** auto-convert all 47 into changes. That would manufacture ~44 phantom open changes in
+   datalena on day one and make the OpenSpec change list useless as a work signal.
+
+Second fork inside D1, resolved by recommendation: **do not** reconstruct `openspec/specs/` (the
+living spec) from ~98 historical change docs. That is ~98 LLM passes producing a spec derived from
+*change history* rather than from *code as it is now* — high cost, low fidelity. Living specs
+accrue naturally as future changes archive into them. Flagged so it can be overridden deliberately
+rather than by omission.
 
 **D2 — The compile step is an LLM pass, exactly once, cached.** That is the token thesis. The
 alternative (authors hand-write file scopes into `tasks.md`) reintroduces the per-task frontmatter
@@ -196,7 +214,7 @@ Each phase is independently verifiable and lands as its own PR.
 | **P2** | Warm lane execution: one worktree + one agent per lane, tasks serial inside. Delete intra-lane `add_stacked_worktree`. Re-derive concurrency per D3. | Live cassette on a real 2-lane spec; assert G worktrees not N; assert no intra-lane merge commits |
 | **P3** | Conductor `compile` → cached RunPlan. Template `dispatch.py` prompt text off `TaskSource` — the extraction plan's still-outstanding "Phase 2", confirmed hardcoded at `dispatch.py:266,273,301,307,314`. | Same change compiled twice ⇒ cache hit, zero LLM calls on the second run |
 | **P4** | `OpenSpecTaskSource` (§4.5) + one real dual-run against a live OpenSpec change. | Same spec driven through both adapters produces the same lane partition |
-| **P5** | Corpus migration per D1: 151 mechanical archive relocations, then 12 real transforms. | Archive cohort: byte-identical content, path-only diff. Open cohort: each migrated change produces a RunPlan whose lane partition matches its pre-migration `pr_plan` |
+| **P5** | Corpus migration per D1, in cohort order: ~98 mechanical archive relocations → 1 superseded drop → 12 open transforms → 5 authored-untasked transforms → 47 intake-only triage (last, and the only cohort needing per-item judgment). | Archive cohort: byte-identical content, path-only diff. Open cohort: each migrated change produces a RunPlan whose lane partition matches its pre-migration `pr_plan`. Intake cohort: every one of the 47 lands in exactly one of archived / proposal-seeded / dropped, with the disposition recorded — none silently skipped |
 
 P0 and P1 have **no OpenSpec dependency** — they pay for themselves on the existing corpus and
 de-risk everything after. Do them first regardless of OpenSpec sequencing. P5 runs last so the
