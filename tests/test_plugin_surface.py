@@ -115,3 +115,22 @@ def test_referenced_reference_files_exist():
             if not (skill_root / "references" / ref).is_file():
                 missing.append(f"{doc.relative_to(REPO_ROOT)} -> references/{ref}")
     assert not missing, f"dangling reference links: {missing}"
+
+
+def test_worktrail_doc_links_from_skills_resolve():
+    """Skills cite this repo's own docs (e.g. the GO design records under
+    `docs/design/history/`) that deliberately live outside the skill bundle —
+    they are history, not procedure, and shipping them as skill context would
+    put ~480 lines of non-procedural text in front of the agent. The citations
+    still have to point at something.
+
+    Scoped to `docs/design/` on purpose: skill docs also cite paths in the
+    *target* repo an agent operates on (`docs/specs/**` — the devkit spec
+    convention), which by definition do not exist here.
+    """
+    missing = []
+    for doc in _skill_docs():
+        for path in re.findall(r"`(docs/design/[A-Za-z0-9_/-]+\.md)`", doc.read_text()):
+            if not (REPO_ROOT / path).is_file():
+                missing.append(f"{doc.relative_to(REPO_ROOT)} -> {path}")
+    assert not missing, f"skill docs cite missing worktrail docs: {missing}"

@@ -545,7 +545,7 @@ git -C "$SYNC_WT" diff --quiet HEAD -- docs/specs/ || {
 
 **Step 4b — CI-wait gate (separate Bash call, only if a PR was created).** Never
 hand-roll a `sleep` poll loop — a 30-min sleep loop exceeds the Bash tool's
-10-minute ceiling and strands the run (GO v1 defect L7, `v2-design.md` §1.2).
+10-minute ceiling and strands the run (GO v1 defect L7, `docs/design/history/go-v2-design.md` §1.2).
 Use `gh pr checks --watch`, bounded by the Bash tool's `timeout` parameter:
 
 ```bash

@@ -2,7 +2,7 @@
 
 One module per route. **Load only the playbook for the selected route** — never
 this whole file into a subagent. Shared procedures stay in
-`subagent-prompts.md` (anchors cited as `#name`); rationale in `v2-design.md`.
+`subagent-prompts.md` (anchors cited as `#name`); rationale in `docs/design/history/go-v2-design.md`.
 
 Conventions used by every route:
 
@@ -215,7 +215,7 @@ Changes to GO, skills, plugins, agent prompts, orchestration, cassettes —
    `test_policy.py`, `test_run_record.py`, and the v1 script suites green.
 3. Adverse-effect gate: a change that reduces route accuracy, drops required
    artifacts, or weakens a safety gate does not merge — fix or revert.
-4. Update `v2-design.md` when the architecture changes; run
+4. Update `docs/design/history/go-v2-design.md` when the architecture changes; run
    `make skill-lint SKILL=plugins/developer-kit-specs/skills/sdd-workflow` and
    `python3 .skills-validator-check/validators/cli.py --all` before the PR.
 5. Never self-modify the active workflow mid-run based on a single run's

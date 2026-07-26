@@ -1,6 +1,6 @@
 # Artifact Authority & Commit Policy
 
-The two normative rules extracted from the design records (`go-design.md` §2.1 +
+The two normative rules extracted from the design records (`docs/design/history/go-v1-design.md` §2.1 +
 §6). Everything else in those files is historical — do not load them at runtime.
 
 ## Authority hierarchy (drift protection) — load-bearing

@@ -29,7 +29,7 @@ Universal engineering front door for a developer-kit workspace. Every invocation
 
 ## Instructions
 
-Artifact authority and commit policy: `references/artifact-policy.md`. (`v2-design.md` and `go-design.md` are historical design records — consult them only for Route J workflow-evolution changes, never as runtime procedure.)
+Artifact authority and commit policy: `references/artifact-policy.md`. (The GO v1/v2 design records live in the repo at `docs/design/history/` — they are history, not procedure, and are deliberately not part of this skill bundle. Consult them only for Route J workflow-evolution changes.)
 
 ### Phase 0 — Environment
 

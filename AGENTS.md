@@ -46,6 +46,10 @@ lookup — those existed only because the skills used to live in a different rep
 **The package remains runtime-agnostic.** The plugin is one optional surface over it; the console
 scripts stay callable from Codex, OpenCode, plain CLI, and CI without it.
 
+The skill bundle carries **procedure only**. The GO v1/v2 design records are history and live
+at `docs/design/history/` — a skill's `references/` are loaded as agent context, so non-procedural
+archaeology does not belong there.
+
 `tests/test_plugin_surface.py` enforces the lockstep: every `worktrail-*` command a skill doc
 names must be a real entry point, `plugin.json`'s hand-maintained `skills` array must match the
 directories on disk, frontmatter `name:` must be kebab-case and match its directory (a dot
