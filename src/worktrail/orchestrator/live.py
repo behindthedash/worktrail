@@ -44,6 +44,7 @@ from . import dispatch
 from . import orchestrate
 from . import progress
 from . import spawnlib
+from ..taskformats import resolve as taskformats
 from ..taskformats.devkit import schema as _devkit_schema
 from ..taskformats.devkit import source as loader
 
@@ -449,7 +450,7 @@ def precheck(repo: Path, spec_rel: str) -> int:
             print("INFO: blocked tasks recorded in status.json: " + ", ".join(blocked))
         return 1
 
-    _, tasks = loader.load_spec(str(repo / spec_rel))
+    _, tasks = taskformats.load_spec(str(repo / spec_rel))
     warn_count = 0
 
     for task in tasks:
@@ -1222,6 +1223,7 @@ class LiveSpawn:
             "branch": "(checked out)",
             "base_commit": "HEAD",
             "default_agent": self.agent,
+            "spec_root_prefix": taskformats.spec_root_prefix_for(self.spec_folder_rel),
         }
         prompt = dispatch.build_worker_prompt(
             role,
@@ -1315,7 +1317,7 @@ def spawn_one(
 ) -> dict | None:
     repo = instantiate(SAMPLE_TEMPLATE, dest)
     spec_folder = repo / SAMPLE_SPEC_REL
-    spec_id, tasks = loader.load_spec(str(spec_folder))
+    spec_id, tasks = taskformats.load_spec(str(spec_folder))
     task = next((t for t in tasks if t["id"] == task_id), None)
     if task is None:
         print(f"no such task: {task_id}")
@@ -1366,7 +1368,7 @@ def live_run(
     """
     model = model or spawnlib.default_model_for_agent(agent)
     repo = instantiate(SAMPLE_TEMPLATE, dest)
-    spec_id, tasks = loader.load_spec(str(repo / SAMPLE_SPEC_REL))
+    spec_id, tasks = taskformats.load_spec(str(repo / SAMPLE_SPEC_REL))
     if only:
         keep = set(only)
         tasks = [t for t in tasks if t["id"] in keep]
@@ -1873,7 +1875,7 @@ def live_run_real(
     model = model or spawnlib.default_model_for_agent(agent)
     repo = repo.resolve()
     role_models = _effective_role_models(agent, role_models)
-    spec_id, tasks = loader.load_spec(str(repo / spec_rel))
+    spec_id, tasks = taskformats.load_spec(str(repo / spec_rel))
     for t in tasks:
         t["retry_count"] = 0
         if t.get("status") in coordinator.DONE:
@@ -2533,7 +2535,7 @@ def _pipeline_scheduler(
     from . import verify as verify_module
 
     role_models = _effective_role_models(agent, role_models)
-    spec_id, tasks = loader.load_spec(str(repo / spec_rel))
+    spec_id, tasks = taskformats.load_spec(str(repo / spec_rel))
     for t in tasks:
         t.setdefault("retry_count", 0)
         if t.get("status") in coordinator.DONE:
@@ -2626,6 +2628,7 @@ def _pipeline_scheduler(
             ci_fix_spawn=ci_fix_spawn,
             git_lock=iv_lock,  # shared registry lock (AC-012 / TASK-005)
             merge_method=merge_method,
+            spec_rel=spec_rel,  # tells the deny-list which spec root to guard
         )
 
     make_verifier_fn = _make_verifier if _make_verifier is not None else _default_make_verifier
@@ -3280,7 +3283,7 @@ def _full_real_inner(
             print(f"{_ts()} ERROR: Failed to read journal: {e}")
             return {"group_prs": [], "final": None, "quarantined": {}, "merged": []}
 
-        spec_id, tasks = loader.load_spec(str(repo / spec_rel))
+        spec_id, tasks = taskformats.load_spec(str(repo / spec_rel))
         for t in tasks:
             t["status"], t["retry_count"] = "done", 0
 
@@ -3388,7 +3391,7 @@ def _full_real_inner(
         spec_folder = repo / spec_rel
         sid = run_research_session(spec_folder, agent=agent, model=model, timeout=timeout)
         if sid:
-            spec_id_tmp, _ = loader.load_spec(str(spec_folder))
+            spec_id_tmp, _ = taskformats.load_spec(str(spec_folder))
             research_spawn = LiveSpawn(
                 spec_id_tmp,
                 spec_rel.rstrip("/") + "/",
@@ -4120,7 +4123,7 @@ def main(argv=None) -> int:
                 spec_folder, agent=args.agent, model=args.model, timeout=args.timeout
             )
             if sid:
-                spec_id_tmp, _ = loader.load_spec(str(spec_folder))
+                spec_id_tmp, _ = taskformats.load_spec(str(spec_folder))
                 spawn = LiveSpawn(
                     spec_id_tmp,
                     args.spec.rstrip("/") + "/",
@@ -4153,7 +4156,7 @@ def main(argv=None) -> int:
         # tasks also appear, and each task's marker reflects its current status.
         tasks: list = []
         try:
-            _, tasks = loader.load_spec(str(repo / args.spec))
+            _, tasks = taskformats.load_spec(str(repo / args.spec))
             for t in tasks:
                 t["retry_count"] = 0
             journal = json.loads(jp.read_text())
