@@ -1,0 +1,22 @@
+{
+  "name": "worktrail",
+  "description": "Route engineering work, capture and consume handoff briefs, and drain the work queue unattended — the Claude Code surface over the installed worktrail package",
+  "author": {
+    "name": "Worktrail",
+    "email": "dev@behindthedash.com"
+  },
+  "homepage": "https://github.com/behindthedash/worktrail",
+  "repository": "https://github.com/behindthedash/worktrail.git",
+  "license": "MIT",
+  "keywords": [
+    "orchestration",
+    "work-queue",
+    "task-routing",
+    "worktree"
+  ],
+  "skills": [
+    "./skills/worktrail-drain",
+    "./skills/worktrail-go",
+    "./skills/worktrail-handoff"
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "name": "worktrail",
+  "description": "Claude Code surface for the worktrail orchestration package",
+  "owner": {
+    "name": "Worktrail",
+    "email": "dev@behindthedash.com"
+  },
+  "plugins": [
+    {
+      "name": "worktrail",
+      "description": "Route engineering work (/go), capture and consume handoff briefs, and drain the work queue unattended",
+      "source": "./"
+    }
+  ]
+}
