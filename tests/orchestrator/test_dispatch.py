@@ -144,12 +144,9 @@ class TestReviewChecksAcDodCheckboxes(unittest.TestCase):
         "formatter (`npx prettier --write`, `black .`) on a repo with no config: "
         "it reflows whole files and flips quote/semicolon style, burying the real "
         "diff. If no formatter is configured, skip formatting. "
-        "Before committing, set the `status` frontmatter field of "
-        "`{spec_folder}tasks/{task_id}.md` to `completed` — change ONLY that field, "
-        "leave every other line byte-for-byte unchanged. "
-        "(Exception to the 'Do NOT modify docs/specs/** status' hard rule: this "
-        "write-back is explicitly permitted for your own task file's `status` field "
-        "only; no other docs/specs/** file or status may be altered.) Commit."
+        "Do NOT touch the spec tree: task status is recorded in the run journal "
+        "during a run and written to the spec artifact once per group at integrate "
+        "time, not on this branch. Commit only your code changes."
     )
 
     def test_review_action_names_ac_and_dod_sections(self):
@@ -194,31 +191,23 @@ class TestReviewChecksAcDodCheckboxes(unittest.TestCase):
 
 class TestCleanupStatusWriteBack(unittest.TestCase):
 
-    def test_cleanup_prompt_contains_status_writeback(self):
-        """AC-008: rendered ROLE_CLEANUP prompt contains 'status', 'completed',
-        and the spec-folder-relative task-file path."""
+    def test_cleanup_prompt_does_not_instruct_status_writeback(self):
+        """Supersedes AC-008 (spec 006-orchestrator-task-status-writeback).
+
+        P0 removed status write-back from task branches entirely: status lives in
+        the run journal during a run and reaches the spec artifact once per group
+        at integrate time. The cleanup prompt previously carried an explicit
+        exception permitting the worker to write it, which would reintroduce the
+        exact per-branch spec diff P0 deleted.
+        """
         spec_folder = "docs/specs/006-orchestrator-task-status-writeback/"
         ctx = _make_ctx(spec_folder)
-        task = _make_task("TASK-002")
-        prompt = build_worker_prompt(ROLE_CLEANUP, task, ctx)
+        prompt = build_worker_prompt(ROLE_CLEANUP, _make_task("TASK-002"), ctx)
 
-        expected_path = f"{spec_folder}tasks/TASK-002.md"
-
-        self.assertIn(
-            "status",
-            prompt,
-            "ROLE_CLEANUP prompt must mention the field name 'status'",
-        )
-        self.assertIn(
-            "completed",
-            prompt,
-            "ROLE_CLEANUP prompt must mention the target value 'completed'",
-        )
-        self.assertIn(
-            expected_path,
-            prompt,
-            f"ROLE_CLEANUP prompt must reference spec-folder-relative path '{expected_path}'",
-        )
+        self.assertNotIn("set the `status` frontmatter field", prompt)
+        self.assertNotIn("explicitly permitted", prompt)
+        self.assertIn("run journal", prompt)
+        self.assertIn("Do NOT modify docs/specs/** at all.", prompt)
 
     def test_cleanup_task_path_is_spec_folder_relative(self):
         """AC-009: cleanup task-file path is derived from ctx['spec_folder'],
