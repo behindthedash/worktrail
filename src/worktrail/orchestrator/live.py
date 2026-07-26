@@ -229,6 +229,37 @@ class RunLock:
         self.release()
 
 
+def apply_run_plan(repo: "Path", spec_rel: str, spec_id: str, tasks: list) -> list:
+    """Enrich freshly-loaded tasks with a compiled RunPlan, if one is cached.
+
+    This reads a plan; it never compiles one. Compiling costs a model call, and a
+    fan-out that silently spent one mid-run would be both a surprise on the bill
+    and a source of nondeterminism between two runs of the same spec. Producing a
+    plan is the explicit, out-of-band `worktrail-compile` step
+    (`conductor/compile.py`); consuming it is free and happens here.
+
+    With no cached plan this is a no-op and the run behaves exactly as it did
+    before P3b -- which is what keeps every existing devkit spec unaffected.
+    """
+    from ..conductor import compile as conductor_compile
+    from ..conductor import runplan as _runplan
+
+    try:
+        spec_dir = repo / spec_rel
+        fp = _runplan.fingerprint(spec_dir, tasks)
+        plan = _runplan.load_cached(conductor_compile.default_cache_dir(repo), spec_id, fp)
+    except OSError as exc:  # an unreadable cache must never take a run down
+        print(f"{_ts()} run plan: cache unreadable ({exc}); using the spec's own deps")
+        return tasks
+    if plan is None:
+        return tasks
+
+    merged, notes = _runplan.apply_to_tasks(tasks, plan)
+    for n in notes:
+        print(f"{_ts()} {n}")
+    return merged
+
+
 def journal_path_for(repo: "Path", spec_rel: str) -> Path:
     """Run-journal path for a (repo, spec) pair: beside the worktrees, keyed by the
     spec folder name. Single source of truth shared by full_real and `status` so
@@ -1876,6 +1907,7 @@ def live_run_real(
     repo = repo.resolve()
     role_models = _effective_role_models(agent, role_models)
     spec_id, tasks = taskformats.load_spec(str(repo / spec_rel))
+    tasks = apply_run_plan(repo, spec_rel, spec_id, tasks)
     for t in tasks:
         t["retry_count"] = 0
         if t.get("status") in coordinator.DONE:
@@ -2536,6 +2568,7 @@ def _pipeline_scheduler(
 
     role_models = _effective_role_models(agent, role_models)
     spec_id, tasks = taskformats.load_spec(str(repo / spec_rel))
+    tasks = apply_run_plan(repo, spec_rel, spec_id, tasks)
     for t in tasks:
         t.setdefault("retry_count", 0)
         if t.get("status") in coordinator.DONE:

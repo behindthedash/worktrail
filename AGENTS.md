@@ -6,8 +6,15 @@ any harness (Claude Code, Codex, plain CLI, CI), not bound to one plugin runtime
 
 ## What this repo is
 
-Four subsystems under `src/worktrail/`:
+Five subsystems under `src/worktrail/`:
 
+- **`conductor/`** — the one context that reads a whole change. `compile.py` turns a spec/change
+  into a **RunPlan** (per-task file scope + dependency edges), content-addressed and cached under
+  `<repo>-worktrees/runplans/`, so a re-run or resume costs nothing. Formats that already declare
+  file scope (devkit frontmatter) are seeded without a model; formats that do not (OpenSpec's
+  `tasks.md`) get one inference pass. `runplan.py` owns the rule for applying a plan safely: an
+  edge may only be dropped if both endpoints carry file scope, because `runnable_frontier` reads
+  an empty file set as "collides with nothing".
 - **`orchestrator/`** — parallel git-worktree fan-out task execution: dependency-aware task DAG
   planning (`coordinator.py`), worktree lifecycle (`worktree.py`), cold-start worker dispatch
   (`dispatch.py`), live headless-agent spawning with run-lock/journal/resilience (`live.py`,
