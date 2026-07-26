@@ -459,12 +459,12 @@ class RenderToolsUsed(unittest.TestCase):
             "entries": [
                 {"role": "implement", "tools_used": ["Bash", "Read", "Edit"]},
                 {"role": "review", "tools_used": ["Read", "Grep"]},
-                {"role": "implement", "skills_used": ["specs-sdd-workflow"]},
+                {"role": "implement", "skills_used": ["worktrail-sdd-workflow"]},
             ]
         }
         s = progress.summarize_tools(journal)
         self.assertEqual(s["tools_used"], ["Bash", "Edit", "Grep", "Read"])
-        self.assertEqual(s["skills_used"], ["specs-sdd-workflow"])
+        self.assertEqual(s["skills_used"], ["worktrail-sdd-workflow"])
 
     def test_deduplicates_across_entries(self):
         journal = {

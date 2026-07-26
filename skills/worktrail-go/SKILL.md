@@ -2,8 +2,8 @@
 name: worktrail-go
 description: >
   Use when the user invokes /go, asks to pick up queued work, resume active specs,
-  implement or fix a spec, route engineering work, or orient across developer-kit
-  repositories. Renders the orientation dashboard, classifies free-text requests,
+  implement or fix a spec, route engineering work, or orient across repositories.
+  Renders the orientation dashboard, classifies free-text requests,
   claims/resumes handoff briefs, and dispatches SDD work without requiring the user
   to know sdd-workflow. Triggers: /go, /go fix, /go implement, /go route:F,
   /go BRIEF-ID, bare /go, multi-repo orientation.
@@ -15,7 +15,7 @@ allowed-tools: Read, Bash, AskUserQuestion, Skill, Agent
 
 ## Overview
 
-Universal engineering front door for a developer-kit workspace. Every invocation starts with an orientation dashboard (active specs, in-flight briefs, ready queue), then classifies the request and dispatches to the right executor. `specs-sdd-workflow` is an internal executor — users access it only via `/go`.
+Universal engineering front door for a Worktrail workspace. Every invocation starts with an orientation dashboard (active specs, in-flight briefs, ready queue), then classifies the request and dispatches to the right executor. `worktrail-sdd-workflow` is an internal executor — users access it only via `/go`.
 
 ## When to Use
 
@@ -144,7 +144,7 @@ Resolve the user's choice and dispatch by its `action`:
 | `action` | dispatch |
 |---|---|
 | `resume` | stalled in-flight brief (claimed ≥48h ago with no completion — likely an abandoned session; freshly-claimed briefs are hidden as actively owned). Before continuing, verify what the prior session already landed (merged PRs / commits / spec status referencing the brief id) so you resume the remainder, not redo it → Phase 3 (no re-claim) |
-| `implement` | active spec → `Skill("specs-sdd-workflow", args="<path> route:E <spec_id>")`, where `<path>` is the item's `path` (multi-repo) or `$REPO` (in-repo) |
+| `implement` | active spec → `Skill("worktrail-sdd-workflow", args="<path> route:E <spec_id>")`, where `<path>` is the item's `path` (multi-repo) or `$REPO` (in-repo) |
 | `close-stale` | stale-bookkeeping spec → **do NOT run the orchestrator** (files already merged on base). Confirm the spec's pending impl tasks are truly shipped (their `files:` exist + are git-tracked on the base branch — `next_action` lists the task ids), then flip those `TASK-*.md` `status:` → `completed` and land a docs-only PR (the way the 068 stale-status case was closed). Re-run the dashboard to confirm the spec drops to sync/complete. |
 | `claim` | queue item → batch-claim it plus any related queued briefs (see **Batch consumption** below), then Phase 3 |
 | `consolidate-cluster` | detected brief cluster → run `consolidate_cluster.py preview <members...>` to re-validate + draft a consolidated brief, show the draft via `AskUserQuestion` requiring an explicit confirm (no default-yes), then run `consolidate_cluster.py execute <members...> --draft '<preview JSON>' --confirm` (or `--decline`, which performs zero writes) |
@@ -304,7 +304,7 @@ Dispatch policy is simple:
 - Explicit invocation flags or caller-supplied `AGENT_CLI` always win over the derived routing values. The routing table slots into the existing precedence at the repository-policy tier: explicit invocation > repository policy (routing table here) > machine-wide env > detected host > `claude`.
 - no routing table → behavior identical to today (flat keys, single fallback). Likewise, no `routing.tiers` → omit `--tier-map` entirely (dispatch behavior unchanged, REQ-NR005).
 - Record the resolved routing decision at dispatch time with `worktrail-run-record start ... --routing-decision "$ROUTING_JSON"` so the audit trail captures the exact route/risk-derived policy.
-- Codex / in-session host: call `Skill("specs-sdd-workflow", ...)` directly.
+- Codex / in-session host: call `Skill("worktrail-sdd-workflow", ...)` directly.
 - OpenCode parent sessions use the seeded subprocess path with `opencode` when the harness
   supplies the explicit `OPENCODE_PARENT` marker; explicit invocation, repository policy,
   and machine-wide provider overrides still win.
@@ -377,11 +377,11 @@ Route I `investigation_complete`) may finish without commit/push/PR creation.
 finish; transient infra → rerun; code defect → minimal patch (≤5 iterations); product
 decision → `blocked_product_decision`; ceiling → `failed_recoverable`.
 
-## Dispatch Contract (to sdd-workflow)
+## Dispatch Contract (to worktrail-sdd-workflow)
 
 ```
-Skill("specs-sdd-workflow", args="<repo-path> route:<X> [spec-folder]")
-Skill("specs-sdd-workflow", args="handoff:<id>")
+Skill("worktrail-sdd-workflow", args="<repo-path> route:<X> [spec-folder]")
+Skill("worktrail-sdd-workflow", args="handoff:<id>")
 ```
 
 sdd-workflow accepts `route:X` to skip its own classification and proceed directly to route execution.
@@ -408,7 +408,7 @@ When a brief is claimed, surface any related briefs from its `related` frontmatt
 ```
 /go ggb route:D 003-payments
 ```
-→ route:D detected, Phase 5 skipped → `Skill("specs-sdd-workflow", args="<ggb-path> route:D 003-payments")`
+→ route:D detected, Phase 5 skipped → `Skill("worktrail-sdd-workflow", args="<ggb-path> route:D 003-payments")`
 
 **Queue claim by ID**
 ```

@@ -10,23 +10,23 @@ from worktrail.router import skill_dispatch
 
 class SkillDispatchTests(unittest.TestCase):
     def test_claude_uses_native_style_prompt_and_provider(self):
-        command = skill_dispatch.build_command("claude", "developer-kit-specs:sdd-workflow", "route:E 002-bootstrap")
+        command = skill_dispatch.build_command("claude", "worktrail-sdd-workflow", "route:E 002-bootstrap")
         self.assertEqual(command[:2], ["claude", "-p"])
-        self.assertEqual(command[2], "/developer-kit-specs:sdd-workflow route:E 002-bootstrap")
+        self.assertEqual(command[2], "/worktrail-sdd-workflow route:E 002-bootstrap")
 
     def test_codex_preserves_codex_binary(self):
-        command = skill_dispatch.build_command("codex", "specs-sdd-workflow", "route:E")
+        command = skill_dispatch.build_command("codex", "worktrail-sdd-workflow", "route:E")
         self.assertEqual(command[:5], ["codex", "exec", "--json", "-s", "workspace-write"])
-        self.assertIn("Use the installed skill 'specs-sdd-workflow'", command[-1])
+        self.assertIn("Use the installed skill 'worktrail-sdd-workflow'", command[-1])
         self.assertNotIn("claude", command)
 
     def test_opencode_preserves_opencode_binary(self):
-        command = skill_dispatch.build_command("opencode", "specs-sdd-workflow", "route:E")
+        command = skill_dispatch.build_command("opencode", "worktrail-sdd-workflow", "route:E")
         self.assertEqual(command[:4], ["opencode", "run", "--format", "json"])
-        self.assertEqual(command[-1], "/specs-sdd-workflow route:E")
+        self.assertEqual(command[-1], "/worktrail-sdd-workflow route:E")
 
     def test_args_are_one_argument_and_extra_args_are_not_shell_parsed(self):
-        command = skill_dispatch.build_command("codex", "specs-sdd-workflow", "route:E; do-not-execute", extra_args=("--flag", "value"))
+        command = skill_dispatch.build_command("codex", "worktrail-sdd-workflow", "route:E; do-not-execute", extra_args=("--flag", "value"))
         self.assertIn("route:E; do-not-execute", command[-3])
         self.assertEqual(command[-2:], ["--flag", "value"])
 

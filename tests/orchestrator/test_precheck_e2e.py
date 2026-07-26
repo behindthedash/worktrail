@@ -233,7 +233,7 @@ class TestPrecheckE2EExternalDeps(unittest.TestCase):
 
 
 # `TestSkillMdContents` (AC-4/5/6) is intentionally not ported: it asserted
-# prose content of `specs-sdd-workflow`'s SKILL.md, a devkit-only Claude Code
+# prose content of the old `specs-sdd-workflow` SKILL.md, a devkit-only Claude Code
 # skill file that documents this engine rather than being part of it. That
 # assertion belongs with the devkit thin-wrapper skill docs, not this package.
 

@@ -178,6 +178,17 @@ def test_no_devkit_specs_dispatches_remain():
     assert not offenders, f"dispatches to retired developer-kit-specs skills: {offenders}"
 
 
+def test_go_dispatches_worktrail_executor_only():
+    """The front door must resolve to the executor shipped by this plugin."""
+    go_docs = [doc for doc in _skill_docs() if doc.is_relative_to(SKILLS_DIR / "worktrail-go")]
+    offenders = []
+    for doc in go_docs:
+        for needle in ("specs-sdd-workflow", "developer-kit-specs:"):
+            if needle in doc.read_text():
+                offenders.append(f"{doc.relative_to(REPO_ROOT)}: {needle}")
+    assert not offenders, f"worktrail-go retains retired cross-plugin dispatches: {offenders}"
+
+
 def test_opsx_apply_is_never_dispatched():
     """worktrail replaces OpenSpec's own sequential executor. Dispatching
     `/opsx:apply` would run the change twice — once sequentially by OpenSpec, once
