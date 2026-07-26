@@ -376,6 +376,10 @@ class DevkitSpecTaskSource:
     def resolve_external_dependency(self, dep_ref: str) -> Dict[str, Any]:
         return resolve_external_dependency(self.repo_root, dep_ref, spec_root=self._spec_root)
 
+    def task_brief_ref(self, task_id: str, spec_ref: str) -> tuple:
+        """The task's own file is the brief; no anchor needed."""
+        return f"{self._spec_root}/{spec_ref}/tasks/{task_id}.md", ""
+
     def task_file_path(self, task_id: str, spec_ref: str) -> Path:
         return self.repo_root / self._spec_root / spec_ref / "tasks" / f"{task_id}.md"
 
