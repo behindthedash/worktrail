@@ -1413,6 +1413,83 @@ class WorkerScopeViolation(unittest.TestCase):
         self.assertEqual(v._forbidden_paths_touched("", "gb"), [])
         self.assertFalse(run.find("git", "-C", "/repo", "diff"))
 
+    # -- the deny-list must name the spec root of the format actually running --
+    #
+    # Both bugs below were found by running datalena spec 080 for real. Neither
+    # was visible to a unit test, because every existing test constructed its own
+    # devkit-shaped Verifier.
+
+    def test_an_openspec_run_guards_openspec_not_docs_specs(self):
+        """`spec_rel` unset meant the deny-list fell back to devkit's root. On an
+        OpenSpec run that leaves `openspec/**` -- the tree the guard exists to
+        protect -- completely unguarded, while falsely flagging `docs/specs/**`.
+        The observed symptom was a ci-fix worker struck out for touching
+        `docs/specs/080-.../promotion-runbook.md`, a declared deliverable."""
+        run = self.ScopeCheckRun({}, touched=[
+            "openspec/changes/080-x/tasks.md",
+            "docs/specs/080-x/promotion-runbook.md",
+        ])
+        v = mk(run, FakeSpawn(), "/tmp/x")
+        v.spec_rel = "openspec/changes/080-x"
+        self.assertEqual(v._forbidden_paths_touched("presha", "gb"),
+                         ["openspec/changes/080-x/tasks.md"])
+
+    def test_a_devkit_run_still_guards_docs_specs(self):
+        run = self.ScopeCheckRun({}, touched=[
+            "openspec/changes/080-x/tasks.md",
+            "docs/specs/080-x/tasks/TASK-001.md",
+        ])
+        v = mk(run, FakeSpawn(), "/tmp/x")
+        v.spec_rel = "docs/specs/080-x"
+        self.assertEqual(v._forbidden_paths_touched("presha", "gb"),
+                         ["docs/specs/080-x/tasks/TASK-001.md"])
+
+    # -- a declared deliverable is in scope, even under a denied prefix --------
+
+    def test_a_declared_workflow_file_is_not_a_violation(self):
+        """Blanket-denying `.github/workflows/**` makes any CI-focused spec
+        unimplementable. datalena spec 080 exists to modify `qa-pipeline.yml`,
+        and its ci-fix worker was struck out for touching it."""
+        run = self.ScopeCheckRun({}, touched=[".github/workflows/qa-pipeline.yml"])
+        v = mk(run, FakeSpawn(), "/tmp/x")
+        v.declared_files = {"feature-1": [".github/workflows/qa-pipeline.yml"]}
+        self.assertEqual(
+            v._forbidden_paths_touched("presha", "gb", {"name": "feature-1"}), [])
+
+    def test_an_undeclared_workflow_file_is_still_a_violation(self):
+        """The guard's actual purpose: a worker must not edit CI it was never
+        asked to touch."""
+        run = self.ScopeCheckRun({}, touched=[".github/workflows/other.yml"])
+        v = mk(run, FakeSpawn(), "/tmp/x")
+        v.declared_files = {"feature-1": [".github/workflows/qa-pipeline.yml"]}
+        self.assertEqual(v._forbidden_paths_touched("presha", "gb", {"name": "feature-1"}),
+                         [".github/workflows/other.yml"])
+
+    def test_another_groups_declaration_does_not_exempt_this_group(self):
+        run = self.ScopeCheckRun({}, touched=[".github/workflows/qa-pipeline.yml"])
+        v = mk(run, FakeSpawn(), "/tmp/x")
+        v.declared_files = {"other": [".github/workflows/qa-pipeline.yml"]}
+        self.assertEqual(v._forbidden_paths_touched("presha", "gb", {"name": "feature-1"}),
+                         [".github/workflows/qa-pipeline.yml"])
+
+    def test_the_spec_root_is_absolute_and_no_declaration_exempts_it(self):
+        """The spec tree is the run's own bookkeeping -- status reaches it once,
+        at integrate, on the base checkout (design 4.3). A worker writing there
+        reintroduces the cross-branch conflict class P0 removed, so unlike the
+        other prefixes this one takes no carve-out."""
+        run = self.ScopeCheckRun({}, touched=["docs/specs/001-x/tasks/TASK-001.md"])
+        v = mk(run, FakeSpawn(), "/tmp/x")
+        v.spec_rel = "docs/specs/001-x"
+        v.declared_files = {"feature-1": ["docs/specs/001-x/tasks/TASK-001.md"]}
+        self.assertEqual(v._forbidden_paths_touched("presha", "gb", {"name": "feature-1"}),
+                         ["docs/specs/001-x/tasks/TASK-001.md"])
+
+    def test_no_declared_files_preserves_pre_existing_behavior(self):
+        run = self.ScopeCheckRun({}, touched=[".github/workflows/x.yml", "src/ok.py"])
+        v = mk(run, FakeSpawn(), "/tmp/x")
+        self.assertEqual(v._forbidden_paths_touched("presha", "gb", {"name": "feature-1"}),
+                         [".github/workflows/x.yml"])
+
 
 class WorkerSelfMergeViolation(unittest.TestCase):
     """Structural backstop for dispatch.py's second Hard rule ('do NOT run

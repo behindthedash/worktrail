@@ -3377,6 +3377,10 @@ def _full_real_inner(
             spawn=resolve_spawn,
             ci_fix_spawn=ci_fix_spawn,
             merge_method=merge_method,
+            # Without these the deny-list falls back to devkit's spec root,
+            # leaving an OpenSpec run's own tree unguarded.
+            spec_rel=spec_rel,
+            declared_files=coordinator.declared_files_by_group(groups, tasks),
         )
         quarantined = vres.get("quarantined", {})
         self_merged = vres.get("self_merged", {})
@@ -3670,6 +3674,10 @@ def _full_real_inner(
         spawn=resolve_spawn,
         ci_fix_spawn=ci_fix_spawn,
         merge_method=merge_method,
+        # Without these the deny-list falls back to devkit's spec root,
+        # leaving an OpenSpec run's own tree unguarded.
+        spec_rel=spec_rel,
+        declared_files=coordinator.declared_files_by_group(groups, tasks),
     )
     quarantined = {**quarantined, **vres["quarantined"]}
     self_merged = vres.get("self_merged", {})
