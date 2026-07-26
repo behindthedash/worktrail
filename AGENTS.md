@@ -26,6 +26,36 @@ Four subsystems under `src/worktrail/`:
 - **`drain/`** — unattended queue-draining: repeatedly spawns fresh-context headless one-shots
   against the router until the queue empties or a stop condition fires.
 
+## Claude Code plugin surface
+
+This repo is also a Claude Code plugin marketplace (`.claude-plugin/marketplace.json` +
+`.claude-plugin/plugin.json`), shipping three skills under `skills/`:
+
+| Skill | Surface over |
+|---|---|
+| `worktrail-go` | `router/` — the route classifier, orientation dashboard, run records, policy |
+| `worktrail-handoff` | `workqueue/` — capture/claim/complete briefs in `$WORK_QUEUE_DIR` |
+| `worktrail-drain` | `drain/` — unattended queue draining |
+
+Install with `/plugin marketplace add behindthedash/worktrail`, then `/plugin install worktrail`.
+The plugin is a **thin surface**, not a second implementation: every command a SKILL.md issues is
+a console script from this package's `[project.scripts]`, on `PATH` after `pip install worktrail`.
+There is no script-path resolution, no `$CLAUDE_PLUGIN_ROOT` fallback, and no cross-plugin
+lookup — those existed only because the skills used to live in a different repo from their engine.
+
+**The package remains runtime-agnostic.** The plugin is one optional surface over it; the console
+scripts stay callable from Codex, OpenCode, plain CLI, and CI without it.
+
+The skill bundle carries **procedure only**. The GO v1/v2 design records are history and live
+at `docs/design/history/` — a skill's `references/` are loaded as agent context, so non-procedural
+archaeology does not belong there.
+
+`tests/test_plugin_surface.py` enforces the lockstep: every `worktrail-*` command a skill doc
+names must be a real entry point, `plugin.json`'s hand-maintained `skills` array must match the
+directories on disk, frontmatter `name:` must be kebab-case and match its directory (a dot
+silently drops the description and makes a skill untriggerable), `references/*.md` cross-links
+must resolve, and the old plugin-path resolution patterns must not reappear.
+
 ## Origin and why it's separate
 
 Extracted from `developer-kit` (behindthedash/developer-kit,
