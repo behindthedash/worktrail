@@ -39,7 +39,7 @@ class TestAdapters:
 
 class TestPromptRendering:
     def test_devkit_rendering_is_unchanged(self):
-        path, note = dispatch._task_brief(
+        path, note, _ = dispatch._task_brief(
             {"task_brief": {"path_fmt": "docs/specs/x/tasks/{task_id}.md", "anchor_fmt": ""}},
             "TASK-001",
         )
@@ -47,7 +47,7 @@ class TestPromptRendering:
         assert note == ""
 
     def test_openspec_rendering_names_the_item_and_warns_off_the_rest(self):
-        path, note = dispatch._task_brief(
+        path, note, _ = dispatch._task_brief(
             {"task_brief": {"path_fmt": "openspec/changes/x/tasks.md", "anchor_fmt": "{task_id}"}},
             "1.1",
         )
@@ -56,7 +56,7 @@ class TestPromptRendering:
 
     def test_a_ctx_predating_the_seam_still_renders_devkit(self):
         """Cassettes and callers written before this seam pass no `task_brief`."""
-        path, note = dispatch._task_brief({"spec_folder": "docs/specs/x/"}, "TASK-002")
+        path, note, _ = dispatch._task_brief({"spec_folder": "docs/specs/x/"}, "TASK-002")
         assert path == "docs/specs/x/tasks/TASK-002.md"
         assert note == ""
 
@@ -80,7 +80,7 @@ class TestLiveWiring:
         adapter ever mangled it, the sentinel would reach a worker's prompt."""
         for rel in ("docs/specs/x", "openspec/changes/x"):
             ctx = self._ctx_for(rel)
-            path, note = dispatch._task_brief({"task_brief": ctx}, "1.1")
+            path, note, _ = dispatch._task_brief({"task_brief": ctx}, "1.1")
             assert "\x00" not in path and "\x00" not in note
 
 

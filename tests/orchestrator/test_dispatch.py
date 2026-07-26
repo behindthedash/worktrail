@@ -149,16 +149,25 @@ class TestReviewChecksAcDodCheckboxes(unittest.TestCase):
         "time, not on this branch. Commit only your code changes."
     )
 
+    # The AC/DoD checkbox behaviour is now conditional on the task format: it
+    # applies when the brief is the task's OWN file (devkit) and is deliberately
+    # withheld when the brief is one item in a file shared by the whole change
+    # (OpenSpec), where the only checkboxes are orchestrator-owned run status.
+    # These assert the RENDERED devkit prompt rather than the raw template --
+    # a stronger check, since the rendered text is what a worker actually reads.
+    def _devkit_review_prompt(self):
+        return build_worker_prompt(ROLE_REVIEW, _make_task(), _make_ctx())
+
     def test_review_action_names_ac_and_dod_sections(self):
         """AC-CHG-009: ROLE_REVIEW action names both checkbox sections to tick."""
-        action = _ROLE_ACTION[ROLE_REVIEW]
+        action = self._devkit_review_prompt()
         self.assertIn("## Acceptance Criteria", action)
         self.assertIn("## Definition of Done (DoD)", action)
 
     def test_review_action_couples_passed_to_all_ticked(self):
         """AC-CHG-010: PASSED requires all AC/DoD ticked; FAILED + finding on
         any unticked item."""
-        action = _ROLE_ACTION[ROLE_REVIEW]
+        action = self._devkit_review_prompt()
         self.assertIn("PASSED", action)
         self.assertIn("EVERY AC/DoD checkbox ticked", action)
         self.assertIn("FAILED", action)
@@ -167,9 +176,25 @@ class TestReviewChecksAcDodCheckboxes(unittest.TestCase):
     def test_review_action_instructs_committing_task_file_edit(self):
         """AC-CHG-011: ROLE_REVIEW action instructs committing the task-file
         checkbox edit, in addition to writing the review file."""
-        action = _ROLE_ACTION[ROLE_REVIEW]
+        action = self._devkit_review_prompt()
         self.assertIn("Commit the task-file checkbox edit", action)
-        self.assertIn("reviews/{task_id}-review.md", action)
+        self.assertIn("reviews/TASK-001-review.md", action)
+
+    def test_a_shared_file_brief_forbids_ticking_instead(self):
+        """The inverse, and the reason the above became conditional: on OpenSpec
+        the only checkboxes in the brief are run status, owned by the
+        orchestrator. A worker ticking one puts a `tasks.md` diff on its branch,
+        and since every task shares that file, every sibling branch conflicts."""
+        ctx = dict(_make_ctx())
+        ctx["spec_folder"] = "openspec/changes/080-x/"
+        ctx["task_brief"] = {
+            "path_fmt": "openspec/changes/080-x/tasks.md",
+            "anchor_fmt": "{task_id}",
+        }
+        action = build_worker_prompt(ROLE_REVIEW, _make_task(), ctx)
+        self.assertIn("strictly READ-ONLY", action)
+        self.assertNotIn("Commit the task-file checkbox edit", action)
+        self.assertNotIn("tick it to", action)
 
     def test_other_roles_byte_for_byte_unchanged(self):
         """AC-CHG-012: ROLE_IMPLEMENT, ROLE_FIX, ROLE_CLEANUP action strings

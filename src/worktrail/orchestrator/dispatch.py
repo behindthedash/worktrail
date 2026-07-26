@@ -185,16 +185,10 @@ _ROLE_ACTION = {
         "Review the diff against ONLY the success-criteria and AC in your task file — "
         "these are your complete checklist. "
         "Do NOT read the spec, data-model, contracts, or knowledge-graph. "
-        "Open `{task_brief}` and, for each `- [ ]` under "
-        "`## Acceptance Criteria` and `## Definition of Done (DoD)`, tick it to "
-        "`- [x]` ONLY when the diff evidence confirms that item is genuinely met -- "
-        "leave any unconfirmed item unticked and record it as a finding. "
+        "{review_checklist}"
         "Write `{spec_folder}reviews/{task_id}-review.md` with "
         "frontmatter `review_status: PASSED|FAILED`, `critical_issues:`, `major_issues:`. "
-        "`review_status: PASSED` requires EVERY AC/DoD checkbox ticked -- a single "
-        "unticked AC/DoD item after your review is itself sufficient grounds for "
-        "`FAILED` plus a finding for that item. "
-        "Commit the task-file checkbox edit alongside the review file."
+        "{review_verdict_rule}"
     ),
     ROLE_FIX: (
         "Read `{spec_folder}reviews/{task_id}-review.md` and fix ONLY the listed findings. "
@@ -222,6 +216,50 @@ def _spec_prefix(ctx: Dict[str, Any]) -> str:
     return ctx.get("spec_root_prefix") or "docs/specs/"
 
 
+# The review role's checklist behaviour depends on whether the brief is the
+# task's OWN file or an item inside a file shared by the whole change.
+#
+# Own-file (devkit): the brief carries this task's AC/DoD checkboxes, and
+# ticking them is part of the review record. Sibling task branches touch
+# disjoint files, so committing that edit is safe.
+#
+# Shared-file (OpenSpec): the ONLY checkboxes in `tasks.md` are run status,
+# which the orchestrator owns exclusively and writes once at integrate time
+# (design §4.3). A worker ticking one puts a `tasks.md` diff on its task
+# branch -- and since every task in the change shares that file, EVERY pair of
+# sibling branches then conflicts. Observed exactly that on the first live
+# OpenSpec run: three tasks produced perfectly disjoint code, and the stacked
+# merge for 1.4 still failed, on `tasks.md` alone.
+_REVIEW_CHECKLIST_OWN_FILE = (
+    "Open `{task_brief}` and, for each `- [ ]` under "
+    "`## Acceptance Criteria` and `## Definition of Done (DoD)`, tick it to "
+    "`- [x]` ONLY when the diff evidence confirms that item is genuinely met -- "
+    "leave any unconfirmed item unticked and record it as a finding. "
+)
+_REVIEW_VERDICT_OWN_FILE = (
+    "`review_status: PASSED` requires EVERY AC/DoD checkbox ticked -- a single "
+    "unticked AC/DoD item after your review is itself sufficient grounds for "
+    "`FAILED` plus a finding for that item. "
+    "Commit the task-file checkbox edit alongside the review file."
+)
+_REVIEW_CHECKLIST_SHARED_FILE = (
+    "Your brief is ONE item in a file shared by every task in this change. "
+    "Treat that file as strictly READ-ONLY: do not tick its checkbox, do not "
+    "edit it, do not commit it. Those checkboxes are run status owned solely by "
+    "the orchestrator, and a branch that edits them conflicts with every sibling "
+    "branch. "
+)
+_REVIEW_VERDICT_SHARED_FILE = (
+    "Record your verdict in the report-back JSON and the review file only."
+)
+
+
+def _review_clauses(anchor: str) -> tuple:
+    if anchor:
+        return _REVIEW_CHECKLIST_SHARED_FILE, _REVIEW_VERDICT_SHARED_FILE
+    return _REVIEW_CHECKLIST_OWN_FILE, _REVIEW_VERDICT_OWN_FILE
+
+
 def _task_brief(ctx: dict, task_id: str) -> tuple:
     """`(path, note)` for the brief this worker opens.
 
@@ -238,11 +276,11 @@ def _task_brief(ctx: dict, task_id: str) -> tuple:
     anchor = (b.get("anchor_fmt") or "").format(task_id=task_id)
     path = path_fmt.format(task_id=task_id)
     if not anchor:
-        return path, ""
+        return path, "", ""
     return path, (
         f" — your brief is the `{anchor}` item ONLY; the rest of this file "
         f"belongs to other workers, do not act on it"
-    )
+    ), anchor
 
 
 def build_worker_prompt(
@@ -281,13 +319,16 @@ def build_worker_prompt(
     # predate the seam.
     spec_prefix = _spec_prefix(ctx)
     tid = task["id"]
-    brief, brief_note = _task_brief(ctx, tid)
+    brief, brief_note, brief_anchor = _task_brief(ctx, tid)
+    review_checklist, review_verdict_rule = _review_clauses(brief_anchor)
     scope = ", ".join(task.get("files", [])) or "(see task file)"
     action = _ROLE_ACTION[role].format(
         task_id=tid,
         base_commit=ctx.get("base_commit", "HEAD"),
         spec_folder=ctx["spec_folder"],
         task_brief=brief,
+        review_checklist=review_checklist,
+        review_verdict_rule=review_verdict_rule,
     )
     # Role-differentiated reads: each role loads only what it actually needs.
     # Review and fix workers skip the full spec/plan (~60-80 KB saved per call).
