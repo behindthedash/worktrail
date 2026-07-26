@@ -1,0 +1,21 @@
+version: 2
+updates:
+  # This package pins no runtime dependencies (stdlib-only by design), so pip
+  # updates here cover the [dev] extra — the test toolchain that gates every PR.
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "deps"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "ci"
