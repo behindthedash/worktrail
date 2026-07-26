@@ -36,6 +36,7 @@ This repo is also a Claude Code plugin marketplace (`.claude-plugin/marketplace.
 | `worktrail-go` | `router/` — the route classifier, orientation dashboard, run records, policy |
 | `worktrail-handoff` | `workqueue/` — capture/claim/complete briefs in `$WORK_QUEUE_DIR` |
 | `worktrail-drain` | `drain/` — unattended queue draining |
+| `worktrail-sdd-workflow` | the route executor `worktrail-go` dispatches to (routes A–J) — internal, never called directly |
 
 Install with `/plugin marketplace add behindthedash/worktrail`, then `/plugin install worktrail`.
 The plugin is a **thin surface**, not a second implementation: every command a SKILL.md issues is
@@ -45,6 +46,12 @@ lookup — those existed only because the skills used to live in a different rep
 
 **The package remains runtime-agnostic.** The plugin is one optional surface over it; the console
 scripts stay callable from Codex, OpenCode, plain CLI, and CI without it.
+
+`worktrail-sdd-workflow` and `worktrail-go` cite each other's `{#anchors}` across skill
+directories. Those citations used to span two repos (the executor lived in
+`developer-kit-specs` and cited 24 anchors in a file this repo owns), where a rename on either
+side was a silent runtime dead-end no test could see. They are intra-repo links now, and
+`test_cross_skill_anchor_citations_resolve` fails the build on a broken one.
 
 The skill bundle carries **procedure only**. The GO v1/v2 design records are history and live
 at `docs/design/history/` — a skill's `references/` are loaded as agent context, so non-procedural
