@@ -220,14 +220,34 @@ P0 and P1 have **no OpenSpec dependency** — they pay for themselves on the exi
 de-risk everything after. Do them first regardless of OpenSpec sequencing. P5 runs last so the
 migration targets a settled format rather than a moving one.
 
-## 7. Unknowns / not verified
+## 7. Verified against OpenSpec 1.6.0 (2026-07-25)
 
-- OpenSpec's **community-schema** mechanism: the README mentions third-party bundles but the fetched
-  content shows no schema-validation surface. Under this design we never need one — but if a later
-  phase wants OpenSpec-side validation, that remains unverified against the actual repo (brief
-  `150500` flagged the same, twice).
-- Whether `/opsx:apply`'s own sequential executor conflicts with an external executor ticking
-  `tasks.md`. **Assumption:** `/opsx:apply` is not used at all — worktrail replaces it — and only
-  `/opsx:archive` runs afterward. Needs one real dual-run (P4) to confirm archive accepts
-  externally-ticked checkboxes. This is the cheapest assumption in the design to disprove and
-  should be prototyped before P4's adapter build, not during it.
+Prototyped before the P4 adapter build, as §7 previously required. All against
+`@fission-ai/openspec@1.6.0` installed locally.
+
+- **Archive accepts externally-written checkboxes — confirmed.** Ticking `tasks.md` with plain
+  `sed` (no OpenSpec involvement) and running `openspec archive <change> --yes` produced
+  `Task status: ✓ Complete`, merged the delta into `openspec/specs/<cap>/spec.md`, and archived to
+  `changes/archive/<date>-<change>/`. This was the design's load-bearing assumption: worktrail can
+  replace `/opsx:apply` entirely and hand back to `archive`. Now covered by a live-CLI test
+  (`test_archive_accepts_checkboxes_this_adapter_wrote`, skipped when the CLI is absent).
+- **Incomplete tasks are a warning, not a block.** `Warning: N incomplete task(s) found. Continuing
+  due to --yes flag.` Archive counts checkboxes but does not gate on them — so the orchestrator,
+  not OpenSpec, owns completeness enforcement.
+- **Task groups are first-class in the authored format — confirmed.** The built-in `spec-driven`
+  schema's `tasks` artifact template is `## N. <Task Group Name>` + `- [ ] N.M <description>`, and
+  its instruction text says "Group related tasks under ## numbered headings" and "Order tasks by
+  dependency (what must be done first?)". §4.2's "free lane hint" is a property of the format, not
+  an inference.
+- **No custom schema needed — confirmed.** `generates: tasks.md` (plain, not a glob) is sufficient
+  because status leaves the artifact during a run (§4.3). The two open questions brief `150500`
+  raised — does `generates:` glob per task, is there a `FIELD_SCHEMA` equivalent — are moot rather
+  than answered: no per-task frontmatter exists, so there is nothing to validate.
+- `openspec schema` exists as an experimental command group (`which`/`validate`/`fork`/`init`), so
+  customization is available if a later phase wants it. Not used.
+
+Still not verified:
+
+- `openspec status --change <id> --json` reports **artifact** completion (does each file exist),
+  not task completion. If a future phase wants OpenSpec to be the progress source of truth rather
+  than the run journal, that gap needs its own answer.
