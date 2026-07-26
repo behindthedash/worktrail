@@ -518,6 +518,30 @@ class WriteGroupTaskStatus(unittest.TestCase):
                 {"TASK-404": "completed"},
             )  # must not raise
 
+    def test_openspec_writes_completion_to_shared_tasks_md(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _init_repo(Path(tmp))
+            change = repo / "openspec" / "changes" / "001-x"
+            change.mkdir(parents=True)
+            tasks_md = change / "tasks.md"
+            tasks_md.write_text("## 1. Setup\n\n- [ ] 1.1 do it\n")
+            _git(repo, "add", "-A")
+            _git(repo, "commit", "-q", "-m", "add OpenSpec change")
+
+            integrate._write_group_task_status(
+                repo,
+                "001-x",
+                {"name": "feature-1", "tasks": ["1.1"]},
+                {"1.1": "completed"},
+            )
+
+            self.assertIn("- [x] 1.1 do it", tasks_md.read_text())
+            log = subprocess.run(
+                ["git", "-C", str(repo), "log", "-1", "--oneline"],
+                capture_output=True, text=True, check=True,
+            ).stdout
+            self.assertIn("mark 1 task(s) completed", log)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
