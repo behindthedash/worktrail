@@ -134,6 +134,21 @@ GH_RETRIES = 3
 FORBIDDEN_WORKER_PATH_PREFIXES = (".github/workflows/", f"{DEFAULT_SPEC_ROOT}/")
 
 
+def forbidden_prefixes_for(spec_path: "str | None" = None) -> tuple:
+    """Deny-list prefixes for the format this run is driving.
+
+    A guard naming the wrong spec root is not a weaker guard, it is no guard:
+    an OpenSpec run checked against `docs/specs/` would let a worker rewrite
+    `openspec/**` and report clean. Falls back to the module constant when no
+    spec path is known, so callers predating the seam keep today's behavior.
+    """
+    if not spec_path:
+        return FORBIDDEN_WORKER_PATH_PREFIXES
+    from worktrail.taskformats import resolve as _resolve
+
+    return (".github/workflows/", _resolve.spec_root_prefix_for(spec_path))
+
+
 # --------------------------------------------------------------------------- #
 # Default (live) effect runners -- replaced by fakes in tests
 # --------------------------------------------------------------------------- #
@@ -225,11 +240,16 @@ class Verifier:
                  poll_interval_max: float = 60.0,
                  max_polls: int = 360,
                  git_lock: Optional[threading.Lock] = None,
-                 merge_method: Optional[str] = None) -> None:
+                 merge_method: Optional[str] = None,
+                 spec_rel: Optional[str] = None) -> None:
         self.repo = Path(repo).resolve()
         self.remote = remote
         self.base = base
         self.spec_id = spec_id
+        # Repo-relative path of the spec/change this run drives. Optional so
+        # existing callers are unaffected; when absent the deny-list falls back
+        # to the devkit prefix, which is today's behavior.
+        self.spec_rel = spec_rel
         self.run = run or _real_run
         self.spawn = spawn or _make_live_spawn()
         # ci-fix workers use a shorter timeout and default to sonnet. When a test
@@ -509,7 +529,8 @@ class Verifier:
         if getattr(p, "returncode", 1) != 0:
             return []
         touched = (getattr(p, "stdout", "") or "").splitlines()
-        return [f for f in touched if f.startswith(FORBIDDEN_WORKER_PATH_PREFIXES)]
+        prefixes = forbidden_prefixes_for(self.spec_rel)
+        return [f for f in touched if f.startswith(prefixes)]
 
     # -- per-stage logic --------------------------------------------------- #
     def ensure_mergeable(self, group: Dict[str, Any], gb: str) -> Tuple[bool, str]:

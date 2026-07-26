@@ -210,14 +210,16 @@ _ROLE_ACTION = {
         "formatter (`npx prettier --write`, `black .`) on a repo with no config: "
         "it reflows whole files and flips quote/semicolon style, burying the real "
         "diff. If no formatter is configured, skip formatting. "
-        "Before committing, set the `status` frontmatter field of "
-        "`{spec_folder}tasks/{task_id}.md` to `completed` — change ONLY that field, "
-        "leave every other line byte-for-byte unchanged. "
-        "(Exception to the 'Do NOT modify docs/specs/** status' hard rule: this "
-        "write-back is explicitly permitted for your own task file's `status` field "
-        "only; no other docs/specs/** file or status may be altered.) Commit."
+        "Do NOT touch the spec tree: task status is recorded in the run journal "
+        "during a run and written to the spec artifact once per group at integrate "
+        "time, not on this branch. Commit only your code changes."
     ),
 }
+
+
+def _spec_prefix(ctx: Dict[str, Any]) -> str:
+    """Spec-root prefix for this run's task format (see build_worker_prompt)."""
+    return ctx.get("spec_root_prefix") or "docs/specs/"
 
 
 def build_worker_prompt(
@@ -248,6 +250,13 @@ def build_worker_prompt(
     aren't (contracts/worker-context-worktree-stacking.md Part A)."""
     if role not in ROLES:
         raise ValueError(f"unknown role: {role}")
+    # The worker's hard rules must name the spec root of whatever format this run
+    # is driving -- `docs/specs/` for devkit, `openspec/` for an OpenSpec change.
+    # Naming the wrong one turns a real safety guard into decoration: the worker
+    # would be told not to touch a tree that isn't there, while the tree it can
+    # actually damage goes unmentioned. Defaults to devkit's for callers that
+    # predate the seam.
+    spec_prefix = _spec_prefix(ctx)
     tid = task["id"]
     scope = ", ".join(task.get("files", [])) or "(see task file)"
     action = _ROLE_ACTION[role].format(
@@ -335,8 +344,8 @@ def build_worker_prompt(
             f"Task: {action}",
             "",
             "Hard rules:",
-            "  - Touch no files outside scope. Do NOT modify docs/specs/** status.",
-            "  - Never commit files under docs/specs/*/reviews/ — they are gitignored "
+            f"  - Touch no files outside scope. Do NOT modify {spec_prefix}** at all.",
+            f"  - Never commit files under {spec_prefix}*/reviews/ — they are gitignored "
             "point-in-time snapshots. If your task writes a review file there, do not "
             "stage or commit it.",
             "  - Do NOT modify package.json or package-lock.json (toolchain is already installed).",
@@ -481,7 +490,7 @@ def build_group_prompt(role: str, group: Dict[str, Any], ctx: Dict[str, Any]) ->
             "",
             "Hard rules:",
             "  - Make the smallest change that resolves the problem.",
-            "  - Do NOT modify docs/specs/** status or orchestrator state.",
+            f"  - Do NOT modify {_spec_prefix(ctx)}** or orchestrator state.",
             "  - Do NOT run `gh pr merge`, enable auto-merge, or take any merge action "
             "yourself, even if a merge/auto-merge command itself is what's failing — "
             "that is the orchestrator's job, not yours.",
