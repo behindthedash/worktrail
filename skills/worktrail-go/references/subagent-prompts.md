@@ -1,8 +1,9 @@
 # Shared Dispatch & Lifecycle Procedures (go + sdd-workflow)
 
-Owned by the **go** skill; also consumed cross-plugin by `sdd-workflow`
-(developer-kit-specs), whose SKILL.md and `pipeline-details.md` cite the
-`{#anchors}` here — **anchor names are a public contract; never rename them.**
+Owned by the **go** skill and cited by `worktrail-sdd-workflow`'s SKILL.md and
+`pipeline-details.md` via `{#anchors}`. Both ship from this repo now, so
+`test_cross_skill_anchor_citations_resolve` fails the build on a broken anchor —
+renames are safe when the citing side moves in the same change.
 Contains prompt templates, failure handling, and worktree procedures kept out
 of SKILL.md to keep the operating procedure lean. Load only the sections the
 selected route needs, not the whole file. Artifact rules: `artifact-policy.md`.
@@ -220,141 +221,78 @@ AskUserQuestion(
 
 ---
 
-## Brainstorm prompt template {#brainstorm-template}
+## OpenSpec authoring {#openspec-authoring}
 
-**Model selection:** Use `model: "opus"` for sparse or vague seeds where open-ended
-ideation is needed. Use `model: "sonnet"` when the `constraints` block is > 300 words
-or contains specific file paths, function names, or concrete technical decisions —
-the constraints do the heavy lifting and sonnet suffices. Fewer tokens at the same
-quality is always preferable.
+Replaces the former `#brainstorm-template`, `#spec-check-template`, and
+`#spec-to-tasks-template`. Those three existed because devkit's authoring pipeline
+had three separate skills producing three artifacts. OpenSpec's `propose` generates
+**proposal, specs, design, and tasks in one step**, so the three-stage dispatch, its
+three prompt templates, and the stage-to-stage handoff between them all collapse into
+one command. Anchors are kept out of this file's public contract only where nothing
+cites them — see the rename note at the end.
 
-Dispatch with `Agent` tool: `subagent_type: "general-purpose"`,
-`model: "opus"|"sonnet"` (per rule above),
-`description: "Brainstorm new specification"`. Replace `{placeholders}` with actual values.
+**Do not use `/opsx:apply`.** It is OpenSpec's own sequential per-change executor;
+worktrail replaces it. The orchestrator fans tasks out across worktrees and hands
+back to `/opsx:archive` at the end. Verified against OpenSpec 1.6.0: `archive`
+accepts checkboxes written by anything, and reports `Task status: ✓ Complete` from
+ticks this system wrote.
 
-```
-You are dispatched as a brainstorm subagent to ideate and draft a specification.
+### Authoring a change {#openspec-propose}
 
-**Your inputs:**
-- repo: {repo}  [absolute path to the spec worktree]
-- spec_dir: {spec_dir}  [absolute path where the spec will be written]
-- spec_id: {spec_id}  [the spec folder name, e.g., 001-manage-context-better]
-- feature_idea: {feature_idea}  [the user's feature description / high-level goal]
-- constraints: {constraints}  [optional: constraints or domain context]
-
-**Brownfield grounding (MANDATORY — do this BEFORE drafting, never assume greenfield):**
-Most "new" features touch a codebase that already has related code. Before writing a
-single requirement, establish what ALREADY EXISTS for this feature's domain:
-1. Extract the domain nouns from feature_idea (models, endpoints, services, UI surfaces).
-2. From the repo root, for each noun run `git grep -in "<noun>"` AND, if a knowledge graph
-   is available, `gitnexus` query/context on it. Reconcile: the worktree grep wins for code
-   you will edit; the graph is the base-branch baseline.
-3. For every module/model/symbol the spec will "create", confirm it does NOT already exist:
-   `git grep -l "<name>"` and `git cat-file -e origin/<base>:<path>` — if it exists, the spec
-   EXTENDS/reconciles it; it does NOT recreate or overwrite it.
-4. Record the findings in the spec (an "Existing surface / brownfield reconciliation" note):
-   what exists, what is orphaned/mismatched, what is genuinely net-new. Frame requirements as
-   extensions of reality, not an idealized clean slate.
-This step is the single highest-leverage defense against the recurring "recreated/overwrote an
-existing module" failure. Skipping it is a defect, not a shortcut.
-
-Your task: Draft a specification for the feature idea under spec_dir, including
-all required markdown files. After writing, commit your work and return a
-structured summary in exactly this format.
-
-**Expected output format (MUST appear before any prose):**
-STATUS: success|failure|needs-clarification
-SPEC_PATH: /absolute/path/to/spec/file
-MARKERS: N  [count of unresolved [NEEDS CLARIFICATION] markers]
-SUMMARY: One-line human-readable summary
-```
-
----
-
-## Spec-check prompt template {#spec-check-template}
-
-Dispatch with `Agent` tool: `subagent_type: "general-purpose"`, `description: "Run spec-check"` (fresh context).
-
-**`subagent_type` MUST be `"general-purpose"` — skill names like `developer-kit-specs:specs.spec-check` are NOT valid agent types and will fail. The subagent invokes the skill itself.**
-
-Prompt body to pass verbatim (replace `<…>` with actual values):
+Run inline in the change worktree — this is a slash command, not an `Agent` dispatch,
+so there is no subagent prompt to template:
 
 ```
-You are a spec-check subagent. Invoke the `developer-kit-specs:specs.spec-check` skill on the spec below, then return a Stage Result Summary.
-
-repo: <absolute path to $WT>
-spec_dir: <absolute path to $SPEC_DIR>
-spec_file: <absolute path to spec file from brainstorm SPEC_PATH>
-
-**Brownfield-grounding verification (MANDATORY quality gate):** before resolving markers,
-confirm the spec is grounded in the EXISTING codebase, not an idealized greenfield. For each
-model/module/endpoint/symbol the spec says it will "create", verify via `git grep -l "<name>"`
-and `git cat-file -e origin/<base>:<path>` that it does not already exist. If any DOES exist,
-the spec is wrong to "create" it — flag it and rewrite that requirement to EXTEND/reconcile the
-existing code (note any orphaned/mismatched state). Treat a missed pre-existing module as a
-blocking spec defect, not a nuance.
-
-After the skill completes, return the following lines before any prose:
-STATUS: success|failure|needs-clarification
-MARKERS: N  [count of unresolved [NEEDS CLARIFICATION] markers]
-SUMMARY: One-line human-readable summary
+/opsx:propose "<the request, verbatim from the brief or the user>"
 ```
 
----
+It creates `openspec/changes/<change-id>/` containing `proposal.md`, `specs/**/*.md`
+(delta specs using ADDED/MODIFIED/REMOVED headers), `design.md`, and `tasks.md`.
+Commit the whole change directory before the orchestrator forks any task worktree —
+the commit-discipline rule is unchanged and still load-bearing, only the path moved
+from `docs/specs/<id>/changes/<slug>/` to `openspec/changes/<id>/`.
 
-## Spec-to-tasks prompt template {#spec-to-tasks-template}
+**There is no separate new-vs-modify authoring path.** An OpenSpec change is always a
+delta against the current specs: new capabilities land as `## ADDED Requirements`,
+modifications as `## MODIFIED Requirements`. Routes C/D and F/G therefore share this
+one authoring step and differ only in what they do afterwards.
 
-Dispatch with `Agent` tool: `subagent_type: "general-purpose"`, `description: "Run spec-to-tasks"` (fresh context).
+### When the request is ambiguous {#openspec-explore}
 
-**`subagent_type` MUST be `"general-purpose"` — skill names are NOT valid agent types.**
-
-Prompt body to pass verbatim (replace `<…>` with actual values):
+If the seed is sparse, or a `[NEEDS CLARIFICATION]`-shaped gap would previously have
+sent it to spec-check, run explore mode first and fold the answers into the proposal:
 
 ```
-You are a spec-to-tasks subagent. Invoke the `developer-kit-specs:specs.spec-to-tasks` skill on the spec below, then return a Stage Result Summary.
-
-repo: <absolute path to $WT>
-spec_dir: <absolute path to $SPEC_DIR>
-spec_file: <absolute path to spec file from brainstorm SPEC_PATH>
-lang_hint: <optional language hint from go args or user>
-
-**Task `timeout:` field guidance**: When the skill generates task frontmatter, it MUST assess each task's complexity and emit `timeout:` (optional integer seconds, overrides run-level default for that task's workers only) using these thresholds:
-- Pure functions, single-file edits, or test-only tasks: omit (or set `timeout: 900` for fast-fail).
-- Multi-file feature work, schema + migration combos, or ≥4-file tasks: `timeout: 1800`.
-- Large refactors, ≥6-file callers, or tasks with complex review cycles: `timeout: 2700`.
-
-**MANDATORY task frontmatter — the orchestrator will fail on first run without these:**
-
-Every generated TASK-*.md MUST have ALL of the following frontmatter fields populated
-(the template stubs exist; fill them with real values, not placeholder strings):
-
-The `files:` and `kind:` field rules are enforced by the generator — see the canonical extraction and inference rules in `plugins/developer-kit-specs/commands/specs.spec-to-tasks.md`.
-
-1. `success-criteria: |` — YAML block scalar. Copy the task's Acceptance Criteria
-   checklist verbatim. The review worker uses this field as its complete checklist
-   and does NOT re-read the spec — so this field is the only spec context a reviewer sees.
-
-   Example:
-   ```yaml
-   success-criteria: |
-     - resolve("slug") returns status:match when folder contains exactly one matching file
-     - resolve() returns status:ambiguous when slug matches >1 file
-     - existing prefix/stem/id forms still work (no regression)
-   ```
-
-**MANDATORY task-splitting heuristic:** If a task body lists MORE THAN 2 "Files to
-Create" OR (≥2 "Files to Create" AND ≥1 "Files to Modify"), SPLIT it into 2 tasks
-before generating any frontmatter. A well-sized task completes in under 15 minutes
-including the review cycle. Over-sized tasks hit the per-task timeout and lose their
-partial work with no resume path.
-
-After the skill completes, return the following lines before any prose:
-STATUS: success|failure|needs-clarification
-MARKERS: N  [count of unresolved [NEEDS CLARIFICATION] markers]
-SUMMARY: One-line human-readable summary
+/opsx:explore "<the ambiguity>"
+/opsx:update <change-id>      # revise the existing artifacts, keeps them coherent
 ```
 
----
+`/opsx:update` never edits code — it is the artifact-revision path, so it is safe to
+run against a change that already exists without touching the implementation.
+
+### Validating before the orchestrator runs {#openspec-validate}
+
+```
+openspec validate <change-id>          # structural: required artifacts, delta headers
+openspec status --change <change-id> --json
+```
+
+`validate` catches the failure OpenSpec warns about in its own schema instructions:
+scenarios must use exactly four hashtags (`####`), and a requirement without a
+scenario fails **silently** in the authoring step but is caught here.
+
+`status` reports **artifact** completion (does each file exist), not task completion —
+do not read it as run progress. Task state lives in the run journal during a run.
+
+### Syncing specs {#openspec-sync}
+
+```
+/opsx:sync <change-id>
+```
+
+Merges the change's delta specs into `openspec/specs/`.
+`/opsx:archive` also performs this merge as part of archiving, so an explicit sync is
+only needed when specs must land before the change is finished.
 
 ## Stage result handling {#stage-result-handling}
 
@@ -516,7 +454,10 @@ git -C "$REPO" worktree add "$SYNC_WT" -b "sync/$SPEC_ID" "$BASE"
 
 **Step 3 — update knowledge graph inside the sync worktree (inline):**
 
-`specs.sync` is registered as a slash **command**, not a skill — `Skill("developer-kit-specs:sync")` and `Skill("developer-kit-specs:specs.sync")` do not exist. Perform the post-orchestrator KG update inline:
+`/opsx:sync` merges the change's delta specs into `openspec/specs/` (see
+`#openspec-sync`); `/opsx:archive` does the same merge as part of archiving, so an
+explicit sync is only needed when specs must land before the change is finished.
+Perform the post-orchestrator knowledge-graph update inline:
 
 1. Glob both `$SYNC_WT/docs/specs/$SPEC_ID/tasks/TASK-*.md` and
    `$SYNC_WT/docs/specs/$SPEC_ID/changes/*/tasks/TASK-CHG-*.md` — read each file;
@@ -723,7 +664,7 @@ SIBLING_REF_GLOB="refs/heads/chg/$SPEC_ID-*"
 ```
 
 If siblings are found, read their Summary/Decisions sections before authoring:
-the `specs.change-spec` step below (`pipeline-details.md#modify-pipeline` step 1)
+the `/opsx:propose` step below (`pipeline-details.md#modify-pipeline` step 1)
 must record the reconciliation (adopted, differs, or superseded) in the new
 change-spec's own Decisions section rather than re-deriving decisions the
 sibling already made.
@@ -741,7 +682,7 @@ worktree-lifecycle note above).
 
 **Commit discipline (this is the fix for the missing-task-file defect):** commit
 immediately after every writing step, on the `chg/$SPEC_ID-$CHANGE_SLUG` branch —
-after `specs.change-spec` authors the change markdown, and again after
+after `/opsx:propose` authors the change artifacts, and again after
 spec-to-tasks (delta) writes `tasks/TASK-CHG-*.md`, `data-model.md`, `contracts/`,
 and `knowledge-graph.json`. Never let generated-but-uncommitted output sit in `$WT`
 before the orchestrator launches — `#modify-pipeline`'s pre-launch guard checks for
@@ -973,8 +914,8 @@ The brief hints are strong evidence, not authority; worktree files and current s
 Hand off to the existing `new` pipeline with `feature_idea`, `constraints`, and the resolved
 `repo`/`base_branch` as inputs when the selected route is new planning/implementation
 (see `#brainstorm-template`, `#spec-worktree-setup`). For `F`, enter Route F at the
-`specs.change-spec --type=bugfix` step. For `G`, enter Route G at the
-`specs.change-spec --type=delta` step.
+`/opsx:propose` step. For `G`, enter Route G at the same `/opsx:propose` step —
+OpenSpec has no bugfix/delta authoring split; the route differs, the command does not.
 
 The handoff-seed sub-flow supplies inputs and route evidence; route playbooks still own
 execution.

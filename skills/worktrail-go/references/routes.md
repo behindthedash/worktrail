@@ -22,9 +22,11 @@ Conventions used by every route:
   artifact → GitNexus graph (callers/blast radius; base-branch only — worktree
   diff wins) → exact files → targeted grep → tests → merged PRs → broad search
   last. Hand subagents pointers, not pasted file bodies.
-- **change-spec Skill id:** invoke `developer-kit-specs:specs.change-spec`
-  exactly — `developer-kit-specs:change-spec` (dropped `specs.`) does not exist
-  and will fail.
+- **Change authoring:** `/opsx:propose` (see
+  `subagent-prompts.md#openspec-propose`). It generates proposal, delta specs,
+  design, and tasks in one step, so there is no separate tasks-generation stage
+  and no new-vs-modify authoring split — an OpenSpec change is always a delta.
+  Do **not** use `/opsx:apply`: worktrail replaces OpenSpec's own executor.
 
 ---
 
@@ -36,9 +38,9 @@ explicit decision** (`no_implementation_without_approval` gate).
 1. Frame: user/business problem, who benefits, observable behavior to improve,
    smallest complete outcome, what would make it commercially unsuccessful.
 2. Inspect for prior art: `overlap_check.py` + GitNexus feature ownership.
-3. Dispatch brainstorm in **discovery framing** (`#brainstorm-template` with
-   `constraints` noting "discovery only — no tasks"): produce problem framing,
-   scope boundaries, risks/unknowns, candidate approaches, recommendation.
+3. `/opsx:explore "<the idea>"` (`#openspec-explore`) — discovery only, no
+   change created: produce problem framing, scope boundaries, risks/unknowns,
+   candidate approaches, recommendation.
 4. Output: a discovery note at `docs/specs/research/<slug>.md` (or seed a spec
    folder if the user converts it) + an epic/feature proposal.
 5. Ask the decision: proceed to Route B/C/D, defer (handoff brief), or stop.
@@ -140,9 +142,8 @@ Behavior violates the spec or an established expectation.
    — if the *requested* behavior is the change, reroute to G.
 3. Root cause per the no-guessing rule (hypothesis → validation → confirmed).
 4. Failing regression test first; prove it fails for the original reason.
-5. Narrowest correct fix via the `developer-kit-specs:specs.change-spec` skill
-   (`--type=bugfix`; exact id per the conventions block) when a spec owns the
-   behavior — run it through `pipeline-details.md#modify-pipeline`
+5. Narrowest correct fix authored as an OpenSpec change (`/opsx:propose`) when a
+   spec owns the behavior — run it through `pipeline-details.md#modify-pipeline`
    (single-worker orchestrate for 1-task fixes) — or a direct fix-branch
    worktree for unspecced code (setup: `subagent-prompts.md#fix-branch-worktree-setup`).
 6. Validate adjacent behavior + edge cases; update the spec only if behavior
@@ -161,11 +162,10 @@ Intentional behavior change; **spec first, code second.**
 
 1. Locate the current spec; record old vs new behavior + compatibility
    implications (existing users/integrations who observe a different result).
-2. Update spec + acceptance criteria via the `developer-kit-specs:specs.change-spec`
-   skill (`--type=delta`; exact id per the conventions block). Determine
-   migration/rollout/deprecation needs; note impacted dependent specs.
-3. spec-to-tasks (delta) → orchestrator → sync, per
-   `pipeline-details.md#modify-pipeline`.
+2. Update spec + acceptance criteria as an OpenSpec change (`/opsx:propose`,
+   `## MODIFIED Requirements`). Determine migration/rollout/deprecation needs;
+   note impacted dependent specs.
+3. propose → orchestrator → sync, per `pipeline-details.md#modify-pipeline`.
 4. Tests prove the NEW contract; remove/update tests that pinned the old one.
 
 Completion: `completed_*`.
@@ -216,8 +216,9 @@ Changes to GO, skills, plugins, agent prompts, orchestration, cassettes —
 3. Adverse-effect gate: a change that reduces route accuracy, drops required
    artifacts, or weakens a safety gate does not merge — fix or revert.
 4. Update `docs/design/history/go-v2-design.md` when the architecture changes; run
-   `make skill-lint SKILL=plugins/developer-kit-specs/skills/sdd-workflow` and
-   `python3 .skills-validator-check/validators/cli.py --all` before the PR.
+   `pytest tests/test_plugin_surface.py` before the PR — it validates every
+   `worktrail-*` command a skill names, the manifest/disk skills match, frontmatter
+   names, and cross-skill anchor citations.
 5. Never self-modify the active workflow mid-run based on a single run's
    evidence — capture the signal in the run record, propose separately (§21.3).
 6. Route J is **not done** when the code or docs change is implemented locally.
