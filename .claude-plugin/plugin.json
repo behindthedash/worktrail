@@ -1,6 +1,6 @@
 {
   "name": "worktrail",
-  "description": "Route engineering work, capture and consume handoff briefs, and drain the work queue unattended — the Claude Code surface over the installed worktrail package",
+  "description": "Route engineering work, capture and consume handoff briefs, and drain the work queue unattended \u2014 the Claude Code surface over the installed worktrail package",
   "author": {
     "name": "Worktrail",
     "email": "dev@behindthedash.com"
@@ -17,6 +17,7 @@
   "skills": [
     "./skills/worktrail-drain",
     "./skills/worktrail-go",
-    "./skills/worktrail-handoff"
+    "./skills/worktrail-handoff",
+    "./skills/worktrail-sdd-workflow"
   ]
 }

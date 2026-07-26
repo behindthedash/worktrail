@@ -117,6 +117,30 @@ def test_referenced_reference_files_exist():
     assert not missing, f"dangling reference links: {missing}"
 
 
+def test_cross_skill_anchor_citations_resolve():
+    """`../worktrail-go/references/subagent-prompts.md#anchor` links between skills
+    must land on a heading that actually defines that anchor.
+
+    This is the guard that did not exist while `sdd-workflow` lived in
+    `developer-kit-specs`: it cited 24 anchors in a file owned by another repo, and
+    a rename on either side was a silent runtime dead-end that no test could see.
+    Now that both sides ship from here, a broken anchor fails the build.
+    """
+    defined: dict[Path, set[str]] = {}
+    for doc in _skill_docs():
+        defined[doc] = set(re.findall(r"\{#([a-z0-9-]+)\}", doc.read_text()))
+
+    broken = []
+    for doc in _skill_docs():
+        for rel, anchor in re.findall(r"`((?:\.\./)[A-Za-z0-9_./-]+\.md)#([a-z0-9-]+)`", doc.read_text()):
+            target = (doc.parent / rel).resolve()
+            if not target.is_file():
+                broken.append(f"{doc.relative_to(REPO_ROOT)} -> {rel} (file missing)")
+            elif anchor not in defined.get(target, set()):
+                broken.append(f"{doc.relative_to(REPO_ROOT)} -> {rel}#{anchor} (anchor undefined)")
+    assert not broken, f"broken cross-skill anchor citations: {broken}"
+
+
 def test_worktrail_doc_links_from_skills_resolve():
     """Skills cite this repo's own docs (e.g. the GO design records under
     `docs/design/history/`) that deliberately live outside the skill bundle —
