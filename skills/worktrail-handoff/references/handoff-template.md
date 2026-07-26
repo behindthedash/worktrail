@@ -33,8 +33,9 @@ Write each brief in the shape below. Rules:
   `unknown`; a Route-C brief must never be silently marked done.
 - `change-kind:` is optional. Use `new`, `delta`, or `bugfix` only when the capturing agent
   has strong evidence about how SDD should treat the brief. `new` hints toward a new spec,
-  `delta` hints toward `specs.change-spec --type=delta`, and `bugfix` hints toward
-  `specs.change-spec --type=bugfix`. It is a hint, not a final decision; the consuming
+  both `delta` and `bugfix` author an OpenSpec change via `/opsx:propose` — the
+  distinction now only steers the route (G vs F), not the authoring command. It is a
+  hint, not a final decision; the consuming
   `sdd-workflow` run re-checks the current repo state.
 - `target-spec:` is optional. Use a `docs/specs/<spec-folder>` folder name when the brief
   likely changes an existing spec. It helps the deterministic handoff matcher find the

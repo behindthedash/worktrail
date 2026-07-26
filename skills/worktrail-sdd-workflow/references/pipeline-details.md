@@ -20,17 +20,22 @@ Route C (feature-planning), and Route D when no spec exists.
    `$SPEC_DIR`. Sandbox-denied → surface and stop. If later stages need repo-local
    tooling in `$WT`, bootstrap dependencies in that worktree per the repo's documented
    install step before running them. Commit on `spec/$SPEC_ID` after each writing step.
-1. **constitution** — only if `$WT/docs/specs/architecture.md` is missing.
-2. **brainstorm** — Agent dispatch per `../../worktrail-go/references/subagent-prompts.md#brainstorm-template` (opus for sparse
-   seeds, sonnet for constrained).
-3. **spec-check** — `Agent(subagent_type: "general-purpose")` per
-   `../../worktrail-go/references/subagent-prompts.md#spec-check-template`. Skill names are NOT valid agent types.
-4. **technical-plan (optional)** — ask once inline.
+1. **propose** — `/opsx:propose "<request>"` per `../../worktrail-go/references/subagent-prompts.md#openspec-propose`. Generates
+   proposal, delta specs, design, and tasks in one step. Run inline: it is a slash
+   command, not an `Agent` dispatch. Ambiguous seed → `../../worktrail-go/references/subagent-prompts.md#openspec-explore` first.
+2. **validate** — `openspec validate <change-id>` per `../../worktrail-go/references/subagent-prompts.md#openspec-validate`. Catches
+   the silent failures OpenSpec's own schema warns about (scenarios needing exactly
+   four hashtags; a requirement with no scenario).
 
-**GUARD: All spec-file edits and task frontmatter fixups must be made inside `$WT/docs/specs/$SPEC_ID/`, never in `$REPO`. After spec-to-tasks and throughout implementation, commit fixups on the `spec/$SPEC_ID` branch. Never stash or transfer edits from the base checkout.**
+**GUARD: all change artifacts are authored inside `$WT/openspec/changes/$CHANGE_ID/`,
+never in `$REPO`, and the whole change directory is committed on `spec/$CHANGE_ID`
+before the orchestrator forks any task worktree. Never stash or transfer edits from
+the base checkout.** The rule is unchanged from the devkit pipeline — only the path
+moved. It is what stops a task worktree branching one commit before `tasks.md` landed.
 
-5. **spec-to-tasks** — `Agent(subagent_type: "general-purpose")` per
-   `../../worktrail-go/references/subagent-prompts.md#spec-to-tasks-template`.
+The former stages 1–5 (constitution, brainstorm, spec-check, technical-plan,
+spec-to-tasks) collapse into step 1: OpenSpec generates all four artifacts in one
+command, so there is no stage-to-stage handoff left to sequence or commit between.
 
 **Stage results:** `../../worktrail-go/references/subagent-prompts.md#stage-result-handling`. **Inline-only:** never delegate
 repo resolution, dashboard, worktree creation, routing, AskUserQuestion gates,
@@ -88,14 +93,14 @@ Pick a `ready-to-implement` spec (ask if several; else route to its actual next 
 
 Route F (defect repair, when a spec owns the behavior) and Route G (specification
 change) — a **delta** against a spec already on `$BASE`, authored via
-`specs.change-spec`. This is the pipeline `routes.md` §F/§G
+`/opsx:propose`. This is the pipeline `routes.md` §F/§G
 refer to; it does not reuse `new`/`implement` because the artifact being fanned
-out (a change's `tasks/TASK-CHG-*.md`) lives under a `changes/<slug>/` subtree
-that must be committed on its own worktree branch before the orchestrator forks
-task worktrees from it — skipping this is exactly how a task worktree ends up
+out (a change's `tasks.md`) lives under `openspec/changes/<id>/` and must be
+committed on its own worktree branch before the orchestrator forks task worktrees
+from it — skipping this is exactly how a task worktree ends up
 missing its own task file (found and root-caused directly against repo history:
 task worktree branched from the change-spec-authoring commit, one commit before
-spec-to-tasks committed `tasks/*.md`, because nothing enforced committing that
+the tasks artifact landed, because nothing enforced committing that
 output before launch).
 
 0. **Change-spec worktree** — `../../worktrail-go/references/subagent-prompts.md#change-spec-worktree-setup`.
@@ -103,22 +108,18 @@ output before launch).
    creating `$WT` (advisory, not a hard stop — see that section). Outputs
    `$CHANGE_SLUG`, `$WT`, `$CHANGE_DIR`. Sandbox-denied → surface and stop.
 
-**GUARD: all change-spec and task-frontmatter edits happen inside
-`$WT/docs/specs/$SPEC_ID/changes/$CHANGE_SLUG/`, never in `$REPO`. Commit on
-`chg/$SPEC_ID-$CHANGE_SLUG` after every writing step below — never launch the
-orchestrator with uncommitted output sitting in `$WT`.**
+**GUARD: all change artifacts are authored inside `$WT/openspec/changes/$CHANGE_ID/`,
+never in `$REPO`. Commit the whole change directory on `chg/$CHANGE_ID` before
+launching the orchestrator — never launch with uncommitted output sitting in `$WT`.**
 
-1. **specs.change-spec** — `--type=bugfix` (Route F) or `--type=delta` (Route G);
-   exact id per the conventions block. Author inside `$CHANGE_DIR`, then commit.
-   If step 0 surfaced sibling change-spec work on this `$SPEC_ID`, read its
-   Summary/Decisions before authoring and record the reconciliation (adopted,
-   differs, or superseded) in this change-spec's own Decisions section — do not
-   re-derive decisions the sibling already made.
-2. **spec-to-tasks (delta)** — `Agent(subagent_type: "general-purpose")` per
-   `../../worktrail-go/references/subagent-prompts.md#spec-to-tasks-template`, `spec_dir=$CHANGE_DIR`. Author
-   `tasks/TASK-CHG-*.md`, `data-model.md`, `contracts/`, `knowledge-graph.json`
-   inside `$CHANGE_DIR`, then commit immediately — do not defer this commit or
-   batch it with a later step.
+1. **propose** — `/opsx:propose "<request>"` per `../../worktrail-go/references/subagent-prompts.md#openspec-propose`, then commit
+   the change directory. Generates proposal, delta specs, design, and tasks in one
+   step, so the former two-step author-then-tasks sequence (and the commit between
+   them) is gone. If step 0 surfaced sibling change work on this capability, read its
+   proposal before authoring and record the reconciliation (adopted, differs, or
+   superseded) in this change's own proposal — do not re-derive decisions the sibling
+   already made.
+2. **validate** — `openspec validate <change-id>` per `../../worktrail-go/references/subagent-prompts.md#openspec-validate`.
 
 **Stage results:** `../../worktrail-go/references/subagent-prompts.md#stage-result-handling`.
 
@@ -127,9 +128,9 @@ orchestrator with uncommitted output sitting in `$WT`.**
    the change-spec worktree itself rather than `$REPO`:
 
 ```bash
-CHG_DIFF=$(git -C "$WT" status --porcelain -- docs/specs/ 2>&1)
+CHG_DIFF=$(git -C "$WT" status --porcelain -- openspec/ 2>&1)
 if [ -n "$CHG_DIFF" ]; then
-  echo "ERROR: $WT has uncommitted docs/specs/ output (tasks/data-model/contracts/knowledge-graph). Commit it on chg/$SPEC_ID-$CHANGE_SLUG before launching the orchestrator — an uncommitted file here will be silently absent from every task worktree the orchestrator forks from \$WT." >&2
+  echo "ERROR: $WT has uncommitted openspec/ output (proposal/specs/design/tasks). Commit it on chg/$CHANGE_ID before launching the orchestrator — an uncommitted file here will be silently absent from every task worktree the orchestrator forks from \$WT." >&2
   exit 1
 fi
 ```

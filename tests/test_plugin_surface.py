@@ -158,3 +158,36 @@ def test_worktrail_doc_links_from_skills_resolve():
             if not (REPO_ROOT / path).is_file():
                 missing.append(f"{doc.relative_to(REPO_ROOT)} -> {path}")
     assert not missing, f"skill docs cite missing worktrail docs: {missing}"
+
+
+def test_no_devkit_specs_dispatches_remain():
+    """The authoring layer dispatches to OpenSpec's `/opsx:*` commands now.
+
+    A skill naming `specs.change-spec` / `specs.spec-to-tasks` / `specs.spec-check` /
+    `specs.sync` would send an agent into a plugin that is being uninstalled — a
+    runtime dead-end nothing else in this suite can see, because the target lives
+    (lived) in another repo entirely.
+    """
+    retired = ("specs.change-spec", "specs.spec-to-tasks", "specs.spec-check", "specs.sync")
+    offenders = []
+    for doc in _skill_docs():
+        text = doc.read_text()
+        for name in retired:
+            if name in text:
+                offenders.append(f"{doc.relative_to(REPO_ROOT)}: {name}")
+    assert not offenders, f"dispatches to retired developer-kit-specs skills: {offenders}"
+
+
+def test_opsx_apply_is_never_dispatched():
+    """worktrail replaces OpenSpec's own sequential executor. Dispatching
+    `/opsx:apply` would run the change twice — once sequentially by OpenSpec, once
+    fanned out by the orchestrator."""
+    offenders = []
+    for doc in _skill_docs():
+        for i, line in enumerate(doc.read_text().splitlines(), 1):
+            if "/opsx:apply" not in line:
+                continue
+            # A mention is fine only when the same line says not to use it.
+            if "not" not in line.lower():
+                offenders.append(f"{doc.relative_to(REPO_ROOT)}:{i}: {line.strip()[:60]}")
+    assert not offenders, f"skills dispatch /opsx:apply: {offenders}"
