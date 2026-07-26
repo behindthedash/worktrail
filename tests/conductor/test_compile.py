@@ -277,6 +277,16 @@ def test_kind_comes_from_the_artifact_not_the_model(change, tmp_path):
 # --------------------------------------------------------------------------- #
 # JSON extraction
 # --------------------------------------------------------------------------- #
+def test_the_cli_refuses_a_spec_outside_a_git_repo(tmp_path, capsys):
+    """The repo walk would otherwise land on `/` and put the plan cache in
+    `/-worktrees/runplans`."""
+    d = tmp_path / "openspec" / "changes" / "stray"
+    d.mkdir(parents=True)
+    (d / "tasks.md").write_text("## 1. G\n\n- [ ] 1.1 a\n")
+    assert conductor_compile.main([str(d)]) == 1
+    assert "not inside a git repository" in capsys.readouterr().err
+
+
 def test_extract_prefers_the_last_fenced_block():
     """Models narrate a draft before committing; the trailing object is the answer."""
     text = '```json\n{"tasks": [{"id": "draft"}]}\n```\nActually:\n```json\n{"tasks": [{"id": "final"}]}\n```'

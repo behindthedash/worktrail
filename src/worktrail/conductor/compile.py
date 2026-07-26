@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from worktrail.conductor import runplan
+from worktrail.orchestrator.coordinator import TAIL_KINDS
 from worktrail.conductor.runplan import (
     SOURCE_BASELINE,
     SOURCE_COMPILED,
@@ -84,8 +85,6 @@ def needs_compile(tasks: Sequence[Dict[str, Any]]) -> List[str]:
     `kind` alone, so they never participate in the file-collision check and
     inferring a scope for them would buy nothing.
     """
-    from worktrail.orchestrator.coordinator import TAIL_KINDS
-
     return [
         t["id"]
         for t in tasks
@@ -359,6 +358,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     repo = spec_dir
     while repo != repo.parent and not (repo / ".git").exists():
         repo = repo.parent
+    if repo == repo.parent:
+        # Without this the walk lands on `/` and the default cache dir becomes
+        # `/-worktrees/runplans`. Fail instead of writing somewhere absurd.
+        print(f"not inside a git repository: {spec_dir}", file=sys.stderr)
+        return 1
 
     plan = compile_run_plan(
         spec_dir,
