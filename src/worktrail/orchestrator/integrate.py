@@ -33,6 +33,7 @@ from . import coordinator
 from . import dispatch
 from . import live
 from . import progress
+from ..taskformats import resolve as taskformats
 from ..taskformats.devkit import source as loader
 
 TAIL = ("e2e", "cleanup")
@@ -213,7 +214,14 @@ def _write_group_task_status(
     inline so a non-devkit task format (e.g. an OpenSpec ``tasks.md`` checkbox)
     plugs in here without changing integrate.
     """
-    source = loader.DevkitSpecTaskSource(iw)
+    # The integration worktree is the source of truth for the spec artifact at
+    # this point. Resolve its adapter from the artifact path instead of
+    # assuming the legacy devkit layout; OpenSpec stores every task in one
+    # `tasks.md`, while devkit stores one file per task.
+    openspec_path = iw / "openspec" / "changes" / spec_id
+    devkit_path = iw / loader.DEFAULT_SPEC_ROOT / spec_id
+    spec_path = openspec_path if openspec_path.exists() else devkit_path
+    source = taskformats.task_source_for(spec_path)
     changed = []
     for tid in group.get("tasks", []):
         if status.get(tid) not in coordinator.ALREADY_INTEGRATED:
@@ -225,7 +233,8 @@ def _write_group_task_status(
             continue  # task file absent on this branch; nothing to write
     if not changed:
         return
-    _git(iw, "add", "--", f"{loader.DEFAULT_SPEC_ROOT}/{spec_id}", check=False)
+    spec_rel = source.spec_root(spec_id).relative_to(iw)
+    _git(iw, "add", "--", str(spec_rel), check=False)
     if _git(iw, "diff", "--cached", "--quiet", check=False).returncode != 0:
         _git(iw, "commit", "-q", "-m",
              f"chore({group['name']}): mark {len(changed)} task(s) completed")
