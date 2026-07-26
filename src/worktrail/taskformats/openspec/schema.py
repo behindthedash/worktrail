@@ -39,6 +39,36 @@ TASK_RE = re.compile(r"^(\s*)-\s+\[( |x|X)\]\s+(\d+\.\d+)\s+(.*?)\s*$")
 STATUS_PENDING = "pending"
 STATUS_COMPLETED = "completed"
 
+# Leading `[...]` tags on a task line, e.g.
+#   - [ ] 3.1 [TASK-013] [e2e] Verify the end-to-end journey
+# `tasks.md` has no per-task fields, and `kind` is not decoration: the
+# orchestrator holds `e2e`/`cleanup` OUT of the parallel fan-out
+# (`coordinator.TAIL_KINDS`). Without a way to express it, a converted change
+# reports every task as `impl` and the verification task gets fanned out
+# alongside the implementation it exists to verify. A leading bracket tag is
+# the least invasive way to carry it: it reads naturally in a hand-authored
+# checklist and OpenSpec's own tracker ignores everything after the `N.M` id.
+TAG_RE = re.compile(r"^\s*\[([^\]]+)\]\s*")
+KNOWN_KINDS = frozenset({"impl", "e2e", "cleanup", "docs", "feature", "chore"})
+DEFAULT_KIND = "impl"
+
+
+def split_tags(title: str) -> tuple[str, list[str]]:
+    """Peel leading `[tag]` markers off a task title.
+
+    Returns `(remaining_title, tags)`. Order is preserved; a title with no
+    leading bracket is returned unchanged with an empty tag list.
+    """
+    tags = []
+    rest = title
+    while True:
+        m = TAG_RE.match(rest)
+        if not m:
+            break
+        tags.append(m.group(1).strip())
+        rest = rest[m.end():]
+    return rest.strip(), tags
+
 
 @dataclass
 class ParsedTask:
@@ -48,6 +78,8 @@ class ParsedTask:
     group: str  # "1" -- the group number this task belongs to
     group_title: str  # "Setup"
     line_no: int  # 0-based index into the file's lines; the write-back anchor
+    kind: str = DEFAULT_KIND  # from a leading [tag]; gates the fan-out holdout
+    tags: list = field(default_factory=list)  # every leading tag, in order
 
 
 @dataclass
@@ -93,14 +125,22 @@ def parse_tasks_md(text: str) -> ParsedTasks:
                 result.warnings.append(f"line {i + 1}: duplicate task id {tid}")
                 continue
             seen.add(tid)
+            clean_title, tags = split_tags(title)
+            kinds = [g for g in (t.lower() for t in tags) if g in KNOWN_KINDS]
+            if len(kinds) > 1:
+                result.warnings.append(
+                    f"line {i + 1}: task {tid} carries multiple kind tags {kinds}; using {kinds[0]!r}"
+                )
             result.tasks.append(
                 ParsedTask(
                     id=tid,
-                    title=title,
+                    title=clean_title or title,
                     status=STATUS_COMPLETED if mark.lower() == "x" else STATUS_PENDING,
                     group=group,
                     group_title=group_title,
                     line_no=i,
+                    kind=kinds[0] if kinds else DEFAULT_KIND,
+                    tags=tags,
                 )
             )
             continue

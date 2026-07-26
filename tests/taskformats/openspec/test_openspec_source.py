@@ -261,3 +261,75 @@ def test_parser_agrees_with_the_shipped_schema_template(tmp_path):
     parsed = os_schema.parse_tasks_md(Path(tasks_template).read_text())
     assert [t.id for t in parsed.tasks] == ["1.1", "1.2", "2.1", "2.2"]
     assert [t.group for t in parsed.tasks] == ["1", "1", "2", "2"]
+
+
+# --------------------------------------------------------------------------- #
+# task kind via leading [tag]
+# --------------------------------------------------------------------------- #
+TAGGED = textwrap.dedent(
+    """\
+    ## 1. Implementation
+
+    - [ ] 1.1 [TASK-001] Build the thing
+    - [ ] 1.2 [TASK-002] Build the other thing
+
+    ## 2. Independent
+
+    - [ ] 2.1 [TASK-008] Unrelated work
+
+    ## 3. Verification and cleanup
+
+    - [ ] 3.1 [TASK-013] [e2e] Verify the journey
+    - [ ] 3.2 [TASK-014] [cleanup] Tidy up
+    """
+)
+
+
+def test_kind_is_recovered_from_a_leading_tag(tmp_path):
+    _, tasks = OpenSpecTaskSource(_change(tmp_path, tasks=TAGGED)).load("add-export")
+    kinds = {t["id"]: t["kind"] for t in tasks}
+    assert kinds == {"1.1": "impl", "1.2": "impl", "2.1": "impl", "3.1": "e2e", "3.2": "cleanup"}
+
+
+def test_tag_is_stripped_from_the_title(tmp_path):
+    _, tasks = OpenSpecTaskSource(_change(tmp_path, tasks=TAGGED)).load("add-export")
+    by_id = {t["id"]: t for t in tasks}
+    assert by_id["3.1"]["title"] == "Verify the journey"
+    assert by_id["3.1"]["tags"] == ["TASK-013", "e2e"]
+
+
+def test_tail_tasks_are_held_out_of_the_fan_out(tmp_path):
+    """The gap this closes. Without `kind`, e2e/cleanup land in an independent
+    section and get dispatched in PARALLEL with the implementation they exist to
+    verify. Found during the first real devkit->OpenSpec conversion (spec 080),
+    where the adapter reported every task as `impl` and detected no tail at all.
+    """
+    from worktrail.orchestrator import coordinator
+
+    _, tasks = OpenSpecTaskSource(_change(tmp_path, tasks=TAGGED)).load("add-export")
+    held = set(coordinator.tail_held_out_task_ids(tasks))
+    assert held == {"3.1", "3.2"}
+
+
+def test_tail_depends_on_every_preceding_non_tail_task(tmp_path):
+    """Sections read as independent, so a tail task needs explicit edges to
+    every earlier implementation task — including ones in *other* sections."""
+    _, tasks = OpenSpecTaskSource(_change(tmp_path, tasks=TAGGED)).load("add-export")
+    by_id = {t["id"]: t for t in tasks}
+    assert by_id["3.1"]["deps"] == ["1.1", "1.2", "2.1"]
+    # ...and cleanup follows e2e via the normal within-section chain
+    assert "3.1" in by_id["3.2"]["deps"]
+
+
+def test_untagged_tasks_keep_section_independence(tmp_path):
+    """Only tail kinds get cross-section edges; ordinary sections stay parallel."""
+    _, tasks = OpenSpecTaskSource(_change(tmp_path, tasks=TAGGED)).load("add-export")
+    by_id = {t["id"]: t for t in tasks}
+    assert by_id["2.1"]["deps"] == []
+
+
+def test_multiple_kind_tags_warn_and_take_the_first(tmp_path):
+    md = "## 1. G\n\n- [ ] 1.1 [e2e] [cleanup] Ambiguous\n"
+    parsed = os_schema.parse_tasks_md(md)
+    assert parsed.tasks[0].kind == "e2e"
+    assert any("multiple kind tags" in w for w in parsed.warnings)
