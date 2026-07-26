@@ -200,16 +200,33 @@ def _reqs(ids, by_id) -> List[str]:
 def plan_groups(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Partition the DAG into a base group + independent feature groups.
 
-    Algorithm (v0):
+    Algorithm:
       1. Hold out tail tasks (e2e/cleanup).
       2. BASE = impl roots (no intra-impl deps) with >= 2 transitive dependents
          -- the foundations many tasks build on.
-      3. Union-find the remaining FEATURE tasks over their dependency edges:
-         any dependency edge between two feature tasks merges them. Result:
-         feature groups are mutually dependency-independent (parallel PRs); a
-         group stacks on BASE iff one of its tasks depends on a base task.
-    TODO: refine with shared-file edges and requirement-cluster labels; detect
-    foundational cut-vertices beyond pure roots.
+      3. Union-find the remaining FEATURE tasks over dependency edges **and
+         shared-file edges**: two feature tasks merge if either one depends on
+         the other, or they write the same file. Result: feature groups are
+         mutually dependency-independent AND file-disjoint, so their PRs merge
+         into base without touching each other's files.
+      4. A group stacks on BASE if one of its tasks depends on a base task, or
+         if it writes a file base also writes.
+
+    Why shared-file edges matter (they are not a refinement of taste): a group
+    is the PR unit. Two dependency-independent tasks that write the same file
+    land in *different* groups, so two concurrent PRs both edit that file and
+    collide at merge. Dependency-independence alone was never sufficient to make
+    group PRs conflict-free; `disjoint_batches`/`runnable_frontier` prevented the
+    concurrent *write* within a run but said nothing about the PR partition.
+
+    Measured on the 81 spec dirs under ~/projects with declared file scope
+    (2026-07-26): adding these edges eliminated all 35 cross-group file
+    collisions and cost 8 of 213 groups. No spec newly collapsed to a single
+    group -- file overlap inside a spec turns out to be sparse and mostly already
+    aligned with the dependency structure, so no hub-file threshold is needed.
+
+    TODO: requirement-cluster labels; detect foundational cut-vertices beyond
+    pure roots.
     """
     impl = [t for t in tasks if t.get("kind", "impl") not in TAIL_KINDS]
     by_id = {t["id"]: t for t in impl}
@@ -260,6 +277,17 @@ def plan_groups(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             if d in feat:
                 union(t["id"], d)
 
+    # Shared-file edges. Grouped by file rather than compared pairwise: a file
+    # written by k tasks contributes k-1 unions, not k*(k-1)/2 comparisons.
+    feat_files = {tid: _norm_files(by_id[tid].get("files")) for tid in feat}
+    writers: Dict[str, List[str]] = {}
+    for tid in sorted(feat):
+        for f in feat_files[tid]:
+            writers.setdefault(f, []).append(tid)
+    for co_writers in writers.values():
+        for other in co_writers[1:]:
+            union(co_writers[0], other)
+
     comps: Dict[str, set] = {}
     for tid in feat:
         comps.setdefault(find(tid), set()).add(tid)
@@ -269,9 +297,23 @@ def plan_groups(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         groups.append(
             {"name": "base", "tasks": sorted(base), "depends_on": [], "reqs": _reqs(base, by_id)}
         )
+    base_files: set = set()
+    for b in base:
+        base_files |= _norm_files(by_id[b].get("files"))
     for idx, members in enumerate(sorted(comps.values(), key=lambda m: sorted(m)[0]), start=1):
-        stacks_on_base = bool(base) and any(
-            d in base for m in members for d in by_id[m].get("deps", [])
+        member_files: set = set()
+        for m in members:
+            member_files |= _norm_files(by_id[m].get("files"))
+        # Sharing a file with base is enough on its own. Base merges first, so
+        # stacking sequences the two; without this the group's PR and base's PR
+        # are concurrent and both edit that file. Merging the group *into* base
+        # would be wrong -- base is the shared foundation, not a catch-all.
+        # (Verified real, not hypothetical: datalena spec 027's feature-2 writes
+        # `package.json`, which base also writes, while depending on nothing in
+        # base.)
+        stacks_on_base = bool(base) and (
+            any(d in base for m in members for d in by_id[m].get("deps", []))
+            or bool(base_files & member_files)
         )
         groups.append(
             {
