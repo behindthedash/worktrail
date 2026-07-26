@@ -7,7 +7,7 @@ Applies to: `worktrail` @ v0.3.0 (`44f2fd3`)
 | Phase (§6) | State |
 |---|---|
 | **P0** status out of task branches | shipped, v0.4.0 (#7) |
-| **P1** lanes: union `plan_groups()` on shared-file edges | **not started** |
+| **P1** lanes: union `plan_groups()` on shared-file edges | shipped (#25) — see the measurement note in §4.2 |
 | **P2** warm lane execution | **not started** |
 | **P3** conductor `compile` → cached RunPlan | shipped: prompt templating off `TaskSource` in #12, compile + cache + safe application in #24 |
 | **P4** `OpenSpecTaskSource` | shipped (#11), `kind` recovery in #20 |
@@ -99,14 +99,35 @@ Extend `coordinator.plan_groups()` to union on **dependency edges ∪ shared-fil
 its own `TODO` (V7). Consequences:
 
 - Lanes are mutually **dependency-independent and file-disjoint** ⇒ branches merge into base without
-  cross-lane conflict, by construction. `_strip_spec_folder_to_base()` (V6) becomes dead code once
-  §4.3 lands, and cross-lane `assembly-resolve` becomes a should-never-fire safety net rather than
-  routine machinery.
+  cross-lane conflict, by construction. Cross-lane `assembly-resolve` becomes a should-never-fire
+  safety net rather than routine machinery.
 - Within a lane, tasks run **serially in dependency order in one worktree with one warm agent**.
   `add_stacked_worktree()` (V2) is no longer needed for intra-lane dependencies — the dependency's
   output is already in the working tree.
 - Parallelism is across lanes, which is where it was safe all along (V8 only ever guaranteed
   disjointness *within a concurrent batch*).
+
+**Measured when P1 shipped (2026-07-26, #25), across the 81 spec dirs under `~/projects/` that
+declare file scope.** Two things this section got wrong, both worth recording:
+
+| | groups | cross-group file collisions | specs collapsed to 1 group |
+|---|---|---|---|
+| before | 213 | **35** | 1 |
+| after | 205 | **0** | 1 (the same one) |
+
+1. **No hub-file threshold is needed.** The obvious fear — that one shared `package.json` or
+   barrel export welds a whole spec into a single lane — does not materialise. It cost 8 groups
+   out of 213 and collapsed nothing new: file overlap inside a spec is sparse and mostly already
+   aligned with the dependency structure. A first prototype *did* show 65 of 81 specs collapsing,
+   but that was an artifact of unioning the BASE tasks too, which `plan_groups` deliberately
+   excludes. Worth knowing before anyone re-derives the threshold idea from first principles.
+2. **`_strip_spec_folder_to_base()` (V6) is not dead code, and P1 does not make it so.** The claim
+   removed from the bullet above conflated two things. §4.3/P0 already eliminated its original
+   job (sibling branches colliding on status writes) by scoping `_write_group_task_status` to each
+   group's own task files. What remains is a defensive reset of *any other* spec-folder drift — and
+   P1's file-disjointness cannot cover that, because the spec folder is orchestrator-written
+   bookkeeping that appears in no task's `files`. It is a safety net now, not conflict machinery.
+   Retiring it is a separate, independently verifiable step.
 
 OpenSpec's numbered sections (`## 1. …` → `1.1`, `1.2`) are a **free lane hint** (V11): authors
 already group tasks the way they want them shipped. Compile treats section = candidate lane, then
