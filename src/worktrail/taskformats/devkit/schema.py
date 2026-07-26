@@ -253,3 +253,41 @@ def validate_task(filepath: str) -> bool:
 
     print(f"Validation passed for {filepath}")
     return True
+
+
+def set_status_completed(task_file: Path) -> bool:
+    """Set the ``status`` frontmatter field to ``completed`` and tick every
+    remaining ``- [ ]`` checkbox marker in the body to ``- [x]`` (mirroring
+    ``_all_checkboxes_checked()``'s marker syntax). No other frontmatter field
+    and no non-checkbox body text changes. Returns True if the file changed.
+
+    Deliberately surgical rather than a ``read_task_file``/``write_task_file``
+    round-trip: that path re-serialises the whole frontmatter through yaml and
+    would reformat fields this write has no business touching. Lives here, with
+    the rest of the devkit frontmatter contract, because it is format-specific —
+    the orchestrator reaches it through ``TaskSource.mark_status()``.
+    """
+    task_file = Path(task_file)
+    if not task_file.exists():
+        return False
+    text = task_file.read_text()
+    m = re.match(r"^(---\s*\n)(.*?)(\n---\s*\n)(.*)$", text, re.DOTALL)
+    if not m:
+        return False
+    head, fm, sep, body = m.groups()
+    lines = fm.split("\n")
+    done = False
+    for i, ln in enumerate(lines):
+        if re.match(r"\s*status\s*:", ln):
+            indent = ln[: len(ln) - len(ln.lstrip())]
+            lines[i] = f"{indent}status: completed"
+            done = True
+            break
+    if not done:
+        lines.append("status: completed")
+    body = re.sub(r"- \[ \]", "- [x]", body)
+    new = head + "\n".join(lines) + sep + body
+    if new == text:
+        return False
+    task_file.write_text(new)
+    return True

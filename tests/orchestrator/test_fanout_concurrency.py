@@ -145,6 +145,10 @@ class ConcurrentFanout(unittest.TestCase):
 
             # the status write-back is committed on each task branch
             for tid in ("TASK-001", "TASK-002", "TASK-003"):
+                # The task branch must carry NO docs/specs/** status diff -- that
+                # write moved to integrate, once per group (see
+                # integrate._write_group_task_status). Completion is asserted via
+                # coordinator.DONE on res["tasks"] above, which reads the journal.
                 tf = (
                     Path(tmp)
                     / "repo-worktrees"
@@ -155,7 +159,7 @@ class ConcurrentFanout(unittest.TestCase):
                     / "tasks"
                     / f"{tid}.md"
                 )
-                self.assertIn("status: completed", tf.read_text())
+                self.assertNotIn("status: completed", tf.read_text())
 
     def test_run_budget_stops_dispatching_new_tasks(self):
         # TASK-002 depends on TASK-001 -> two ticks. A near-zero budget trips after

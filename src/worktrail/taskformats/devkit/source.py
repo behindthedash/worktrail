@@ -342,17 +342,36 @@ class DevkitSpecTaskSource:
     def load(self, spec_ref: str) -> Tuple[str, List[Dict[str, Any]]]:
         return load_spec(str(self.repo_root / self._spec_root / spec_ref))
 
-    def mark_status(self, task_id: str, status: str, *, spec_ref: Optional[str] = None) -> None:
-        from worktrail.taskformats.devkit.schema import read_task_file, write_task_file
+    def mark_status(self, task_id: str, status: str, *, spec_ref: Optional[str] = None) -> bool:
+        """Persist *status* for one task. Returns True if the file changed.
+
+        ``completed`` takes the surgical path (`schema.set_status_completed`):
+        it rewrites only the status line and ticks the body's checkboxes,
+        leaving every other frontmatter field byte-identical. Any other status
+        goes through the yaml round-trip. The split exists because the
+        orchestrator's integrate stage writes ``completed`` onto a PR branch,
+        where an incidental yaml reformat of unrelated fields would show up as
+        review noise.
+        """
+        from worktrail.taskformats.devkit.schema import (
+            read_task_file,
+            set_status_completed,
+            write_task_file,
+        )
 
         if spec_ref is None:
             raise ValueError("DevkitSpecTaskSource.mark_status requires spec_ref")
         path = self.task_file_path(task_id, spec_ref)
+        if status == "completed":
+            return set_status_completed(path)
         frontmatter, error, body = read_task_file(path)
         if error or frontmatter is None:
             raise FileNotFoundError(f"cannot read {path}: {error}")
+        if frontmatter.get("status") == status:
+            return False
         frontmatter["status"] = status
         write_task_file(path, frontmatter, body)
+        return True
 
     def resolve_external_dependency(self, dep_ref: str) -> Dict[str, Any]:
         return resolve_external_dependency(self.repo_root, dep_ref, spec_root=self._spec_root)
