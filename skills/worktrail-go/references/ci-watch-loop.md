@@ -1,0 +1,94 @@
+# CI Watch Loop (Phase 8, after a PR is opened)
+
+> **⚠️ MANDATORY — DO NOT SKIP.** Every PR-owning route MUST complete this loop
+> and classify the outcome before calling `run_record.py finish`. The five cases
+> below (all-pass, transient infra, code defect, product decision, ceiling) are
+> the only valid terminal transitions. "Tests passed locally" is not a terminal
+> state — run the loop.
+
+Enter this loop on every PR-owning route before closing the run record. Track
+patch iterations with `PATCH_ITER=0`; ceiling is **5**. Track `$PUSH_SHA` (unset
+until a fixup is pushed) for the stale-head merge guard in case 1.
+
+## Waiting for checks
+
+**Use `--watch`, never a hand-rolled sleep loop** (the harness blocks `sleep`,
+and a foreground poll loop strands the run — GO v1 defect L7). Run with the
+Bash tool `timeout` parameter set to 600000; if the timeout fires with checks
+still pending, re-issue the same command up to 3 times, then treat as stuck:
+
+```bash
+gh pr checks "$PR_NUM" --repo "$OWNER/$REPO_NAME" --watch --fail-fast
+gh pr checks "$PR_NUM" --repo "$OWNER/$REPO_NAME" --json name,bucket,workflowRunId  # final state
+```
+
+(Optional event-driven variant when pullhook is deployed at
+`https://pullhook.io`: `curl -sf "https://pullhook.io/api/hooks/<repo-channel>/pull"`
+blocks up to 30 s and returns on a check_run event.)
+
+## When the checks settle, classify the results and act
+
+1. **All pass** — no `bucket: fail` entries. Before finishing, re-query the PR's live
+   merge state — a repo with its own auto-merge CI (e.g. a `gh pr merge --auto` workflow)
+   can merge the PR within seconds of checks going green, before this loop reacts, which
+   makes `completed_pr_open` stale the instant it's written:
+   ```bash
+   gh pr view "$PR_NUM" --repo "$OWNER/$REPO_NAME" --json state,mergedAt,autoMergeRequest,headRefOid
+   ```
+   - **Stale-head guard (only if this loop pushed a fixup — `$PUSH_SHA` is set, case 3
+     below):** `state == "MERGED"` with `headRefOid` != `$PUSH_SHA` means the PR merged a
+     head OLDER than the fix just pushed (GGB #556: a pyright fix landed 2s after native
+     auto-merge had already merged the still-broken pre-fix head — `gh pr checks --watch`
+     reported all-green with no signal that the merged head predated the push). Treat as a
+     stale-merge incident, not a clean completion:
+     `worktrail-run-record finish "$RUN" --status "completed_and_merged" --merge-result "STALE-HEAD MERGE: merged headRefOid <headRefOid> predates fixup $PUSH_SHA -- original defect may have shipped"`,
+     then open a same-fix follow-up PR carrying `$PUSH_SHA`'s commit (mirrors GGB #558) and
+     stop.
+   - `state == "MERGED"` (no `$PUSH_SHA`, or `headRefOid` == `$PUSH_SHA`) —
+     `worktrail-run-record finish "$RUN" --status "completed_and_merged" --merge-result "merged externally"`
+     and stop.
+   - `state != "MERGED"` and `autoMergeRequest` is non-null — auto-merge is armed (native
+     GitHub toggle, bot, or workflow) and will complete without further action. Name the
+     mechanism using whichever of `mergeMethod` / `enabledBy.login` is present:
+     `worktrail-run-record finish "$RUN" --status "completed_pr_open" --merge-result "auto-merge armed (<mergeMethod>, enabled by <enabledBy.login>); will complete without further action"`
+     and stop.
+   - `state != "MERGED"` and `autoMergeRequest` is null —
+     `worktrail-run-record finish "$RUN" --status "completed_pr_open"` and stop.
+
+2. **Transient infrastructure failure** — matches any of:
+   check name contains `Initialize containers` or `Set up job`; log contains
+   `Error response from daemon` (Docker pull rate-limit); runner OS-level timeout at
+   container init (not at a test or lint step).
+   Action: `gh run rerun "$RUN_ID" --failed --repo "$OWNER/$REPO_NAME"`.
+   Does **not** increment `PATCH_ITER`. Re-enter the watch loop.
+
+3. **Code defect** — ImportError, test assertion, lint error, type error, build error:
+   ```bash
+   gh run view "$RUN_ID" --log-failed --repo "$OWNER/$REPO_NAME"
+   ```
+   Diagnose root cause (no-guessing rule: verified observation → hypothesis → confirmed).
+   Apply the minimal patch in the worktree, then **before pushing**, disarm any native
+   auto-merge that could race the push (stale-head fixup-push race — see the case-1
+   guard above for the incident this closes): a PR with checks currently green or
+   `autoMergeRequest` already armed can merge the OLD head at any moment, including in
+   the gap between this diagnosis and the push landing.
+   ```bash
+   gh pr merge "$PR_NUM" --repo "$OWNER/$REPO_NAME" --disable-auto 2>/dev/null || true  # no-op if never armed
+   git add -p   # stage only the targeted fix
+   git commit -m "fix: <one-line root cause>"
+   PUSH_SHA=$(git rev-parse HEAD)
+   git push     # triggers a new CI run automatically
+   ```
+   Increment `PATCH_ITER`. Emit: `CI watch iteration $PATCH_ITER/5 — $FAIL_COUNT failing: $FAIL_NAMES`.
+   Re-enter the watch loop with `$PUSH_SHA` held for the case-1 stale-head guard. If the
+   repo's own auto-merge workflow re-arms on `pull_request: synchronize` (most do), it
+   re-establishes itself on the new head automatically; no manual re-enable needed.
+
+4. **Product / design / test-logic decision** — failure requires a behaviour change, new
+   acceptance criteria, or a test that needs product input to write.
+   Surface a clear summary of what decision is needed.
+   `finish("blocked_product_decision")` and stop.
+
+5. **Iteration ceiling** — `PATCH_ITER` reaches 5 without a green run.
+   Output a summary of all patch iterations (what was tried, what failed each time).
+   `finish("failed_recoverable")` and stop.
