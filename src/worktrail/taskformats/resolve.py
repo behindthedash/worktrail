@@ -81,6 +81,17 @@ def load_spec(spec_path: Path | str) -> Tuple[str, List[Dict[str, Any]]]:
     return devkit.load_spec(str(spec_path))
 
 
+def task_brief_ref_for(spec_path: Path | str, task_id: str) -> Tuple[str, str]:
+    """`(repo-relative path, anchor)` for the brief a worker should open.
+
+    `anchor` is `""` when the file is the whole brief. Feeds the cold-worker
+    prompt, which otherwise hardcodes devkit's file-per-task layout and sends an
+    OpenSpec worker to a path that does not exist.
+    """
+    spec_path = Path(spec_path)
+    return task_source_for(spec_path).task_brief_ref(task_id, spec_path.name)
+
+
 def spec_root_prefix_for(spec_path: Path | str) -> str:
     """The path prefix a worker must never write to, for this spec's format.
 

@@ -156,6 +156,14 @@ class OpenSpecTaskSource:
 
     # -- paths ---------------------------------------------------------------
 
+    def task_brief_ref(self, task_id: str, spec_ref: str) -> tuple:
+        """One `tasks.md` holds every task, so the worker needs the item anchor.
+
+        Without it the orchestrator hands a worker a path to a file containing
+        the whole change's checklist and no way to tell which line is its job.
+        """
+        return f"{self._spec_root}/{spec_ref}/tasks.md", task_id
+
     def task_file_path(self, task_id: str, spec_ref: str) -> Path:
         """Every task lives in the change's single `tasks.md`.
 

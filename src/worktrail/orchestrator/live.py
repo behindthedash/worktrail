@@ -1239,6 +1239,24 @@ class LiveSpawn:
         # the caller (drive()/_commit_step) right after the call returns.
         self.last_agent: str | None = None
 
+    def _task_brief_ctx(self) -> dict:
+        """Format templates for where a worker reads its brief.
+
+        Resolved once per spawn against a probe id, then re-templated per task
+        in `dispatch._task_brief` -- the path is identical for every task in an
+        OpenSpec change and differs only by id in devkit, so asking the adapter
+        per task would buy nothing.
+        """
+        probe = "\x00TASKID\x00"
+        try:
+            path, anchor = taskformats.task_brief_ref_for(self.spec_folder_rel, probe)
+        except (OSError, ValueError, AttributeError):
+            return {}
+        return {
+            "path_fmt": path.replace(probe, "{task_id}"),
+            "anchor_fmt": anchor.replace(probe, "{task_id}"),
+        }
+
     def __call__(self, role: str, task: dict, worktree: Path) -> "spawnlib.SpawnResult":
         effective_timeout = task.get("timeout") or self.timeout
         # Consume any extra reads staged by drive() for adaptive context widening
@@ -1255,6 +1273,7 @@ class LiveSpawn:
             "base_commit": "HEAD",
             "default_agent": self.agent,
             "spec_root_prefix": taskformats.spec_root_prefix_for(self.spec_folder_rel),
+            "task_brief": self._task_brief_ctx(),
         }
         prompt = dispatch.build_worker_prompt(
             role,
@@ -1698,9 +1717,19 @@ def salvage_report(role: str, task: dict, wt: Path, pre_sha: str) -> dict | None
 
 
 def _task_file_in_worktree(wt: Path, spec_rel: str, task_id: str) -> Path:
-    """Locate a task's TASK-*.md inside a worktree (tasks/ or changes/*/ layout)."""
+    """Locate the file holding a task's definition inside a worktree.
+
+    Asks the `TaskSource` first, so a format that keeps every task in one file
+    (OpenSpec's `tasks.md`) resolves correctly. Hardcoding `tasks/<id>.md` here
+    made `_require_task_file` reject every OpenSpec worktree as "missing its
+    task file" before any worker was spawned. The devkit `changes/*/` probing
+    below is retained as a fallback for that format's older layouts.
+    """
     base = wt / spec_rel.strip("/")
-    cand = base / "tasks" / f"{task_id}.md"
+    try:
+        cand = Path(wt) / taskformats.task_brief_ref_for(base, task_id)[0]
+    except (OSError, ValueError, AttributeError):
+        cand = base / "tasks" / f"{task_id}.md"
     if cand.exists():
         return cand
     changes = base / "changes"
