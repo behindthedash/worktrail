@@ -241,7 +241,8 @@ class Verifier:
                  max_polls: int = 360,
                  git_lock: Optional[threading.Lock] = None,
                  merge_method: Optional[str] = None,
-                 spec_rel: Optional[str] = None) -> None:
+                 spec_rel: Optional[str] = None,
+                 declared_files: Optional[Dict[str, List[str]]] = None) -> None:
         self.repo = Path(repo).resolve()
         self.remote = remote
         self.base = base
@@ -250,6 +251,10 @@ class Verifier:
         # existing callers are unaffected; when absent the deny-list falls back
         # to the devkit prefix, which is today's behavior.
         self.spec_rel = spec_rel
+        # {group name: files its tasks declare}. Lets the deny-list tell a
+        # deliverable apart from an out-of-scope edit; absent -> no carve-out,
+        # which is the pre-existing behavior.
+        self.declared_files = declared_files or {}
         self.run = run or _real_run
         self.spawn = spawn or _make_live_spawn()
         # ci-fix workers use a shorter timeout and default to sonnet. When a test
@@ -454,7 +459,7 @@ class Verifier:
             return False
         if rep.get("status") != "success":
             return False
-        forbidden = self._forbidden_paths_touched(pre_sha, gb)
+        forbidden = self._forbidden_paths_touched(pre_sha, gb, group)
         if forbidden:
             self.log(f"    {role} worker touched forbidden path(s) despite "
                      f"status=success — treating as strike failure: {forbidden}")
@@ -514,10 +519,29 @@ class Verifier:
         self._self_merge_violations[group["name"]] = detail
         return True
 
-    def _forbidden_paths_touched(self, pre_sha: str, gb: str) -> List[str]:
+    def _forbidden_paths_touched(
+        self, pre_sha: str, gb: str, group: Optional[Dict[str, Any]] = None
+    ) -> List[str]:
         """Deny-list check on what the worker actually changed (not what it says
         it changed): files under FORBIDDEN_WORKER_PATH_PREFIXES touched between
         the worker's pre-run HEAD and its post-run HEAD on `gb`.
+
+        Two tiers, because they protect different things:
+
+        * **The spec root is absolute.** It is the run's own bookkeeping -- task
+          status reaches the artifact once, at integrate, on the base checkout
+          (design §4.3). A worker writing there reintroduces the cross-branch
+          conflict class P0 removed, so no declaration exempts it.
+        * **Everything else is out-of-scope protection**, and a path the group's
+          own tasks declare is by definition in scope. Blanket-denying
+          `.github/workflows/**` makes any CI-focused spec unimplementable:
+          datalena's spec 080 exists to modify `qa-pipeline.yml`, and its ci-fix
+          worker was struck out for touching the file the spec is about.
+
+        Residual risk, stated rather than designed away: a ci-fix worker whose
+        group declares a workflow file can still weaken the check it is trying to
+        turn green. That edit lands in the PR diff under human review, which is a
+        better trade than a guard that blocks the deliverable outright.
 
         `pre_sha` empty (rev-parse failed) -> can't diff; fail open, since this
         is a defense-in-depth backstop and a `gh pr view`/CI check downstream
@@ -529,8 +553,14 @@ class Verifier:
         if getattr(p, "returncode", 1) != 0:
             return []
         touched = (getattr(p, "stdout", "") or "").splitlines()
-        prefixes = forbidden_prefixes_for(self.spec_rel)
-        return [f for f in touched if f.startswith(prefixes)]
+        spec_root = forbidden_prefixes_for(self.spec_rel)[1]
+        others = tuple(x for x in forbidden_prefixes_for(self.spec_rel) if x != spec_root)
+        declared = set((self.declared_files or {}).get((group or {}).get("name"), ()))
+        return [
+            f
+            for f in touched
+            if f.startswith(spec_root) or (f.startswith(others) and f not in declared)
+        ]
 
     # -- per-stage logic --------------------------------------------------- #
     def ensure_mergeable(self, group: Dict[str, Any], gb: str) -> Tuple[bool, str]:

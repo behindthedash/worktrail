@@ -326,6 +326,28 @@ def plan_groups(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return groups
 
 
+def declared_files_by_group(
+    groups: List[Dict[str, Any]], tasks: List[Dict[str, Any]]
+) -> Dict[str, List[str]]:
+    """`{group name: every file its tasks declare}`, normalised.
+
+    Feeds the verify-stage deny-list, which needs to tell an out-of-scope edit
+    apart from a deliverable. Spec 080 is the case that forced this: its whole
+    purpose is modifying `.github/workflows/**`, a blanket-denied prefix, so its
+    own deliverable read as a violation.
+    """
+    by_id = {t["id"]: t for t in tasks}
+    out: Dict[str, List[str]] = {}
+    for g in groups:
+        files: set = set()
+        for tid in g.get("tasks", []):
+            t = by_id.get(tid)
+            if t:
+                files |= _norm_files(t.get("files"))
+        out[g["name"]] = sorted(files)
+    return out
+
+
 FAILED_STATUSES = {"failed", "escalated"}
 
 
