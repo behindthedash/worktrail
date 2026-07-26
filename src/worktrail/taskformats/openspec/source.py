@@ -26,6 +26,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from worktrail.orchestrator.coordinator import TAIL_KINDS
 from worktrail.taskformats.openspec import schema as os_schema
 
 DEFAULT_SPEC_ROOT = "openspec/changes"
@@ -71,9 +72,19 @@ class OpenSpecTaskSource:
 
         out: List[Dict[str, Any]] = []
         prev_in_group: Dict[str, str] = {}
+        non_tail_ids: List[str] = []
         for t in parsed.tasks:
             deps = [prev_in_group[t.group]] if t.group in prev_in_group else []
             prev_in_group[t.group] = t.id
+            if t.kind in TAIL_KINDS:
+                # A tail task verifies or tidies up after the implementation. Its
+                # section reads as independent like any other, so without this it
+                # would be fanned out ALONGSIDE the work it exists to check.
+                # Depending on every preceding non-tail task is what
+                # `coordinator.tail_held_out_task_ids()` needs to hold it back.
+                deps = sorted(set(deps) | set(non_tail_ids))
+            else:
+                non_tail_ids.append(t.id)
             out.append(
                 {
                     "id": t.id,
@@ -82,7 +93,8 @@ class OpenSpecTaskSource:
                     "deps": deps,
                     "external_deps": [],
                     "files": [],
-                    "kind": "impl",
+                    "kind": t.kind,
+                    "tags": list(t.tags),
                     "group": t.group,
                     "group_title": t.group_title,
                     "path": rel,
