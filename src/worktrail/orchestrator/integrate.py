@@ -193,6 +193,44 @@ def _strip_spec_folder_to_base(iw: Path, spec_id: str, base_ref: str) -> None:
              f"chore: reset spec folder to {base_ref} (non-spec-carrier group)")
 
 
+def _write_group_task_status(
+    iw: Path, spec_id: str, group: dict, status: dict
+) -> None:
+    """Write ``completed`` into this group's own task files, once, on the group
+    branch -- the single point where run bookkeeping reaches the spec artifact.
+
+    Task branches deliberately carry no ``docs/specs/**`` diff (see
+    ``live.cleanup_task_in_python``): status lives in the run journal during a
+    run. Without this step a merged PR would leave the artifact stale.
+
+    Scoped to ``group["tasks"]``, so sibling group branches touch disjoint task
+    files and cannot add/add conflict on them -- which is why this runs *after*
+    ``_strip_spec_folder_to_base()`` rather than instead of it: the strip still
+    owns resetting any *other* spec-folder drift, and this re-applies only the
+    status this group is entitled to write.
+
+    Goes through ``TaskSource.mark_status`` rather than editing frontmatter
+    inline so a non-devkit task format (e.g. an OpenSpec ``tasks.md`` checkbox)
+    plugs in here without changing integrate.
+    """
+    source = loader.DevkitSpecTaskSource(iw)
+    changed = []
+    for tid in group.get("tasks", []):
+        if status.get(tid) not in coordinator.ALREADY_INTEGRATED:
+            continue
+        try:
+            if source.mark_status(tid, "completed", spec_ref=spec_id):
+                changed.append(tid)
+        except (FileNotFoundError, OSError):
+            continue  # task file absent on this branch; nothing to write
+    if not changed:
+        return
+    _git(iw, "add", "--", f"{loader.DEFAULT_SPEC_ROOT}/{spec_id}", check=False)
+    if _git(iw, "diff", "--cached", "--quiet", check=False).returncode != 0:
+        _git(iw, "commit", "-q", "-m",
+             f"chore({group['name']}): mark {len(changed)} task(s) completed")
+
+
 def synthetic_fanout(repo: Path, spec_id: str, tasks: list, base: str) -> None:
     """Fabricate per-task branches with trivial commits (no agents)."""
     for t in [t for t in tasks if t.get("kind", "impl") not in TAIL]:
@@ -756,6 +794,7 @@ def integrate_one(
                 _git(iw, "merge", "--no-edit", "-X", "ours", squash_reconcile_ref, check=False)
             if strip_spec_folder:
                 _strip_spec_folder_to_base(iw, spec_id, target)
+            _write_group_task_status(iw, spec_id, g, status)
             if smoke_cmd:
                 ok, detail = _run_integration_smoke(iw, name, smoke_cmd)
                 if not ok:
