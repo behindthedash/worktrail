@@ -50,6 +50,20 @@ class TaskSource(Protocol):
         """Resolve a `<spec-id>/<task-id>` cross-spec reference."""
         ...
 
+    def task_brief_ref(self, task_id: str, spec_ref: str) -> tuple[str, str]:
+        """Where a cold worker reads this task's brief: `(repo-relative path, anchor)`.
+
+        The anchor is `""` when the file *is* the brief (devkit: one
+        `TASK-*.md` per task) and the task id when the brief is an item inside a
+        shared file (OpenSpec: one `tasks.md` for the whole change).
+
+        Separate from `task_file_path` on purpose. That one answers "which file
+        does the orchestrator read and write"; this one answers "what do I tell
+        a worker to open", and the two diverge the moment a format stops giving
+        each task its own file.
+        """
+        ...
+
     def task_file_path(self, task_id: str, spec_ref: str) -> Path:
         """Where the given task's definition file lives on disk."""
         ...
