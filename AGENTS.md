@@ -15,9 +15,9 @@ Four subsystems under `src/worktrail/`:
   (`verify.py`).
 - **`taskformats/`** — the `TaskSource` adapter interface (`base.py`) plus `devkit/`, the
   reference implementation backed by the original `docs/specs/[id]/tasks/TASK-*.md` frontmatter
-  contract (`FIELD_SCHEMA`, ported from `task_lifecycle.py`). Additional `TaskSource`
-  implementations (e.g. an OpenSpec-backed one) are meant to plug in here without touching
-  `orchestrator/`.
+  contract (`FIELD_SCHEMA`, ported from `task_lifecycle.py`), and `openspec/`, backed by an
+  OpenSpec change's single `tasks.md` checklist. Both plug in without `orchestrator/` knowing
+  which is in use.
 - **`workqueue/`** — the work-queue handoff system (`work_queue.py` claim/done/release, brief
   scoring, upstream-dependency watch). Storage root is `$WORK_QUEUE_DIR` (default `~/work-queue`),
   resolved at runtime — never inside this repo or any consuming repo.
