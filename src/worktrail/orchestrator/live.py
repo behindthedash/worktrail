@@ -29,7 +29,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -45,6 +44,7 @@ from . import dispatch
 from . import orchestrate
 from . import progress
 from . import spawnlib
+from ..taskformats.devkit import schema as _devkit_schema
 from ..taskformats.devkit import source as loader
 
 
@@ -1768,48 +1768,25 @@ def _require_dependency_files(wt: Path, task: dict, by_id: dict) -> "list[dict]"
     return events
 
 
-def set_task_status_completed(task_file: Path) -> bool:
-    """Set the ``status`` frontmatter field to ``completed`` and tick every
-    remaining ``- [ ]`` checkbox marker in the body to ``- [x]`` (mirroring
-    ``task_lifecycle.py::_all_checkboxes_checked()``'s marker syntax). No other
-    frontmatter field and no non-checkbox body text changes. Returns True if
-    the file changed."""
-    if not task_file.exists():
-        return False
-    text = task_file.read_text()
-    m = re.match(r"^(---\s*\n)(.*?)(\n---\s*\n)(.*)$", text, re.DOTALL)
-    if not m:
-        return False
-    head, fm, sep, body = m.groups()
-    lines = fm.split("\n")
-    done = False
-    for i, ln in enumerate(lines):
-        if re.match(r"\s*status\s*:", ln):
-            indent = ln[: len(ln) - len(ln.lstrip())]
-            lines[i] = f"{indent}status: completed"
-            done = True
-            break
-    if not done:
-        lines.append("status: completed")
-    body = re.sub(r"- \[ \]", "- [x]", body)
-    new = head + "\n".join(lines) + sep + body
-    if new == text:
-        return False
-    task_file.write_text(new)
-    return True
+# The devkit frontmatter contract owns the surgical status write. Re-exported
+# here under its historical name because this module's helpers are part of the
+# orchestrator's tested public surface.
+set_task_status_completed = _devkit_schema.set_status_completed
 
 
-def cleanup_task_in_python(wt: Path, spec_rel: str, task_id: str) -> dict:
-    """Deterministic replacement for the cleanup SPAWN: flip the task file's status
-    to ``completed`` and commit it on the task branch -- no LLM round-trip and no
-    formatter churn (review + CI own style). The status write-back was the only
-    load-bearing output of the old cleanup role (it drives deliverable_subset and
-    the post-run dashboard), so doing it in Python removes ~1 spawn per task.
+def cleanup_task_in_python(wt: Path, task_id: str) -> dict:
+    """Deterministic replacement for the cleanup SPAWN -- a pure state transition:
+    no filesystem write, no commit.
+
+    The task's ``completed`` status is recorded in the run journal (by the
+    caller's ``_commit_step`` -> ``dispatch.apply_report``), which is what
+    actually drives ``deliverable_subset`` and the post-run dashboard. It is
+    deliberately NOT written into the task file on this branch: doing that put a
+    ``docs/specs/**`` diff on every one of N task branches, which is the entire
+    reason ``integrate._strip_spec_folder_to_base()`` had to exist. The artifact
+    write now happens exactly once per group, on the group branch, at integrate
+    time -- see ``integrate._write_group_task_status()``.
     """
-    tf = _task_file_in_worktree(wt, spec_rel, task_id)
-    if set_task_status_completed(tf):
-        _git(wt, "add", str(tf.relative_to(wt)), check=False)
-        _git(wt, "commit", "-q", "-m", f"chore({task_id}): mark task completed", check=False)
     head = _git(wt, "rev-parse", "HEAD", check=False).stdout.strip()
     return {
         "task": task_id,
@@ -1817,7 +1794,7 @@ def cleanup_task_in_python(wt: Path, spec_rel: str, task_id: str) -> dict:
         "status": "success",
         "head_sha": head[:8],
         "tests": "none",
-        "notes": "deterministic cleanup (status write-back, no spawn)",
+        "notes": "deterministic cleanup (journal-only status, no spawn)",
     }
 
 
@@ -2137,7 +2114,7 @@ def live_run_real(
             # Deterministic cleanup (#14): status write-back + commit, no spawn.
             if role == dispatch.ROLE_CLEANUP:
                 t0 = time.time()
-                rep = cleanup_task_in_python(wt, spec_rel, task["id"])
+                rep = cleanup_task_in_python(wt, task["id"])
                 t1 = time.time()
                 _, new = _commit_step(task, role, rep, t0, t1)
                 print(
@@ -2998,7 +2975,7 @@ def _pipeline_scheduler(
                 continue
             if role == dispatch.ROLE_CLEANUP:
                 t0 = time.time()
-                rep = cleanup_task_in_python(wt, spec_rel, task["id"])
+                rep = cleanup_task_in_python(wt, task["id"])
                 t1 = time.time()
                 _commit_step(task, role, rep, t0, t1)
                 continue

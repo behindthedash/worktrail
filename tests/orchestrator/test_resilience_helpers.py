@@ -24,6 +24,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from worktrail.orchestrator import coordinator  # noqa: E402
+from worktrail.orchestrator import integrate  # noqa: E402
 from worktrail.orchestrator import live  # noqa: E402
 from worktrail.orchestrator import spawnlib  # noqa: E402
 
@@ -409,7 +410,12 @@ class ReviewerIndependence(unittest.TestCase):
 
 
 class CleanupInPython(unittest.TestCase):
-    def test_flips_status_and_commits(self):
+    def test_reports_success_without_touching_the_task_branch(self):
+        """Cleanup is a pure state transition: the task file must NOT change and
+        no commit may be added. Writing status here is what put a docs/specs/**
+        diff on every task branch and forced _strip_spec_folder_to_base() to
+        exist; the artifact write now happens once per group at integrate time.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             repo = _init_repo(
                 Path(tmp), task_md="---\nid: TASK-001\nstatus: reviewing\n---\nbody\n"
@@ -422,15 +428,95 @@ class CleanupInPython(unittest.TestCase):
                 {"TASK-001": {"id": "TASK-001", "deps": []}},
                 wt,
             )
-            rep = live.cleanup_task_in_python(wt, "docs/specs/001-x", "TASK-001")
+            head_before = subprocess.run(
+                ["git", "-C", str(wt), "rev-parse", "HEAD"], capture_output=True, text=True
+            ).stdout.strip()
+
+            rep = live.cleanup_task_in_python(wt, "TASK-001")
+
             self.assertEqual(rep["status"], "success")
             tf = wt / "docs" / "specs" / "001-x" / "tasks" / "TASK-001.md"
-            self.assertIn("status: completed", tf.read_text())
-            # change was committed -> worktree clean
+            self.assertIn("status: reviewing", tf.read_text())
+            self.assertNotIn("status: completed", tf.read_text())
+            head_after = subprocess.run(
+                ["git", "-C", str(wt), "rev-parse", "HEAD"], capture_output=True, text=True
+            ).stdout.strip()
+            self.assertEqual(head_before, head_after, "cleanup must add no commit")
             porcelain = subprocess.run(
                 ["git", "-C", str(wt), "status", "--porcelain"], capture_output=True, text=True
             ).stdout.strip()
-            self.assertEqual(porcelain, "")
+            self.assertEqual(porcelain, "", "cleanup must leave the worktree clean")
+
+
+class WriteGroupTaskStatus(unittest.TestCase):
+    """integrate._write_group_task_status: the one place run bookkeeping reaches
+    the spec artifact."""
+
+    def _repo_with_tasks(self, tmp):
+        repo = _init_repo(
+            Path(tmp), task_md="---\nid: TASK-001\nstatus: reviewing\n---\n- [ ] do it\n"
+        )
+        second = repo / "docs" / "specs" / "001-x" / "tasks" / "TASK-002.md"
+        second.write_text("---\nid: TASK-002\nstatus: reviewing\n---\n- [ ] other\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-m", "add TASK-002")
+        return repo
+
+    def test_writes_only_this_groups_tasks_and_commits_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._repo_with_tasks(tmp)
+            head_before = subprocess.run(
+                ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True
+            ).stdout.strip()
+
+            integrate._write_group_task_status(
+                repo,
+                "001-x",
+                {"name": "feature-1", "tasks": ["TASK-001"]},
+                {"TASK-001": "completed", "TASK-002": "completed"},
+            )
+
+            base = repo / "docs" / "specs" / "001-x" / "tasks"
+            self.assertIn("status: completed", (base / "TASK-001.md").read_text())
+            self.assertIn("- [x] do it", (base / "TASK-001.md").read_text())
+            # TASK-002 belongs to another group -> untouched, so sibling group
+            # branches touch disjoint files and cannot add/add conflict.
+            self.assertIn("status: reviewing", (base / "TASK-002.md").read_text())
+
+            log = subprocess.run(
+                ["git", "-C", str(repo), "log", "--oneline", f"{head_before}..HEAD"],
+                capture_output=True, text=True,
+            ).stdout.strip().splitlines()
+            self.assertEqual(len(log), 1, f"expected exactly one commit, got {log}")
+
+    def test_no_commit_when_no_task_is_completed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._repo_with_tasks(tmp)
+            head_before = subprocess.run(
+                ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True
+            ).stdout.strip()
+
+            integrate._write_group_task_status(
+                repo,
+                "001-x",
+                {"name": "feature-1", "tasks": ["TASK-001"]},
+                {"TASK-001": "failed"},
+            )
+
+            head_after = subprocess.run(
+                ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True
+            ).stdout.strip()
+            self.assertEqual(head_before, head_after)
+
+    def test_missing_task_file_is_skipped_not_fatal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._repo_with_tasks(tmp)
+            integrate._write_group_task_status(
+                repo,
+                "001-x",
+                {"name": "feature-1", "tasks": ["TASK-404"]},
+                {"TASK-404": "completed"},
+            )  # must not raise
 
 
 if __name__ == "__main__":
