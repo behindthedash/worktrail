@@ -1,8 +1,21 @@
 # Conductor + Lanes: orchestrator design for an OpenSpec-authored lifecycle
 
-Status: accepted design, not yet implemented
+Status: accepted design, partially implemented — see the table below
 Date: 2026-07-25
 Applies to: `worktrail` @ v0.3.0 (`44f2fd3`)
+
+| Phase (§6) | State |
+|---|---|
+| **P0** status out of task branches | shipped, v0.4.0 (#7) |
+| **P1** lanes: union `plan_groups()` on shared-file edges | **not started** |
+| **P2** warm lane execution | **not started** |
+| **P3** conductor `compile` → cached RunPlan | shipped: prompt templating off `TaskSource` in #12, compile + cache + safe application in #24 |
+| **P4** `OpenSpecTaskSource` | shipped (#11), `kind` recovery in #20 |
+| **P5** corpus migration | in progress — pilot `080-test-impact-analysis` converted (datalena #1951, #1952) |
+
+P1 is now the binding constraint: a compiled plan supplies the shared-file edges
+`plan_groups()`'s own `TODO` (V7) asks for, but nothing consumes them at the group level yet, so
+file overlap still only affects the concurrent-batch check (V8), not the PR partition.
 
 Inputs: work-queue briefs `20260725-150500` (OpenSpec TaskSource), `20260725-125412` (hook
 registration / devkit retirement), `20260725-131002` (verify console-script); the extraction plan

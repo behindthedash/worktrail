@@ -1,0 +1,336 @@
+"""Tests for the conductor's compile phase.
+
+The headline assertion is design P3's own acceptance criterion: *the same change
+compiled twice produces zero LLM calls on the second run*. The rest cover the
+two ways compile avoids the model entirely, and the ways a bad model response
+must degrade rather than propagate.
+"""
+
+from __future__ import annotations
+
+import json
+import textwrap
+from pathlib import Path
+
+import pytest
+
+from worktrail.conductor import compile as conductor_compile
+from worktrail.conductor import runplan
+
+TASKS_MD = textwrap.dedent(
+    """\
+    ## 1. Core
+
+    - [ ] 1.1 Add the parser
+    - [ ] 1.2 Wire the endpoint
+
+    ## 2. Verification
+
+    - [ ] 2.1 [e2e] End-to-end check
+    """
+)
+
+
+@pytest.fixture()
+def change(tmp_path: Path) -> Path:
+    repo = tmp_path / "repo"
+    d = repo / "openspec" / "changes" / "add-parser"
+    d.mkdir(parents=True)
+    (repo / ".git").mkdir()
+    (d / "proposal.md").write_text("## Why\nBecause.\n")
+    (d / "tasks.md").write_text(TASKS_MD)
+    return d
+
+
+def _load(change: Path):
+    from worktrail.taskformats import resolve
+
+    return resolve.load_spec(str(change))
+
+
+class RecordingSpawn:
+    """Stands in for `spawn_agent`, counting calls and replaying a fixed answer."""
+
+    def __init__(self, reply: str):
+        self.reply = reply
+        self.calls = 0
+        self.prompts: list[str] = []
+
+    def __call__(self, prompt, cwd, timeout, log):
+        self.calls += 1
+        self.prompts.append(prompt)
+        return self.reply
+
+
+def _reply(**per_task) -> str:
+    rows = [{"id": k, **v} for k, v in per_task.items()]
+    return "Here is the plan.\n\n```json\n" + json.dumps({"tasks": rows}) + "\n```\n"
+
+
+# --------------------------------------------------------------------------- #
+# The P3 acceptance criterion
+# --------------------------------------------------------------------------- #
+def test_compiling_the_same_change_twice_spawns_nothing_the_second_time(change, tmp_path):
+    spec_id, tasks = _load(change)
+    spawn = RecordingSpawn(
+        _reply(
+            **{
+                "1.1": {"files": ["src/parser.py"], "deps": []},
+                "1.2": {"files": ["src/api.py"], "deps": ["1.1"]},
+                "2.1": {"files": ["tests/e2e.py"], "deps": ["1.2"]},
+            }
+        )
+    )
+    kwargs = dict(
+        spec_id=spec_id,
+        repo=change.parents[2],
+        cache_dir=tmp_path / "plans",
+        spawn=spawn,
+    )
+
+    first = conductor_compile.compile_run_plan(change, tasks, **kwargs)
+    assert spawn.calls == 1
+    assert first.source == runplan.SOURCE_COMPILED
+
+    second = conductor_compile.compile_run_plan(change, tasks, **kwargs)
+    assert spawn.calls == 1, "a cache hit must not reach the model"
+    assert second.fingerprint == first.fingerprint
+    assert second.to_dict() == first.to_dict()
+
+
+def test_editing_the_change_invalidates_the_cache(change, tmp_path):
+    spec_id, tasks = _load(change)
+    spawn = RecordingSpawn(
+        _reply(**{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks})
+    )
+    kwargs = dict(spec_id=spec_id, repo=change.parents[2], cache_dir=tmp_path / "plans", spawn=spawn)
+
+    conductor_compile.compile_run_plan(change, tasks, **kwargs)
+    (change / "proposal.md").write_text("## Why\nBecause, revised.\n")
+    conductor_compile.compile_run_plan(change, tasks, **kwargs)
+    assert spawn.calls == 2
+
+
+def test_force_recompiles_over_a_cache_hit(change, tmp_path):
+    spec_id, tasks = _load(change)
+    spawn = RecordingSpawn(_reply(**{t["id"]: {"files": ["a.py"], "deps": []} for t in tasks}))
+    kwargs = dict(spec_id=spec_id, repo=change.parents[2], cache_dir=tmp_path / "plans", spawn=spawn)
+
+    conductor_compile.compile_run_plan(change, tasks, **kwargs)
+    conductor_compile.compile_run_plan(change, tasks, force=True, **kwargs)
+    assert spawn.calls == 2
+
+
+# --------------------------------------------------------------------------- #
+# Paths that never reach a model
+# --------------------------------------------------------------------------- #
+def test_a_format_that_already_declares_file_scope_is_seeded_not_compiled(tmp_path):
+    """Decision D1: devkit frontmatter is ground truth, so every devkit spec
+    skips the model entirely rather than paying to re-infer what it already says."""
+    d = tmp_path / "openspec" / "changes" / "seeded"
+    d.mkdir(parents=True)
+    (d / "tasks.md").write_text("## 1. G\n\n- [ ] 1.1 a\n")
+    tasks = [
+        {"id": "1.1", "title": "a", "kind": "impl", "deps": [], "files": ["src/a.py"], "path": "tasks.md"}
+    ]
+    spawn = RecordingSpawn("should never be called")
+    plan = conductor_compile.compile_run_plan(
+        d, tasks, spec_id="seeded", repo=tmp_path, cache_dir=tmp_path / "plans", spawn=spawn
+    )
+    assert spawn.calls == 0
+    assert plan.source == runplan.SOURCE_SEED
+    assert plan.by_id()["1.1"].files == ("src/a.py",)
+
+
+def test_tail_tasks_do_not_by_themselves_trigger_a_compile(tmp_path):
+    """A tail is held out of the fan-out on `kind`, so it never reaches the
+    file-collision check and inferring a scope for it would buy nothing."""
+    tasks = [
+        {"id": "1.1", "kind": "impl", "files": ["src/a.py"], "deps": [], "path": "t.md"},
+        {"id": "2.1", "kind": "e2e", "files": [], "deps": ["1.1"], "path": "t.md"},
+    ]
+    assert conductor_compile.needs_compile(tasks) == []
+
+
+def test_no_llm_returns_the_baseline_without_spawning(change, tmp_path):
+    spec_id, tasks = _load(change)
+    spawn = RecordingSpawn("should never be called")
+    plan = conductor_compile.compile_run_plan(
+        change,
+        tasks,
+        spec_id=spec_id,
+        repo=change.parents[2],
+        cache_dir=tmp_path / "plans",
+        allow_llm=False,
+        spawn=spawn,
+    )
+    assert spawn.calls == 0 and plan.source == runplan.SOURCE_BASELINE
+    merged, _ = runplan.apply_to_tasks(tasks, plan)
+    assert merged == tasks, "the baseline plan must change nothing"
+
+
+# --------------------------------------------------------------------------- #
+# Degrading on a bad response
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    "reply, why",
+    [
+        ("I could not work it out, sorry.", "no JSON at all"),
+        ('```json\n{"tasks": [{"id": "9.9", "files": []}]}\n```', "an id that does not exist"),
+        ('```json\n{"tasks": [{"id": "1.1", "files": []}]}\n```', "an incomplete task set"),
+        ('```json\n{"tasks": "nope"}\n```', "the wrong shape"),
+    ],
+)
+def test_an_unusable_response_degrades_to_the_baseline(change, tmp_path, reply, why):
+    spec_id, tasks = _load(change)
+    plan = conductor_compile.compile_run_plan(
+        change,
+        tasks,
+        spec_id=spec_id,
+        repo=change.parents[2],
+        cache_dir=tmp_path / "plans",
+        spawn=RecordingSpawn(reply),
+    )
+    assert plan.source == runplan.SOURCE_BASELINE, why
+    merged, notes = runplan.apply_to_tasks(tasks, plan)
+    assert merged == tasks
+    assert notes, "the reason must reach the run journal"
+
+
+def test_a_failed_spawn_does_not_raise(change, tmp_path):
+    def boom(*_a, **_k):
+        raise RuntimeError("provider unavailable")
+
+    spec_id, tasks = _load(change)
+    plan = conductor_compile.compile_run_plan(
+        change, tasks, spec_id=spec_id, repo=change.parents[2], cache_dir=tmp_path / "plans", spawn=boom
+    )
+    assert plan.source == runplan.SOURCE_BASELINE
+    assert "provider unavailable" in plan.notes[0]
+
+
+def test_a_rejected_response_is_not_cached(change, tmp_path):
+    """Otherwise one bad answer would be pinned for the life of the change
+    version, and the next run would silently inherit it."""
+    spec_id, tasks = _load(change)
+    bad = RecordingSpawn("no json here")
+    kwargs = dict(spec_id=spec_id, repo=change.parents[2], cache_dir=tmp_path / "plans")
+
+    conductor_compile.compile_run_plan(change, tasks, spawn=bad, **kwargs)
+    good = RecordingSpawn(_reply(**{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks}))
+    plan = conductor_compile.compile_run_plan(change, tasks, spawn=good, **kwargs)
+    assert good.calls == 1 and plan.source == runplan.SOURCE_COMPILED
+
+
+@pytest.mark.parametrize("bad", ["../../etc/passwd", "/etc/passwd", "src/../../out.py", "..\\..\\win.py"])
+def test_paths_escaping_the_repo_reject_the_plan(change, tmp_path, bad):
+    """A file scope becomes a worker's declared write surface, so a traversal
+    here is not a formatting nit. `lstrip("./")` looked like the obvious
+    normalisation and is exactly wrong: it takes a character set, so it eats the
+    whole `../../` and hands back a plausible-looking repo-relative path."""
+    spec_id, tasks = _load(change)
+    reply = _reply(
+        **{
+            "1.1": {"files": [bad], "deps": []},
+            "1.2": {"files": ["src/api.py"], "deps": []},
+            "2.1": {"files": ["tests/e2e.py"], "deps": []},
+        }
+    )
+    plan = conductor_compile.compile_run_plan(
+        change, tasks, spec_id=spec_id, repo=change.parents[2], cache_dir=tmp_path / "plans", spawn=RecordingSpawn(reply)
+    )
+    assert plan.source == runplan.SOURCE_BASELINE
+
+
+def test_a_leading_dot_slash_is_normalised_not_rejected(change, tmp_path):
+    spec_id, tasks = _load(change)
+    reply = _reply(
+        **{
+            "1.1": {"files": ["./src/parser.py"], "deps": []},
+            "1.2": {"files": ["src/api.py"], "deps": []},
+            "2.1": {"files": ["tests/e2e.py"], "deps": []},
+        }
+    )
+    plan = conductor_compile.compile_run_plan(
+        change, tasks, spec_id=spec_id, repo=change.parents[2], cache_dir=tmp_path / "plans", spawn=RecordingSpawn(reply)
+    )
+    assert plan.by_id()["1.1"].files == ("src/parser.py",)
+
+
+def test_kind_comes_from_the_artifact_not_the_model(change, tmp_path):
+    """The `[e2e]` tag is authored. A model that omits or contradicts it must
+    not be able to pull 2.1 back into the fan-out."""
+    spec_id, tasks = _load(change)
+    reply = _reply(
+        **{
+            "1.1": {"files": ["src/parser.py"], "deps": []},
+            "1.2": {"files": ["src/api.py"], "deps": []},
+            "2.1": {"files": ["tests/e2e.py"], "deps": [], "kind": "impl"},
+        }
+    )
+    plan = conductor_compile.compile_run_plan(
+        change, tasks, spec_id=spec_id, repo=change.parents[2], cache_dir=tmp_path / "plans", spawn=RecordingSpawn(reply)
+    )
+    assert plan.by_id()["2.1"].kind == "e2e"
+
+
+# --------------------------------------------------------------------------- #
+# JSON extraction
+# --------------------------------------------------------------------------- #
+def test_the_cli_refuses_a_spec_outside_a_git_repo(tmp_path, capsys):
+    """The repo walk would otherwise land on `/` and put the plan cache in
+    `/-worktrees/runplans`."""
+    d = tmp_path / "openspec" / "changes" / "stray"
+    d.mkdir(parents=True)
+    (d / "tasks.md").write_text("## 1. G\n\n- [ ] 1.1 a\n")
+    assert conductor_compile.main([str(d)]) == 1
+    assert "not inside a git repository" in capsys.readouterr().err
+
+
+def test_extract_prefers_the_last_fenced_block():
+    """Models narrate a draft before committing; the trailing object is the answer."""
+    text = '```json\n{"tasks": [{"id": "draft"}]}\n```\nActually:\n```json\n{"tasks": [{"id": "final"}]}\n```'
+    assert conductor_compile._extract_json(text)["tasks"][0]["id"] == "final"
+
+
+def test_extract_falls_back_to_an_unfenced_object():
+    assert conductor_compile._extract_json('sure: {"tasks": []} done')["tasks"] == []
+
+
+def test_extract_returns_none_when_there_is_nothing_to_parse():
+    assert conductor_compile._extract_json("no object here") is None
+
+
+# --------------------------------------------------------------------------- #
+# End to end: the parallelism a compile actually unlocks
+# --------------------------------------------------------------------------- #
+def test_a_compiled_plan_unlocks_parallelism_the_format_could_not_express(change, tmp_path):
+    """`OpenSpecTaskSource` serialises within a section because it has no file
+    scope to reason with. This is the payoff: with scope, the frontier widens."""
+    from worktrail.orchestrator import coordinator
+
+    spec_id, tasks = _load(change)
+    assert [t["deps"] for t in tasks][:2] == [[], ["1.1"]], "baseline is sequential"
+    assert len(coordinator.runnable_frontier(tasks, max_workers=4)) == 1
+
+    plan = conductor_compile.compile_run_plan(
+        change,
+        tasks,
+        spec_id=spec_id,
+        repo=change.parents[2],
+        cache_dir=tmp_path / "plans",
+        spawn=RecordingSpawn(
+            _reply(
+                **{
+                    "1.1": {"files": ["src/parser.py"], "deps": []},
+                    "1.2": {"files": ["src/api.py"], "deps": []},
+                    "2.1": {"files": ["tests/e2e.py"], "deps": ["1.1", "1.2"]},
+                }
+            )
+        ),
+    )
+    merged, notes = runplan.apply_to_tasks(tasks, plan)
+    frontier = coordinator.runnable_frontier(merged, max_workers=4)
+    assert {t["id"] for t in frontier} == {"1.1", "1.2"}
+    assert "2.1" not in {t["id"] for t in frontier}, "the tail is still held out"
+    assert any("applied" in n for n in notes)

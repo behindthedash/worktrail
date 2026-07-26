@@ -19,6 +19,7 @@ dev = [
 ]
 
 [project.scripts]
+worktrail-compile = "worktrail.conductor.compile:main"
 worktrail-orchestrate = "worktrail.orchestrator.orchestrate:main"
 worktrail-live = "worktrail.orchestrator.live:main"
 worktrail-integrate = "worktrail.orchestrator.integrate:main"
