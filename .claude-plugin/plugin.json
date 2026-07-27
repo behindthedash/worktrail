@@ -17,6 +17,7 @@
   "skills": [
     "./skills/worktrail-drain",
     "./skills/worktrail-go",
+    "./skills/worktrail-help",
     "./skills/worktrail-handoff",
     "./skills/worktrail-sdd-workflow"
   ]

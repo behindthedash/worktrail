@@ -41,6 +41,7 @@ This repo is also a Claude Code plugin marketplace (`.claude-plugin/marketplace.
 | Skill | Surface over |
 |---|---|
 | `worktrail-go` | `router/` — the route classifier, orientation dashboard, run records, policy |
+| `worktrail-help` | command reference for the host-specific Worktrail front door |
 | `worktrail-handoff` | `workqueue/` — capture/claim/complete briefs in `$WORK_QUEUE_DIR` |
 | `worktrail-drain` | `drain/` — unattended queue draining |
 | `worktrail-sdd-workflow` | the route executor `worktrail-go` dispatches to (routes A–J) — internal, never called directly |
