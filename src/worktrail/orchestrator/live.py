@@ -659,7 +659,7 @@ def skip_tasks(repo: Path, spec_rel: str, task_ids: list, reason: str = "manuall
     return 0
 
 
-def _annotate_external_deps(repo: Path, spec_rel: str, tasks: list) -> None:
+def _annotate_external_deps(repo: Path, tasks: list, spec_rel: str | None = None) -> None:
     """Freshly set `external_deps_ok`/`external_deps_blockers` on every pending task
     with a non-empty `external_deps` list (contracts/frontier-external-deps-gate.md).
 
@@ -678,7 +678,11 @@ def _annotate_external_deps(repo: Path, spec_rel: str, tasks: list) -> None:
             continue
         blockers = []
         for ref in refs:
-            result = taskformats.resolve_external_dependency(repo / spec_rel, ref)
+            result = (
+                taskformats.resolve_external_dependency(repo / spec_rel, ref)
+                if spec_rel
+                else taskformats.resolve_external_dependency_for_repo(repo, ref)
+            )
             if result["satisfied"]:
                 continue
             if result["resolved"]:
@@ -854,7 +858,7 @@ def _resume_drift_report(repo: Path, base: str, spec_id: str, tasks: list) -> No
         return
 
 
-def build_external_deps_by_ref(repo: Path, spec_rel: str, tasks: list) -> dict:
+def build_external_deps_by_ref(repo: Path, tasks: list, spec_rel: str | None = None) -> dict:
     """Resolve every task's `external_deps` refs (cross-spec `external-dependencies:`
     entries, spec 025) into the `external_deps_by_ref` shape `dispatch.build_worker_prompt`
     expects: `ref -> {"id", "files"}` for the sibling task, included ONLY when
@@ -1492,7 +1496,7 @@ def live_run(
 
     tick = 0
     while True:
-        _annotate_external_deps(repo, spec_rel, tasks)
+        _annotate_external_deps(repo, tasks, spec_rel)
         frontier = coordinator.runnable_frontier(tasks, max_workers)
         if not frontier:
             break
@@ -1831,10 +1835,7 @@ def _require_dependency_files(wt: Path, task: dict, by_id: dict) -> "list[dict]"
 
 def set_task_status_completed(path: Path) -> bool:
     """Compatibility wrapper for callers that still pass a legacy task file."""
-    source = taskformats.task_source_for(path)
-    task_id = path.stem
-    spec_ref = path.parent.parent.name
-    return bool(source.mark_status(task_id, "completed", spec_ref=spec_ref))
+    return taskformats.mark_status_completed(path)
 
 
 def cleanup_task_in_python(wt: Path, task_id: str) -> dict:
@@ -1981,7 +1982,7 @@ def live_run_real(
     if hasattr(spawn, "by_id"):
         spawn.by_id = by_id
     if hasattr(spawn, "external_deps_by_ref"):
-        spawn.external_deps_by_ref = build_external_deps_by_ref(repo, spec_rel, tasks)
+        spawn.external_deps_by_ref = build_external_deps_by_ref(repo, tasks, spec_rel)
     wt_base = repo.parent / f"{repo.name}-worktrees"
     wt_base.mkdir(parents=True, exist_ok=True)
     run_budget = RUN_BUDGET_DEFAULT if run_budget is None else run_budget
@@ -2384,7 +2385,7 @@ def live_run_real(
                     f"sleeps excluded) -- pending tasks left for resume"
                 )
                 break
-        _annotate_external_deps(repo, spec_rel, tasks)
+        _annotate_external_deps(repo, tasks, spec_rel)
         frontier = coordinator.runnable_frontier(tasks, max_workers)
         if not frontier:
             break
@@ -2637,7 +2638,7 @@ def _pipeline_scheduler(
     if hasattr(spawn_fn, "by_id"):
         spawn_fn.by_id = by_id
     if hasattr(spawn_fn, "external_deps_by_ref"):
-        spawn_fn.external_deps_by_ref = build_external_deps_by_ref(repo, spec_rel, tasks)
+        spawn_fn.external_deps_by_ref = build_external_deps_by_ref(repo, tasks, spec_rel)
     integrate_one_fn = (
         _integrate_one if _integrate_one is not None else integrate_module.integrate_one
     )
@@ -3181,7 +3182,7 @@ def _pipeline_scheduler(
                     f"sleeps excluded) -- pending tasks left for resume"
                 )
                 break
-        _annotate_external_deps(repo, spec_rel, tasks)
+        _annotate_external_deps(repo, tasks, spec_rel)
         frontier = coordinator.runnable_frontier(tasks, max_workers)
         if not frontier:
             break

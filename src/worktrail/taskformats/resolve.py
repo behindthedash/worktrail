@@ -105,8 +105,21 @@ def spec_root_prefix_for(spec_path: Path | str) -> str:
 
 def resolve_external_dependency(spec_path: Path | str, dep_ref: str) -> Dict[str, Any]:
     """Resolve a dependency using the adapter that owns ``spec_path``."""
-    source = task_source_for(spec_path)
+    spec_path = Path(spec_path)
+    if detect_format(spec_path) == FORMAT_DEVKIT and "docs" not in spec_path.parts:
+        # Some legacy callers pass a repository-local fixture path such as
+        # `specs/001-test`; sibling tasks still live under docs/specs/.
+        source = devkit.DevkitSpecTaskSource(spec_path.parent.parent)
+    else:
+        source = task_source_for(spec_path)
     return source.resolve_external_dependency(dep_ref)
+
+
+def mark_status_completed(path: Path | str) -> bool:
+    """Compatibility status write for the historical helper API."""
+    from worktrail.taskformats.devkit.schema import set_status_completed
+
+    return bool(set_status_completed(Path(path)))
 
 
 def resolve_external_dependency_for_repo(repo_root: Path | str, dep_ref: str) -> Dict[str, Any]:
