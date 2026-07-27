@@ -421,11 +421,53 @@ def _moved_tracked_path(repo: Path, old_path: str) -> Optional[str]:
     return None
 
 
+def _declared_file_targets(repo: Path, declared: str) -> List[tuple[Path, str]]:
+    """Resolve a task's file declaration to candidate repository-relative paths.
+
+    Task artifacts are commonly copied between repositories and may retain a
+    repository-directory prefix (for example ``datalena/.github/...``). A
+    change spec can also own tasks for a sibling repository. Keep the
+    unqualified path as a fallback, but prefer an exact repository prefix or a
+    sibling checkout when one is present.
+    """
+    path = Path(str(declared))
+    parts = path.parts
+    targets: List[tuple[Path, str]] = []
+
+    def add(root: Path, relative: Path) -> None:
+        candidate = (root, relative.as_posix())
+        if candidate not in targets:
+            targets.append(candidate)
+
+    if parts and parts[0] == repo.name:
+        add(repo, Path(*parts[1:]))
+    elif len(parts) > 1:
+        sibling = repo.parent / parts[0]
+        if sibling.exists() and (sibling / ".git").exists():
+            add(sibling, Path(*parts[1:]))
+
+    add(repo, path)
+    return targets
+
+
 def _task_files_are_shipped(repo: Path, files: List[str], tracked: set) -> bool:
-    return all(
-        (f in tracked and (repo / f).exists()) or _moved_tracked_path(repo, f) is not None
-        for f in files
-    )
+    for declared in files:
+        shipped = False
+        for target_repo, relative in _declared_file_targets(repo, declared):
+            target_tracked = (
+                tracked
+                if target_repo == repo and relative == str(declared)
+                else _git_tracked(target_repo, [relative])
+            )
+            if relative in target_tracked and (target_repo / relative).is_file():
+                shipped = True
+                break
+            if _moved_tracked_path(target_repo, relative) is not None:
+                shipped = True
+                break
+        if not shipped:
+            return False
+    return True
 
 
 def _pending_impl_stale(
