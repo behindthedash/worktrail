@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - '.github/rulesets/**'
+      - '.github/workflows/rulesets_drift_guard.yml'
+      - 'scripts/ci/rulesets/**'
   workflow_dispatch: {}
   schedule:
     # Weekly drift check to catch out-of-band GitHub UI edits.
@@ -49,4 +51,3 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         run: python scripts/ci/rulesets/rulesets_sync.py --check
-
