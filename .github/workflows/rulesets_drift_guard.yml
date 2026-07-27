@@ -48,7 +48,7 @@ jobs:
         if: ${{ env.RULESETS_APP_ID != '' && env.RULESETS_APP_PRIVATE_KEY != '' }}
         uses: actions/create-github-app-token@v3
         with:
-          app-id: ${{ env.RULESETS_APP_ID }}
+          client-id: ${{ env.RULESETS_APP_ID }}
           private-key: ${{ env.RULESETS_APP_PRIVATE_KEY }}
 
       - name: Check committed rulesets against live GitHub rulesets
