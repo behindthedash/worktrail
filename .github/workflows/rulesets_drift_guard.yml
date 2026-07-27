@@ -23,6 +23,9 @@ jobs:
   rulesets-check:
     name: Rulesets drift check
     runs-on: ubuntu-latest
+    env:
+      RULESETS_APP_ID: ${{ vars.RELEASE_NOTES_APP_ID }}
+      RULESETS_APP_PRIVATE_KEY: ${{ secrets.RELEASE_NOTES_APP_PRIVATE_KEY }}
     steps:
       - uses: actions/checkout@v7
 
@@ -42,12 +45,18 @@ jobs:
       # a token from the App already installed for bot automation instead.
       - name: Generate rulesets-check bot token
         id: app-token
+        if: ${{ env.RULESETS_APP_ID != '' && env.RULESETS_APP_PRIVATE_KEY != '' }}
         uses: actions/create-github-app-token@v3
         with:
-          app-id: ${{ vars.RELEASE_NOTES_APP_ID }}
-          private-key: ${{ secrets.RELEASE_NOTES_APP_PRIVATE_KEY }}
+          app-id: ${{ env.RULESETS_APP_ID }}
+          private-key: ${{ env.RULESETS_APP_PRIVATE_KEY }}
 
       - name: Check committed rulesets against live GitHub rulesets
+        if: ${{ steps.app-token.outputs.token != '' }}
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         run: python scripts/ci/rulesets/rulesets_sync.py --check
+
+      - name: Skip live ruleset check when App credentials are unavailable
+        if: ${{ steps.app-token.outputs.token == '' }}
+        run: echo "Ruleset drift check skipped because repository App credentials are unavailable to this pull request."
