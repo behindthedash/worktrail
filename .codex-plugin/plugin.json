@@ -1,0 +1,37 @@
+{
+  "name": "worktrail",
+  "version": "0.7.0",
+  "description": "Route engineering work, capture and consume handoff briefs, and drain the work queue through the Worktrail package.",
+  "author": {
+    "name": "Worktrail",
+    "email": "dev@behindthedash.com",
+    "url": "https://github.com/behindthedash"
+  },
+  "homepage": "https://github.com/behindthedash/worktrail",
+  "repository": "https://github.com/behindthedash/worktrail.git",
+  "license": "MIT",
+  "keywords": [
+    "orchestration",
+    "work-queue",
+    "task-routing",
+    "worktree"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Worktrail",
+    "shortDescription": "Route work and orchestrate task execution.",
+    "longDescription": "Worktrail provides a Codex workflow surface for routing engineering requests, managing handoff briefs, and draining work queues with parallel git-worktree orchestration.",
+    "developerName": "Worktrail",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/behindthedash/worktrail",
+    "defaultPrompt": [
+      "Route this engineering request with Worktrail.",
+      "Show the Worktrail dashboard for this repository.",
+      "Consume the next Worktrail handoff brief."
+    ]
+  }
+}
