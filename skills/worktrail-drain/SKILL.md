@@ -111,7 +111,7 @@ without launching anything.
 - Drain when no other `/go` session is active on the machine, so run-record
   outcome attribution stays unambiguous.
 - After a stop for `capacity_gated`, fix the external condition and clear the
-  gate via `agent_capacity.py clear` (see the `/go` capacity-cache commands)
+  gate via `worktrail-agent-capacity clear` (see the `/go` capacity-cache commands)
   before re-draining — drain never clears gates itself.
 
 ## Constraints and Warnings

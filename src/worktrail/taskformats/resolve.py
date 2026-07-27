@@ -16,9 +16,11 @@ from typing import Any, Dict, List, Tuple
 
 from worktrail.taskformats.devkit import source as devkit
 from worktrail.taskformats.openspec import source as openspec
+from worktrail.taskformats.speckit import source as speckit
 
 FORMAT_OPENSPEC = "openspec"
 FORMAT_DEVKIT = "devkit"
+FORMAT_SPECKIT = "speckit"
 
 
 def detect_format(spec_path: Path | str) -> str:
@@ -32,6 +34,8 @@ def detect_format(spec_path: Path | str) -> str:
     for i in range(len(parts) - 1):
         if parts[i] == "openspec" and parts[i + 1] == "changes":
             return FORMAT_OPENSPEC
+        if parts[i] == ".specify" and parts[i + 1] == "specs":
+            return FORMAT_SPECKIT
     return FORMAT_DEVKIT
 
 
@@ -44,7 +48,9 @@ def _split(spec_path: Path, fmt: str) -> Tuple[Path, str]:
     spec_path = Path(spec_path)
     spec_ref = spec_path.name
     depth = len(Path(
-        openspec.DEFAULT_SPEC_ROOT if fmt == FORMAT_OPENSPEC else devkit.DEFAULT_SPEC_ROOT
+        (openspec.DEFAULT_SPEC_ROOT if fmt == FORMAT_OPENSPEC
+         else speckit.DEFAULT_SPEC_ROOT if fmt == FORMAT_SPECKIT
+         else devkit.DEFAULT_SPEC_ROOT)
     ).parts)
     repo_root = spec_path
     for _ in range(depth + 1):  # +1 for the spec_ref segment itself
@@ -59,6 +65,8 @@ def task_source_for(spec_path: Path | str):
     repo_root, _ = _split(spec_path, fmt)
     if fmt == FORMAT_OPENSPEC:
         return openspec.OpenSpecTaskSource(repo_root)
+    if fmt == FORMAT_SPECKIT:
+        return speckit.SpecKitTaskSource(repo_root)
     return devkit.DevkitSpecTaskSource(repo_root)
 
 
@@ -73,6 +81,9 @@ def load_spec(spec_path: Path | str) -> Tuple[str, List[Dict[str, Any]]]:
     if fmt == FORMAT_OPENSPEC:
         repo_root, spec_ref = _split(spec_path, fmt)
         return openspec.OpenSpecTaskSource(repo_root).load(spec_ref)
+    if fmt == FORMAT_SPECKIT:
+        repo_root, spec_ref = _split(spec_path, fmt)
+        return speckit.SpecKitTaskSource(repo_root).load(spec_ref)
     # devkit's loader takes the folder path directly and tolerates the several
     # tasks/ layouts it has accumulated (see _find_tasks_dir); go through it
     # rather than reimplementing that lookup here.
@@ -100,6 +111,8 @@ def spec_root_prefix_for(spec_path: Path | str) -> str:
     fmt = detect_format(spec_path)
     if fmt == FORMAT_OPENSPEC:
         return openspec.OpenSpecTaskSource(Path(".")).spec_root_prefix()
+    if fmt == FORMAT_SPECKIT:
+        return speckit.SpecKitTaskSource(Path(".")).spec_root_prefix()
     return devkit.DevkitSpecTaskSource(Path(".")).spec_root_prefix()
 
 
@@ -128,6 +141,7 @@ def resolve_external_dependency_for_repo(repo_root: Path | str, dep_ref: str) ->
     spec_id = dep_ref.partition("/")[0]
     for candidate in (
         repo_root / openspec.DEFAULT_SPEC_ROOT / spec_id,
+        repo_root / speckit.DEFAULT_SPEC_ROOT / spec_id,
         repo_root / devkit.DEFAULT_SPEC_ROOT / spec_id,
     ):
         if candidate.is_dir():

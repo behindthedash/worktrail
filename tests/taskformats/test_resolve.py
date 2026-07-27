@@ -14,6 +14,7 @@ from worktrail.orchestrator import dispatch
 from worktrail.taskformats import resolve
 from worktrail.taskformats.devkit.source import DevkitSpecTaskSource
 from worktrail.taskformats.openspec.source import OpenSpecTaskSource
+from worktrail.taskformats.speckit.source import SpecKitTaskSource
 
 
 @pytest.mark.parametrize(
@@ -27,6 +28,7 @@ from worktrail.taskformats.openspec.source import OpenSpecTaskSource
         ("/home/me/openspec/docs/specs/001-x", resolve.FORMAT_DEVKIT),
         # nor a change dir that isn't under changes/
         ("/repo/openspec/specs/data-export", resolve.FORMAT_DEVKIT),
+        ("/repo/.specify/specs/data-export", resolve.FORMAT_SPECKIT),
     ],
 )
 def test_detect_format(path, expected):
@@ -44,6 +46,7 @@ def test_detect_works_on_a_path_that_does_not_exist_yet():
     [
         ("/repo/openspec/changes/add-export", OpenSpecTaskSource),
         ("/repo/docs/specs/025-feature", DevkitSpecTaskSource),
+        ("/repo/.specify/specs/data-export", SpecKitTaskSource),
     ],
 )
 def test_task_source_for_returns_the_right_adapter(path, cls):
@@ -55,6 +58,7 @@ def test_task_source_for_returns_the_right_adapter(path, cls):
     [
         ("/repo/openspec/changes/add-export", Path("/repo")),
         ("/repo/docs/specs/025-feature", Path("/repo")),
+        ("/repo/.specify/specs/data-export", Path("/repo")),
     ],
 )
 def test_repo_root_is_recovered_from_the_joined_path(path, repo_root):
@@ -69,6 +73,7 @@ def test_repo_root_is_recovered_from_the_joined_path(path, repo_root):
     [
         ("/repo/openspec/changes/add-export", "openspec/"),
         ("/repo/docs/specs/025-feature", "docs/specs/"),
+        ("/repo/.specify/specs/data-export", ".specify/"),
     ],
 )
 def test_spec_root_prefix_tracks_the_format(path, prefix):
@@ -92,6 +97,14 @@ def test_load_spec_dispatches_to_devkit(tmp_path):
     )
     _, tasks = resolve.load_spec(d.parent)
     assert [t["id"] for t in tasks] == ["TASK-001"]
+
+
+def test_load_spec_dispatches_to_spec_kit(tmp_path):
+    d = tmp_path / ".specify" / "specs" / "025-feature"
+    d.mkdir(parents=True)
+    (d / "tasks.md").write_text("## Phase 1: Setup\n\n- [ ] T001 First\n")
+    _, tasks = resolve.load_spec(d)
+    assert [t["id"] for t in tasks] == ["T001"]
 
 
 # --------------------------------------------------------------------------- #
@@ -145,6 +158,10 @@ def test_verify_deny_list_tracks_the_format():
     assert verify.forbidden_prefixes_for("docs/specs/025-feature") == (
         ".github/workflows/",
         "docs/specs/",
+    )
+    assert verify.forbidden_prefixes_for(".specify/specs/data-export") == (
+        ".github/workflows/",
+        ".specify/",
     )
     # unknown spec path -> today's behavior, not a dropped guard
     assert verify.forbidden_prefixes_for(None) == verify.FORBIDDEN_WORKER_PATH_PREFIXES

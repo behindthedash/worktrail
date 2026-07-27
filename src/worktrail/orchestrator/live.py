@@ -877,9 +877,15 @@ def build_external_deps_by_ref(repo: Path, tasks: list, spec_rel: str | None = N
             if not resolved.get("satisfied"):
                 continue
             spec_id, _, task_id = ref.partition("/")
-            sibling_spec = repo / "openspec" / "changes" / spec_id
-            if not sibling_spec.is_dir():
-                sibling_spec = repo / "docs" / "specs" / spec_id
+            sibling_candidates = (
+                repo / "openspec" / "changes" / spec_id,
+                repo / "docs" / "specs" / spec_id,
+                repo / ".specify" / "specs" / spec_id,
+            )
+            sibling_spec = next(
+                (candidate for candidate in sibling_candidates if candidate.is_dir()),
+                sibling_candidates[-1],
+            )
             sibling_task = taskformats.task_for(sibling_spec, task_id)
             if sibling_task is None:
                 continue
@@ -1119,7 +1125,7 @@ def run_research_session(
                 pass
 
     # --- pre-load top-N most-referenced source files ---
-    repo_root = spec_folder.parent.parent  # docs/specs/NNN → docs/specs → repo
+    repo_root = taskformats.task_source_for(spec_folder).repo_root
     file_sections: list[str] = []
     for rel_path, _ in file_counts.most_common(10):
         abs_path = repo_root / rel_path

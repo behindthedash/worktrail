@@ -202,3 +202,12 @@ def test_opsx_apply_is_never_dispatched():
             if "not" not in line.lower():
                 offenders.append(f"{doc.relative_to(REPO_ROOT)}:{i}: {line.strip()[:60]}")
     assert not offenders, f"skills dispatch /opsx:apply: {offenders}"
+
+
+def test_opencode_bridge_exposes_worktrail_commands_without_devkit_paths():
+    bridge = REPO_ROOT / ".opencode" / "plugins" / "worktrail.js"
+    text = bridge.read_text()
+    for command in ("worktrail.go", "worktrail.handoff", "worktrail.drain", "worktrail.spec-create"):
+        assert command in text
+    assert "developer-kit" not in text
+    assert "developer_kit" not in text
