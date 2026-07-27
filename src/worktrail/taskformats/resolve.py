@@ -46,7 +46,19 @@ def _split(spec_path: Path, fmt: str) -> Tuple[Path, str]:
     but the orchestrator only ever holds the joined path -- this is the inverse.
     """
     spec_path = Path(spec_path)
-    spec_ref = spec_path.name
+    if fmt == FORMAT_DEVKIT:
+        # Devkit change specs live below the parent spec:
+        # docs/specs/<parent>/changes/<change>/tasks/. Retain the full path
+        # below docs/specs instead of collapsing it to the leaf name.
+        parts = spec_path.parts
+        for i in range(len(parts) - 1):
+            if parts[i : i + 2] == ("docs", "specs"):
+                repo_root = Path(*parts[:i]) if i else Path(".")
+                spec_ref = Path(*parts[i + 2 :]).as_posix()
+                return repo_root, spec_ref
+        spec_ref = spec_path.name
+    else:
+        spec_ref = spec_path.name
     depth = len(Path(
         (openspec.DEFAULT_SPEC_ROOT if fmt == FORMAT_OPENSPEC
          else speckit.DEFAULT_SPEC_ROOT if fmt == FORMAT_SPECKIT
@@ -84,10 +96,19 @@ def load_spec(spec_path: Path | str) -> Tuple[str, List[Dict[str, Any]]]:
     if fmt == FORMAT_SPECKIT:
         repo_root, spec_ref = _split(spec_path, fmt)
         return speckit.SpecKitTaskSource(repo_root).load(spec_ref)
-    # devkit's loader takes the folder path directly and tolerates the several
-    # tasks/ layouts it has accumulated (see _find_tasks_dir); go through it
-    # rather than reimplementing that lookup here.
-    return devkit.load_spec(str(spec_path))
+    # Keep support for repository-local fixture/spec roots such as
+    # ``specs/001-test`` used by the precheck harness. These paths are not
+    # addressed through the repo's docs/specs adapter root.
+    if "docs" not in spec_path.parts:
+        return devkit.load_spec(str(spec_path))
+    repo_root, spec_ref = _split(spec_path, fmt)
+    return devkit.DevkitSpecTaskSource(repo_root).load(spec_ref)
+
+
+def spec_ref_for(spec_path: Path | str) -> str:
+    """Return the adapter-local reference for a joined spec/change path."""
+    spec_path = Path(spec_path)
+    return _split(spec_path, detect_format(spec_path))[1]
 
 
 def task_brief_ref_for(spec_path: Path | str, task_id: str) -> Tuple[str, str]:
@@ -98,7 +119,8 @@ def task_brief_ref_for(spec_path: Path | str, task_id: str) -> Tuple[str, str]:
     OpenSpec worker to a path that does not exist.
     """
     spec_path = Path(spec_path)
-    return task_source_for(spec_path).task_brief_ref(task_id, spec_path.name)
+    source = task_source_for(spec_path)
+    return source.task_brief_ref(task_id, spec_ref_for(spec_path))
 
 
 def spec_root_prefix_for(spec_path: Path | str) -> str:
@@ -152,7 +174,7 @@ def resolve_external_dependency_for_repo(repo_root: Path | str, dep_ref: str) ->
 def task_for(spec_path: Path | str, task_id: str) -> Dict[str, Any] | None:
     """Find one task through its owning adapter."""
     source = task_source_for(spec_path)
-    _, tasks = source.load(Path(spec_path).name)
+    _, tasks = source.load(spec_ref_for(spec_path))
     return next((task for task in tasks if task.get("id") == task_id), None)
 
 

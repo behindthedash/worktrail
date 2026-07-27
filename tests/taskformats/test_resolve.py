@@ -23,6 +23,10 @@ from worktrail.taskformats.speckit.source import SpecKitTaskSource
         ("/repo/openspec/changes/add-export", resolve.FORMAT_OPENSPEC),
         ("openspec/changes/add-export", resolve.FORMAT_OPENSPEC),
         ("/repo/docs/specs/025-feature", resolve.FORMAT_DEVKIT),
+        (
+            "/repo/docs/specs/053-parent/changes/2026-07-21-output-contract",
+            resolve.FORMAT_DEVKIT,
+        ),
         ("docs/specs/025-feature", resolve.FORMAT_DEVKIT),
         # a repo literally named "openspec" must not be mistaken for the format
         ("/home/me/openspec/docs/specs/001-x", resolve.FORMAT_DEVKIT),
@@ -58,6 +62,10 @@ def test_task_source_for_returns_the_right_adapter(path, cls):
     [
         ("/repo/openspec/changes/add-export", Path("/repo")),
         ("/repo/docs/specs/025-feature", Path("/repo")),
+        (
+            "/repo/docs/specs/053-parent/changes/2026-07-21-output-contract",
+            Path("/repo"),
+        ),
         ("/repo/.specify/specs/data-export", Path("/repo")),
     ],
 )
@@ -97,6 +105,23 @@ def test_load_spec_dispatches_to_devkit(tmp_path):
     )
     _, tasks = resolve.load_spec(d.parent)
     assert [t["id"] for t in tasks] == ["TASK-001"]
+
+
+def test_nested_devkit_change_preserves_parent_spec_path(tmp_path):
+    d = tmp_path / "docs" / "specs" / "053-parent" / "changes" / "2026-07-21-output-contract"
+    (d / "tasks").mkdir(parents=True)
+    (d / "tasks" / "TASK-CHG-003.md").write_text(
+        "---\nid: TASK-CHG-003\ntitle: API\nstatus: pending\nkind: impl\n---\n\nbody\n"
+    )
+
+    spec_id, tasks = resolve.load_spec(d)
+
+    assert spec_id == "2026-07-21-output-contract"
+    assert [t["id"] for t in tasks] == ["TASK-CHG-003"]
+    assert resolve.spec_ref_for(d) == "053-parent/changes/2026-07-21-output-contract"
+    assert resolve.task_brief_ref_for(d, "TASK-CHG-003")[0] == (
+        "docs/specs/053-parent/changes/2026-07-21-output-contract/tasks/TASK-CHG-003.md"
+    )
 
 
 def test_load_spec_dispatches_to_spec_kit(tmp_path):

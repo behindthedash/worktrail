@@ -42,6 +42,19 @@ TERMINAL_GROUP_STATES = {"OPEN", "MERGED", "QUARANTINED"}
 _HERE = Path(__file__).resolve().parent
 
 
+def _spec_path_for(iw: Path, spec_id: str) -> Path:
+    """Find a materialized spec, including nested devkit change specs."""
+    candidates = [
+        iw / "openspec" / "changes" / spec_id,
+        iw / "docs" / "specs" / spec_id,
+        iw / ".specify" / "specs" / spec_id,
+    ]
+    nested = sorted((iw / "docs" / "specs").glob(f"*/changes/{spec_id}"))
+    # Preserve the historical devkit fallback when mocked or not-yet-materialized
+    # specs have no on-disk path to select.
+    return next((p for p in [*candidates, *nested] if p.exists()), candidates[1])
+
+
 def _resolve_pre_pr_gate(here: Path = _HERE) -> Optional[Path]:
     """Locate Worktrail's own pre-PR gate, with an explicit override for tests."""
     candidate = os.environ.get("PRE_PR_GATE_SCRIPT")
@@ -170,14 +183,7 @@ def _strip_spec_folder_to_base(iw: Path, spec_id: str, base_ref: str) -> None:
     independent siblings reset it to base_ref so their PRs introduce zero spec-folder
     diff and cannot conflict on those files.
     """
-    candidate_paths = [
-        taskformats.task_source_for(iw / "openspec" / "changes" / spec_id).spec_root(spec_id),
-        taskformats.task_source_for(iw / "docs" / "specs" / spec_id).spec_root(spec_id),
-        taskformats.task_source_for(iw / ".specify" / "specs" / spec_id).spec_root(spec_id),
-    ]
-    # Keep the legacy fallback when the spec has not been materialized yet;
-    # existing callers use that path as the checkout target in mocked runs.
-    spec_path = next((p for p in candidate_paths if p.exists()), candidate_paths[1])
+    spec_path = _spec_path_for(iw, spec_id)
     p = _git(iw, "checkout", base_ref, "--", str(spec_path.relative_to(iw)), check=False)
     if p.returncode != 0:
         return
@@ -211,25 +217,21 @@ def _write_group_task_status(
     # this point. Resolve its adapter from the artifact path instead of
     # assuming the legacy devkit layout; OpenSpec stores every task in one
     # `tasks.md`, while devkit stores one file per task.
-    candidate_paths = (
-        iw / "openspec" / "changes" / spec_id,
-        iw / "docs" / "specs" / spec_id,
-        iw / ".specify" / "specs" / spec_id,
-    )
-    spec_path = next((p for p in candidate_paths if p.exists()), candidate_paths[-1])
+    spec_path = _spec_path_for(iw, spec_id)
     source = taskformats.task_source_for(spec_path)
+    spec_ref = taskformats.spec_ref_for(spec_path)
     changed = []
     for tid in group.get("tasks", []):
         if status.get(tid) not in coordinator.ALREADY_INTEGRATED:
             continue
         try:
-            if source.mark_status(tid, "completed", spec_ref=spec_id):
+            if source.mark_status(tid, "completed", spec_ref=spec_ref):
                 changed.append(tid)
         except (FileNotFoundError, OSError):
             continue  # task file absent on this branch; nothing to write
     if not changed:
         return
-    spec_rel = source.spec_root(spec_id).relative_to(iw)
+    spec_rel = source.spec_root(spec_ref).relative_to(iw)
     _git(iw, "add", "--", str(spec_rel), check=False)
     if _git(iw, "diff", "--cached", "--quiet", check=False).returncode != 0:
         _git(iw, "commit", "-q", "-m",

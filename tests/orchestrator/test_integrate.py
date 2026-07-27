@@ -1001,6 +1001,19 @@ class SpecFolderOwnership(unittest.TestCase):
         run = TrackingRun()
         return run, checkout_spec_calls
 
+    def test_nested_devkit_change_is_selected_for_spec_folder_operations(self):
+        """Nested change specs must win over the flat leaf-name fallback."""
+        with tempfile.TemporaryDirectory() as tmp:
+            iw = Path(tmp)
+            nested = (
+                iw / "docs" / "specs" / "053-parent" / "changes" / "2026-07-21-output-contract"
+            )
+            nested.mkdir(parents=True)
+
+            self.assertEqual(
+                integrate._spec_path_for(iw, "2026-07-21-output-contract"), nested
+            )
+
     def test_carrier_group_does_not_strip(self):
         """The designated spec-carrier group must NOT reset the spec folder."""
         run, spec_checkouts = self._make_strip_tracker()

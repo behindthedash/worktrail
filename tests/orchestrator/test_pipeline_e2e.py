@@ -662,11 +662,16 @@ class RegressionTest(unittest.TestCase):
             if f.name != this_file
         )
         failures = []
+        child_env = os.environ.copy()
+        src_root = Path(__file__).resolve().parents[2] / "src"
+        child_env["PYTHONPATH"] = os.pathsep.join(
+            [str(src_root), child_env.get("PYTHONPATH", "")]
+        ).rstrip(os.pathsep)
         for tf in test_files:
             try:
                 result = subprocess.run(
                     [sys.executable, str(tf)],
-                    capture_output=True, text=True, cwd=str(_HERE), timeout=120,
+                    capture_output=True, text=True, cwd=str(_HERE), env=child_env, timeout=120,
                 )
                 if result.returncode != 0:
                     failures.append(
