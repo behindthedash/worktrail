@@ -1632,37 +1632,37 @@ class StaleBookkeeping(unittest.TestCase):
         self.assertEqual(r["stage"], "stale-bookkeeping")
         self.assertIn("TASK-068-19", r["next_action"])
 
-    def test_repo_qualified_cross_repo_files_are_stale_bookkeeping(self):
+    def test_repo_qualified_sibling_files_are_stale_bookkeeping(self):
         """Resolve task paths copied from a multi-repository change spec."""
         workspace = self.repo / "workspace"
         workspace.mkdir()
-        datalena = workspace / "datalena"
-        ggb = workspace / "gracefully-giving-back"
-        for repo in (datalena, ggb):
+        primary = workspace / "primary-repo"
+        sibling = workspace / "sibling-repo"
+        for repo in (primary, sibling):
             repo.mkdir()
             subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
             subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@t"], check=True)
             subprocess.run(["git", "-C", str(repo), "config", "user.name", "t"], check=True)
 
-        spec = datalena / "docs" / "specs" / "046-release-notes-unification"
+        spec = primary / "docs" / "specs" / "001-cross-repo"
         spec.mkdir(parents=True)
         (spec / "2026-05-29--feature.md").write_text(SPEC_CLARIFIED)
         tasks = spec / "changes" / "2026-07-20--persistence" / "tasks"
         tasks.mkdir(parents=True)
         (tasks / "TASK-001.md").write_text(
             "---\nid: TASK-001\nstatus: pending\nkind: modification\n"
-            "files:\n  - datalena/.github/workflows/release_notes_draft.yml\n"
+            "files:\n  - primary-repo/.github/workflows/release_notes_draft.yml\n"
             "dependencies: []\n---\n"
         )
         (tasks / "TASK-002.md").write_text(
             "---\nid: TASK-002\nstatus: pending\nkind: modification\n"
-            "files:\n  - gracefully-giving-back/.github/workflows/release_notes_draft.yml\n"
+            "files:\n  - sibling-repo/.github/workflows/release_notes_draft.yml\n"
             "dependencies: []\n---\n"
         )
 
         for repo, relative in (
-            (datalena, ".github/workflows/release_notes_draft.yml"),
-            (ggb, ".github/workflows/release_notes_draft.yml"),
+            (primary, ".github/workflows/release_notes_draft.yml"),
+            (sibling, ".github/workflows/release_notes_draft.yml"),
         ):
             path = repo / relative
             path.parent.mkdir(parents=True, exist_ok=True)
