@@ -47,6 +47,10 @@ If `worktrail-classify` is not on `PATH`, stop and report that the `worktrail` p
 installed (`pip install worktrail`) rather than attempting to locate scripts on disk.
 `$REPO` starts as `$PWD` and is formally resolved and overwritten by Phase 3.
 
+New spec format: `/go new` uses OpenSpec by default. Set
+`WORKTRAIL_SPEC_FORMAT=devkit` for a repository that must author the legacy
+`docs/specs/` format; existing specs are always detected by their on-disk format.
+
 ### Invocation Context (Mandatory — Resolve Once, Carry Explicitly)
 
 The Go front door resolves a durable **invocation context** before any dispatch. This
