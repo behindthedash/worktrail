@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence
@@ -54,6 +55,28 @@ def default_cache_dir(repo: "str | Path") -> Path:
     """
     repo = Path(repo).resolve()
     return repo.parent / f"{repo.name}-worktrees" / "runplans"
+
+
+def _git_repo_root(path: Path) -> Optional[Path]:
+    """Return the actual Git checkout root containing ``path``.
+
+    Checking only for a directory named ``.git`` is insufficient: test and
+    cache fixtures may use that name as a marker, and an unrelated ancestor
+    can then make an outside path look like a repository.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    root = result.stdout.strip()
+    return Path(root).resolve() if root else None
 
 
 # --------------------------------------------------------------------------- #
@@ -355,10 +378,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 1
 
     spec_id, tasks = resolve.load_spec(str(spec_dir))
-    repo = spec_dir
-    while repo != repo.parent and not (repo / ".git").exists():
-        repo = repo.parent
-    if repo == repo.parent:
+    repo = _git_repo_root(spec_dir)
+    if repo is None:
         # Without this the walk lands on `/` and the default cache dir becomes
         # `/-worktrees/runplans`. Fail instead of writing somewhere absurd.
         print(f"not inside a git repository: {spec_dir}", file=sys.stderr)

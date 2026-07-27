@@ -2413,6 +2413,12 @@ class DashboardRepoRootResolution(unittest.TestCase):
         )
         scripts.mkdir(parents=True)
         dashboard._HERE = scripts
+        # The test runner may itself place a marker at `/tmp/.git`; isolate
+        # this fixture from unrelated ancestors so it exercises the stated
+        # no-git condition.
+        original_find_git_root = dashboard._find_git_root
+        self.addCleanup(setattr, dashboard, "_find_git_root", original_find_git_root)
+        dashboard._find_git_root = lambda _: None
 
         self.assertEqual(dashboard._dashboard_repo_root(), scripts.parents[4])
 

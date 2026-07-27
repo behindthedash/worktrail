@@ -69,7 +69,7 @@ mode and enters at Phase 1 with resolved parameters. The subprocess skips dashbo
 resolution, policy load, and classification — sdd-workflow Phase 1 reads `$REPO`, `$BASE`, `$ROUTE`,
 `$SPEC_ID`, `$RUN` from the seed and proceeds directly to route execution at Phase 6
 (run record attachment). Codex-host runs do not enter this mode; they stay in-session and call
-`Skill("specs-sdd-workflow", ...)` directly instead.
+`Skill("worktrail-sdd-workflow", ...)` directly instead.
 
 **Seeded-dispatch detection:** sdd-workflow Phase 1 checks for the presence of these environment
 variables/fields from the seed prompt: `ROUTE`, `SPEC_ID`, `REPO`, `BASE`, `RUN`, and optional `AGENT_CLI`.
@@ -83,7 +83,7 @@ The subprocess attaches to the parent run record as usual but does NOT call `wor
 ### Interactive routes stay in-session
 
 Routes that need `AskUserQuestion` mid-flow (C, I) use the in-session
-`Skill("specs-sdd-workflow", args="...")` call, never a subprocess —
+`Skill("worktrail-sdd-workflow", args="...")` call, never a subprocess —
 a headless worker cannot surface interactive prompts to the parent session.
 Subprocess dispatch applies to the background routes (D/F/G/H) with the bounded
 poll below.
@@ -318,7 +318,7 @@ One block for both pipelines, parameterized on `$SPEC_ROOT` (= `$WT` for the
 `new` pipeline — spec not yet on base; = `$REPO` for `implement` — spec already
 committed on base; same convention as `#orchestrator-gates`). On a Codex host
 (the `CODEX_*` check) stay in-session via
-`Skill("specs-sdd-workflow", args="<repo-path> route:<X> [spec-folder]")`
+`Skill("worktrail-sdd-workflow", args="<repo-path> route:<X> [spec-folder]")`
 instead of the CLI call — `Skill(...)` is a tool invocation, not a shell command.
 
 ```bash
