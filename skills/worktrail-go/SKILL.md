@@ -347,9 +347,9 @@ class, and retry time for operators returning to the workspace.
 inspected and explicitly cleared:
 
 ```text
-python3 agent_capacity.py status [--cache PATH]
-python3 agent_capacity.py clear PROVIDER_KEY [--reason TEXT] [--cache PATH]
-python3 agent_capacity.py clear --all [--reason TEXT] [--cache PATH]
+worktrail-agent-capacity status [--cache PATH]
+worktrail-agent-capacity clear PROVIDER_KEY [--reason TEXT] [--cache PATH]
+worktrail-agent-capacity clear --all [--reason TEXT] [--cache PATH]
 ```
 
 - `status` prints provider keys, status, failure class, check time, and retry

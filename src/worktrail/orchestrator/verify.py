@@ -50,7 +50,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from . import dispatch
 from . import spawnlib
 from . import worktree
-from ..taskformats.openspec.source import DEFAULT_SPEC_ROOT as OPENSPEC_SPEC_ROOT
+from ..taskformats import resolve as taskformats
 
 
 class _LazyAutomergePreflight:
@@ -134,7 +134,8 @@ GH_RETRIES = 3
 FORBIDDEN_WORKER_PATH_PREFIXES = (
     ".github/workflows/",
     "docs/specs/",
-    f"{OPENSPEC_SPEC_ROOT.split('/')[0]}/",
+    "openspec/",
+    ".specify/",
 )
 
 
@@ -148,9 +149,7 @@ def forbidden_prefixes_for(spec_path: "str | None" = None) -> tuple:
     """
     if not spec_path:
         return FORBIDDEN_WORKER_PATH_PREFIXES
-    from worktrail.taskformats import resolve as _resolve
-
-    return (".github/workflows/", _resolve.spec_root_prefix_for(spec_path))
+    return (".github/workflows/", taskformats.spec_root_prefix_for(spec_path))
 
 
 # --------------------------------------------------------------------------- #

@@ -161,7 +161,7 @@ def _integration_worktree(repo: Path, branch: str, start_ref: str, git_lock=None
 
 
 def _strip_spec_folder_to_base(iw: Path, spec_id: str, base_ref: str) -> None:
-    """Reset docs/specs/<spec_id>/ to base_ref in a non-spec-carrier group branch.
+    """Reset the active spec folder to base_ref in a non-spec-carrier branch.
 
     Sibling independent groups all carry TASK-*.md status updates, causing add/add
     (or modify/modify) conflicts when the first sibling merges into the real base.
@@ -173,8 +173,11 @@ def _strip_spec_folder_to_base(iw: Path, spec_id: str, base_ref: str) -> None:
     candidate_paths = [
         taskformats.task_source_for(iw / "openspec" / "changes" / spec_id).spec_root(spec_id),
         taskformats.task_source_for(iw / "docs" / "specs" / spec_id).spec_root(spec_id),
+        taskformats.task_source_for(iw / ".specify" / "specs" / spec_id).spec_root(spec_id),
     ]
-    spec_path = next((p for p in candidate_paths if p.exists()), candidate_paths[-1])
+    # Keep the legacy fallback when the spec has not been materialized yet;
+    # existing callers use that path as the checkout target in mocked runs.
+    spec_path = next((p for p in candidate_paths if p.exists()), candidate_paths[1])
     p = _git(iw, "checkout", base_ref, "--", str(spec_path.relative_to(iw)), check=False)
     if p.returncode != 0:
         return
@@ -208,9 +211,12 @@ def _write_group_task_status(
     # this point. Resolve its adapter from the artifact path instead of
     # assuming the legacy devkit layout; OpenSpec stores every task in one
     # `tasks.md`, while devkit stores one file per task.
-    openspec_path = iw / "openspec" / "changes" / spec_id
-    devkit_path = iw / "docs" / "specs" / spec_id
-    spec_path = openspec_path if openspec_path.exists() else devkit_path
+    candidate_paths = (
+        iw / "openspec" / "changes" / spec_id,
+        iw / "docs" / "specs" / spec_id,
+        iw / ".specify" / "specs" / spec_id,
+    )
+    spec_path = next((p for p in candidate_paths if p.exists()), candidate_paths[-1])
     source = taskformats.task_source_for(spec_path)
     changed = []
     for tid in group.get("tasks", []):

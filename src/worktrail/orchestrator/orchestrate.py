@@ -293,7 +293,7 @@ def main(argv=None) -> int:
     for name in ("run", "record", "check"):
         sp = sub.add_parser(name)
         sp.add_argument("--file", default=None)
-        sp.add_argument("--spec", default=None, help="docs/specs/[id]/ folder")
+        sp.add_argument("--spec", default=None, help="spec folder relative to the repo root")
         sp.add_argument("--cassette", default=None)
         if name == "run":
             sp.add_argument("--write-golden", default=None)
