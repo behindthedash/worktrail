@@ -58,63 +58,32 @@ BASE="${WORK_QUEUE_DIR:-$HOME/work-queue}"      # queue/ and picked/ live under 
 
 ### Create workflow (`new`)
 
-**Step 1 — Determine focus.** If the user passed focus text, that is the focus. If not, infer
-it from what was left incomplete in this conversation. Ask once via `AskUserQuestion` only if
-genuinely ambiguous.
+**Step 1 — Determine focus.** If the user passed focus text, use it. If not, infer it from what
+was left incomplete in this conversation. Ask once via `AskUserQuestion` only if genuinely
+ambiguous. Redact API keys, passwords, tokens, and PII before passing content to the command.
 
-**Step 2 — Generate a filename.**
-
-```
-YYYYMMDD-HHMMSS-<slug>.md
-```
-
-Slug = 3–5 word kebab-case summary of the focus. Example:
-`20260531-183000-go-skill-teardown-cleanup.md`
-
-**Step 2.5 — Classify the recommended route.** `recommended-route:` used to be filled in only
-when the capturing agent happened to already know the route, which left most queued briefs
-without one — and `/go auto`'s Phase 5 has no one to ask when it draws a hint-less brief, so an
-unattended run halts on the first ambiguous pick. Stamp it deterministically instead:
+**Step 2 — Create through Worktrail.** The CLI owns filename generation, frontmatter, route
+classification, validation, candidate scoring, and high-confidence related linking. Pass the
+focus and any known context instead of writing Markdown directly:
 
 ```bash
-[ -f worktrail-classify ] && worktrail-classify --request "$FOCUS_TEXT" --json
+worktrail-handoff --focus "$FOCUS_TEXT" --queue-dir "$BASE" \
+  [--repo "$REPO"] [--remote "$REMOTE"] [--base-branch "$BASE_BRANCH"] \
+  [--context "$CONTEXT"] [--approach "$APPROACH"] \
+  [--artifacts "$ARTIFACTS"] [--questions "$QUESTIONS"] \
+  [--suggested-skill skill.name]... --json
 ```
 
-Use the response's `route` field as `recommended-route:` in Step 3, UNLESS the capturing agent
-has direct evidence classify.py can't see (e.g. it already knows this is a spec-change, not a
-defect) — in that case prefer the agent's own judgment. If `classify.py` errors, is absent, or
-its `confidence` is `"low"` with a non-empty `ambiguous_between`, omit `recommended-route:`
-entirely rather than guessing — continue to Step 3 without blocking (same degrade-quietly
-precedent as Step 3.5's `score_candidates.py`).
+Use `--recommended-route`, `--implementation-intent`, `--change-kind`, `--target-spec`,
+`--blocked-by`, or `--watch` when the capturing agent has direct evidence. The command omits
+`recommended-route` when classification is low-confidence and ambiguous rather than guessing.
+It returns `auto_linked` IDs and `confirm` candidates. Report automatic links; ask via
+`AskUserQuestion` whether to link any `confirm` candidates, then use
+`worktrail-work-queue link` for selected IDs.
 
-**Step 3 — Write the document.** Save to `$BASE/queue/<filename>` (create the dir if needed:
-`mkdir -p "$BASE/queue"`) following the **Document format** below exactly. Key rules:
-
-- **Do not duplicate** content already in commits, PRs, issues, diffs, plans, or ADRs.
-  Reference them by path or URL instead.
-- **Redact** API keys, passwords, tokens, and PII before writing.
-- **Tailor** the "Suggested approach" and "Suggested skills" sections to the stated focus.
-- Include `recommended-route:` from Step 2.5 when one was produced.
-- Keep the whole document under ~150 lines. Dense > verbose.
-
-**Step 3.5 — Auto-detect related briefs.** After writing the brief, scan the queue (`$BASE` from the start of Instructions):
-
-```bash
-worktrail-score-candidates "$BRIEF_PATH" --queue-dir "$BASE"
-```
-
-`$BRIEF_PATH` = full path of the brief; `$BRIEF_STEM` = filename without `.md`. Output: `{"auto_link": [...], "confirm": [...]}` — each entry is `{"id": ..., "focus": ...}`.
-
-| Output | Action |
-|---|---|
-| `auto_link` non-empty | `worktrail-work-queue link "$BRIEF_STEM" "<id>"` for each; report "Auto-linked to `<id>`." |
-| `confirm` non-empty | Ask via `AskUserQuestion` (multiSelect): "These briefs look related — link them?"; link each selected entry |
-| Both empty | Proceed silently |
-
-If `score_candidates.py` errors or is absent, continue to Step 4 without blocking.
-
-**Step 4 — Confirm.** Tell the user: the file path, the focus line, the suggested skills
-listed, and how to consume it ("Start a new session and run `/handoff consume` to pick this up").
+**Step 3 — Confirm.** Tell the user the returned file path, focus, suggested skills, and how to
+consume it ("Start a new session and run `/handoff consume` to pick this up"). If creation fails,
+report the CLI error and do not hand-write a fallback document.
 
 ### Consume workflow (`consume`)
 
