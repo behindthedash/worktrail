@@ -1,7 +1,7 @@
 # /go policy for Worktrail. The commands mirror the repository's offline CI
 # checks without installing dependencies or requiring network access.
-pre_pr_cmd: "pytest -q && python3 -m worktrail.orchestrator.orchestrate check"
-integrate_smoke_cmd: "python3 -m worktrail.orchestrator.orchestrate check"
+pre_pr_cmd: "PYTHONPATH=src pytest -q && PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check"
+integrate_smoke_cmd: "PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check"
 base_branch: main
 automerge:
   enabled: false
