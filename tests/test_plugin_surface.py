@@ -20,6 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SKILLS_DIR = REPO_ROOT / "skills"
 PLUGIN_JSON = REPO_ROOT / ".claude-plugin" / "plugin.json"
 MARKETPLACE_JSON = REPO_ROOT / ".claude-plugin" / "marketplace.json"
+HOOKS_JSON = REPO_ROOT / "hooks" / "hooks.json"
 
 COMMAND_RE = re.compile(r"\bworktrail-[a-z0-9-]+")
 
@@ -103,6 +104,15 @@ def test_every_skill_has_a_frontmatter_name_and_description():
 @pytest.mark.parametrize("manifest", [PLUGIN_JSON, MARKETPLACE_JSON])
 def test_manifests_are_valid_json(manifest: Path):
     json.loads(manifest.read_text())
+
+
+def test_stop_hook_is_registered_and_points_inside_worktrail():
+    hooks = json.loads(HOOKS_JSON.read_text())
+    stop_hooks = hooks["hooks"]["Stop"]
+    command = stop_hooks[0]["hooks"][0]["command"]
+    assert "suggest_next_step.py" in command
+    assert "developer-kit" not in command
+    assert (REPO_ROOT / "hooks" / "suggest_next_step.py").is_file()
 
 
 def test_referenced_reference_files_exist():
@@ -211,3 +221,11 @@ def test_opencode_bridge_exposes_worktrail_commands_without_devkit_paths():
         assert command in text
     assert "developer-kit" not in text
     assert "developer_kit" not in text
+
+
+def test_opencode_bridge_exposes_session_end_parity():
+    bridge = REPO_ROOT / ".opencode" / "plugins" / "worktrail.js"
+    text = bridge.read_text()
+    assert '"session.idle"' in text
+    assert '"session.compacted"' in text
+    assert "worktrail-handoff" in text

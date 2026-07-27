@@ -1,3 +1,36 @@
+import { existsSync, mkdirSync, writeFileSync, unlinkSync } from "fs"
+import { join } from "path"
+import { homedir } from "os"
+import { execFileSync } from "child_process"
+
+const STATE_DIR = join(homedir(), ".opencode", "state", "worktrail-suggest-next")
+
+const SESSION_END_INSTRUCTION = `SESSION WRAP-UP — proactive next-step suggestion (auto-triggered by the Worktrail session.idle hook).
+
+This session's workspace shows file changes. Before you finish, offer YOUR creative "here's what I'd do next": give 1-3 forward-looking, ranked ideas tied to what actually changed this session, focused on valuable step-change improvements.
+
+Decide whether the single strongest idea clears an EXCEPTIONAL-VALUE gate. Creating a handoff is optional, not the default. Capture only a genuine step-change, recurring high-cost bottleneck, material user-outcome improvement, or verified major reliability, security, or operational risk.
+
+Do NOT capture routine polish, nearby cleanup/refactors, extra tests or docs, speculative flexibility, minor optimizations, or the next obvious task. If no idea clears the gate, say 'No handoff captured; no exceptional next step identified.' and finish.
+
+Only if one idea clearly passes the gate, run \`worktrail-handoff --focus "<focus>" --json\` and report its filename. Keep the response tight.`
+
+function hasSubstantiveWork(directory) {
+  try {
+    return execFileSync("git", ["status", "--porcelain"], {
+      cwd: directory,
+      encoding: "utf-8",
+      timeout: 5000,
+    }).trim().length > 0
+  } catch {
+    return false
+  }
+}
+
+function sentinelPath(sessionId) {
+  return join(STATE_DIR, `${sessionId}.done`)
+}
+
 /**
  * Native OpenCode command surface for Worktrail.
  *
@@ -5,7 +38,25 @@
  * prompt adapters that tell OpenCode to use the installed Worktrail console
  * scripts. No external checkout or plugin path is required.
  */
-export const Worktrail = async () => ({
+export const Worktrail = async ({ directory } = {}) => ({
+  "session.idle": async (input, output) => {
+    const sessionId = input?.session?.id || "unknown"
+    const sentinel = sentinelPath(sessionId)
+    if (existsSync(sentinel) || !hasSubstantiveWork(directory || process.cwd())) return
+    mkdirSync(STATE_DIR, { recursive: true })
+    writeFileSync(sentinel, "1", "utf-8")
+    output.context = output.context || []
+    output.context.push(SESSION_END_INSTRUCTION)
+  },
+
+  "session.compacted": async (input) => {
+    const sessionId = input?.session?.id
+    if (sessionId) {
+      const sentinel = sentinelPath(sessionId)
+      if (existsSync(sentinel)) unlinkSync(sentinel)
+    }
+  },
+
   config: async (input) => {
     input.command = input.command || {}
     input.command["worktrail.go"] = {
