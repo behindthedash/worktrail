@@ -27,7 +27,7 @@ jobs:
       RULESETS_APP_ID: ${{ vars.RELEASE_NOTES_APP_ID }}
       RULESETS_APP_PRIVATE_KEY: ${{ secrets.RELEASE_NOTES_APP_PRIVATE_KEY }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Setup Python
         uses: actions/setup-python@v7
