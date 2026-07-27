@@ -33,6 +33,7 @@ The help skill itself is available as `/worktrail-help` in Claude Code or
 <front-door> <repo>                  show active work for a repository
 <front-door> auto                    auto-pick one ranked queue brief
 <front-door> <repo> auto             auto-pick one brief for that repository
+<front-door> drain [max-items] [repo] drain multiple items in fresh contexts
 <front-door> fix <request>            classify and route a defect/request
 <front-door> implement spec <id>      execute a specification
 <front-door> <repo> implement spec <id>
@@ -45,8 +46,8 @@ The help skill itself is available as `/worktrail-help` in Claude Code or
 `implement spec <id>` or an explicit repository and route. A bare spec name
 may instead be interpreted through the dashboard picker.
 
-`auto` runs one queue item. To drain multiple items with fresh contexts, use
-`/worktrail-drain` in Claude Code or `$worktrail:worktrail-drain` in Codex.
+`auto` runs one queue item. `drain` runs multiple items with fresh contexts.
+The standalone drain skill is intentionally not user-facing.
 
 `handoff:<id>` remains an internal/documented compatibility spelling, but the
 portable front-door spelling is the bare positional `<brief-id>`.

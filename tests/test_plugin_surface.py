@@ -217,8 +217,9 @@ def test_opsx_apply_is_never_dispatched():
 def test_opencode_bridge_exposes_worktrail_commands_without_devkit_paths():
     bridge = REPO_ROOT / ".opencode" / "plugins" / "worktrail.js"
     text = bridge.read_text()
-    for command in ("worktrail.go", "worktrail.handoff", "worktrail.drain", "worktrail.spec-create"):
+    for command in ("worktrail.go", "worktrail.handoff", "worktrail.spec-create"):
         assert command in text
+    assert "drain" in text.split('input.command["worktrail.go"]', 1)[1].split('input.command["worktrail.handoff"]', 1)[0]
     assert "developer-kit" not in text
     assert "developer_kit" not in text
 

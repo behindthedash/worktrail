@@ -22,6 +22,7 @@ Universal engineering front door for a Worktrail workspace. Work invocations sta
 
 - Bare `worktrail-go` — orientation dashboard + `AskUserQuestion` picker
 - `worktrail-go help` — delegate to `worktrail-help`
+- `worktrail-go drain [max-items] [repo]` — delegate to the unattended queue drain
 - `worktrail-go fix X` — classify and dispatch a free-text request
 - `worktrail-go implement spec 003` — dispatch to spec execution
 - `worktrail-go route:F` or `worktrail-go REPO route:D spec-folder` — explicit route, no classification
@@ -125,6 +126,11 @@ Handle a missing/empty dashboard gracefully (the `rendered` field already prints
 
 **Auto invocations** (`auto` argument, spec 017): print the `rendered` dashboard as usual, skip BOTH picker levels, and add `--auto` (plus `--auto-repo "$ARG_REPO"` when a repo was named) to the dashboard.py call so `$DASHBOARD_JSON.auto_pick` is populated. Full flow: `references/auto-mode.md`.
 
+**Drain invocations** (`drain [max-items] [repo]`): skip the dashboard and picker, read
+`references/drain.md`, and run the installed `worktrail-drain` console script with the
+resolved invocation agent. The console script is an internal executor; users enter
+drain requests through `worktrail-go` only.
+
 ### Phase 1b — Two-Level Picker (AskUserQuestion)
 
 For bare `/go` or free-text with no explicit route/brief, use a **two-level picker**:
@@ -177,6 +183,7 @@ claim. Null pick → report and STOP. Full flow, guards, race handling: `referen
 
 Parse the positional arguments to detect:
 - **help** — delegate to `Skill("worktrail-help", args="<remaining topic>")` and stop; do not render the dashboard or claim work
+- **drain** — run the internal queue-drain procedure from `references/drain.md`; do not claim a brief in the interactive process
 - **auto** — auto mode (spec 017): skip the picker, use `$DASHBOARD_JSON.auto_pick` per the Auto mode flow above; combinable with a repo arg (`/go REPO auto`)
 - **Bare integer** — resolves within the active Level-2 category picker (the level-2 rule above); there is no global numbered list, so a standalone `/go N` argument is treated as free-text (Phase 5)
 - **handoff:ID** — explicit brief ID from queue (delegate to sdd-workflow or direct work)
