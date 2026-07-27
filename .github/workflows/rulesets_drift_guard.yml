@@ -1,0 +1,52 @@
+name: 'CI: Rulesets Drift Guard'
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/rulesets/**'
+  workflow_dispatch: {}
+  schedule:
+    # Weekly drift check to catch out-of-band GitHub UI edits.
+    - cron: '0 9 * * 1'
+
+concurrency:
+  group: rulesets-drift-guard-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  rulesets-check:
+    name: Rulesets drift check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: python -m pip install -r scripts/ci/rulesets/requirements.txt
+
+      # Reading live rulesets requires repository Administration:Read, which
+      # is a GitHub App installation permission — it cannot be granted to the
+      # default GITHUB_TOKEN via the workflow-level `permissions:` block
+      # (`administration` is not one of the scopes that key accepts; see
+      # scripts/ci/rulesets/README.md for the upstream bug this avoids). Mint
+      # a token from the App already installed for bot automation instead.
+      - name: Generate rulesets-check bot token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.RELEASE_NOTES_APP_ID }}
+          private-key: ${{ secrets.RELEASE_NOTES_APP_PRIVATE_KEY }}
+
+      - name: Check committed rulesets against live GitHub rulesets
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: python scripts/ci/rulesets/rulesets_sync.py --check
+
