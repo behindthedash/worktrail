@@ -4,11 +4,9 @@ The orchestrator is handed a filesystem path to a unit of work and must not care
 which authoring format produced it. This module is the single place that decides,
 so `orchestrator/` never imports a concrete adapter.
 
-**This is transition-scoped.** The devkit `docs/specs/` format is being converted
-to OpenSpec; once no repo has a `docs/specs/` tree left, `taskformats/devkit/`
-and the `"devkit"` branch below are deleted together and this module collapses to
-constructing `OpenSpecTaskSource`. Detection is deliberately a single function
-with one branch so that removal is a deletion, not an untangling.
+Both supported formats remain first-class adapters. The legacy devkit adapter is
+kept for existing repositories, but callers outside this module never need to
+know which adapter owns a spec.
 """
 
 from __future__ import annotations
@@ -103,3 +101,34 @@ def spec_root_prefix_for(spec_path: Path | str) -> str:
     if fmt == FORMAT_OPENSPEC:
         return openspec.OpenSpecTaskSource(Path(".")).spec_root_prefix()
     return devkit.DevkitSpecTaskSource(Path(".")).spec_root_prefix()
+
+
+def resolve_external_dependency(spec_path: Path | str, dep_ref: str) -> Dict[str, Any]:
+    """Resolve a dependency using the adapter that owns ``spec_path``."""
+    source = task_source_for(spec_path)
+    return source.resolve_external_dependency(dep_ref)
+
+
+def resolve_external_dependency_for_repo(repo_root: Path | str, dep_ref: str) -> Dict[str, Any]:
+    """Resolve a dependency when only the repository and reference are known."""
+    repo_root = Path(repo_root)
+    spec_id = dep_ref.partition("/")[0]
+    for candidate in (
+        repo_root / openspec.DEFAULT_SPEC_ROOT / spec_id,
+        repo_root / devkit.DEFAULT_SPEC_ROOT / spec_id,
+    ):
+        if candidate.is_dir():
+            return resolve_external_dependency(candidate, dep_ref)
+    return resolve_external_dependency(repo_root / openspec.DEFAULT_SPEC_ROOT / spec_id, dep_ref)
+
+
+def task_for(spec_path: Path | str, task_id: str) -> Dict[str, Any] | None:
+    """Find one task through its owning adapter."""
+    source = task_source_for(spec_path)
+    _, tasks = source.load(Path(spec_path).name)
+    return next((task for task in tasks if task.get("id") == task_id), None)
+
+
+def file_sections_for(path: Path | str, text: str) -> tuple[List[str], List[str]]:
+    """Extract format-specific file sections without importing an adapter."""
+    return task_source_for(path).file_sections(text)

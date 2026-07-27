@@ -7,7 +7,7 @@ Two phases, mirroring consolidate_cluster.py's preview/execute split so a
 batch write to already-authored briefs is never silent:
 
   preview -- classify every queue/*.md brief that doesn't already carry
-             `recommended-route:` via devkit-pm-go/scripts/classify.py
+             `recommended-route:` via Worktrail's classify command
              (invoked as a subprocess -- classify.py lives in a sibling
              skill, not the shared plugin-level _shared/ dir, so this
              mirrors consolidate_cluster.py's documented no-cross-skill-
@@ -62,10 +62,6 @@ def _resolve_classify_command() -> Optional[List[str]]:
         return [sys.executable, "-m", "worktrail.router.classify"]
     except ImportError:
         pass
-    plugins_dir = Path.home() / ".claude" / "plugins"
-    if plugins_dir.is_dir():
-        for p in plugins_dir.rglob("devkit-pm-go/scripts/classify.py"):
-            return [sys.executable, str(p)]
     return None
 
 

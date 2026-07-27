@@ -388,3 +388,6 @@ class DevkitSpecTaskSource:
 
     def spec_root_prefix(self) -> str:
         return f"{self._spec_root}/"
+
+    def file_sections(self, text: str) -> tuple:
+        return parse_files_sections(text)

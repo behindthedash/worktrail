@@ -38,7 +38,7 @@ providers.
 ### `go_seed.py` CLI contract
 
 The `go_seed.py` helper generates a seed prompt for subprocess dispatch. Located at
-`plugins/developer-kit-project-management/skills/worktrail-go/worktrail-go-seed`.
+`skills/worktrail-go/worktrail-go-seed`.
 
 **Required arguments:**
 - `--repo <absolute-path>` — resolved target repository path

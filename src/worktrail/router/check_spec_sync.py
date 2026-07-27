@@ -9,9 +9,8 @@ under a spec's tasks/ directory reported status: completed, but the spec's
 own task-plan summary table and parent-spec Status header still described a
 pre-implementation state (see PR #553, the docs-only fix, spec 026's
 decision-log.md, and handoff brief 20260706-201500-ggb-spec-sync-drift-guard).
-Ported into developer-kit (handoff brief
-20260707-203826-generalize-spec-sync-guard-to-developer-kit) so every repo
-consuming the developer-kit-specs plugin inherits the same check.
+Made repository-owned so every Worktrail consumer can run the same check
+without depending on a separate authoring plugin.
 
 Scope (deliberately narrow):
 
@@ -233,7 +232,7 @@ def main() -> int:
         # actionable drift; nothing else to report.
 
     if total_failures:
-        print(f"\n{total_failures} drift issue(s) across {checked} spec(s). Run /developer-kit-specs:specs.sync on the affected spec(s) to fix.")
+        print(f"\n{total_failures} drift issue(s) across {checked} spec(s). Run worktrail-check-spec-sync on the affected spec(s) to fix.")
         return 1
 
     print(f"spec sync guard: no drift detected across {len(spec_dirs)} spec(s).")

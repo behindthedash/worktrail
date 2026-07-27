@@ -181,3 +181,8 @@ class OpenSpecTaskSource:
         # Guards the whole openspec tree, not just changes/: a worker must not
         # edit archived changes or the merged specs under openspec/specs/ either.
         return f"{self._spec_root.split('/')[0]}/"
+
+    def file_sections(self, text: str) -> tuple:
+        # OpenSpec has no per-task create/modify sections. File scope is supplied
+        # by the compiled run plan, not inferred from tasks.md prose.
+        return [], []

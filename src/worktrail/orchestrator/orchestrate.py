@@ -42,7 +42,7 @@ from typing import Any, Dict, List, Optional
 from . import coordinator
 from . import dispatch
 from . import worktree
-from ..taskformats.devkit import source as loader
+from ..taskformats import resolve as taskformats
 
 _HERE = Path(__file__).resolve().parent
 _SKILL = _HERE.parent
@@ -265,7 +265,7 @@ def simulate_text(
 # --------------------------------------------------------------------------- #
 def _build(file: Optional[str], spec: Optional[str], cassette: Optional[str]):
     if spec:
-        spec_id, tasks = loader.load_spec(spec)
+        spec_id, tasks = taskformats.load_spec(spec)
         scenario: Dict[str, Any] = {}
     else:
         data = json.load(open(file or DEFAULT_FIXTURE))

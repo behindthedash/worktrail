@@ -34,7 +34,6 @@ from . import dispatch
 from . import live
 from . import progress
 from ..taskformats import resolve as taskformats
-from ..taskformats.devkit import source as loader
 
 TAIL = ("e2e", "cleanup")
 TERMINAL_GROUP_STATES = {"OPEN", "MERGED", "QUARANTINED"}
@@ -44,29 +43,16 @@ _HERE = Path(__file__).resolve().parent
 
 
 def _resolve_pre_pr_gate(here: Path = _HERE) -> Optional[Path]:
-    """Locate the GO pre-PR gate script across plugin boundaries.
-
-    Search order: env var, fixed-offset fast path (marketplace/repo-checkout
-    topology), then an ancestor walk with a content-hash-version glob (plugin
-    cache topology) -- same approach as verify.py's `_find_go_scripts_dir()`.
-    Returns None when the script cannot be resolved (refresh is skipped).
-    """
+    """Locate Worktrail's own pre-PR gate, with an explicit override for tests."""
     candidate = os.environ.get("PRE_PR_GATE_SCRIPT")
     if candidate and Path(candidate).is_file():
         return Path(candidate).resolve()
-    fast_path = (
-        here / ".." / ".." / ".." / ".." / "developer-kit-project-management"
-        / "skills" / "devkit-pm-go" / "scripts" / "pre_pr_gate.py"
-    ).resolve()
-    if fast_path.is_file():
-        return fast_path
-    for ancestor in here.parents:
-        direct = ancestor / "developer-kit-project-management" / "skills" / "devkit-pm-go" / "scripts" / "pre_pr_gate.py"
-        if direct.is_file():
-            return direct
-        for versioned in sorted(ancestor.glob("developer-kit-project-management/*/skills/devkit-pm-go/scripts/pre_pr_gate.py")):
-            if versioned.is_file():
-                return versioned
+    installed = shutil.which("worktrail-pre-pr-gate")
+    if installed:
+        return Path(installed).resolve()
+    local = here.parent.parent / "router" / "pre_pr_gate.py"
+    if local.is_file():
+        return local.resolve()
     return None
 
 
@@ -184,8 +170,12 @@ def _strip_spec_folder_to_base(iw: Path, spec_id: str, base_ref: str) -> None:
     independent siblings reset it to base_ref so their PRs introduce zero spec-folder
     diff and cannot conflict on those files.
     """
-    spec_path = f"{loader.DEFAULT_SPEC_ROOT}/{spec_id}"
-    p = _git(iw, "checkout", base_ref, "--", spec_path, check=False)
+    candidate_paths = [
+        taskformats.task_source_for(iw / "openspec" / "changes" / spec_id).spec_root(spec_id),
+        taskformats.task_source_for(iw / "docs" / "specs" / spec_id).spec_root(spec_id),
+    ]
+    spec_path = next((p for p in candidate_paths if p.exists()), candidate_paths[-1])
+    p = _git(iw, "checkout", base_ref, "--", str(spec_path.relative_to(iw)), check=False)
     if p.returncode != 0:
         return
     diff = _git(iw, "diff", "--cached", "--quiet", check=False)
@@ -219,7 +209,7 @@ def _write_group_task_status(
     # assuming the legacy devkit layout; OpenSpec stores every task in one
     # `tasks.md`, while devkit stores one file per task.
     openspec_path = iw / "openspec" / "changes" / spec_id
-    devkit_path = iw / loader.DEFAULT_SPEC_ROOT / spec_id
+    devkit_path = iw / "docs" / "specs" / spec_id
     spec_path = openspec_path if openspec_path.exists() else devkit_path
     source = taskformats.task_source_for(spec_path)
     changed = []
@@ -1096,7 +1086,7 @@ def finish_real(
 
 def validate(sandbox: str, keep: bool = False) -> list:
     repo = live.instantiate(live.SAMPLE_TEMPLATE)
-    spec_id, tasks = loader.load_spec(str(repo / live.SAMPLE_SPEC_REL))
+    spec_id, tasks = taskformats.load_spec(str(repo / live.SAMPLE_SPEC_REL))
     base = current_branch(repo)
     run_id = f"val-{int(time.time())}"
     print(
@@ -1115,7 +1105,7 @@ def finish_existing(dest, sandbox: str, keep: bool = False) -> list:
     """Integrate + PR an existing repo that already has per-task branches from a
     live fan-out (no synthetic commits, no spawns)."""
     repo = Path(dest).resolve()
-    spec_id, tasks = loader.load_spec(str(repo / live.SAMPLE_SPEC_REL))
+    spec_id, tasks = taskformats.load_spec(str(repo / live.SAMPLE_SPEC_REL))
     base = current_branch(repo)
     run_id = f"live-{int(time.time())}"
     print(f"=== integrate existing fan-out ({spec_id}) run {run_id} on {sandbox} ===")
