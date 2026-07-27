@@ -36,13 +36,13 @@ Five subsystems under `src/worktrail/`:
 ## Claude Code plugin surface
 
 This repo is also a Claude Code plugin marketplace (`.claude-plugin/marketplace.json` +
-`.claude-plugin/plugin.json`), shipping three skills under `skills/`:
+`.claude-plugin/plugin.json`), shipping four user-facing skills under `skills/`:
 
 | Skill | Surface over |
 |---|---|
-| `worktrail-go` | `router/` — the route classifier, orientation dashboard, run records, policy |
+| `worktrail-help` | command reference for the host-specific Worktrail front door |
 | `worktrail-handoff` | `workqueue/` — capture/claim/complete briefs in `$WORK_QUEUE_DIR` |
-| `worktrail-drain` | `drain/` — unattended queue draining |
+| `worktrail-go` | `router/` — the route classifier, orientation dashboard, run records, policy, and queue draining |
 | `worktrail-sdd-workflow` | the route executor `worktrail-go` dispatches to (routes A–J) — internal, never called directly |
 
 Install with `/plugin marketplace add behindthedash/worktrail`, then `/plugin install worktrail`.

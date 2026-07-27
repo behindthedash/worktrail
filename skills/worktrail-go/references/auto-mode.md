@@ -1,6 +1,6 @@
 # Auto Mode (`auto` argument — spec 017)
 
-`/go auto` (and repo-scoped `/go REPO auto`) starts the next ranked queue brief with no
+`worktrail-go auto` (and repo-scoped `worktrail-go REPO auto`) starts the next ranked queue brief with no
 selection prompt. Auto mode removes the selection prompt ONLY — policy approval gates,
 risk tiers, the run record, and the CI watch loop apply exactly as for interactive runs.
 
@@ -44,7 +44,7 @@ actively working that repo — stale lock files probe as free).
 ## Draining many items
 
 Auto mode picks and runs ONE brief per invocation. To work through the whole queue
-unattended, do not loop `/go auto` inside one session (context accumulates and
-permission prompts stall the loop) — use the `worktrail-drain` skill, which launches a
-fresh-context headless one-shot of `/go auto` per item and stops with an explicit
+unattended, do not loop `worktrail-go auto` inside one session (context accumulates and
+permission prompts stall the loop) — use `worktrail-go drain`, which launches a
+fresh-context headless one-shot of `worktrail-go auto` per item and stops with an explicit
 reason (queue empty, capacity gate, circuit breaker, budget).

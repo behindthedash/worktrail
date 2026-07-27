@@ -64,7 +64,7 @@ export const Worktrail = async ({ directory } = {}) => ({
       template: [
         "Use Worktrail for this request.",
         "Run `worktrail-dashboard` when orientation is needed, then follow the installed",
-        "Worktrail workflow and preserve the exact request below.",
+        "Worktrail workflow. Use `drain` for unattended queue processing and preserve the exact request below.",
         "\nRequest: $ARGUMENTS",
       ].join("\n"),
     }
@@ -73,14 +73,6 @@ export const Worktrail = async ({ directory } = {}) => ({
       template: [
         "Create a handoff with the Worktrail CLI, not by writing Markdown directly.",
         "Run `worktrail-handoff --focus \"$ARGUMENTS\" --json`, then report the created path.",
-      ].join("\n"),
-    }
-    input.command["worktrail.drain"] = {
-      description: "Drain queued Worktrail handoffs",
-      template: [
-        "Use the installed Worktrail drain command for this request.",
-        "Run `worktrail-drain` with the user's requested limits and report its stop reason.",
-        "\nRequest: $ARGUMENTS",
       ].join("\n"),
     }
     input.command["worktrail.spec-create"] = {

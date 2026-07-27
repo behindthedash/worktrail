@@ -1,13 +1,14 @@
 ---
 name: worktrail-go
 description: >
-  Use when the user invokes /go, asks to pick up queued work, resume active specs,
+  Use when the user invokes worktrail-go, asks to pick up queued work, resume active specs,
   implement or fix a spec, route engineering work, or orient across repositories.
   Renders the orientation dashboard, classifies free-text requests,
   claims/resumes handoff briefs, and dispatches SDD work without requiring the user
-  to know sdd-workflow. Triggers: /go, /go fix, /go implement, /go route:F,
-  /go BRIEF-ID, bare /go, multi-repo orientation.
-argument-hint: "[free-text request | route:X | handoff:ID | REPO [intent keywords]]"
+  to know sdd-workflow. Triggers: worktrail-go, worktrail-go help,
+  worktrail-go fix, worktrail-go implement, worktrail-go route:F,
+  worktrail-go BRIEF-ID, bare worktrail-go, multi-repo orientation.
+argument-hint: "[help | free-text request | route:X | BRIEF-ID | REPO [intent keywords]]"
 allowed-tools: Read, Bash, AskUserQuestion, Skill, Agent
 ---
 
@@ -15,17 +16,22 @@ allowed-tools: Read, Bash, AskUserQuestion, Skill, Agent
 
 ## Overview
 
-Universal engineering front door for a Worktrail workspace. Every invocation starts with an orientation dashboard (active specs, in-flight briefs, ready queue), then classifies the request and dispatches to the right executor. `worktrail-sdd-workflow` is an internal executor — users access it only via `/go`.
+Universal engineering front door for a Worktrail workspace. Work invocations start with an orientation dashboard (active specs, in-flight briefs, ready queue), then classify the request and dispatch to the right executor. The `help` invocation is the read-only exception and delegates to `worktrail-help` without rendering or claiming work. `worktrail-sdd-workflow` is an internal executor — users access it only via `worktrail-go`.
 
 ## When to Use
 
-- Bare `/go` — orientation dashboard + `AskUserQuestion` picker
-- `/go fix X` — classify and dispatch a free-text request
-- `/go implement spec 003` — dispatch to spec execution
-- `/go route:F` or `/go REPO route:D spec-folder` — explicit route, no classification
-- `/go BRIEF-ID` — claim or resume a specific queued brief
-- `/go auto` or `/go REPO auto` — auto-pick the next ranked queue brief and start it, no selection prompt (spec 017)
-- `/go REPO` — check what's active in a specific repo
+- Bare `worktrail-go` — orientation dashboard + `AskUserQuestion` picker
+- `worktrail-go help` — delegate to `worktrail-help`
+- `worktrail-go drain [max-items] [repo]` — delegate to the unattended queue drain
+- `worktrail-go fix X` — classify and dispatch a free-text request
+- `worktrail-go implement spec 003` — dispatch to spec execution
+- `worktrail-go route:F` or `worktrail-go REPO route:D spec-folder` — explicit route, no classification
+- `worktrail-go BRIEF-ID` — claim or resume a specific queued brief
+- `worktrail-go auto` or `worktrail-go REPO auto` — auto-pick the next ranked queue brief and start it, no selection prompt (spec 017)
+- `worktrail-go REPO` — check what's active in a specific repo
+
+Claude Code exposes this as `/worktrail-go`; Codex exposes it as
+`$worktrail:worktrail-go`. Substitute the host command in the forms below.
 
 ## Instructions
 
@@ -114,9 +120,16 @@ Handle a missing/empty dashboard gracefully (the `rendered` field already prints
 
 **Print `$DASHBOARD_JSON.rendered` verbatim.** Do NOT re-render, reorder, regroup, or summarize it — rendering it yourself reintroduces the non-determinism this field exists to remove.
 
+**Help invocations** (`help`): delegate to `worktrail-help` and stop before the dashboard.
+
 **Brief-ID invocations** (`handoff:ID`, `route:X`, explicit brief id): print only a one-line summary (e.g. `Dashboard: N specs, M in-flight`) and skip the picker — go straight to Phase 2.
 
 **Auto invocations** (`auto` argument, spec 017): print the `rendered` dashboard as usual, skip BOTH picker levels, and add `--auto` (plus `--auto-repo "$ARG_REPO"` when a repo was named) to the dashboard.py call so `$DASHBOARD_JSON.auto_pick` is populated. Full flow: `references/auto-mode.md`.
+
+**Drain invocations** (`drain [max-items] [repo]`): skip the dashboard and picker, read
+`references/drain.md`, and run the installed `worktrail-drain` console script with the
+resolved invocation agent. The console script is an internal executor; users enter
+drain requests through `worktrail-go` only.
 
 ### Phase 1b — Two-Level Picker (AskUserQuestion)
 
@@ -169,6 +182,8 @@ run, mark each brief done individually. Full procedure: `references/batch-consum
 claim. Null pick → report and STOP. Full flow, guards, race handling: `references/auto-mode.md`.
 
 Parse the positional arguments to detect:
+- **help** — delegate to `Skill("worktrail-help", args="<remaining topic>")` and stop; do not render the dashboard or claim work
+- **drain** — run the internal queue-drain procedure from `references/drain.md`; do not claim a brief in the interactive process
 - **auto** — auto mode (spec 017): skip the picker, use `$DASHBOARD_JSON.auto_pick` per the Auto mode flow above; combinable with a repo arg (`/go REPO auto`)
 - **Bare integer** — resolves within the active Level-2 category picker (the level-2 rule above); there is no global numbered list, so a standalone `/go N` argument is treated as free-text (Phase 5)
 - **handoff:ID** — explicit brief ID from queue (delegate to sdd-workflow or direct work)
