@@ -45,8 +45,6 @@ from . import orchestrate
 from . import progress
 from . import spawnlib
 from ..taskformats import resolve as taskformats
-from ..taskformats.devkit import schema as _devkit_schema
-from ..taskformats.devkit import source as loader
 
 
 def _ts() -> str:
@@ -506,7 +504,7 @@ def precheck(repo: Path, spec_rel: str) -> int:
         # spec's deliverable).
         if status == "pending":
             for ref in task.get("external_deps") or []:
-                result = loader.resolve_external_dependency(repo_root, ref)
+                result = taskformats.resolve_external_dependency(repo / spec_rel, ref)
                 if result["resolved"]:
                     print(
                         f"INFO: {task_id} — external dependency {ref} resolved, "
@@ -552,7 +550,7 @@ def precheck(repo: Path, spec_rel: str) -> int:
             except OSError:
                 body_text = None
             if body_text is not None:
-                create_files, modify_files = loader.parse_files_sections(body_text)
+                create_files, modify_files = taskformats.file_sections_for(task_path, body_text)
                 if create_files or modify_files:
                     is_modify_only = not create_files and bool(modify_files)
 
@@ -661,7 +659,7 @@ def skip_tasks(repo: Path, spec_rel: str, task_ids: list, reason: str = "manuall
     return 0
 
 
-def _annotate_external_deps(repo: Path, tasks: list) -> None:
+def _annotate_external_deps(repo: Path, tasks: list, spec_rel: str | None = None) -> None:
     """Freshly set `external_deps_ok`/`external_deps_blockers` on every pending task
     with a non-empty `external_deps` list (contracts/frontier-external-deps-gate.md).
 
@@ -680,7 +678,11 @@ def _annotate_external_deps(repo: Path, tasks: list) -> None:
             continue
         blockers = []
         for ref in refs:
-            result = loader.resolve_external_dependency(repo_root, ref)
+            result = (
+                taskformats.resolve_external_dependency(repo / spec_rel, ref)
+                if spec_rel
+                else taskformats.resolve_external_dependency_for_repo(repo, ref)
+            )
             if result["satisfied"]:
                 continue
             if result["resolved"]:
@@ -856,7 +858,7 @@ def _resume_drift_report(repo: Path, base: str, spec_id: str, tasks: list) -> No
         return
 
 
-def build_external_deps_by_ref(repo: Path, tasks: list) -> dict:
+def build_external_deps_by_ref(repo: Path, tasks: list, spec_rel: str | None = None) -> dict:
     """Resolve every task's `external_deps` refs (cross-spec `external-dependencies:`
     entries, spec 025) into the `external_deps_by_ref` shape `dispatch.build_worker_prompt`
     expects: `ref -> {"id", "files"}` for the sibling task, included ONLY when
@@ -871,16 +873,17 @@ def build_external_deps_by_ref(repo: Path, tasks: list) -> dict:
         for ref in t.get("external_deps", []) or []:
             if ref in external_deps_by_ref:
                 continue
-            resolved = loader.resolve_external_dependency(repo, ref)
+            resolved = taskformats.resolve_external_dependency_for_repo(repo, ref)
             if not resolved.get("satisfied"):
                 continue
             spec_id, _, task_id = ref.partition("/")
-            task_file = repo / loader.DEFAULT_SPEC_ROOT / spec_id / "tasks" / f"{task_id}.md"
-            try:
-                sibling_fm = loader.parse_frontmatter(task_file.read_text())
-            except OSError:
+            sibling_spec = repo / "openspec" / "changes" / spec_id
+            if not sibling_spec.is_dir():
+                sibling_spec = repo / "docs" / "specs" / spec_id
+            sibling_task = taskformats.task_for(sibling_spec, task_id)
+            if sibling_task is None:
                 continue
-            external_deps_by_ref[ref] = {"id": task_id, "files": sibling_fm.get("files", [])}
+            external_deps_by_ref[ref] = {"id": task_id, "files": sibling_task.get("files", [])}
     return external_deps_by_ref
 
 
@@ -912,7 +915,7 @@ def dependency_start_ref(repo: Path, spec_id: str, task: dict, by_id: dict) -> t
 
     repo_root = repo.resolve()
     for ref in task.get("external_deps") or []:
-        result = loader.resolve_external_dependency(repo_root, ref)
+        result = taskformats.resolve_external_dependency_for_repo(repo_root, ref)
         if not result["satisfied"]:
             continue
         sibling_spec_id, _, sibling_task_id = ref.partition("/")
@@ -1109,8 +1112,8 @@ def run_research_session(
     if tasks_dir.is_dir():
         for tf in sorted(tasks_dir.glob("TASK-*.md")):
             try:
-                fm = loader.parse_frontmatter(tf.read_text())
-                for f in (fm or {}).get("files", []) or []:
+                task = taskformats.task_for(spec_folder, tf.stem)
+                for f in (task or {}).get("files", []) or []:
                     file_counts[f] += 1
             except Exception:
                 pass
@@ -1493,7 +1496,7 @@ def live_run(
 
     tick = 0
     while True:
-        _annotate_external_deps(repo, tasks)
+        _annotate_external_deps(repo, tasks, spec_rel)
         frontier = coordinator.runnable_frontier(tasks, max_workers)
         if not frontier:
             break
@@ -1830,10 +1833,9 @@ def _require_dependency_files(wt: Path, task: dict, by_id: dict) -> "list[dict]"
     return events
 
 
-# The devkit frontmatter contract owns the surgical status write. Re-exported
-# here under its historical name because this module's helpers are part of the
-# orchestrator's tested public surface.
-set_task_status_completed = _devkit_schema.set_status_completed
+def set_task_status_completed(path: Path) -> bool:
+    """Compatibility wrapper for callers that still pass a legacy task file."""
+    return taskformats.mark_status_completed(path)
 
 
 def cleanup_task_in_python(wt: Path, task_id: str) -> dict:
@@ -1980,7 +1982,7 @@ def live_run_real(
     if hasattr(spawn, "by_id"):
         spawn.by_id = by_id
     if hasattr(spawn, "external_deps_by_ref"):
-        spawn.external_deps_by_ref = build_external_deps_by_ref(repo, tasks)
+        spawn.external_deps_by_ref = build_external_deps_by_ref(repo, tasks, spec_rel)
     wt_base = repo.parent / f"{repo.name}-worktrees"
     wt_base.mkdir(parents=True, exist_ok=True)
     run_budget = RUN_BUDGET_DEFAULT if run_budget is None else run_budget
@@ -2383,7 +2385,7 @@ def live_run_real(
                     f"sleeps excluded) -- pending tasks left for resume"
                 )
                 break
-        _annotate_external_deps(repo, tasks)
+        _annotate_external_deps(repo, tasks, spec_rel)
         frontier = coordinator.runnable_frontier(tasks, max_workers)
         if not frontier:
             break
@@ -2636,7 +2638,7 @@ def _pipeline_scheduler(
     if hasattr(spawn_fn, "by_id"):
         spawn_fn.by_id = by_id
     if hasattr(spawn_fn, "external_deps_by_ref"):
-        spawn_fn.external_deps_by_ref = build_external_deps_by_ref(repo, tasks)
+        spawn_fn.external_deps_by_ref = build_external_deps_by_ref(repo, tasks, spec_rel)
     integrate_one_fn = (
         _integrate_one if _integrate_one is not None else integrate_module.integrate_one
     )
@@ -3180,7 +3182,7 @@ def _pipeline_scheduler(
                     f"sleeps excluded) -- pending tasks left for resume"
                 )
                 break
-        _annotate_external_deps(repo, tasks)
+        _annotate_external_deps(repo, tasks, spec_rel)
         frontier = coordinator.runnable_frontier(tasks, max_workers)
         if not frontier:
             break

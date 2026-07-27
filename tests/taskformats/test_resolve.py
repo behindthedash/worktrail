@@ -1,8 +1,7 @@
 """The format seam: which `TaskSource` owns a given spec path.
 
-This is transition-scoped machinery — the devkit `docs/specs/` format is being
-converted to OpenSpec, after which the `"devkit"` branch and these tests go away
-together. Until then a single repo can hold both, so detection has to be right.
+This is the format seam: a single repo can hold both the legacy devkit format
+and OpenSpec, so detection and adapter routing have to be right.
 """
 
 from __future__ import annotations

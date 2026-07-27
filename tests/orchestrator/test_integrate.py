@@ -1097,13 +1097,8 @@ class SpecFolderOwnership(unittest.TestCase):
                 )
 
 
-class ResolvePrePrGateTopology(unittest.TestCase):
-    """`_resolve_pre_pr_gate()` has the same cross-plugin resolution shape as
-    verify.py's `_find_go_scripts_dir()` -- audited and fixed alongside it.
-    Unlike verify.py it degraded gracefully (returned None, skipping PR-label
-    refresh) rather than crashing, but the plugin cache topology matched
-    neither original hardcoded candidate. Brief
-    20260724-103800-orchestrator-verify-cache-layout-import-crash."""
+class ResolvePrePrGateResolution(unittest.TestCase):
+    """The gate resolves from an explicit override or Worktrail itself."""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -1114,52 +1109,15 @@ class ResolvePrePrGateTopology(unittest.TestCase):
         os.environ.pop("PRE_PR_GATE_SCRIPT", None)
         self.addCleanup(self._env_patch.stop)
 
-    def _touch_gate(self, go_scripts):
-        go_scripts.mkdir(parents=True, exist_ok=True)
-        (go_scripts / "pre_pr_gate.py").write_text("")
+    def test_explicit_override_wins(self):
+        gate = self.root / "pre_pr_gate.py"
+        gate.write_text("")
+        os.environ["PRE_PR_GATE_SCRIPT"] = str(gate)
+        self.assertEqual(integrate._resolve_pre_pr_gate(self.root), gate)
 
-    def test_marketplace_topology_resolves(self):
-        here = (
-            self.root / "marketplaces" / "developer-kit" / "plugins"
-            / "developer-kit-specs" / "skills" / "specs-parallel-orchestrator"
-            / "scripts"
-        )
-        here.mkdir(parents=True)
-        gate = (
-            self.root / "marketplaces" / "developer-kit" / "plugins"
-            / "developer-kit-project-management" / "skills" / "devkit-pm-go"
-            / "scripts" / "pre_pr_gate.py"
-        )
-        self._touch_gate(gate.parent)
-
-        self.assertEqual(integrate._resolve_pre_pr_gate(here), gate)
-
-    def test_hash_cache_topology_resolves(self):
-        """Simulates `.../cache/developer-kit/<plugin>/<sha>/skills/<skill>/
-        scripts` -- the layout the original two hardcoded candidates missed."""
-        here = (
-            self.root / "cache" / "developer-kit" / "developer-kit-specs"
-            / "1122334455aa" / "skills" / "specs-parallel-orchestrator"
-            / "scripts"
-        )
-        here.mkdir(parents=True)
-        gate = (
-            self.root / "cache" / "developer-kit" / "developer-kit-project-management"
-            / "a1b2c3d4e5f6" / "skills" / "devkit-pm-go" / "scripts" / "pre_pr_gate.py"
-        )
-        self._touch_gate(gate.parent)
-
-        self.assertEqual(integrate._resolve_pre_pr_gate(here), gate)
-
-    def test_sibling_plugin_missing_returns_none_without_crash(self):
-        here = (
-            self.root / "cache" / "developer-kit" / "developer-kit-specs"
-            / "deadbeefcafe" / "skills" / "specs-parallel-orchestrator"
-            / "scripts"
-        )
-        here.mkdir(parents=True)
-
-        self.assertIsNone(integrate._resolve_pre_pr_gate(here))
+    @patch("worktrail.orchestrator.integrate.shutil.which", return_value=None)
+    def test_no_external_plugin_path_is_scanned(self, _which):
+        self.assertIsNone(integrate._resolve_pre_pr_gate(self.root))
 
 
 if __name__ == "__main__":

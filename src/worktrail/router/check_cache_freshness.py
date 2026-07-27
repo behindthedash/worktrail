@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Plugin-cache freshness guard.
+Plugin-cache freshness guard for Worktrail-compatible installations.
 
 `go`/`sdd-workflow`'s Phase 0 script resolution falls back to
 `find ~/.claude/plugins -path '*<plugin>*/skills/<skill>'` whenever
@@ -16,7 +16,7 @@ feature-lagged snapshot -- and two sibling resolutions in the same script
 (e.g. `$GO` and `$HANDOFF`) can each land on a *different* stale generation.
 
 This module answers one question: does the resolved path's commit match the
-canonical dev checkout (default `~/projects/developer-kit`)? When it doesn't,
+canonical Worktrail checkout (default `~/projects/worktrail`)? When it doesn't,
 and the canonical checkout has the same skill dir on disk, `prefer_path`
 offers the fresher path so the caller can warn and auto-prefer it -- the
 "diff/grep of cache vs checkout, then use the checkout" recovery every prior
@@ -145,12 +145,12 @@ def main(argv=None) -> int:
         "--plugin",
         required=True,
         help="plugin name as it appears under plugins/ in the canonical checkout "
-        "(e.g. developer-kit-project-management)",
+        "(e.g. worktrail)",
     )
     p.add_argument(
         "--canonical",
-        default="~/projects/developer-kit",
-        help="canonical dev checkout to compare against (default: ~/projects/developer-kit)",
+        default="~/projects/worktrail",
+        help="canonical Worktrail checkout to compare against (default: ~/projects/worktrail)",
     )
     p.add_argument("--json", action="store_true", help="emit JSON instead of a summary line")
     args = p.parse_args(argv)

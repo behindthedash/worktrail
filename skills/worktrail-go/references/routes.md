@@ -208,8 +208,8 @@ Completion: `investigation_complete` (or the F completion if continued).
 Changes to GO, skills, plugins, agent prompts, orchestration, cassettes —
 **this is production code** (`routing_cassette_required` gate).
 
-1. Work in the developer-kit repo: worktree off `main`, never the installed
-   copy under `~/.claude/plugins`.
+1. Work in the Worktrail repo: use a worktree off `main`, never the installed
+   copy under the Worktrail plugin directory.
 2. Routing changes MUST add/update scenarios in
    `scripts/cassettes/routing_cassette.json` and keep `test_classify.py`,
    `test_policy.py`, `test_run_record.py`, and the v1 script suites green.

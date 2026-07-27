@@ -2,7 +2,7 @@
 """Clarification-inference drift guard.
 
 Backs the Decision Classification rule `specs.spec-check` gained in PR #428
-(`plugins/developer-kit-specs/commands/specs.spec-check.md`): an owner-escalated
+(`worktrail-check-clarification-integrity`): an owner-escalated
 `[NEEDS CLARIFICATION]` marker (design selection, security/authz, cross-tenant
 contention, or justified only by an absent schema field) must never be
 silently resolved and reported clean. That fix lives entirely in the

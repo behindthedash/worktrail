@@ -297,17 +297,7 @@ def _count_tasks(
 
 
 def _dashboard_repo_root() -> Path:
-    """The developer-kit repo checkout root, across install topologies.
-
-    `_HERE.parents[4]` is correct for the marketplace topology
-    (`.../marketplaces/developer-kit/plugins/<plugin>/skills/<skill>/scripts`)
-    but lands on a non-git container directory under the plugin cache topology
-    (`.../cache/developer-kit/<plugin>/<sha>/skills/<skill>/scripts`, which
-    inserts an extra `<sha>` segment). Walk up for the nearest `.git` ancestor
-    first; fall back to the fixed offset if no `.git` is found (e.g. a repo
-    checkout without a `.git` dir, or an unrecognized topology), same
-    graceful-degrade posture as `_load_dashboard_policy`'s callers.
-    """
+    """Find the Worktrail checkout root across installed and source layouts."""
     git_root = _find_git_root(_HERE) if _find_git_root is not None else None
     if git_root is not None:
         return git_root

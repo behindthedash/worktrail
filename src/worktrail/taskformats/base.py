@@ -6,7 +6,7 @@ produced by spec-to-tasks / fix_plan.json") and a handful of filesystem paths
 derived from a `spec_ref`. A `TaskSource` is the one seam between that planning
 core and wherever task definitions actually live on disk — the devkit
 `docs/specs/[id]/tasks/TASK-*.md` convention (`worktrail.taskformats.devkit`)
-today, and potentially an OpenSpec-backed convention later. Nothing in
+and the OpenSpec `openspec/changes/<id>/tasks.md` convention. Nothing in
 `orchestrator/` should construct a task-definition path itself; it asks its
 `TaskSource` instead.
 """
@@ -42,7 +42,7 @@ class TaskSource(Protocol):
         """Return (spec_id, tasks) for the given spec reference."""
         ...
 
-    def mark_status(self, task_id: str, status: str, *, spec_ref: Optional[str] = None) -> None:
+    def mark_status(self, task_id: str, status: str, *, spec_ref: Optional[str] = None) -> bool:
         """Persist a status transition for one task."""
         ...
 
@@ -75,4 +75,8 @@ class TaskSource(Protocol):
     def spec_root_prefix(self) -> str:
         """Path prefix (e.g. `docs/specs/`) worker agents must never write to —
         used to build safety guards like `FORBIDDEN_WORKER_PATH_PREFIXES`."""
+        ...
+
+    def file_sections(self, text: str) -> tuple[List[str], List[str]]:
+        """Return authored create/modify file sections, when the format has them."""
         ...

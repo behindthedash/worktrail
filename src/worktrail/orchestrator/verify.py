@@ -50,12 +50,12 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from . import dispatch
 from . import spawnlib
 from . import worktree
-from ..taskformats.devkit.source import DEFAULT_SPEC_ROOT
+from ..taskformats.openspec.source import DEFAULT_SPEC_ROOT as OPENSPEC_SPEC_ROOT
 
 
 class _LazyAutomergePreflight:
     """Attribute-transparent stand-in for `worktrail.router.automerge_preflight`
-    (moved from devkit-pm-go in a later extraction sub-phase within this same
+    (moved from the original external implementation in a later extraction sub-phase within this same
     package). Resolves the real module on first attribute access rather than
     at `verify.py` import time, so `verify.py` stays importable (and its own
     non-automerge test suite runnable) in a partial install where
@@ -131,7 +131,11 @@ GH_RETRIES = 3
 # state as a side effect of their fix). A prompt instruction alone can be
 # rationalized around under pressure; this is the deterministic check against the
 # worker's actual pushed diff, covering both existing soft rules with one mechanism.
-FORBIDDEN_WORKER_PATH_PREFIXES = (".github/workflows/", f"{DEFAULT_SPEC_ROOT}/")
+FORBIDDEN_WORKER_PATH_PREFIXES = (
+    ".github/workflows/",
+    "docs/specs/",
+    f"{OPENSPEC_SPEC_ROOT.split('/')[0]}/",
+)
 
 
 def forbidden_prefixes_for(spec_path: "str | None" = None) -> tuple:

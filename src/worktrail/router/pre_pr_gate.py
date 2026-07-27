@@ -269,7 +269,7 @@ def main(argv=None) -> int:
                   file=sys.stderr)
             for failure in drift:
                 print(f"  - {failure}", file=sys.stderr)
-            print("  Run /developer-kit-specs:specs.sync on the affected spec(s) to fix.",
+            print("  Run worktrail-check-spec-sync on the affected spec(s) to fix.",
                   file=sys.stderr)
             return SPEC_SYNC_DRIFT_EXIT
 
