@@ -14,13 +14,18 @@ Route C (feature-planning), and Route D when no spec exists.
 
 **Pre-step: Overlap Check** — `../../worktrail-go/references/subagent-prompts.md#overlap-check`.
 
-0. **Id + spec worktree** — `../../worktrail-go/references/subagent-prompts.md#spec-worktree-setup`. Includes a mandatory
+0. **Format + id + spec worktree** — `../../worktrail-go/references/subagent-prompts.md#spec-worktree-setup`. `/go new` defaults to OpenSpec and accepts
+   `WORKTRAIL_SPEC_FORMAT=devkit` for legacy authoring. Includes a mandatory
    sibling-worktree/branch check against `$SPEC_ID` before creating `$WT` (advisory, not a
    hard stop — `../../worktrail-go/references/subagent-prompts.md#sibling-worktree-check`). Outputs `$SPEC_ID`, `$WT`,
    `$SPEC_DIR`. Sandbox-denied → surface and stop. If later stages need repo-local
    tooling in `$WT`, bootstrap dependencies in that worktree per the repo's documented
    install step before running them. Commit on `spec/$SPEC_ID` after each writing step.
-1. **propose** — `/opsx:propose "<request>"` per `../../worktrail-go/references/subagent-prompts.md#openspec-propose`. Generates
+   For `devkit`, create the initial artifact shape before authoring:
+   `worktrail-spec-create --repo "$WT" --format devkit --id "$SPEC_ID" --request "<request>"`.
+1. **create/author** — create the selected format's scaffold with
+   `worktrail-spec-create` when using the devkit format, or `/opsx:propose "<request>"`
+   for OpenSpec, per `../../worktrail-go/references/subagent-prompts.md#openspec-propose`. Generates
    proposal, delta specs, design, and tasks in one step. Run inline: it is a slash
    command, not an `Agent` dispatch. Ambiguous seed → `../../worktrail-go/references/subagent-prompts.md#openspec-explore` first.
 2. **validate** — `openspec validate <change-id>` per `../../worktrail-go/references/subagent-prompts.md#openspec-validate`. Catches

@@ -77,6 +77,7 @@ _HERE = Path(__file__).resolve().parent
 # Reuse the orchestrator's task loader (same package) so we don't duplicate
 # the changes/<name>/ resolution + review-file skipping.
 from ..taskformats.devkit.source import parse_frontmatter as _parse_fm
+from ..taskformats import resolve as _taskformats
 
 _HAVE_LOADER = True
 
@@ -930,15 +931,73 @@ def _safe_detect_stage(spec_dir: Path) -> Dict[str, Any]:
         }
 
 
+def _safe_detect_openspec(change_dir: Path) -> Dict[str, Any]:
+    """Project an OpenSpec change into the dashboard's common stage shape."""
+    try:
+        spec_id, tasks = _taskformats.load_spec(change_dir)
+        pending = [t for t in tasks if t.get("status") != "completed"]
+        if not tasks:
+            stage, next_action = "needs-tasks", "create tasks"
+        elif pending:
+            stage, next_action = "ready-to-implement", "orchestrator"
+        else:
+            stage, next_action = "complete", "sync/archive"
+        return {
+            "id": spec_id,
+            "format": "openspec",
+            "path": str(change_dir),
+            "spec_file": str(change_dir / "proposal.md") if (change_dir / "proposal.md").is_file() else None,
+            "status_header": None,
+            "has_clarifications": False,
+            "clarification_markers": False,
+            "has_user_request": False,
+            "technical_plan": "present" if (change_dir / "design.md").is_file() else "missing",
+            "tasks": tasks,
+            "feature_summary": None,
+            "stage": stage,
+            "next_action": next_action,
+        }
+    except Exception as e:  # noqa: BLE001 — one malformed change must not kill /go
+        return {
+            "id": change_dir.name,
+            "format": "openspec",
+            "path": str(change_dir),
+            "spec_file": None,
+            "status_header": None,
+            "has_clarifications": False,
+            "clarification_markers": False,
+            "has_user_request": False,
+            "technical_plan": "missing",
+            "tasks": None,
+            "feature_summary": None,
+            "stage": "error",
+            "next_action": f"inspect manually ({type(e).__name__}: {e})",
+        }
+
+
+def _openspec_change_dirs(repo: Path) -> List[Path]:
+    changes = Path(repo) / "openspec" / "changes"
+    if not changes.is_dir():
+        return []
+    return sorted(d for d in changes.iterdir() if d.is_dir() and d.name != "archive")
+
+
 def scan(specs_root: Path) -> List[Dict[str, Any]]:
     specs_root = Path(specs_root)
     if not specs_root.is_dir():
-        return []
+        repo_root = specs_root.parent.parent if specs_root.name == "specs" and specs_root.parent.name == "docs" else None
+        return [_safe_detect_openspec(d) for d in _openspec_change_dirs(repo_root)] if repo_root else []
     spec_dirs = sorted(d for d in specs_root.iterdir() if _is_spec_folder(d))
-    if not spec_dirs:
-        return []
-    with ThreadPoolExecutor() as ex:
-        return list(ex.map(_safe_detect_stage, spec_dirs))
+    repo_root = specs_root.parent.parent if specs_root.name == "specs" and specs_root.parent.name == "docs" else None
+    if spec_dirs:
+        with ThreadPoolExecutor() as ex:
+            rows = list(ex.map(_safe_detect_stage, spec_dirs))
+    else:
+        rows = []
+    if repo_root is not None:
+        with ThreadPoolExecutor() as ex:
+            rows.extend(ex.map(_safe_detect_openspec, _openspec_change_dirs(repo_root)))
+    return rows
 
 
 def constitution_status(specs_root: Path) -> Dict[str, bool]:
@@ -1293,9 +1352,11 @@ def _find_worktrees(parent: Path, repo_name: str) -> List[Path]:
 
 
 def _detect_for_repo(args: tuple) -> tuple:
-    """Worker for flat parallel detect_stage across repos.
+    """Worker for flat parallel detection across repos.
     Returns (repo_path_str, stage_dict) so results can be reassembled per-repo."""
     repo_key, spec_dir = args
+    if "openspec" in spec_dir.parts and "changes" in spec_dir.parts:
+        return (repo_key, _safe_detect_openspec(spec_dir))
     return (repo_key, _safe_detect_stage(spec_dir))
 
 
@@ -1344,7 +1405,7 @@ def scan_repos(parent: Path) -> List[Dict[str, Any]]:
         repo_info[repo_key] = {
             "name": repo.name,
             "path": str(repo),
-            "has_specs": specs_root.is_dir(),
+            "has_specs": specs_root.is_dir() or bool(_openspec_change_dirs(repo)),
             "worktrees": [wt.name for wt in _find_worktrees(parent, repo.name)],
             "policy_findings": policy_findings,
         }
@@ -1352,6 +1413,7 @@ def scan_repos(parent: Path) -> List[Dict[str, Any]]:
             for d in sorted(specs_root.iterdir()):
                 if _is_spec_folder(d):
                     all_pairs.append((repo_key, d))
+        all_pairs.extend((repo_key, d) for d in _openspec_change_dirs(repo))
 
     # Flat parallel detect_stage across every spec dir in every repo.
     repo_specs: Dict[str, List[Dict[str, Any]]] = {k: [] for k in repo_keys}

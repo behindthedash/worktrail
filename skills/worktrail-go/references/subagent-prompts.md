@@ -614,7 +614,14 @@ proves costly in practice.
 
 ### Spec worktree setup {#spec-worktree-setup}
 
+`/go new` selects the authoring format from `WORKTRAIL_SPEC_FORMAT` (default
+`openspec`). The execution adapter is selected from the resulting path, so a
+repository may process legacy devkit specs and OpenSpec changes in the same
+workspace. Never infer the format from the task id alone.
+
 ```bash
+FORMAT="${WORKTRAIL_SPEC_FORMAT:-openspec}"
+case "$FORMAT" in openspec|devkit) ;; *) echo "Unsupported WORKTRAIL_SPEC_FORMAT=$FORMAT" >&2; exit 2 ;; esac
 NNN=$(ls -d "$REPO/docs/specs/[0-9]*/" 2>/dev/null | wc -l)   # zero-padded
 # Cross-session NNN-allocation race guard: two concurrent /go sessions (this
 # machine or another) can each compute the same NNN from their own local
@@ -635,7 +642,11 @@ SIBLING_REF_GLOB="refs/heads/spec/$SPEC_ID"
 # run the sibling check — #sibling-worktree-check
 WT="$REPO-worktrees/$SPEC_ID-spec"
 git -C "$REPO" worktree add -b "spec/$SPEC_ID" "$WT" "$BASE"
-SPEC_DIR="$WT/docs/specs/$SPEC_ID"
+if [ "$FORMAT" = "openspec" ]; then
+  SPEC_DIR="$WT/openspec/changes/$SPEC_ID"
+else
+  SPEC_DIR="$WT/docs/specs/$SPEC_ID"
+fi
 ```
 
 If `git worktree add` is sandbox-denied, surface it and stop — don't write on base.

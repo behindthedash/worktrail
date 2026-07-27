@@ -564,6 +564,34 @@ class ScanFiltering(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(dashboard.scan(Path(tmp)), [])
 
+    def test_scan_includes_openspec_changes_next_to_legacy_specs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            root = repo / "docs" / "specs"
+            _spec(root / "001-legacy", spec_body=SPEC_MIN)
+            change = repo / "openspec" / "changes" / "add-export"
+            change.mkdir(parents=True)
+            (change / "tasks.md").write_text(
+                "## 1. Export\n\n- [ ] 1.1 Add exporter\n"
+            )
+            rows = dashboard.scan(root)
+            assert [row["id"] for row in rows] == ["001-legacy", "add-export"]
+            openspec = rows[1]
+            assert openspec["format"] == "openspec"
+            assert openspec["path"] == str(change)
+            assert openspec["stage"] == "ready-to-implement"
+
+    def test_scan_finds_openspec_when_docs_specs_is_absent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            change = repo / "openspec" / "changes" / "first-change"
+            change.mkdir(parents=True)
+            (change / "tasks.md").write_text(
+                "## 1. Start\n\n- [ ] 1.1 Create the first task\n"
+            )
+            rows = dashboard.scan(repo / "docs" / "specs")
+            assert [row["id"] for row in rows] == ["first-change"]
+
 
 class SpecFileDiscovery(unittest.TestCase):
     """find_spec_file recognizes every naming era and excludes auxiliaries."""
