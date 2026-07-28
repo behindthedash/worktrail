@@ -1,4 +1,5 @@
 import json
+import os
 import unittest
 from unittest.mock import patch
 from contextlib import redirect_stdout
@@ -44,6 +45,37 @@ class SkillDispatchTests(unittest.TestCase):
         )
         self.assertEqual(run.call_args.args[0][0], "codex")
         self.assertTrue(run.call_args.kwargs["check"] is False)
+
+    @patch.dict(os.environ, {"WORKTRAIL_CODEX_HOME": "/tmp/worktrail-codex"}, clear=False)
+    @patch("worktrail.router.skill_dispatch.subprocess.run")
+    def test_codex_home_environment_override_is_passed_to_child(self, run):
+        run.return_value.returncode = 0
+
+        self.assertEqual(
+            skill_dispatch.main(["--agent", "codex", "--skill", "x:y"]), 0
+        )
+
+        self.assertEqual(run.call_args.kwargs["env"]["CODEX_HOME"], "/tmp/worktrail-codex")
+
+    @patch.dict(os.environ, {"WORKTRAIL_CODEX_HOME": "/tmp/from-env"}, clear=False)
+    @patch("worktrail.router.skill_dispatch.subprocess.run")
+    def test_explicit_codex_home_takes_precedence(self, run):
+        run.return_value.returncode = 0
+
+        skill_dispatch.main([
+            "--agent", "codex", "--skill", "x:y", "--codex-home", "/tmp/explicit"
+        ])
+
+        self.assertEqual(run.call_args.kwargs["env"]["CODEX_HOME"], "/tmp/explicit")
+
+    @patch.dict(os.environ, {"WORKTRAIL_CODEX_HOME": "/tmp/should-not-leak"}, clear=False)
+    @patch("worktrail.router.skill_dispatch.subprocess.run")
+    def test_codex_home_override_is_not_applied_to_other_providers(self, run):
+        run.return_value.returncode = 0
+
+        skill_dispatch.main(["--agent", "opencode", "--skill", "x:y"])
+
+        self.assertNotIn("env", run.call_args.kwargs)
 
     def test_invalid_skill_name_is_rejected(self):
         with self.assertRaises(ValueError):

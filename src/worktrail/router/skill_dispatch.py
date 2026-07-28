@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 from typing import Sequence
@@ -55,6 +56,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--skill", required=True)
     parser.add_argument("--args", default="")
     parser.add_argument("--model")
+    parser.add_argument(
+        "--codex-home",
+        help="override CODEX_HOME for a Codex child process (or use WORKTRAIL_CODEX_HOME)",
+    )
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parsed = parser.parse_args(argv)
@@ -62,7 +67,15 @@ def main(argv: list[str] | None = None) -> int:
     if parsed.dry_run:
         print(json.dumps(command) if parsed.json else " ".join(command))
         return 0
-    return subprocess.run(command, check=False).returncode
+    codex_home = parsed.codex_home or os.environ.get("WORKTRAIL_CODEX_HOME")
+    child_env = None
+    if parsed.agent == "codex" and codex_home:
+        child_env = os.environ.copy()
+        child_env["CODEX_HOME"] = codex_home
+    run_kwargs = {"check": False}
+    if child_env is not None:
+        run_kwargs["env"] = child_env
+    return subprocess.run(command, **run_kwargs).returncode
 
 
 if __name__ == "__main__":

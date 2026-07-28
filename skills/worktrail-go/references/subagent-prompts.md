@@ -33,7 +33,9 @@ When it is absent, `worktrail-skill-dispatch` is the supported adapter. It accep
 the resolved provider, skill name, and argument string, and executes an argv list
 for that same provider. Claude and OpenCode receive their slash-style skill prompt;
 Codex receives an explicit installed-skill instruction. It never silently switches
-providers.
+providers. When the nested Codex app-server cannot write its normal state directory,
+set `WORKTRAIL_CODEX_HOME` to a persistent writable directory or pass
+`--codex-home <path>`; the adapter applies that override only to the Codex child.
 
 ### `go_seed.py` CLI contract
 
