@@ -380,7 +380,12 @@ a role pinned to a different agent falls back to that agent's own default model.
   `--smoke-cmd "<command>"`. The orchestrator runs it on each group's integration branch
   before opening that group's PR and quarantines the group on a non-zero exit — catching
   cross-task API drift a CI round-trip earlier. Omit the flag when the policy key is unset
-  (repos without a wired command are never blocked).
+  (repos without a wired command are never blocked). **Still pass it explicitly when known** —
+  `live.py` auto-resolves the same command from policy (`pre_pr_cmd`, falling back to
+  `integrate_smoke_cmd`) when `--smoke-cmd` is omitted on a repo that has either key
+  configured, as a code-level safety net for exactly the case this note used to leave to the
+  calling agent's memory — but an explicit flag is still clearer and always wins over the
+  auto-resolved value.
 - **Task-worktree dependency bootstrap (opt-in, from policy):** when
   `worktree_bootstrap_cmd` is set in `docs/specs/go-policy.yaml` (loaded in Phase 4), pass
   it through as `--bootstrap-cmd "<command>"`. The orchestrator runs it in each fanned-out
