@@ -275,6 +275,65 @@ def test_kind_comes_from_the_artifact_not_the_model(change, tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# The CLI must not exit 0 on a plan that leaves impl tasks scope-less
+# --------------------------------------------------------------------------- #
+def test_the_cli_fails_loudly_when_impl_tasks_stay_scope_less(tmp_path, capsys):
+    """`worktrail-compile` used to always exit 0, even when the resulting plan
+    left non-tail-kind tasks with no file scope -- a live run would later
+    refuse to fan those out (`validate_task_metadata`), but the CLI itself
+    gave no signal. `--no-llm` degrades every task to the baseline (empty
+    files) deterministically, without spawning anything, so this reproduces
+    the gap without needing a fake model reply."""
+    import subprocess
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    d = repo / "openspec" / "changes" / "add-thing"
+    d.mkdir(parents=True)
+    (d / "proposal.md").write_text("## Why\nBecause.\n")
+    (d / "tasks.md").write_text("## 1. Core\n\n- [ ] 1.1 Add the parser\n- [ ] 1.2 Wire the endpoint\n")
+
+    rc = conductor_compile.main([str(d), "--no-llm"])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "1.1" in err and "1.2" in err
+    assert "scope" in err.lower()
+
+
+def test_the_cli_exits_zero_when_every_task_gets_scope(tmp_path, capsys):
+    """The counterpart: a plan with real scope for every task must not trip
+    the new gap check."""
+    import json
+    import subprocess
+    from unittest.mock import patch
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    d = repo / "openspec" / "changes" / "add-thing"
+    d.mkdir(parents=True)
+    (d / "proposal.md").write_text("## Why\nBecause.\n")
+    (d / "tasks.md").write_text("## 1. Core\n\n- [ ] 1.1 Add the parser\n- [ ] 1.2 Wire the endpoint\n")
+
+    reply = (
+        "```json\n"
+        + json.dumps(
+            {
+                "tasks": [
+                    {"id": "1.1", "files": ["src/parser.py"], "deps": []},
+                    {"id": "1.2", "files": ["src/api.py"], "deps": ["1.1"]},
+                ]
+            }
+        )
+        + "\n```\n"
+    )
+    with patch("worktrail.conductor.compile._default_spawn", return_value=reply):
+        rc = conductor_compile.main([str(d)])
+    assert rc == 0
+    assert "ERROR" not in capsys.readouterr().err
+
+
 # JSON extraction
 # --------------------------------------------------------------------------- #
 def test_the_cli_refuses_a_spec_outside_a_git_repo(tmp_path, capsys):

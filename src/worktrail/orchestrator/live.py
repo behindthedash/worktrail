@@ -204,6 +204,12 @@ class WorktreeMissingDependencyFileError(RuntimeError):
     branch in."""
 
 
+class WorktreeStackConflictError(WorktreeAddError):
+    """A sibling dependency branch could not be merged into a stacked worktree
+    (add/add or content conflict) -- the worktree would silently be missing
+    that dependency's commits if the run continued on it."""
+
+
 class RunLock:
     """Single-owner advisory lock for one (repo, spec) run, via ``flock`` on a
     sidecar beside the journal.
@@ -258,30 +264,46 @@ class RunLock:
         self.release()
 
 
-def apply_run_plan(repo: "Path", spec_rel: str, spec_id: str, tasks: list) -> list:
-    """Enrich freshly-loaded tasks with a compiled RunPlan, if one is cached.
+def apply_run_plan(
+    repo: "Path", spec_rel: str, spec_id: str, tasks: list, *, spawn=None
+) -> list:
+    """Enrich freshly-loaded tasks with a RunPlan, compiling one if none is cached.
 
-    This reads a plan; it never compiles one. Compiling costs a model call, and a
-    fan-out that silently spent one mid-run would be both a surprise on the bill
-    and a source of nondeterminism between two runs of the same spec. Producing a
-    plan is the explicit, out-of-band `worktrail-compile` step
-    (`conductor/compile.py`); consuming it is free and happens here.
+    `compile_run_plan` pays for a model call only when it has to: a cache hit is
+    free, and a format that already declares file scope for every task (devkit
+    frontmatter) takes the free seed path -- no model call, same as before this
+    changed. Only a format that carries no per-task file scope at all (OpenSpec's
+    `tasks.md`) triggers a real compile, and only on the first run of that exact
+    content version; every subsequent run/resume hits the cache this call just
+    populated. That one-time cost is exactly what running `worktrail-compile`
+    by hand beforehand would have paid -- this makes it automatic instead of a
+    required, easy-to-forget separate step (see `docs/design/history/` P3b and
+    the incident that motivated this: a first `full-real` launch against a fresh
+    OpenSpec change used to hard-fail with `RuntimeError: implementation task(s)
+    missing required frontmatter files` unless the operator remembered to compile
+    first).
 
-    With no cached plan this is a no-op and the run behaves exactly as it did
-    before P3b -- which is what keeps every existing devkit spec unaffected.
+    `spawn` is the same injectable compile seam `compile_run_plan` exposes,
+    threaded through for tests; production callers never pass it (falls back to
+    the real headless-agent spawn).
     """
     from ..conductor import compile as conductor_compile
-    from ..conductor import runplan as _runplan
 
     try:
         spec_dir = repo / spec_rel
-        fp = _runplan.fingerprint(spec_dir, tasks)
-        plan = _runplan.load_cached(conductor_compile.default_cache_dir(repo), spec_id, fp)
-    except OSError as exc:  # an unreadable cache must never take a run down
+        plan = conductor_compile.compile_run_plan(
+            spec_dir,
+            tasks,
+            spec_id=spec_id,
+            repo=repo,
+            spawn=spawn,
+            log=lambda m: print(f"{_ts()} {m}"),
+        )
+    except OSError as exc:  # an unreadable/unwritable cache must never take a run down
         print(f"{_ts()} run plan: cache unreadable ({exc}); using the spec's own deps")
         return tasks
-    if plan is None:
-        return tasks
+
+    from ..conductor import runplan as _runplan
 
     merged, notes = _runplan.apply_to_tasks(tasks, plan)
     for n in notes:
@@ -1045,9 +1067,18 @@ def add_stacked_worktree(
         mr = _git(wt, "merge", "--no-edit", mb, check=False)
         if mr.returncode != 0:
             _git(wt, "merge", "--abort", check=False)
-            print(
-                f"  !! {task['id']}: could not stack dependency branch {mb} "
-                f"(conflict) -- continuing on {start}"
+            # Continuing here would silently leave `wt` missing `mb`'s commits --
+            # `_require_dependency_files` would be the next line to notice, but only
+            # for files it happens to check, and only well after this cheap check
+            # could have caught it. Raise now: `_safe_drive` isolates this to just
+            # `task['id']` (marked failed, journaled), so the run continues on every
+            # OTHER task; only this task's dependents stay blocked until a human
+            # resolves the conflict and resumes.
+            raise WorktreeStackConflictError(
+                f"{task['id']}: could not stack dependency branch {mb} onto {start} "
+                f"(merge conflict) -- {task['id']}'s worktree would be missing {mb}'s "
+                f"commits. Resolve the conflict between {start} and {mb} manually, "
+                f"then resume the run."
             )
 
 
