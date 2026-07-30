@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 from worktrail.router.policy import load_policy
 from worktrail.router.pre_pr_gate import (
-    CLARIFICATION_INTEGRITY_DRIFT_EXIT,
+    CLARIFICATION_INTEGRITY_DRIFT_EXIT, DOD_VERIFICATION_DRIFT_EXIT,
     SCOPE_COMPLETENESS_EXIT, SPEC_SYNC_DRIFT_EXIT,
     UNCONFIGURED_EXIT, is_docs_only, main, resolve_cmd,
     scope_review_failures, spec_sync_drift,
@@ -386,6 +386,75 @@ class TestClarificationIntegrityGate(unittest.TestCase):
             "## Open Questions\n\nNone outstanding.\n",
         )
         self._commit(repo, "add spec")
+        self.assertEqual(main(["--repo", repo]), 0)
+
+
+class TestDodVerificationGate(unittest.TestCase):
+    """Exercises pre_pr_gate.py's wiring of check_dod_verification.py against
+    a real throwaway git repo (mirrors TestClarificationIntegrityGate's
+    pattern)."""
+
+    def _git(self, repo: str, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", *args], cwd=repo, capture_output=True,
+                              text=True, check=True)
+
+    def _init_repo(self) -> str:
+        d = tempfile.mkdtemp(prefix="prepr-dod-")
+        self._git(d, "init", "-q", "-b", "main")
+        self._git(d, "config", "user.email", "test@example.com")
+        self._git(d, "config", "user.name", "Test")
+        spec = Path(d) / "docs" / "specs"
+        spec.mkdir(parents=True)
+        (spec / "go-policy.yaml").write_text('pre_pr_cmd: "true"\n', encoding="utf-8")
+        self._git(d, "add", ".")
+        self._git(d, "commit", "-q", "-m", "base")
+        return d
+
+    def _write(self, repo: str, relpath: str, content: str) -> None:
+        path = Path(repo) / relpath
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    def _commit(self, repo: str, message: str) -> None:
+        self._git(repo, "add", ".")
+        self._git(repo, "commit", "-q", "-m", message)
+
+    def _task(self, dod_checks: str) -> str:
+        return (
+            "---\nid: TASK-001\ntitle: Fixture\nspec: 098-fixture\n"
+            "status: completed\n"
+            f"{dod_checks}"
+            "---\n\nbody\n"
+        )
+
+    def test_newly_added_completed_task_with_failing_dod_check_fails_gate(self) -> None:
+        repo = self._init_repo()
+        self._git(repo, "checkout", "-q", "-b", "feature")
+        self._write(
+            repo, "docs/specs/098-fixture/tasks/TASK-001.md",
+            self._task("dod-checks:\n  - type: file_exists\n    path: nonexistent.txt\n"),
+        )
+        self._commit(repo, "add task")
+        self.assertEqual(main(["--repo", repo]), DOD_VERIFICATION_DRIFT_EXIT)
+
+    def test_completed_task_with_passing_dod_checks_passes_gate(self) -> None:
+        repo = self._init_repo()
+        self._git(repo, "checkout", "-q", "-b", "feature")
+        self._write(repo, "README.md", "present\n")
+        self._write(
+            repo, "docs/specs/098-fixture/tasks/TASK-001.md",
+            self._task("dod-checks:\n  - type: file_exists\n    path: README.md\n"),
+        )
+        self._commit(repo, "add task")
+        self.assertEqual(main(["--repo", repo]), 0)
+
+    def test_completed_task_with_no_dod_checks_passes_gate(self) -> None:
+        repo = self._init_repo()
+        self._git(repo, "checkout", "-q", "-b", "feature")
+        self._write(
+            repo, "docs/specs/098-fixture/tasks/TASK-001.md", self._task("")
+        )
+        self._commit(repo, "add task")
         self.assertEqual(main(["--repo", repo]), 0)
 
 
