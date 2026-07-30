@@ -1,0 +1,34 @@
+schema: spec-driven
+
+context: |
+  Python 3.10+ package (pyproject.toml, src/worktrail/ layout, console-script
+  entry points). Never commit directly on main -- branch off into a sibling
+  git worktree, open a PR, merge only after CI is green (see AGENTS.md).
+  New behavior needs pytest coverage (tests/ mirrors src/worktrail/ layout)
+  and must keep `PYTHONPATH=src pytest -q && PYTHONPATH=src python3 -m
+  worktrail.orchestrator.orchestrate check` green. This repo also ships a
+  Claude Code plugin (.claude-plugin/, skills/, commands/) kept in lockstep
+  with the package by tests/test_plugin_surface.py -- a skill/command
+  referencing a script must be a real console script; a new skill's
+  directory must be added to plugin.json's "skills" array. /opsx:apply is
+  never dispatched from worktrail's own skills -- the orchestrator's own
+  fan-out replaces it.
+
+# Project context (optional)
+# This is shown to AI when creating artifacts.
+# Add your tech stack, conventions, style guides, domain knowledge, etc.
+# Example:
+#   context: |
+#     Tech stack: TypeScript, React, Node.js
+#     We use conventional commits
+#     Domain: e-commerce platform
+
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+# Example:
+#   rules:
+#     proposal:
+#       - Keep proposals under 500 words
+#       - Always include a "Non-goals" section
+#     tasks:
+#       - Break tasks into chunks of max 2 hours

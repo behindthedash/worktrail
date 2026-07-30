@@ -18,6 +18,11 @@
     "./skills/worktrail-go",
     "./skills/worktrail-help",
     "./skills/worktrail-handoff",
-    "./skills/worktrail-sdd-workflow"
+    "./skills/worktrail-sdd-workflow",
+    "./skills/openspec-propose",
+    "./skills/openspec-explore",
+    "./skills/openspec-update-change",
+    "./skills/openspec-sync-specs",
+    "./skills/openspec-archive-change"
   ]
 }
