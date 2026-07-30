@@ -1,0 +1,10 @@
+{
+  "metadata": {
+    "spec_id": "001-task-ac-verification-gate",
+    "updated_at": "2026-07-30T17:49:14Z",
+    "analysis_sources": [
+      {"agent": "spec-sync", "timestamp": "2026-07-30T17:49:14Z", "mode": "full"}
+    ]
+  },
+  "provides": []
+}
