@@ -45,6 +45,25 @@ This repo is also a Claude Code plugin marketplace (`.claude-plugin/marketplace.
 | `worktrail-go` | `router/` — the route classifier, orientation dashboard, run records, policy, and queue draining |
 | `worktrail-sdd-workflow` | the route executor `worktrail-go` dispatches to (routes A–J) — internal, never called directly |
 
+It also bundles OpenSpec's own Claude Code integration (`commands/opsx/*.md` +
+`skills/openspec-{propose,explore,update-change,sync-specs,archive-change}/`,
+sourced from `openspec init --tools claude` — see https://github.com/Fission-AI/OpenSpec),
+so `/opsx:propose` etc. are available to any session that installs this plugin, not only one
+launched with the target repo as cwd (project-scoped `.claude/commands/` are never loaded via
+`--add-dir`, and a workspace-rooted `/go` session is not launched from inside the target repo —
+Fission-AI ships no plugin/marketplace of its own to depend on instead, so this is a deliberate
+fork-and-adapt, not a second implementation). `/opsx:apply` and its backing `openspec-apply-change`
+skill are deliberately **not** bundled: worktrail's own orchestrator replaces it, and shipping it
+would let it be invoked directly and run a change twice (`test_opsx_apply_is_never_dispatched`
+guards the skill *text* against dispatching it; not bundling it at all closes the same gap for
+direct invocation). The bundled skill text is lightly edited from OpenSpec's generated output to
+redirect its own "next step" suggestions to worktrail's pipeline instead of `/opsx:apply`, and to
+fix a dangling `/opsx:continue` reference (that command does not exist in OpenSpec 1.6.0's
+Claude Code integration; redirected to `/opsx:propose` against the same change name instead).
+This repo's own specs use the OpenSpec format (`openspec/`, `openspec init`'d — see
+`openspec/config.yaml`); `docs/specs/001-task-ac-verification-gate/` predates this and stays
+devkit-format, since existing specs are always read by their on-disk format, never migrated.
+
 Install with `/plugin marketplace add behindthedash/worktrail`, then `/plugin install worktrail`.
 The plugin is a **thin surface**, not a second implementation: every command a SKILL.md issues is
 a console script from this package's `[project.scripts]`, on `PATH` after `pip install worktrail`.
