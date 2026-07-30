@@ -19,6 +19,24 @@ from . import score_candidates
 from . import work_queue
 
 
+class _LiteralStr(str):
+    """Marker subclass so the YAML dumper renders this value as a literal
+    block scalar (``|``) instead of a quoted flow scalar.
+
+    Free-text fields like ``focus`` routinely contain a colon+space or a
+    space+``#`` (both of which force PyYAML to quote a plain scalar) and
+    apostrophes (which single-quote style then escapes by doubling, e.g.
+    ``PR #2010''s``). A literal block scalar needs no escaping at all.
+    """
+
+
+def _represent_literal_str(dumper: yaml.SafeDumper, data: str) -> yaml.ScalarNode:
+    return dumper.represent_scalar("tag:yaml.org,2002:str", data, style="|")
+
+
+yaml.SafeDumper.add_representer(_LiteralStr, _represent_literal_str)
+
+
 def _slugify(focus: str) -> str:
     words = re.findall(r"[a-z0-9]+", focus.lower())[:5]
     return "-".join(words) or "handoff"
@@ -112,7 +130,7 @@ def create_handoff(
     frontmatter: dict[str, Any] = {
         "id": path.stem,
         "created": now.isoformat(timespec="seconds"),
-        "focus": focus,
+        "focus": _LiteralStr(focus),
         "repo": repo or None,
         "remote": remote or None,
         "base-branch": base_branch or None,
