@@ -35,6 +35,13 @@ existed (PR #428) may legitimately carry the anti-pattern and must not fail
 every future PR. See check_clarification_integrity.py's module docstring for
 the exact signature.
 
+Immediately after that, the gate runs the DoD-verification check
+(`check_dod_verification.py`) against task files **changed in this diff
+only**, same scoping rationale: a completed task whose `dod-checks:`
+frontmatter fails re-verification means its Acceptance Criteria/DoD
+checkboxes were claimed, not independently true. See
+check_dod_verification.py's module docstring for the exact signature.
+
 Exit codes:
   0   command passed, the repo opted out explicitly (`pre_pr_cmd: skip`), or
       the diff was docs-only per `docs_only_paths`
@@ -43,6 +50,7 @@ Exit codes:
       (default-deny: configure the repo or opt out explicitly; never bypass
       silently)
   3   clarification-integrity drift detected in changed docs/specs/ files
+  4   DoD-verification drift detected in changed, completed task file(s)
   N   the gate command's own non-zero exit code
 
 On a PASS, passing `--risk` also prints an `AUTOMERGE LABELS:` line — the
@@ -75,6 +83,7 @@ from typing import Any, Dict, List, Optional
 
 from .automerge_preflight import required_checks_gate
 from .check_clarification_integrity import check_changed_specs
+from .check_dod_verification import check_changed_specs as check_dod_failures
 from .check_spec_sync import check_spec
 from .policy import (
     POLICY_RELPATH, automerge_eligible, automerge_labels, load_policy,
@@ -88,6 +97,7 @@ UNCONFIGURED_EXIT = 2
 SPEC_SYNC_DRIFT_EXIT = 1
 SCOPE_COMPLETENESS_EXIT = 1
 CLARIFICATION_INTEGRITY_DRIFT_EXIT = 3
+DOD_VERIFICATION_DRIFT_EXIT = 4
 CANDIDATE_BASE_REFS = ("origin/main", "origin/master", "main", "master")
 
 
@@ -285,6 +295,16 @@ def main(argv=None) -> int:
                   "clean — see Decision Classification in specs.spec-check.md.",
                   file=sys.stderr)
             return CLARIFICATION_INTEGRITY_DRIFT_EXIT
+
+        dod_failures = check_dod_failures(repo, changed_paths(repo, policy) or [])
+        if dod_failures:
+            print("PRE-PR GATE: FAIL — Definition-of-Done verification failed for "
+                  "completed task(s):", file=sys.stderr)
+            for failure in dod_failures:
+                print(f"  - {failure}", file=sys.stderr)
+            print("  Run worktrail-check-dod-verification on the affected task(s) to fix.",
+                  file=sys.stderr)
+            return DOD_VERIFICATION_DRIFT_EXIT
 
     if not args.print_cmd and is_docs_only(repo, policy):
         print("PRE-PR GATE: DOCS-ONLY SKIP — every changed path matched "

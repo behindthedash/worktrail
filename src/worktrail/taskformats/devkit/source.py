@@ -64,6 +64,7 @@ KNOWN_TASK_FRONTMATTER_KEYS = {
     "imp-requirements",
     "success-criteria",
     "external-dependencies",
+    "dod-checks",
 }
 
 
