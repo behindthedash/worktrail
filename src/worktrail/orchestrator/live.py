@@ -91,6 +91,37 @@ def _detect_default_agent() -> str:
     return "claude"
 
 
+def _default_smoke_cmd(repo: Path) -> "str | None":
+    """Auto-resolve the pre-PR gate command from policy when `--smoke-cmd` was
+    not passed explicitly.
+
+    `--smoke-cmd` is opt-in and easy for the calling agent to forget -- it
+    happened in the same session this fix was authored in, on a repo (this
+    one) that has `pre_pr_cmd` configured the whole time. `gh pr create` in
+    `integrate.py` is a raw subprocess call; it is never reachable by a
+    Claude Code hook (headless or interactive), so the only place this can be
+    enforced is here, in code, before a group PR ever opens.
+
+    Mirrors `pre_pr_gate.resolve_cmd()`'s own precedence (`pre_pr_cmd`, then
+    `integrate_smoke_cmd`) and its `pre_pr_cmd: skip` opt-out -- but does NOT
+    mirror its default-deny-when-unconfigured behavior: a repo with neither
+    key set resolves to None here too, identical to the pre-existing "omit
+    `--smoke-cmd` to skip" contract. Failing closed on every unconfigured
+    repo would be more consistent with the interactive gate, but it changes
+    behavior for every repo and test fixture that has never configured
+    either key -- out of scope for this fix, which closes the "forgot to
+    pass a flag on an already-configured repo" gap, not the separate
+    "repos with no gate configured at all" gap.
+    """
+    from ..router.policy import load_policy
+    from ..router.pre_pr_gate import SKIP_VALUES, resolve_cmd
+
+    cmd = resolve_cmd(load_policy(repo))
+    if cmd is None or cmd.lower() in SKIP_VALUES:
+        return None
+    return cmd
+
+
 # DEFAULT_AGENT is resolved from the launching host via _detect_default_agent()
 # so that Claude Code, Codex, and OpenCode each use their own headless CLI
 # without an invocation-wide env var or a per-call --agent flag. Explicit
@@ -4069,8 +4100,11 @@ def main(argv=None) -> int:
         dest="smoke_cmd",
         help="Shell command run on each group's integration branch before its PR opens "
         "(e.g. 'pytest -q' or 'cd app && npm ci && npm test'); a non-zero exit quarantines "
-        "the group. Sourced from go-policy.yaml's integrate_smoke_cmd by the sdd-workflow conductor; "
-        "omit to skip (repos without a wired command are never blocked).",
+        "the group. Omit to auto-resolve from go-policy.yaml (pre_pr_cmd, falling back to "
+        "integrate_smoke_cmd -- same precedence as pre_pr_gate.py); explicit --smoke-cmd "
+        "always wins over policy. Repos with neither key configured are unaffected "
+        "(never blocked) -- this only closes the gap of forgetting to pass the flag on "
+        "an already-configured repo, not repos with no gate configured at all.",
     )
     fr.add_argument(
         "--bootstrap-cmd",
@@ -4261,6 +4295,9 @@ def main(argv=None) -> int:
         return 0
     if args.cmd == "full-real":
         only = [s.strip() for s in args.only.split(",")] if args.only else None
+        smoke_cmd = args.smoke_cmd
+        if smoke_cmd is None:
+            smoke_cmd = _default_smoke_cmd(Path(args.repo))
         full_real(
             args.repo,
             args.spec,
@@ -4281,7 +4318,7 @@ def main(argv=None) -> int:
             run_budget=args.run_budget * 60 if args.run_budget else args.run_budget,
             pipeline=args.pipeline,
             re_integrate=args.re_integrate,
-            smoke_cmd=args.smoke_cmd,
+            smoke_cmd=smoke_cmd,
             bootstrap_cmd=args.bootstrap_cmd,
             fork_research=args.fork_research,
             notify_cmd=getattr(args, "notify_cmd", None),
