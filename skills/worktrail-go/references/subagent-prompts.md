@@ -344,6 +344,23 @@ FALLBACK_AGENT_ARGS=(); [ -n "$FALLBACK_AGENT_CLI" ] && FALLBACK_AGENT_ARGS=(--f
 PR_LABELS=$(worktrail-pre-pr-gate --repo "$SPEC_ROOT" --risk "$RISK_LEVEL" --gates "$GATES" --target-branch "$BASE" --labels-only)
 PR_LABEL_ARGS=()
 for label in $PR_LABELS; do PR_LABEL_ARGS+=(--pr-label "$label"); done
+# An OpenSpec change's tasks.md never declares per-task file scope
+# (OpenSpecTaskSource deliberately emits `files: []` rather than inventing one —
+# inferring it is the conductor's job, not the adapter's). full-real's
+# validate_task_metadata() refuses to fan out without it, and apply_run_plan()
+# only ever *reads* a cached RunPlan, it never compiles one — a fan-out
+# silently spending a model call mid-run would be a cost and determinism
+# surprise. So the plan has to be produced explicitly, out-of-band, before
+# every first launch against an OpenSpec change, or full-real fails immediately
+# with "implementation task(s) missing required frontmatter files: ...".
+# Devkit specs already declare file scope in their task frontmatter and take
+# compile's free seed path (no model call), so this is a no-op there.
+if [ -d "$SPEC_ROOT/openspec/changes/$SPEC_ID" ]; then
+  worktrail-compile "$SPEC_ROOT/openspec/changes/$SPEC_ID" || {
+    echo "ERROR: worktrail-compile failed for $SPEC_ID — inspect the error above before retrying full-real." >&2
+    exit 1
+  }
+fi
 worktrail-live full-real --repo "$SPEC_ROOT" --spec docs/specs/$SPEC_ID --base "$BASE" --agent "$AGENT_CLI" "${AGENT_MODEL_ARGS[@]}" "${FALLBACK_AGENT_ARGS[@]}" "${ROLE_AGENT_MAP_ARGS[@]}" "${PR_LABEL_ARGS[@]}"
 ```
 
@@ -368,6 +385,11 @@ a role pinned to a different agent falls back to that agent's own default model.
 - Slash `GO` uses the pipelined orchestrator path by default. Include `--pipeline`
   and a non-zero `--run-budget` in the `full-real` invocation unless the user
   explicitly asks for sequential debug mode.
+- **Run `worktrail-compile` before `full-real` for every OpenSpec change** (see the
+  code block above). Skipping it is why a first launch against a fresh OpenSpec
+  change fails immediately with `RuntimeError: implementation task(s) missing
+  required frontmatter files: ...` — the change's `tasks.md` never carries file
+  scope, and `full-real` only reads a cached plan, it never compiles one.
 - The orchestrator's `full-real` mode is **long-running and CI-blocking** — always run it
   in the background (never on the foreground 10-minute Bash timeout). Use the Bash tool's
   `run_in_background` option **only** — never also `nohup … &` / `setsid` / a trailing `&`.
