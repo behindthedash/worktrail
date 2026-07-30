@@ -1,0 +1,45 @@
+name: 'CI: Auto-merge on open'
+on:
+  pull_request:
+    # `ready_for_review` so auto-merge engages when a draft is marked ready;
+    # the `opened`/`reopened` runs are skipped below while it is still a draft.
+    types: [opened, reopened, ready_for_review]
+
+jobs:
+  test-automerge-eligibility:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: bash scripts/ci/test_automerge_eligibility.sh
+
+  auto-merge:
+    # Never attempt auto-merge on a draft PR — GitHub rejects it
+    # ("Pull request is a draft") which fails this check red on every draft.
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check automerge eligibility
+        id: check-automerge
+        run: |
+          labels=$(gh pr view "${{ github.event.pull_request.number }}" \
+            --json labels --jq '.labels[].name' -R "${{ github.repository }}")
+          has_no_automerge="false"
+          if echo "$labels" | grep -q "^go:no-automerge$"; then
+            has_no_automerge="true"
+          fi
+
+          bash scripts/ci/automerge_eligibility.sh \
+            --github-output "$GITHUB_OUTPUT" \
+            --has-no-automerge-label "$has_no_automerge"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - run: gh pr merge --auto --squash "${{ github.event.pull_request.number }}" -R "${{ github.repository }}"
+        if: steps.check-automerge.outputs.eligible == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
