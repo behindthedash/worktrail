@@ -119,26 +119,26 @@ across a handful of files in the same subsystem, single worker).
 
 ## Acceptance Criteria
 
-- [ ] `FIELD_SCHEMA` accepts optional `dod-checks` list field.
-- [ ] `check_dod_verification.run_check` passes/fails `file_exists`, `grep`,
+- [x] `FIELD_SCHEMA` accepts optional `dod-checks` list field.
+- [x] `check_dod_verification.run_check` passes/fails `file_exists`, `grep`,
       `command` correctly; unknown type and malformed check are failures.
-- [ ] `check_dod_verification.check_task_file` is `[]` for non-completed
+- [x] `check_dod_verification.check_task_file` is `[]` for non-completed
       status and for completed-with-no-`dod-checks`.
-- [ ] `check_dod_verification.check_changed_specs` scopes correctly to
+- [x] `check_dod_verification.check_changed_specs` scopes correctly to
       devkit task files under `docs/specs/` from the given changed-paths.
-- [ ] `pre_pr_gate.main()` returns `4` on a failing completed-task DoD
+- [x] `pre_pr_gate.main()` returns `4` on a failing completed-task DoD
       check and `0` when checks pass or are absent.
-- [ ] `worktrail-check-dod-verification` console script registered.
-- [ ] `pytest` and `python3 -m worktrail.orchestrator.orchestrate check`
+- [x] `worktrail-check-dod-verification` console script registered.
+- [x] `pytest` and `python3 -m worktrail.orchestrator.orchestrate check`
       both pass.
 
 ## Definition of Done (DoD)
 
-- [ ] All Acceptance Criteria above are checked and independently true (not
+- [x] All Acceptance Criteria above are checked and independently true (not
       just claimed) — this task's own `dod-checks:` frontmatter re-verifies
       the file-existence/grep/test-command subset of these before status
       may read `completed`.
 - [ ] `PYTHONPATH=src python3 -m pytest -q` passes in full (not just the
       new/changed test files).
-- [ ] `python3 -m worktrail.orchestrator.orchestrate check` passes.
-- [ ] No unrelated files changed.
+- [x] `python3 -m worktrail.orchestrator.orchestrate check` passes.
+- [x] No unrelated files changed.
