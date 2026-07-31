@@ -4,12 +4,15 @@
       `check_repo(repo: Path) -> Dict[str, Any]`, `sweep(repos_root: Path) ->
       List[Dict[str, Any]]`, and `main()`, following `policy_selfcheck.py`'s
       shape (module docstring, `--repo`/`--repos-root`/`--json` CLI, exit 0
-      clean / 1 flagged). Import `_is_spec_doc` and `_rank` from
+      clean / 1 flagged). Import `_is_spec_doc` and `find_spec_file` from
       `.dashboard` rather than reimplementing the candidate-classification
-      rules; scan only `docs/specs/*/` (skip if the directory doesn't
-      exist). A finding fires when 2+ candidates rank 3 (no
-      naming-convention signal) and tie, matching `find_spec_file()`'s own
-      tie condition exactly.
+      rules (`_rank` is a closure nested inside `find_spec_file()`, not a
+      module-level name — do not attempt to import it or promote it to
+      module scope; that file is out of this task's scope). Scan only
+      `docs/specs/*/` (skip if the directory doesn't exist); for each spec
+      directory, collect `.md` candidates via `_is_spec_doc`, and if that
+      set is non-empty, a finding fires exactly when `find_spec_file(spec_dir)
+      is None` — the one condition under which it refuses to guess.
 - [ ] 1.2 Register `worktrail-dashboard-selfcheck =
       "worktrail.router.dashboard_selfcheck:main"` in `pyproject.toml`
       `[project.scripts]`, alongside the existing `worktrail-policy-selfcheck`
