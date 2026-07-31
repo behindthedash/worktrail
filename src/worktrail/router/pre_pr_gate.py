@@ -225,13 +225,21 @@ def scope_review_failures(run_path: Optional[Path]) -> List[str]:
 
 def resolve_pr_labels(
     repo: Path, policy: Dict[str, Any], risk: str, gates: List[str], target_branch: str,
+    route: Optional[str] = None,
 ) -> Tuple[List[str], bool, str]:
     """The exact label set `--labels-only` and `--risk` both compute: policy
     eligibility, then (only if policy-eligible) the live required-checks gate.
     Single source of truth so `--labels-only`, the printed AUTOMERGE LABELS
     line, and preflight.py's marker all agree on the same labels for the same
-    inputs."""
-    eligible, reason = automerge_eligible(policy, risk, gates, target_branch)
+    inputs.
+
+    `route` (when supplied) feeds `automerge_eligible()`'s `require_human_routes`
+    check. This function's own `changed_paths(repo, policy)` result feeds its
+    `protected_paths` check unconditionally -- no separate flag needed, since
+    the diff is already resolvable from `repo`/`policy` here."""
+    eligible, reason = automerge_eligible(
+        policy, risk, gates, target_branch,
+        route=route, changed_paths=changed_paths(repo, policy))
     if eligible:
         eligible, reason = required_checks_gate(repo, target_branch)
     return automerge_labels(eligible, risk), eligible, reason
@@ -254,6 +262,8 @@ def main(argv=None) -> int:
                     help="comma-separated classifier gates for --risk's eligibility check")
     p.add_argument("--target-branch", default="main",
                    help="PR target branch for --risk's eligibility check")
+    p.add_argument("--route", default=None,
+                   help="classified route letter for --risk's require_human_routes check")
     p.add_argument("--labels-only", action="store_true",
                    help="print resolved PR labels without running the test command")
     p.add_argument("--run", default=None, metavar="RUN_RECORD",
@@ -273,7 +283,7 @@ def main(argv=None) -> int:
             return UNCONFIGURED_EXIT
         gates = [g for g in args.gates.split(",") if g]
         labels, _eligible, _reason = resolve_pr_labels(
-            repo, policy, args.risk, gates, args.target_branch
+            repo, policy, args.risk, gates, args.target_branch, route=args.route
         )
         print(" ".join(labels))
         return 0
@@ -355,7 +365,7 @@ def main(argv=None) -> int:
     if args.risk is not None:
         gates = [g for g in args.gates.split(",") if g]
         labels, eligible, reason = resolve_pr_labels(
-            repo, policy, args.risk, gates, args.target_branch
+            repo, policy, args.risk, gates, args.target_branch, route=args.route
         )
         label_line = f"AUTOMERGE LABELS: {' '.join(labels)}  (eligible={eligible}: {reason})"
         hint_line = f"  Pass to PR creation: gh pr create {' '.join(f'--label {l}' for l in labels)} ..."

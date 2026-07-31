@@ -429,6 +429,8 @@ def _run(args: argparse.Namespace) -> int:
         gate_argv += ["--gates", args.gates]
     if args.target_branch:
         gate_argv += ["--target-branch", args.target_branch]
+    if args.route:
+        gate_argv += ["--route", args.route]
     if args.run:
         gate_argv += ["--run", args.run]
 
@@ -446,7 +448,7 @@ def _run(args: argparse.Namespace) -> int:
     if args.risk:
         gates = [g for g in args.gates.split(",") if g]
         labels, _eligible, _reason = pre_pr_gate.resolve_pr_labels(
-            repo, policy, args.risk, gates, args.target_branch
+            repo, policy, args.risk, gates, args.target_branch, route=args.route
         )
     marker = write_marker(repo, state, cmd, labels)
     if marker is not None:
@@ -490,6 +492,11 @@ def main(argv=None) -> int:
     )
     run_p.add_argument("--gates", default="", help="comma-separated classifier gates")
     run_p.add_argument("--target-branch", default="main", help="PR target branch")
+    run_p.add_argument(
+        "--route", default=None,
+        help="classified route letter — forwarded to pre_pr_gate.py's --route "
+             "for the require_human_routes check",
+    )
     run_p.add_argument(
         "--run", default=None, metavar="RUN_RECORD",
         help="shared go run record; enables mandatory scope completeness review",
