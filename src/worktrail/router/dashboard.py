@@ -196,7 +196,19 @@ def find_spec_file(spec_dir: Path) -> Optional[Path]:
             return (2, f.name)
         return (3, f.name)
 
-    return sorted(cands, key=_rank)[0]
+    ranked = sorted(cands, key=_rank)
+    best = ranked[0]
+    # A rank-3 file has no naming-convention evidence of being the spec doc --
+    # a single one is still trusted (the whole reason detection is by
+    # exclusion, not a strict pattern, is to cover bespoke legacy names), but
+    # 2+ rank-3 files tied means several arbitrarily-named prose docs are
+    # equally (un)plausible. Picking one by alphabetical order was the bug
+    # that misidentified a reference-doc dump (architecture diagram,
+    # investigation summaries, ...) as "the spec" and misrouted a docs-only
+    # backlog stub to spec-to-tasks instead of unspecd. Refuse to guess.
+    if _rank(best)[0] == 3 and sum(1 for f in cands if _rank(f)[0] == 3) > 1:
+        return None
+    return best
 
 
 # --- task counting -----------------------------------------------------------

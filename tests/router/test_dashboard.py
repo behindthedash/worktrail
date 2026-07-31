@@ -104,6 +104,22 @@ class StateMachine(unittest.TestCase):
         self.assertIn("brainstorm", r["next_action"])
         self.assertTrue(r["has_user_request"])
 
+    def test_user_request_with_reference_docs_is_unspecd_not_needs_tasks(self):
+        # Real bug (datalena docs/specs/038-authentication): user-request.md plus
+        # several colocated research/reference docs (architecture diagram,
+        # investigation summaries) was misrouted to needs-tasks/spec-to-tasks
+        # because find_spec_file() picked one of the reference docs as "the
+        # spec". Must resolve to unspecd like any other spec-less backlog stub.
+        d = self.root / "038-authentication"
+        d.mkdir()
+        (d / "user-request.md").write_text("# User Request\n\n**Feature**: Auth\n")
+        (d / "architecture-diagram.md").write_text("# Architecture\n")
+        (d / "implementation-checklist.md").write_text("# Checklist\n")
+        (d / "world_id_executive_summary.md").write_text("# Summary\n")
+        r = dashboard.detect_stage(d)
+        self.assertEqual(r["stage"], "unspecd")
+        self.assertIn("brainstorm", r["next_action"])
+
     def test_backfill_is_done_even_without_tasks(self):
         r = self.stage(spec_body=SPEC_BACKFILL)
         self.assertEqual(r["stage"], "done")
@@ -639,6 +655,25 @@ class SpecFileDiscovery(unittest.TestCase):
                        "TASK-001-review.md", "2026-05-30--technical-plan.md",
                        "brainstorming-notes.md", "spec-check.md", "TASKS.md"])
         self.assertIsNone(dashboard.find_spec_file(d))
+
+    def test_ambiguous_reference_docs_not_guessed_as_spec(self):
+        # Real bug (datalena docs/specs/038-authentication): a backlog stub with
+        # user-request.md plus several colocated research/reference docs (none
+        # dated, none matching the spec.md/-specs.md/brainstorm.md legacy names)
+        # had "architecture-diagram.md" picked as "the spec" by alphabetical
+        # tie-break, misrouting the folder to spec-to-tasks instead of unspecd.
+        # With 2+ candidates tied at the lowest rank, none of them carries any
+        # naming-convention evidence of being the real spec -- refuse to guess.
+        d = self._dir(["user-request.md", "architecture-diagram.md",
+                       "implementation-checklist.md", "world_id_executive_summary.md",
+                       "world_id_integration_assessment.md",
+                       "world_id_technical_implementation.md"])
+        self.assertIsNone(dashboard.find_spec_file(d))
+
+    def test_single_unconventional_name_still_recognized(self):
+        # A lone non-dated, non-legacy-named .md file is still trusted as the
+        # spec doc -- the ambiguity guard only fires when 2+ candidates tie.
+        self.assertEqual(self._found(["auth-redesign.md"]), "auth-redesign.md")
 
 
 class Constitution(unittest.TestCase):
