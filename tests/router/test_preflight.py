@@ -7,9 +7,11 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from worktrail.router.preflight import (
-    check, main, marker_path, read_marker, tree_state, write_marker,
+    check, duplicate_work_warning, main, marker_path, read_marker,
+    tree_state, write_marker,
 )
 
 
@@ -34,6 +36,14 @@ class _GitRepoCase(unittest.TestCase):
         path = Path(repo) / relpath
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
+
+    def _add_worktree(self, repo: str, branch: str) -> str:
+        import shutil
+        wt_dir = tempfile.mkdtemp(prefix="preflight-wt-")
+        shutil.rmtree(wt_dir)
+        self._git(repo, "worktree", "add", "-b", branch, wt_dir)
+        self.addCleanup(lambda: self._git(repo, "worktree", "remove", "--force", wt_dir))
+        return wt_dir
 
 
 class TestTreeState(_GitRepoCase):
@@ -175,6 +185,122 @@ class TestRunCli(_GitRepoCase):
         code = main(["run", "--repo", repo])
         self.assertEqual(code, 3)
         self.assertIsNone(read_marker(Path(repo)))
+
+
+class TestOpenPrBranches(_GitRepoCase):
+    def test_gh_missing_returns_empty(self) -> None:
+        from worktrail.router.preflight import _open_pr_branches
+        repo = self._init_repo()
+        with mock.patch("subprocess.run", side_effect=FileNotFoundError("gh")):
+            self.assertEqual(_open_pr_branches(Path(repo)), [])
+
+    def test_gh_nonzero_exit_returns_empty(self) -> None:
+        from worktrail.router.preflight import _open_pr_branches
+        repo = self._init_repo()
+        result = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="err")
+        with mock.patch("subprocess.run", return_value=result):
+            self.assertEqual(_open_pr_branches(Path(repo)), [])
+
+    def test_gh_success_parses_branch_names(self) -> None:
+        from worktrail.router.preflight import _open_pr_branches
+        repo = self._init_repo()
+        payload = json.dumps([{"headRefName": "a-b-c"}, {"headRefName": "d-e-f"}])
+        result = subprocess.CompletedProcess(args=[], returncode=0, stdout=payload, stderr="")
+        with mock.patch("subprocess.run", return_value=result):
+            self.assertEqual(_open_pr_branches(Path(repo)), ["a-b-c", "d-e-f"])
+
+
+class TestDuplicateWorkWarning(_GitRepoCase):
+    def test_no_siblings_and_no_open_prs_returns_none(self) -> None:
+        repo = self._init_repo()
+        self._git(repo, "checkout", "-q", "-b", "add-metrics-dashboard")
+        with mock.patch("worktrail.router.preflight._open_pr_branches", return_value=[]):
+            self.assertIsNone(duplicate_work_warning(Path(repo)))
+
+    def test_overlapping_sibling_worktree_warns(self) -> None:
+        repo = self._init_repo()
+        self._git(repo, "checkout", "-q", "-b", "wire-plan-audit-into-verify")
+        self._add_worktree(repo, "investigate-wire-plan-audit-into-verify")
+        with mock.patch("worktrail.router.preflight._open_pr_branches", return_value=[]):
+            warning = duplicate_work_warning(Path(repo))
+        assert warning is not None
+        self.assertIn("investigate-wire-plan-audit-into-verify", warning)
+        self.assertIn("worktree", warning)
+
+    def test_dissimilar_sibling_worktree_does_not_warn(self) -> None:
+        repo = self._init_repo()
+        self._git(repo, "checkout", "-q", "-b", "fix-typo-in-readme")
+        self._add_worktree(repo, "add-metrics-dashboard")
+        with mock.patch("worktrail.router.preflight._open_pr_branches", return_value=[]):
+            self.assertIsNone(duplicate_work_warning(Path(repo)))
+
+    def test_own_worktree_never_self_matches(self) -> None:
+        repo = self._init_repo()
+        self._git(repo, "checkout", "-q", "-b", "wire-plan-audit-into-verify")
+        with mock.patch("worktrail.router.preflight._open_pr_branches", return_value=[]):
+            self.assertIsNone(duplicate_work_warning(Path(repo)))
+
+    def test_matching_open_pr_warns(self) -> None:
+        repo = self._init_repo()
+        self._git(repo, "checkout", "-q", "-b", "wire-plan-audit-into-verify")
+        with mock.patch(
+            "worktrail.router.preflight._open_pr_branches",
+            return_value=["investigate/wire-plan-audit-into-verify"],
+        ):
+            warning = duplicate_work_warning(Path(repo))
+        assert warning is not None
+        self.assertIn("open PR", warning)
+
+    def test_single_word_branch_never_warns(self) -> None:
+        repo = self._init_repo()
+        self._git(repo, "checkout", "-q", "-b", "fix")
+        with mock.patch("worktrail.router.preflight._open_pr_branches", return_value=["fixes"]):
+            self.assertIsNone(duplicate_work_warning(Path(repo)))
+
+    def test_low_overlap_does_not_warn(self) -> None:
+        repo = self._init_repo()
+        self._git(repo, "checkout", "-q", "-b", "add-metrics-dashboard-panel")
+        with mock.patch(
+            "worktrail.router.preflight._open_pr_branches",
+            return_value=["add-billing-invoice-export"],
+        ):
+            self.assertIsNone(duplicate_work_warning(Path(repo)))
+
+
+class TestCheckWarningIntegration(_GitRepoCase):
+    def test_warning_key_present_on_allow_when_duplicate_detected(self) -> None:
+        repo = self._init_repo('pre_pr_cmd: "true"\n')
+        self._git(repo, "checkout", "-q", "-b", "wire-plan-audit-into-verify")
+        state = tree_state(Path(repo))
+        write_marker(Path(repo), state, "true")
+        with mock.patch(
+            "worktrail.router.preflight._open_pr_branches",
+            return_value=["investigate/wire-plan-audit-into-verify"],
+        ):
+            verdict = check(Path(repo))
+        self.assertEqual(verdict["decision"], "allow")
+        self.assertIn("warning", verdict)
+
+    def test_warning_key_present_on_deny_when_duplicate_detected(self) -> None:
+        repo = self._init_repo('pre_pr_cmd: "true"\n')
+        self._git(repo, "checkout", "-q", "-b", "wire-plan-audit-into-verify")
+        with mock.patch(
+            "worktrail.router.preflight._open_pr_branches",
+            return_value=["investigate/wire-plan-audit-into-verify"],
+        ):
+            verdict = check(Path(repo))
+        self.assertEqual(verdict["decision"], "deny")
+        self.assertIn("warning", verdict)
+
+    def test_warning_key_absent_when_no_duplicate(self) -> None:
+        repo = self._init_repo('pre_pr_cmd: "true"\n')
+        self._git(repo, "checkout", "-q", "-b", "add-metrics-dashboard")
+        state = tree_state(Path(repo))
+        write_marker(Path(repo), state, "true")
+        with mock.patch("worktrail.router.preflight._open_pr_branches", return_value=[]):
+            verdict = check(Path(repo))
+        self.assertEqual(verdict["decision"], "allow")
+        self.assertNotIn("warning", verdict)
 
 
 if __name__ == "__main__":
