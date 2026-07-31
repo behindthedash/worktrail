@@ -580,6 +580,59 @@ def build_group_prompt(role: str, group: Dict[str, Any], ctx: Dict[str, Any]) ->
 
 
 # --------------------------------------------------------------------------- #
+# Stacked-worktree sibling merge conflict (pre-PR, single task -- not a group)
+# --------------------------------------------------------------------------- #
+def build_stack_conflict_prompt(
+    spec_id: str,
+    task: Dict[str, Any],
+    conflicting_branch: str,
+    worktree_path: Any,
+) -> str:
+    """Render the cold-worker brief for a stacked-worktree sibling merge conflict.
+
+    Fires while `add_stacked_worktree()` is stacking a task's OWN worktree on its
+    sibling dependency branches (before any PR exists), not the post-PR group
+    branch build_group_prompt's ROLE_ASSEMBLY_RESOLVE handles -- but the resolve
+    instructions mirror that branch: minimal conflict resolution preserving both
+    sides' intent, `git add` + `git merge --continue`, no push/PR at this stage.
+    """
+    task_id = task["id"]
+    return "\n".join(
+        [
+            f"You are the {ROLE_ASSEMBLY_RESOLVE.upper()} worker for task `{task_id}` of "
+            f"spec {spec_id}.",
+            "",
+            f"Worktree (operate ONLY here): {worktree_path}",
+            f"Branch (already in conflicted merge state, merging sibling dependency "
+            f"branch `{conflicting_branch}`):",
+            "",
+            f"Merging sibling dependency branch `{conflicting_branch}` into task "
+            f"`{task_id}`'s stacked worktree has CONFLICTS.",
+            "The worktree is already in a conflicted `git merge` state.",
+            "  1. `git diff --name-only --diff-filter=U` to list conflicted files.",
+            "  2. Open each file and resolve every conflict MINIMALLY, preserving the "
+            "intent of BOTH sides (keep both branches' changes where possible).",
+            "  3. `git add <resolved files>` then `git merge --continue` to complete the merge.",
+            "  4. Run the affected tests to confirm nothing regressed.",
+            "",
+            "Hard rules:",
+            "  - Make the smallest change that resolves the problem.",
+            "  - Operate ONLY in this worktree -- do not touch any other worktree or branch.",
+            "  - Do NOT push or open a PR -- this branch is build-only at this stage; "
+            "the orchestrator pushes and opens the PR after all tasks are merged.",
+            "  - Do NOT wait for CI or hand-roll a background-wait loop (while true / "
+            "until / sleep). Resolve, then report back.",
+            "",
+            "End your reply with EXACTLY one fenced ```json block (the report-back):",
+            '  {"task": "%s", "step": "%s", "status": "success|failed",'
+            % (task_id, ROLE_ASSEMBLY_RESOLVE),
+            '   "head_sha": "<sha>", "files_touched": [...], "tests": "passed|failed|none",',
+            '   "notes": "<one line>"}',
+        ]
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Report-back parsing
 # --------------------------------------------------------------------------- #
 def parse_report_back(text: str) -> Dict[str, Any]:

@@ -1031,6 +1031,7 @@ def add_stacked_worktree(
     by_id: dict,
     wt: Path,
     expected_head_sha: str | None = None,
+    assembly_resolve_spawn=None,
 ) -> None:
     """Create `wt` on a fresh task branch, stacked on the task's dependencies.
 
@@ -1038,6 +1039,11 @@ def add_stacked_worktree(
     sibling dependencies into the new worktree so it carries ALL dependency
     commits. A merge conflict between sibling deps is aborted and logged (rare --
     deps are usually a chain), leaving the worktree on the primary dependency.
+
+    `assembly_resolve_spawn`, when provided, is used to attempt an automated
+    resolve-and-retry of a sibling merge conflict before giving up (see the
+    tasks in the stacked-worktree-conflict-auto-resolve change for the
+    resolve-and-retry behavior itself; this parameter is currently unused).
     """
     start, extra = dependency_start_ref(repo, spec_id, task, by_id)
     branch = f"{spec_id}/{task['id'].lower()}"
