@@ -111,7 +111,7 @@ output before launch).
 0. **Change-spec worktree** — `../../worktrail-go/references/subagent-prompts.md#change-spec-worktree-setup`.
    Includes a mandatory sibling-worktree/branch check against `$SPEC_ID` before
    creating `$WT` (advisory, not a hard stop — see that section). Outputs
-   `$CHANGE_SLUG`, `$WT`, `$CHANGE_DIR`. Sandbox-denied → surface and stop.
+   `$CHANGE_SLUG`, `$CHANGE_ID`, `$WT`, `$CHANGE_DIR`. Sandbox-denied → surface and stop.
 
 **GUARD: all change artifacts are authored inside `$WT/openspec/changes/$CHANGE_ID/`,
 never in `$REPO`. Commit the whole change directory on `chg/$CHANGE_ID` before
