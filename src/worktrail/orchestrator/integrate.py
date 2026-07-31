@@ -81,12 +81,18 @@ def _refresh_pr_labels(
     pr_labels: Optional[list[str]],
     target_branch: str,
     gates: str = "",
+    route: Optional[str] = None,
 ) -> Optional[list[str]]:
     """Refresh PR labels by re-running the pre-PR gate's label resolution.
 
     Returns fresh labels from the current policy and required-check state,
     or None when the gate script cannot be resolved or no risk label is
     present (caller should fall back to the original pr_labels).
+
+    route: the classified route letter, forwarded to pre_pr_gate.py's
+    --route so policy's require_human_routes check applies to orchestrator
+    group PRs the same way it applies to one-off PRs (worktrail-preflight
+    run already passes --route there). Omit only when the route is unknown.
     """
     if not pr_labels:
         return None
@@ -97,15 +103,18 @@ def _refresh_pr_labels(
     if risk is None:
         return None
     try:
+        cmd = [
+            sys.executable, str(gate_script),
+            "--repo", str(repo),
+            "--labels-only",
+            "--risk", risk,
+            "--gates", gates,
+            "--target-branch", target_branch,
+        ]
+        if route:
+            cmd += ["--route", route]
         r = subprocess.run(
-            [
-                sys.executable, str(gate_script),
-                "--repo", str(repo),
-                "--labels-only",
-                "--risk", risk,
-                "--gates", gates,
-                "--target-branch", target_branch,
-            ],
+            cmd,
             capture_output=True, text=True, timeout=30,
         )
         if r.returncode != 0:
@@ -640,6 +649,8 @@ def integrate_one(
     smoke_cmd: Optional[str] = None,
     assembly_resolve_spawn=None,
     pr_labels: Optional[list[str]] = None,
+    route: Optional[str] = None,
+    gates: str = "",
 ) -> Optional[tuple]:
     """Integrate exactly one group and record its result in the journal.
 
@@ -672,6 +683,10 @@ def integrate_one(
     pre_pr_gate.py --labels-only) so every fresh PR reflects the current
     policy and required-check state. Existing OPEN/MERGED PRs keep their
     original labels (deterministic). Pass None to skip label handling.
+    route, gates: the classified route letter and comma-joined gates for
+    this run, forwarded to the label refresh so require_human_routes (and
+    any gate-driven eligibility check) reaches orchestrator-created group
+    PRs the same way it reaches one-off PRs. Omit when unknown.
     """
     name = g["name"]
 
@@ -881,7 +896,7 @@ def integrate_one(
             pass
 
     # No PR found (conventional or operator); refresh labels and create new one
-    fresh_labels = _refresh_pr_labels(repo, pr_labels, pr_base)
+    fresh_labels = _refresh_pr_labels(repo, pr_labels, pr_base, gates=gates, route=route)
     effective_labels = fresh_labels if fresh_labels is not None else pr_labels
 
     remote_url = _git(repo, "remote", "get-url", remote).stdout.strip()
@@ -1005,6 +1020,8 @@ def finish_real(
     assembly_resolve_spawn=None,
     pr_labels: Optional[list[str]] = None,
     pr_pacing_wait: int = 0,
+    route: Optional[str] = None,
+    gates: str = "",
 ) -> tuple:
     """Integrate per-group branches into the REAL repo and open PRs against `base`.
 
@@ -1062,6 +1079,8 @@ def finish_real(
             smoke_cmd=smoke_cmd,
             assembly_resolve_spawn=assembly_resolve_spawn,
             pr_labels=pr_labels,
+            route=route,
+            gates=gates,
         )
         if result is not None:
             prs.append(result)
