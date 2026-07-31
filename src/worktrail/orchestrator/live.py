@@ -1024,6 +1024,15 @@ def _validate_retained_task_branch(
             )
 
 
+ASSEMBLY_RESOLVE_STRIKES = 1
+"""Bounds a sibling-merge resolve attempt to a single try before giving up.
+
+Mirrors `integrate.ASSEMBLY_RESOLVE_STRIKES`. Kept as a separate constant
+rather than imported -- `integrate` imports `live`, so importing back would
+cycle -- but must stay numerically in sync with it.
+"""
+
+
 def _stack_resolve_verify(wt: Path, conflicted_files: list) -> bool:
     """Git-state check for whether a sibling-merge conflict was actually resolved.
 
@@ -1045,6 +1054,46 @@ def _stack_resolve_verify(wt: Path, conflicted_files: list) -> bool:
     return True
 
 
+def _stack_resolve_attempt(
+    wt: Path, spec_id: str, task: dict, conflicting_branch: str, assembly_resolve_spawn
+) -> bool:
+    """Dispatch a resolve worker to fix a sibling-dependency merge conflict.
+
+    Called with the conflicted merge state (conflict markers) still in place.
+    Mirrors `integrate._attempt_assembly_resolve`'s bounded strike loop (see
+    `ASSEMBLY_RESOLVE_STRIKES`): a worker's report-back is trusted only as far
+    as `_stack_resolve_verify` backs it up. Returns True once a strike's
+    resolution verifies clean; False once strikes are exhausted, leaving the
+    merge aborted so the caller can raise.
+    """
+    conflicted_files = [
+        ln.strip()
+        for ln in _git(
+            wt, "diff", "--name-only", "--diff-filter=U", check=False
+        ).stdout.splitlines()
+        if ln.strip()
+    ]
+    prompt = dispatch.build_stack_conflict_prompt(spec_id, task, conflicting_branch, wt)
+    for strike in range(ASSEMBLY_RESOLVE_STRIKES):
+        explicit_failure = False
+        try:
+            raw = assembly_resolve_spawn(prompt, wt)
+            rep = dispatch.parse_report_back(raw)
+            if rep.get("status") != "success":
+                explicit_failure = True  # worker explicitly reported failure; trust it
+        except Exception:
+            pass  # spawn crash or unparseable report-back: let git state decide
+        if not explicit_failure and _stack_resolve_verify(wt, conflicted_files):
+            return True
+        _git(wt, "merge", "--abort", check=False)
+        if strike < ASSEMBLY_RESOLVE_STRIKES - 1:
+            # Re-issue the conflicting merge to restore conflict state for the next strike.
+            m = _git(wt, "merge", "--no-edit", conflicting_branch, check=False)
+            if m.returncode == 0:
+                return True  # Merged cleanly on the retry (unlikely but safe)
+    return False
+
+
 def add_stacked_worktree(
     repo: Path,
     spec_id: str,
@@ -1063,11 +1112,12 @@ def add_stacked_worktree(
 
     `assembly_resolve_spawn`, when provided, is used to attempt an automated
     resolve-and-retry of a sibling merge conflict before giving up: on a
-    conflicted merge, the conflicted-files list is captured, a resolve-worker
-    prompt is built via `dispatch.build_stack_conflict_prompt`, and the spawn
-    is dispatched in place of raising immediately (see the tasks in the
-    stacked-worktree-conflict-auto-resolve change for the surrounding
-    verify/abort/retry-bound behavior).
+    conflicted merge, `_stack_resolve_attempt` dispatches a resolve-worker
+    (bounded to `ASSEMBLY_RESOLVE_STRIKES` tries) and only accepts the
+    resolution once `_stack_resolve_verify` confirms the git state actually
+    backs it up. If the attempt is exhausted or `assembly_resolve_spawn` is
+    not provided, the merge is aborted and `WorktreeStackConflictError` is
+    raised as before.
     """
     start, extra = dependency_start_ref(repo, spec_id, task, by_id)
     branch = f"{spec_id}/{task['id'].lower()}"
@@ -1096,16 +1146,9 @@ def add_stacked_worktree(
     for mb in extra:  # carry sibling dependencies' commits too
         mr = _git(wt, "merge", "--no-edit", mb, check=False)
         if mr.returncode != 0:
-            if assembly_resolve_spawn is not None:
-                conflicted_files = [
-                    ln.strip()
-                    for ln in _git(
-                        wt, "diff", "--name-only", "--diff-filter=U", check=False
-                    ).stdout.splitlines()
-                    if ln.strip()
-                ]
-                prompt = dispatch.build_stack_conflict_prompt(spec_id, task, mb, wt)
-                assembly_resolve_spawn(prompt, wt)
+            if assembly_resolve_spawn is not None and _stack_resolve_attempt(
+                wt, spec_id, task, mb, assembly_resolve_spawn
+            ):
                 continue
             _git(wt, "merge", "--abort", check=False)
             # Continuing here would silently leave `wt` missing `mb`'s commits --
