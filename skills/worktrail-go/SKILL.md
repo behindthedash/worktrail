@@ -122,7 +122,15 @@ Handle a missing/empty dashboard gracefully (the `rendered` field already prints
 
 **Help invocations** (`help`): delegate to `worktrail-help` and stop before the dashboard.
 
-**Brief-ID invocations** (`handoff:ID`, `route:X`, explicit brief id): print only a one-line summary (e.g. `Dashboard: N specs, M in-flight`) and skip the picker — go straight to Phase 2.
+**Brief-ID invocations** (`handoff:ID`, `route:X`, or a bare/prefix positional argument that
+resolves to exactly one queued brief): print only a one-line summary (e.g. `Dashboard: N specs,
+M in-flight`) and skip the picker — go straight to Phase 2. **Determine this here, before
+Phase 1b runs** — do not defer the check to Phase 2, which only executes after the picker for
+invocations Phase 1 didn't already classify as Brief-ID. For a positional argument not already
+identified as `help`/`drain`/`auto`/`route:X`/a v1 intent keyword/a resolved repo name, run the
+resolve check now: see Phase 2's **Bare or prefix brief ID** rule for the exact command and
+match semantics. A `match` makes this a Brief-ID invocation; `none`/`ambiguous` falls through to
+Phase 1b's picker.
 
 **Auto invocations** (`auto` argument, spec 017): print the `rendered` dashboard as usual, skip BOTH picker levels, and add `--auto` (plus `--auto-repo "$ARG_REPO"` when a repo was named) to the dashboard.py call so `$DASHBOARD_JSON.auto_pick` is populated. Full flow: `references/auto-mode.md`.
 
@@ -133,7 +141,8 @@ drain requests through `worktrail-go` only.
 
 ### Phase 1b — Two-Level Picker (AskUserQuestion)
 
-For bare `/go` or free-text with no explicit route/brief, use a **two-level picker**:
+For bare `/go` or free-text with no explicit route/brief — i.e. Phase 1's Brief-ID check
+(including the bare/prefix resolve check) found no match — use a **two-level picker**:
 
 **Level 1 — Category.** Call `AskUserQuestion` with options from `$DASHBOARD_JSON.category_actions` verbatim (header: `What to work on`). Each option is a work category: Ready / in-progress, Needs tasking, Work queue, New work. Only categories with items are present. The tool's automatic **"Other"** covers free-text, a specific spec id, or "see more".
 
