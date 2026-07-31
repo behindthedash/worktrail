@@ -1024,6 +1024,27 @@ def _validate_retained_task_branch(
             )
 
 
+def _stack_resolve_verify(wt: Path, conflicted_files: list) -> bool:
+    """Git-state check for whether a sibling-merge conflict was actually resolved.
+
+    Mirrors `integrate._assembly_resolve_salvage`: a resolve worker's report-back
+    is trusted only as far as the git state backs it up. The merge must be
+    concluded (no `MERGE_HEAD`), the tree must be clean (`git status
+    --porcelain`), and none of the files that were conflicted may still carry a
+    `<<<<<<<` marker. Any failure here means the resolution is rejected outright,
+    regardless of what the worker claimed.
+    """
+    if _git(wt, "rev-parse", "-q", "--verify", "MERGE_HEAD", check=False).returncode == 0:
+        return False  # merge still in progress
+    if _git(wt, "status", "--porcelain", check=False).stdout.strip():
+        return False  # dirty tree
+    for f in conflicted_files:
+        p = Path(wt) / f
+        if p.is_file() and "<<<<<<<" in p.read_text(errors="replace"):
+            return False
+    return True
+
+
 def add_stacked_worktree(
     repo: Path,
     spec_id: str,
@@ -1041,9 +1062,12 @@ def add_stacked_worktree(
     deps are usually a chain), leaving the worktree on the primary dependency.
 
     `assembly_resolve_spawn`, when provided, is used to attempt an automated
-    resolve-and-retry of a sibling merge conflict before giving up (see the
-    tasks in the stacked-worktree-conflict-auto-resolve change for the
-    resolve-and-retry behavior itself; this parameter is currently unused).
+    resolve-and-retry of a sibling merge conflict before giving up: on a
+    conflicted merge, the conflicted-files list is captured, a resolve-worker
+    prompt is built via `dispatch.build_stack_conflict_prompt`, and the spawn
+    is dispatched in place of raising immediately (see the tasks in the
+    stacked-worktree-conflict-auto-resolve change for the surrounding
+    verify/abort/retry-bound behavior).
     """
     start, extra = dependency_start_ref(repo, spec_id, task, by_id)
     branch = f"{spec_id}/{task['id'].lower()}"
@@ -1072,6 +1096,17 @@ def add_stacked_worktree(
     for mb in extra:  # carry sibling dependencies' commits too
         mr = _git(wt, "merge", "--no-edit", mb, check=False)
         if mr.returncode != 0:
+            if assembly_resolve_spawn is not None:
+                conflicted_files = [
+                    ln.strip()
+                    for ln in _git(
+                        wt, "diff", "--name-only", "--diff-filter=U", check=False
+                    ).stdout.splitlines()
+                    if ln.strip()
+                ]
+                prompt = dispatch.build_stack_conflict_prompt(spec_id, task, mb, wt)
+                assembly_resolve_spawn(prompt, wt)
+                continue
             _git(wt, "merge", "--abort", check=False)
             # Continuing here would silently leave `wt` missing `mb`'s commits --
             # `_require_dependency_files` would be the next line to notice, but only
