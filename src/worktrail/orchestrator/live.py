@@ -2087,8 +2087,14 @@ def live_run_real(
     outside it.
     """
     model = model or spawnlib.default_model_for_agent(agent)
+    from . import verify as verify_module
+
     repo = repo.resolve()
     role_models = _effective_role_models(agent, role_models)
+    _ar_agent, _ar_model = _role_agent_model(
+        dispatch.ROLE_ASSEMBLY_RESOLVE, agent, model, role_agents, role_models
+    )
+    assembly_resolve_spawn_fn = verify_module._make_live_spawn(_ar_model, timeout, agent=_ar_agent)
     spec_id, tasks = taskformats.load_spec(str(repo / spec_rel))
     tasks = apply_run_plan(repo, spec_rel, spec_id, tasks)
     for t in tasks:
@@ -2207,10 +2213,23 @@ def live_run_real(
                 if not wt.exists():
                     if expected_head_sha:
                         add_stacked_worktree(
-                            repo, spec_id, task, by_id, wt, expected_head_sha=expected_head_sha
+                            repo,
+                            spec_id,
+                            task,
+                            by_id,
+                            wt,
+                            expected_head_sha=expected_head_sha,
+                            assembly_resolve_spawn=assembly_resolve_spawn_fn,
                         )
                     else:
-                        add_stacked_worktree(repo, spec_id, task, by_id, wt)
+                        add_stacked_worktree(
+                            repo,
+                            spec_id,
+                            task,
+                            by_id,
+                            wt,
+                            assembly_resolve_spawn=assembly_resolve_spawn_fn,
+                        )
                     drift_events = _require_dependency_files(wt, task, by_id)
                     if drift_events:
                         with state_lock:
