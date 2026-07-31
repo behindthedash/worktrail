@@ -21,6 +21,13 @@ status + diff digest) in the worktree's private git dir. That marker contract
 is unchanged from the standalone devops hook script's, so passes recorded
 before this migration remain valid after it.
 
+Both subcommands' verdict also carries an optional "warning" key
+(`duplicate_work_warning()`): the current branch's name is compared, by word
+overlap, against sibling worktrees' branches and open PR head branches. A
+close match never flips the decision to "deny" -- a legitimate resume must
+still proceed -- it only surfaces a heads-up that a matching PR or worktree
+may already exist.
+
 Usage:
   worktrail-preflight check [--repo PATH]
   worktrail-preflight run [--repo PATH] [--risk low|medium|high|critical]
@@ -32,15 +39,23 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from . import pre_pr_gate
 from .policy import load_policy
 
 MARKER_NAME = "preflight-pass.json"
+
+# Duplicate-work warning: how much of the smaller branch's word set must
+# overlap the other branch's before we warn. Two words minimum on each side
+# keeps a single generic word (e.g. "fix") from tripping a false positive.
+_SLUG_WORD_RE = re.compile(r"[a-z0-9]+")
+_DUPLICATE_OVERLAP_THRESHOLD = 0.6
+_DUPLICATE_MIN_WORDS = 2
 
 
 def _git(repo: Path, *args: str) -> Optional[str]:
@@ -54,6 +69,117 @@ def _git(repo: Path, *args: str) -> Optional[str]:
     if result.returncode != 0:
         return None
     return result.stdout
+
+
+def _current_branch(repo: Path) -> Optional[str]:
+    ref = _git(repo, "symbolic-ref", "--short", "-q", "HEAD")
+    if ref is None:
+        return None
+    ref = ref.strip()
+    return ref or None
+
+
+def _sibling_worktree_branches(repo: Path) -> Dict[str, str]:
+    """branch name -> worktree path, for every OTHER worktree tracked by
+    repo's canonical checkout.
+
+    Reads `git worktree list --porcelain` rather than scanning
+    `<repo>-worktrees/` directory names (as dashboard.py's cleanup listing
+    does): that convention breaks for branch names containing "/", and this
+    check must not silently miss a sibling because of that.
+    """
+    output = _git(repo, "worktree", "list", "--porcelain")
+    if output is None:
+        return {}
+    branches: Dict[str, str] = {}
+    path: Optional[str] = None
+    for line in output.splitlines():
+        if line.startswith("worktree "):
+            path = line[len("worktree "):].strip()
+        elif line.startswith("branch "):
+            ref = line[len("branch "):].strip()
+            if ref.startswith("refs/heads/"):
+                ref = ref[len("refs/heads/"):]
+            if path is not None:
+                branches[ref] = path
+    return branches
+
+
+def _open_pr_branches(repo: Path) -> List[str]:
+    """Open PR head branch names for repo's GitHub remote, via `gh pr list`.
+
+    Best-effort only: `gh` missing, unauthenticated, offline, or lacking a
+    GitHub remote all resolve to an empty list. This feeds a warning, never
+    a deny, so it must never block on tooling/network availability.
+    """
+    try:
+        result = subprocess.run(
+            ["gh", "pr", "list", "--state", "open", "--json", "headRefName",
+             "--limit", "200"],
+            capture_output=True, text=True, timeout=15, cwd=str(repo),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if result.returncode != 0:
+        return []
+    try:
+        rows = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return []
+    return [row["headRefName"] for row in rows if row.get("headRefName")]
+
+
+def _slug_words(branch: str) -> set:
+    return set(_SLUG_WORD_RE.findall(branch.lower()))
+
+
+def duplicate_work_warning(repo: Path) -> Optional[str]:
+    """Warn (never deny) when the current branch's name closely overlaps an
+    open PR's or a sibling worktree's branch name.
+
+    This is the signal PR #63/#64 slipped through undetected: two sessions
+    independently branched near-identical work
+    (`wire-plan-audit-into-verify` / `investigate/wire-plan-audit-into-verify`)
+    and neither was warned before opening its PR. Matching is by branch-name
+    word overlap, not file-diff comparison, so it costs one `gh pr list` call
+    and a worktree-list read -- no diff inspection.
+    """
+    branch = _current_branch(repo)
+    if not branch:
+        return None
+    own_words = _slug_words(branch)
+    if len(own_words) < _DUPLICATE_MIN_WORDS:
+        return None
+
+    here = str(repo.resolve())
+    candidates: Dict[str, str] = {}
+    for other_branch, path in _sibling_worktree_branches(repo).items():
+        if other_branch == branch:
+            continue
+        try:
+            if str(Path(path).resolve()) == here:
+                continue
+        except OSError:
+            pass
+        candidates.setdefault(other_branch, f"worktree at {path}")
+    for other_branch in _open_pr_branches(repo):
+        if other_branch == branch:
+            continue
+        candidates.setdefault(other_branch, "an open PR")
+
+    for other_branch, source in candidates.items():
+        other_words = _slug_words(other_branch)
+        if len(other_words) < _DUPLICATE_MIN_WORDS:
+            continue
+        overlap = own_words & other_words
+        ratio = len(overlap) / min(len(own_words), len(other_words))
+        if ratio >= _DUPLICATE_OVERLAP_THRESHOLD:
+            return (
+                f"branch '{branch}' closely overlaps '{other_branch}' "
+                f"({source}) -- possible duplicate work, verify before "
+                "opening a PR"
+            )
+    return None
 
 
 def tree_state(repo: Path) -> Optional[str]:
@@ -101,27 +227,41 @@ def write_marker(repo: Path, state: str, cmd: Optional[str]) -> Optional[Path]:
 
 
 def check(repo: Path) -> Dict[str, str]:
-    """Marker-aware verdict: {"decision": "allow"|"deny", "reason": str}."""
+    """Marker-aware verdict: {"decision": "allow"|"deny", "reason": str,
+    "warning": str (optional)}.
+
+    "warning" is populated by `duplicate_work_warning()` when set, on every
+    decision path -- it is an independent, non-blocking signal, never a
+    reason to flip allow to deny.
+    """
     if not repo.is_dir():
         return {"decision": "deny", "reason": f"repo path does not exist: {repo}"}
+
+    warning = duplicate_work_warning(repo)
+
+    def _verdict(decision: str, reason: str) -> Dict[str, str]:
+        verdict = {"decision": decision, "reason": reason}
+        if warning:
+            verdict["warning"] = warning
+        return verdict
 
     policy = load_policy(repo)
     cmd = pre_pr_gate.resolve_cmd(policy)
     if cmd is None:
-        return {"decision": "allow", "reason": "no pre_pr_cmd/integrate_smoke_cmd configured"}
+        return _verdict("allow", "no pre_pr_cmd/integrate_smoke_cmd configured")
     if cmd.lower() in pre_pr_gate.SKIP_VALUES:
-        return {"decision": "allow", "reason": f"explicit 'pre_pr_cmd: {cmd}'"}
+        return _verdict("allow", f"explicit 'pre_pr_cmd: {cmd}'")
     if pre_pr_gate.is_docs_only(repo, policy):
-        return {"decision": "allow", "reason": "docs-only diff per docs_only_paths"}
+        return _verdict("allow", "docs-only diff per docs_only_paths")
 
     state = tree_state(repo)
     marker = read_marker(repo)
     if state is not None and marker is not None and marker.get("state") == state:
-        return {"decision": "allow", "reason": "pass marker matches current tree"}
+        return _verdict("allow", "pass marker matches current tree")
 
-    return {
-        "decision": "deny",
-        "reason": (
+    return _verdict(
+        "deny",
+        (
             "pre-PR preflight gate has not passed against the current tree. Run "
             f"`worktrail-preflight run --repo {repo}` (or `cd {repo} && "
             "worktrail-preflight run`) to execute the gate; on success it records "
@@ -129,7 +269,7 @@ def check(repo: Path) -> Dict[str, str]:
             "invalidates it) and PR creation will be allowed. Docs-only diffs "
             "(per go-policy docs_only_paths) skip the gate automatically."
         ),
-    }
+    )
 
 
 def _run(args: argparse.Namespace) -> int:
