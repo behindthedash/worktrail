@@ -13,6 +13,7 @@ from worktrail.router.preflight import (
     check, duplicate_work_warning, main, marker_path, read_marker,
     tree_state, write_marker,
 )
+from worktrail.router.preflight import _pr_touched_files, _resolve_base_ref, _touched_files
 
 
 class _GitRepoCase(unittest.TestCase):
@@ -37,11 +38,11 @@ class _GitRepoCase(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
 
-    def _add_worktree(self, repo: str, branch: str) -> str:
+    def _add_worktree(self, repo: str, branch: str, start_point: str = "HEAD") -> str:
         import shutil
         wt_dir = tempfile.mkdtemp(prefix="preflight-wt-")
         shutil.rmtree(wt_dir)
-        self._git(repo, "worktree", "add", "-b", branch, wt_dir)
+        self._git(repo, "worktree", "add", "-b", branch, wt_dir, start_point)
         self.addCleanup(lambda: self._git(repo, "worktree", "remove", "--force", wt_dir))
         return wt_dir
 
@@ -210,6 +211,60 @@ class TestOpenPrBranches(_GitRepoCase):
             self.assertEqual(_open_pr_branches(Path(repo)), ["a-b-c", "d-e-f"])
 
 
+class TestPrTouchedFiles(_GitRepoCase):
+    def test_gh_missing_returns_none(self) -> None:
+        repo = self._init_repo()
+        with mock.patch("subprocess.run", side_effect=FileNotFoundError("gh")):
+            self.assertIsNone(_pr_touched_files(Path(repo), "some-branch"))
+
+    def test_gh_nonzero_exit_returns_none(self) -> None:
+        repo = self._init_repo()
+        result = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="err")
+        with mock.patch("subprocess.run", return_value=result):
+            self.assertIsNone(_pr_touched_files(Path(repo), "some-branch"))
+
+    def test_gh_success_parses_file_names(self) -> None:
+        repo = self._init_repo()
+        result = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="a.py\nb.py\n", stderr="",
+        )
+        with mock.patch("subprocess.run", return_value=result):
+            self.assertEqual(
+                _pr_touched_files(Path(repo), "some-branch"), frozenset({"a.py", "b.py"}),
+            )
+
+
+class TestResolveBaseRef(_GitRepoCase):
+    def test_finds_local_main_when_unconfigured(self) -> None:
+        repo = self._init_repo()
+        self.assertEqual(_resolve_base_ref(Path(repo)), "main")
+
+    def test_prefers_configured_base_branch(self) -> None:
+        repo = self._init_repo('pre_pr_cmd: "true"\nbase_branch: main\n')
+        self.assertEqual(_resolve_base_ref(Path(repo)), "main")
+
+    def test_returns_none_when_unresolvable(self) -> None:
+        repo = self._init_repo('pre_pr_cmd: "true"\nbase_branch: nonexistent-branch\n')
+        self.assertIsNone(_resolve_base_ref(Path(repo)))
+
+
+class TestTouchedFiles(_GitRepoCase):
+    def test_reports_diff_from_base(self) -> None:
+        repo = self._init_repo()
+        self._git(repo, "checkout", "-q", "-b", "feature")
+        self._write(repo, "src/new_file.py")
+        self._git(repo, "add", ".")
+        self._git(repo, "commit", "-q", "-m", "add file")
+        self.assertEqual(
+            _touched_files(Path(repo), "main", "feature"), frozenset({"src/new_file.py"}),
+        )
+
+    def test_empty_when_no_divergence(self) -> None:
+        repo = self._init_repo()
+        self._git(repo, "checkout", "-q", "-b", "feature")
+        self.assertEqual(_touched_files(Path(repo), "main", "feature"), frozenset())
+
+
 class TestDuplicateWorkWarning(_GitRepoCase):
     def test_no_siblings_and_no_open_prs_returns_none(self) -> None:
         repo = self._init_repo()
@@ -263,6 +318,78 @@ class TestDuplicateWorkWarning(_GitRepoCase):
         with mock.patch(
             "worktrail.router.preflight._open_pr_branches",
             return_value=["add-billing-invoice-export"],
+        ):
+            self.assertIsNone(duplicate_work_warning(Path(repo)))
+
+
+class TestDuplicateWorkWarningFileOverlap(_GitRepoCase):
+    def test_overlapping_touched_files_in_sibling_worktree_warns(self) -> None:
+        repo = self._init_repo()
+        self._git(repo, "checkout", "-q", "-b", "improve-onboarding-flow")
+        self._write(repo, "src/shared_module.py", "own change\n")
+        self._git(repo, "add", ".")
+        self._git(repo, "commit", "-q", "-m", "touch shared module")
+
+        wt_dir = self._add_worktree(repo, "polish-signup-experience", start_point="main")
+        self._write(wt_dir, "src/shared_module.py", "other change\n")
+        self._git(wt_dir, "add", ".")
+        self._git(wt_dir, "commit", "-q", "-m", "touch shared module too")
+
+        with mock.patch("worktrail.router.preflight._open_pr_branches", return_value=[]):
+            warning = duplicate_work_warning(Path(repo))
+        assert warning is not None
+        self.assertIn("shared_module.py", warning)
+        self.assertIn("polish-signup-experience", warning)
+        self.assertIn("worktree", warning)
+
+    def test_overlapping_touched_files_in_open_pr_warns(self) -> None:
+        repo = self._init_repo()
+        self._git(repo, "checkout", "-q", "-b", "improve-onboarding-flow")
+        self._write(repo, "src/shared_module.py", "own change\n")
+        self._git(repo, "add", ".")
+        self._git(repo, "commit", "-q", "-m", "touch shared module")
+
+        with mock.patch(
+            "worktrail.router.preflight._open_pr_branches",
+            return_value=["polish-signup-experience"],
+        ), mock.patch(
+            "worktrail.router.preflight._pr_touched_files",
+            return_value=frozenset({"src/shared_module.py", "docs/notes.md"}),
+        ):
+            warning = duplicate_work_warning(Path(repo))
+        assert warning is not None
+        self.assertIn("shared_module.py", warning)
+        self.assertIn("open PR", warning)
+
+    def test_dissimilar_touched_files_and_names_does_not_warn(self) -> None:
+        repo = self._init_repo()
+        self._git(repo, "checkout", "-q", "-b", "improve-onboarding-flow")
+        self._write(repo, "src/onboarding.py", "own change\n")
+        self._git(repo, "add", ".")
+        self._git(repo, "commit", "-q", "-m", "touch onboarding")
+
+        with mock.patch(
+            "worktrail.router.preflight._open_pr_branches",
+            return_value=["polish-signup-experience"],
+        ), mock.patch(
+            "worktrail.router.preflight._pr_touched_files",
+            return_value=frozenset({"src/billing.py"}),
+        ):
+            self.assertIsNone(duplicate_work_warning(Path(repo)))
+
+    def test_pr_diff_fetch_failure_is_fail_open(self) -> None:
+        repo = self._init_repo()
+        self._git(repo, "checkout", "-q", "-b", "improve-onboarding-flow")
+        self._write(repo, "src/onboarding.py", "own change\n")
+        self._git(repo, "add", ".")
+        self._git(repo, "commit", "-q", "-m", "touch onboarding")
+
+        with mock.patch(
+            "worktrail.router.preflight._open_pr_branches",
+            return_value=["polish-signup-experience"],
+        ), mock.patch(
+            "worktrail.router.preflight._pr_touched_files",
+            return_value=None,
         ):
             self.assertIsNone(duplicate_work_warning(Path(repo)))
 

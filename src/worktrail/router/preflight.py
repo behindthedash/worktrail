@@ -23,10 +23,12 @@ before this migration remain valid after it.
 
 Both subcommands' verdict also carries an optional "warning" key
 (`duplicate_work_warning()`): the current branch's name is compared, by word
-overlap, against sibling worktrees' branches and open PR head branches. A
-close match never flips the decision to "deny" -- a legitimate resume must
-still proceed -- it only surfaces a heads-up that a matching PR or worktree
-may already exist.
+overlap, against sibling worktrees' branches and open PR head branches, and
+its touched files are separately compared against each candidate's touched
+files (independent of the name match -- catches differently-named branches
+that independently edit the same files). A close match never flips the
+decision to "deny" -- a legitimate resume must still proceed -- it only
+surfaces a heads-up that a matching PR or worktree may already exist.
 
 Usage:
   worktrail-preflight check [--repo PATH]
@@ -133,26 +135,77 @@ def _slug_words(branch: str) -> set:
     return set(_SLUG_WORD_RE.findall(branch.lower()))
 
 
+def _resolve_base_ref(repo: Path) -> Optional[str]:
+    """Find a ref to diff branches against for the touched-file check,
+    preferring the repo policy's configured base_branch. Mirrors
+    pre_pr_gate._resolve_base_ref / check_dod_verification._resolve_base_ref
+    -- each caller owns its own copy rather than importing another module's
+    private helper.
+    """
+    configured = load_policy(repo).get("base_branch")
+    candidates = (
+        (f"origin/{configured}", configured)
+        if configured else pre_pr_gate.CANDIDATE_BASE_REFS
+    )
+    for ref in candidates:
+        if _git(repo, "rev-parse", "--verify", "--quiet", ref) is not None:
+            return ref
+    return None
+
+
+def _touched_files(repo: Path, base_ref: str, ref: str) -> Optional[frozenset]:
+    """Files `ref` has touched relative to its merge-base with `base_ref`,
+    via `git diff base_ref...ref --name-only`. None means unresolvable (e.g.
+    `ref` shares no history with `base_ref`) -- callers must treat that as
+    "no signal", never as an error.
+    """
+    diff = _git(repo, "diff", "--name-only", f"{base_ref}...{ref}")
+    if diff is None:
+        return None
+    return frozenset(line for line in diff.splitlines() if line.strip())
+
+
+def _pr_touched_files(repo: Path, branch: str) -> Optional[frozenset]:
+    """Files touched by the open PR whose head branch is `branch`, via `gh
+    pr diff --name-only`. Best-effort like `_open_pr_branches`: any failure
+    (gh missing, unauthenticated, offline, a ref gh can't resolve) returns
+    None, never raises -- this feeds a warning, never a deny.
+    """
+    try:
+        result = subprocess.run(
+            ["gh", "pr", "diff", branch, "--name-only"],
+            capture_output=True, text=True, timeout=15, cwd=str(repo),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return frozenset(line for line in result.stdout.splitlines() if line.strip())
+
+
 def duplicate_work_warning(repo: Path) -> Optional[str]:
-    """Warn (never deny) when the current branch's name closely overlaps an
-    open PR's or a sibling worktree's branch name.
+    """Warn (never deny) when the current branch closely overlaps an open
+    PR's or a sibling worktree's branch, by branch-name word overlap or by
+    touched-file overlap.
 
     This is the signal PR #63/#64 slipped through undetected: two sessions
     independently branched near-identical work
     (`wire-plan-audit-into-verify` / `investigate/wire-plan-audit-into-verify`)
-    and neither was warned before opening its PR. Matching is by branch-name
-    word overlap, not file-diff comparison, so it costs one `gh pr list` call
-    and a worktree-list read -- no diff inspection.
+    and neither was warned before opening its PR. The branch-name check
+    catches that cheaply (word overlap, no diff inspection) but misses two
+    differently-named branches that independently touch the same files --
+    the deeper form of the same problem (PR #67) -- so the touched-file
+    check runs alongside it: one `git diff base...branch --name-only` per
+    worktree candidate, one `gh pr diff --name-only` per PR candidate.
     """
     branch = _current_branch(repo)
     if not branch:
         return None
     own_words = _slug_words(branch)
-    if len(own_words) < _DUPLICATE_MIN_WORDS:
-        return None
+    name_check_active = len(own_words) >= _DUPLICATE_MIN_WORDS
 
     here = str(repo.resolve())
-    candidates: Dict[str, str] = {}
+    candidates: Dict[str, Dict[str, str]] = {}
     for other_branch, path in _sibling_worktree_branches(repo).items():
         if other_branch == branch:
             continue
@@ -161,24 +214,48 @@ def duplicate_work_warning(repo: Path) -> Optional[str]:
                 continue
         except OSError:
             pass
-        candidates.setdefault(other_branch, f"worktree at {path}")
+        candidates.setdefault(
+            other_branch, {"source": f"worktree at {path}", "kind": "worktree"}
+        )
     for other_branch in _open_pr_branches(repo):
         if other_branch == branch:
             continue
-        candidates.setdefault(other_branch, "an open PR")
+        candidates.setdefault(other_branch, {"source": "an open PR", "kind": "pr"})
+    if not candidates:
+        return None
 
-    for other_branch, source in candidates.items():
-        other_words = _slug_words(other_branch)
-        if len(other_words) < _DUPLICATE_MIN_WORDS:
-            continue
-        overlap = own_words & other_words
-        ratio = len(overlap) / min(len(own_words), len(other_words))
-        if ratio >= _DUPLICATE_OVERLAP_THRESHOLD:
-            return (
-                f"branch '{branch}' closely overlaps '{other_branch}' "
-                f"({source}) -- possible duplicate work, verify before "
-                "opening a PR"
+    base_ref = _resolve_base_ref(repo)
+    own_files = _touched_files(repo, base_ref, branch) if base_ref else None
+
+    for other_branch, info in candidates.items():
+        source, kind = info["source"], info["kind"]
+
+        if name_check_active:
+            other_words = _slug_words(other_branch)
+            if len(other_words) >= _DUPLICATE_MIN_WORDS:
+                overlap = own_words & other_words
+                ratio = len(overlap) / min(len(own_words), len(other_words))
+                if ratio >= _DUPLICATE_OVERLAP_THRESHOLD:
+                    return (
+                        f"branch '{branch}' closely overlaps '{other_branch}' "
+                        f"({source}) -- possible duplicate work, verify before "
+                        "opening a PR"
+                    )
+
+        if own_files and base_ref:
+            other_files = (
+                _touched_files(repo, base_ref, other_branch) if kind == "worktree"
+                else _pr_touched_files(repo, other_branch)
             )
+            if other_files:
+                shared_files = own_files & other_files
+                if shared_files:
+                    example = sorted(shared_files)[0]
+                    return (
+                        f"branch '{branch}' touches the same file(s) as "
+                        f"'{other_branch}' ({source}), e.g. '{example}' -- "
+                        "possible duplicate work, verify before opening a PR"
+                    )
     return None
 
 
