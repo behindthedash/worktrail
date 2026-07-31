@@ -1024,6 +1024,27 @@ def _validate_retained_task_branch(
             )
 
 
+def _stack_resolve_verify(wt: Path, conflicted_files: list) -> bool:
+    """Git-state check for whether a sibling-merge conflict was actually resolved.
+
+    Mirrors `integrate._assembly_resolve_salvage`: a resolve worker's report-back
+    is trusted only as far as the git state backs it up. The merge must be
+    concluded (no `MERGE_HEAD`), the tree must be clean (`git status
+    --porcelain`), and none of the files that were conflicted may still carry a
+    `<<<<<<<` marker. Any failure here means the resolution is rejected outright,
+    regardless of what the worker claimed.
+    """
+    if _git(wt, "rev-parse", "-q", "--verify", "MERGE_HEAD", check=False).returncode == 0:
+        return False  # merge still in progress
+    if _git(wt, "status", "--porcelain", check=False).stdout.strip():
+        return False  # dirty tree
+    for f in conflicted_files:
+        p = Path(wt) / f
+        if p.is_file() and "<<<<<<<" in p.read_text(errors="replace"):
+            return False
+    return True
+
+
 def add_stacked_worktree(
     repo: Path,
     spec_id: str,
