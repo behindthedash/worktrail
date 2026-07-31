@@ -145,8 +145,21 @@ claude/codex workers included.** Before `gh pr create` (or updating an existing
 PR's head), run the gate from the worktree root and require exit 0:
 
 ```bash
-worktrail-pre-pr-gate --repo "$PWD" --run "$RUN" --risk "$RISK_LEVEL" --gates "$GATES" --target-branch "$BASE"
+worktrail-preflight run --repo "$PWD" --run "$RUN" --risk "$RISK_LEVEL" --gates "$GATES" --target-branch "$BASE"
 ```
+
+`worktrail-preflight run` executes `pre_pr_gate.py` in-process (identical
+checks and exit codes to calling `worktrail-pre-pr-gate` directly — it is a
+strict superset, not an alternate path) and, on a zero exit, additionally
+records a pass marker for the exact current tree **plus** the `go:risk-*`/
+`go:no-automerge` labels this risk/gates combination requires. That marker is
+what the machine-level `gh pr create` PreToolUse hook (delegating to
+`worktrail-preflight check`) reads: a `gh pr create` invocation whose
+`--label` flags don't match the recorded labels is denied at the tool-call
+level, independent of whether this SKILL.md section ran correctly. Do not
+call `worktrail-pre-pr-gate` directly for this step — it performs the same
+checks but never records the marker, so the label enforcement below silently
+never engages.
 
 The gate resolves `pre_pr_cmd` (fallback: `integrate_smoke_cmd`) from the
 target repo's `docs/specs/go-policy.yaml` and runs it, streaming output. Rules:
@@ -168,16 +181,19 @@ target repo's `docs/specs/go-policy.yaml` and runs it, streaming output. Rules:
   orchestrator recalculating policy internally. Recycled/open PRs keep their
   original labels.
 
-**Automerge labels (code-enforced eligibility, not agent-narrated).** On a
+**Automerge labels (code-enforced at two points, not agent-narrated).** On a
 PASS, the gate above also prints an `AUTOMERGE LABELS:` line —
 `go:risk-<level>` always, plus `go:no-automerge` when
 `policy.automerge_eligible()` is false. Pass those exact labels to
 `gh pr create --label <label> [--label <label>]`; they must already exist in
-the target repo (bootstrapped once via `gh label create`, not per-PR). A
+the target repo (bootstrapped once via `gh label create`, not per-PR). Two
+independent enforcement points now back this, so a skipped or wrong copy of
+the labels doesn't silently reach GitHub: (1) locally, the `gh pr create`
+PreToolUse hook denies the tool call itself when the labels it carries don't
+match the marker `worktrail-preflight run` just recorded; (2) on GitHub, a
 repo's own auto-merge automation (e.g. `.github/workflows/auto-merge.yml`)
-reads `go:no-automerge` to skip/undo arming — this is what makes the
-eligibility check binding even if a future dispatch skips this SKILL.md
-section entirely, instead of depending on the agent to run it correctly.
+reads `go:no-automerge` to skip/undo arming, covering PRs created outside
+this hook's reach (e.g. a headless worker on a machine without it wired up).
 
 For every PR produced:
 

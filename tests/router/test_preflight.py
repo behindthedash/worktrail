@@ -10,8 +10,8 @@ from pathlib import Path
 from unittest import mock
 
 from worktrail.router.preflight import (
-    check, duplicate_work_warning, main, marker_path, read_marker,
-    tree_state, write_marker,
+    check, duplicate_work_warning, labels_in_command, main, marker_path,
+    read_marker, tree_state, write_marker,
 )
 from worktrail.router.preflight import _pr_touched_files, _resolve_base_ref, _touched_files
 
@@ -97,6 +97,56 @@ class TestMarkerRoundtrip(_GitRepoCase):
         marker_path(Path(repo)).write_text("not json", encoding="utf-8")
         self.assertIsNone(read_marker(Path(repo)))
 
+    def test_labels_round_trip(self) -> None:
+        repo = self._init_repo()
+        state = tree_state(Path(repo))
+        write_marker(Path(repo), state, "pytest -q", ["go:risk-high", "go:no-automerge"])
+        marker = read_marker(Path(repo))
+        self.assertEqual(marker["labels"], ["go:risk-high", "go:no-automerge"])
+
+    def test_omitted_labels_default_to_empty_list(self) -> None:
+        repo = self._init_repo()
+        state = tree_state(Path(repo))
+        write_marker(Path(repo), state, "pytest -q")
+        marker = read_marker(Path(repo))
+        self.assertEqual(marker["labels"], [])
+
+
+class TestLabelsInCommand(unittest.TestCase):
+    def test_space_separated_label(self) -> None:
+        self.assertEqual(
+            labels_in_command("gh pr create --title x --label go:risk-high"),
+            {"go:risk-high"},
+        )
+
+    def test_equals_separated_label(self) -> None:
+        self.assertEqual(
+            labels_in_command("gh pr create --title x --label=go:risk-low"),
+            {"go:risk-low"},
+        )
+
+    def test_multiple_labels(self) -> None:
+        self.assertEqual(
+            labels_in_command(
+                "gh pr create --label go:risk-high --label go:no-automerge --title x"
+            ),
+            {"go:risk-high", "go:no-automerge"},
+        )
+
+    def test_quoted_title_does_not_confuse_parsing(self) -> None:
+        self.assertEqual(
+            labels_in_command(
+                "gh pr create --title 'fix: something --label fake' --label go:risk-low"
+            ),
+            {"go:risk-low"},
+        )
+
+    def test_no_labels_returns_empty_set(self) -> None:
+        self.assertEqual(labels_in_command("gh pr create --title x"), set())
+
+    def test_malformed_quoting_fails_closed_to_empty_set(self) -> None:
+        self.assertEqual(labels_in_command("gh pr create --title 'unterminated"), set())
+
 
 class TestCheckVerdict(_GitRepoCase):
     def test_unconfigured_repo_allows(self) -> None:
@@ -143,6 +193,57 @@ class TestCheckVerdict(_GitRepoCase):
         verdict = check(Path("/nonexistent/path/xyz"))
         self.assertEqual(verdict["decision"], "deny")
 
+    def test_matching_marker_with_no_labels_omits_required_labels_key(self) -> None:
+        repo = self._init_repo('pre_pr_cmd: "true"\n')
+        state = tree_state(Path(repo))
+        write_marker(Path(repo), state, "true")
+        verdict = check(Path(repo))
+        self.assertEqual(verdict["decision"], "allow")
+        self.assertNotIn("required_labels", verdict)
+
+    def test_matching_marker_with_labels_surfaces_required_labels(self) -> None:
+        repo = self._init_repo('pre_pr_cmd: "true"\n')
+        state = tree_state(Path(repo))
+        write_marker(Path(repo), state, "true", ["go:risk-high", "go:no-automerge"])
+        verdict = check(Path(repo))
+        self.assertEqual(verdict["decision"], "allow")
+        self.assertEqual(verdict["required_labels"], ["go:risk-high", "go:no-automerge"])
+
+    def test_gh_pr_create_missing_required_label_denies(self) -> None:
+        repo = self._init_repo('pre_pr_cmd: "true"\n')
+        state = tree_state(Path(repo))
+        write_marker(Path(repo), state, "true", ["go:risk-high", "go:no-automerge"])
+        verdict = check(
+            Path(repo),
+            command="gh pr create --title x --label go:risk-high",
+        )
+        self.assertEqual(verdict["decision"], "deny")
+        self.assertIn("go:no-automerge", verdict["reason"])
+
+    def test_gh_pr_create_with_all_required_labels_allows(self) -> None:
+        repo = self._init_repo('pre_pr_cmd: "true"\n')
+        state = tree_state(Path(repo))
+        write_marker(Path(repo), state, "true", ["go:risk-high", "go:no-automerge"])
+        verdict = check(
+            Path(repo),
+            command="gh pr create --title x --label go:risk-high --label go:no-automerge",
+        )
+        self.assertEqual(verdict["decision"], "allow")
+
+    def test_gh_pr_ready_ignores_required_labels(self) -> None:
+        repo = self._init_repo('pre_pr_cmd: "true"\n')
+        state = tree_state(Path(repo))
+        write_marker(Path(repo), state, "true", ["go:risk-high", "go:no-automerge"])
+        verdict = check(Path(repo), command="gh pr ready 42")
+        self.assertEqual(verdict["decision"], "allow")
+
+    def test_no_command_argument_does_not_enforce_labels(self) -> None:
+        repo = self._init_repo('pre_pr_cmd: "true"\n')
+        state = tree_state(Path(repo))
+        write_marker(Path(repo), state, "true", ["go:risk-high", "go:no-automerge"])
+        verdict = check(Path(repo))
+        self.assertEqual(verdict["decision"], "allow")
+
 
 class TestCheckCli(_GitRepoCase):
     def test_check_cli_allow_exits_zero_and_prints_json(self) -> None:
@@ -167,6 +268,23 @@ class TestCheckCli(_GitRepoCase):
         payload = json.loads(out.getvalue())
         self.assertEqual(payload["decision"], "deny")
 
+    def test_check_cli_command_flag_enforces_missing_label(self) -> None:
+        repo = self._init_repo('pre_pr_cmd: "true"\n')
+        state = tree_state(Path(repo))
+        write_marker(Path(repo), state, "true", ["go:risk-critical", "go:no-automerge"])
+        import contextlib
+        import io
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = main([
+                "check", "--repo", repo,
+                "--command", "gh pr create --title x --label go:risk-critical",
+            ])
+        self.assertEqual(code, 1)
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["decision"], "deny")
+        self.assertIn("go:no-automerge", payload["reason"])
+
 
 class TestRunCli(_GitRepoCase):
     def test_run_records_marker_on_pass(self) -> None:
@@ -186,6 +304,29 @@ class TestRunCli(_GitRepoCase):
         code = main(["run", "--repo", repo])
         self.assertEqual(code, 3)
         self.assertIsNone(read_marker(Path(repo)))
+
+    def test_run_without_risk_records_empty_labels(self) -> None:
+        repo = self._init_repo('pre_pr_cmd: "true"\n')
+        code = main(["run", "--repo", repo])
+        self.assertEqual(code, 0)
+        self.assertEqual(read_marker(Path(repo))["labels"], [])
+
+    def test_run_with_protected_gate_records_risk_and_no_automerge_labels(self) -> None:
+        # never_automerge short-circuits automerge_eligible() before any live
+        # required-checks lookup, so this stays fully offline/deterministic.
+        repo = self._init_repo('pre_pr_cmd: "true"\n')
+        code = main([
+            "run", "--repo", repo, "--risk", "critical", "--gates", "never_automerge",
+        ])
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            read_marker(Path(repo))["labels"], ["go:risk-critical", "go:no-automerge"],
+        )
+        # And check() now enforces that label set against a gh pr create command.
+        verdict = check(
+            Path(repo), command="gh pr create --title x --label go:risk-critical",
+        )
+        self.assertEqual(verdict["decision"], "deny")
 
 
 class TestOpenPrBranches(_GitRepoCase):

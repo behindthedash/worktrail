@@ -275,6 +275,20 @@ required status checks plus the repo's `allow_auto_merge` setting (false makes
 Either signal missing forces `go:no-automerge` regardless of the policy-level
 verdict — checked per-PR, not cached, since protection can change mid-session.
 
+The formula's output still had to reach the actual PR as a label, and until
+this fix that step was agent-executed and unenforced for every one-off route
+(F/G/H/I/J, non-grouped C/D): `pre_pr_gate.py --risk` only *printed* an
+`AUTOMERGE LABELS:` line, and nothing stopped a `gh pr create` that never
+copied it (`docs/specs/research/classify-gate-enforcement-audit.md`, PR #74).
+`worktrail-preflight run --risk` now records the resolved labels in the same
+pass marker it already writes for the test gate, and `worktrail-preflight
+check` — which the `gh pr create`/`gh pr ready` PreToolUse hook already
+delegates to for the test-gate decision — denies the tool call itself when a
+`gh pr create` command's `--label` flags don't match. The parallel
+orchestrator's own group-PR path (`integrate.py`'s `_refresh_pr_labels()`)
+was already exempt from this gap since it applies labels programmatically at
+`gh pr create` time; it is unaffected by this change.
+
 ---
 
 ## 3. Migration plan (v1 → v2)

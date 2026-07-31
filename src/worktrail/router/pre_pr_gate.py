@@ -79,7 +79,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .automerge_preflight import required_checks_gate
 from .check_clarification_integrity import check_changed_specs
@@ -223,6 +223,20 @@ def scope_review_failures(run_path: Optional[Path]) -> List[str]:
     return failures
 
 
+def resolve_pr_labels(
+    repo: Path, policy: Dict[str, Any], risk: str, gates: List[str], target_branch: str,
+) -> Tuple[List[str], bool, str]:
+    """The exact label set `--labels-only` and `--risk` both compute: policy
+    eligibility, then (only if policy-eligible) the live required-checks gate.
+    Single source of truth so `--labels-only`, the printed AUTOMERGE LABELS
+    line, and preflight.py's marker all agree on the same labels for the same
+    inputs."""
+    eligible, reason = automerge_eligible(policy, risk, gates, target_branch)
+    if eligible:
+        eligible, reason = required_checks_gate(repo, target_branch)
+    return automerge_labels(eligible, risk), eligible, reason
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--repo", default=".",
@@ -258,10 +272,10 @@ def main(argv=None) -> int:
             print("--labels-only requires --risk", file=sys.stderr)
             return UNCONFIGURED_EXIT
         gates = [g for g in args.gates.split(",") if g]
-        eligible, _reason = automerge_eligible(policy, args.risk, gates, args.target_branch)
-        if eligible:
-            eligible, _reason = required_checks_gate(repo, args.target_branch)
-        print(" ".join(automerge_labels(eligible, args.risk)))
+        labels, _eligible, _reason = resolve_pr_labels(
+            repo, policy, args.risk, gates, args.target_branch
+        )
+        print(" ".join(labels))
         return 0
 
     scope_failures = scope_review_failures(Path(args.run) if args.run else None)
@@ -340,10 +354,9 @@ def main(argv=None) -> int:
 
     if args.risk is not None:
         gates = [g for g in args.gates.split(",") if g]
-        eligible, reason = automerge_eligible(policy, args.risk, gates, args.target_branch)
-        if eligible:
-            eligible, reason = required_checks_gate(repo, args.target_branch)
-        labels = automerge_labels(eligible, args.risk)
+        labels, eligible, reason = resolve_pr_labels(
+            repo, policy, args.risk, gates, args.target_branch
+        )
         label_line = f"AUTOMERGE LABELS: {' '.join(labels)}  (eligible={eligible}: {reason})"
         hint_line = f"  Pass to PR creation: gh pr create {' '.join(f'--label {l}' for l in labels)} ..."
     else:
