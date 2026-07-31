@@ -1,0 +1,59 @@
+name: 'CI: Version Bump Check'
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: version-bump-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  version-bump-check:
+    name: Version bump check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Collect changed files and pyproject.toml diff
+        run: |
+          git diff --name-only "origin/${{ github.base_ref }}...HEAD" > /tmp/changed_files.txt
+          git diff "origin/${{ github.base_ref }}...HEAD" -- pyproject.toml > /tmp/version_diff.txt
+
+      - name: Check version-bump label
+        id: label
+        run: |
+          labels=$(gh pr view "${{ github.event.pull_request.number }}" \
+            --json labels --jq '.labels[].name' -R "${{ github.repository }}")
+          has_exempt="false"
+          if echo "$labels" | grep -q "^go:no-version-bump$"; then
+            has_exempt="true"
+          fi
+          echo "has_exempt=$has_exempt" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Evaluate version bump requirement
+        id: check
+        run: |
+          bash scripts/ci/version_bump_check.sh \
+            --changed-files /tmp/changed_files.txt \
+            --version-diff /tmp/version_diff.txt \
+            --has-exempt-label "${{ steps.label.outputs.has_exempt }}" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Report
+        run: |
+          echo "required=${{ steps.check.outputs.required }}"
+          echo "bumped=${{ steps.check.outputs.bumped }}"
+          echo "exempt=${{ steps.check.outputs.exempt }}"
+          echo "${{ steps.check.outputs.reason }}"
+          if [ "${{ steps.check.outputs.pass }}" != "true" ]; then
+            echo "::error::This PR changes src/worktrail/** without bumping pyproject.toml's version." \
+              "Either bump the version (see the 'chore: bump Worktrail to X.Y.Z' commits for the" \
+              "pattern -- pyproject.toml + .codex-plugin/plugin.json together), or apply the" \
+              "go:no-version-bump label if this change is intentionally deferred to a future batch bump."
+            exit 1
+          fi
