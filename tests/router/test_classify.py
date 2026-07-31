@@ -24,7 +24,8 @@ class TestRoutingCassette(unittest.TestCase):
         for sc in data["scenarios"]:
             with self.subTest(scenario=sc["id"]):
                 result = classify(sc["request"], state=sc.get("state"),
-                                   handoff_route=sc.get("handoff_route"))
+                                   handoff_route=sc.get("handoff_route"),
+                                   pr_states=sc.get("pr_states"))
                 exp = sc["expect"]
                 if "route" in exp:
                     self.assertEqual(result["route"], exp["route"],
@@ -152,6 +153,93 @@ class TestOverridesAndSignals(unittest.TestCase):
     def test_new_ci_gate_is_not_misclassified_as_ci_repair(self):
         r = classify("Add a new CI job that fails the PR when generated files drift")
         self.assertNotEqual(r["route"], "E")
+
+    def test_pr_repair_signal_suppressed_for_merged_pr(self):
+        # Reproduces the 20260730-203004 incident: a cited PR number alone
+        # forced Route E even though the PR was already merged hours earlier.
+        text = "PR #68 is broken and needs fixing"
+        unknown = classify(text)
+        self.assertEqual(unknown["route"], "E")
+        merged = classify(text, pr_states={"68": "MERGED"})
+        self.assertNotEqual(merged["route"], "E")
+
+    def test_pr_repair_signal_still_fires_for_open_pr(self):
+        text = "PR #68 is broken and needs fixing"
+        r = classify(text, pr_states={"68": "OPEN"})
+        self.assertEqual(r["route"], "E")
+
+    def test_pr_repair_signal_fires_when_pr_state_unknown(self):
+        # No pr_states info at all -> fail-open toward the original behavior.
+        text = "PR #68 is broken and needs fixing"
+        r = classify(text, pr_states={})
+        self.assertEqual(r["route"], "E")
+
+    def test_pr_repair_signal_requires_all_cited_prs_settled(self):
+        # Two PRs cited; only one is confirmed merged -> signal still fires,
+        # since the other citation is unresolved/still live.
+        text = "PR #68 is broken; also check PR #70 which is failing"
+        r = classify(text, pr_states={"68": "MERGED"})
+        self.assertEqual(r["route"], "E")
+
+    def test_other_ci_repair_signals_unaffected_by_pr_states(self):
+        # pr_states only suppresses the pr-repair label; a real CI-failure
+        # phrase with no PR citation must still force Route E.
+        r = classify("the bug is that CI is broken on my branch",
+                     pr_states={"68": "MERGED"})
+        self.assertEqual(r["route"], "E")
+
+
+class TestCitedPrStates(unittest.TestCase):
+    """cited_pr_states/_pr_state — the only live-I/O boundary in this module,
+    exercised here with an injected fake runner (no real `gh`/network calls)."""
+
+    def test_no_repo_returns_empty(self):
+        from worktrail.router.classify import cited_pr_states
+        self.assertEqual(cited_pr_states("PR #68 is broken", None), {})
+
+    def test_no_cited_pr_returns_empty_without_calling_runner(self):
+        from worktrail.router.classify import cited_pr_states
+
+        def _runner(*a, **kw):
+            raise AssertionError("runner should not be called with no cited PR")
+
+        self.assertEqual(cited_pr_states("fix the login bug", Path("."), _runner), {})
+
+    def test_resolves_cited_pr_state(self):
+        from worktrail.router.classify import cited_pr_states
+
+        class _Result:
+            returncode = 0
+            stdout = json.dumps({"state": "MERGED"})
+
+        calls = []
+
+        def _runner(cmd, **kw):
+            calls.append(cmd)
+            return _Result()
+
+        states = cited_pr_states("PR #68 is broken and needs fixing", Path("."), _runner)
+        self.assertEqual(states, {"68": "MERGED"})
+        self.assertEqual(calls[0][:3], ["gh", "pr", "view"])
+
+    def test_failed_lookup_is_fail_open(self):
+        from worktrail.router.classify import cited_pr_states
+
+        class _Result:
+            returncode = 1
+            stdout = ""
+
+        states = cited_pr_states("PR #68 is broken", Path("."), lambda *a, **kw: _Result())
+        self.assertEqual(states, {})
+
+    def test_runner_exception_is_fail_open(self):
+        from worktrail.router.classify import cited_pr_states
+
+        def _runner(*a, **kw):
+            raise OSError("gh not found")
+
+        states = cited_pr_states("PR #68 is broken", Path("."), _runner)
+        self.assertEqual(states, {})
 
 
 class TestRiskAndProtection(unittest.TestCase):

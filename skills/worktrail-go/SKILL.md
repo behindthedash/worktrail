@@ -237,15 +237,19 @@ RECOMMENDED_ROUTE=$(worktrail-handoff-seed seed "<primary-claimed-path>" --json 
   | python3 -c "import sys, json; print(json.load(sys.stdin).get('recommended_route') or '')")
 HANDOFF_ROUTE_FLAG=(); [ -n "$RECOMMENDED_ROUTE" ] && HANDOFF_ROUTE_FLAG=(--handoff-route "$RECOMMENDED_ROUTE")
 
-worktrail-classify --request "$ARG_INTENT" --state "$DASHBOARD_JSON" "${HANDOFF_ROUTE_FLAG[@]}" --json
+worktrail-classify --request "$ARG_INTENT" --state "$DASHBOARD_JSON" "${HANDOFF_ROUTE_FLAG[@]}" --repo "$REPO" --json
 ```
 
 For free-text/level-2-item dispatches with no claimed brief, omit `--handoff-route` (no
 hint to weigh):
 
 ```bash
-worktrail-classify --request "$ARG_INTENT" --state "$DASHBOARD_JSON" --json
+worktrail-classify --request "$ARG_INTENT" --state "$DASHBOARD_JSON" --repo "$REPO" --json
 ```
+
+`--repo "$REPO"` lets classify.py resolve the state of any `PR #NNN` cited in the
+request (best-effort `gh pr view`, fail-open) so a PR number mentioned in passing
+doesn't force Route E once that PR is already merged/closed.
 
 **Route-C implementation transition.** A claimed brief's optional
 `implementation-intent:` frontmatter controls the post-spec transition:

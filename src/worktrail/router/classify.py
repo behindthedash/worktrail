@@ -22,8 +22,12 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 import sys
-from typing import Any, Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+Runner = Callable[..., "subprocess.CompletedProcess[str]"]
 
 ROUTE_NAMES = {
     "A": "idea-discovery",
@@ -43,6 +47,10 @@ ROUTE_NAMES = {
 # precondition keys on it; a positional ROUTE_SIGNALS["D"][1][0] lookup silently
 # broke whenever the D signal list was reordered.
 _SPEC_ID_RE = re.compile(r"\b\d{3}-[a-z0-9][a-z0-9-]*\b")
+
+# Cited PR numbers (e.g. `PR #68`), used to look up live PR state so the
+# pr-repair signal below doesn't fire for delivery that's already settled.
+_PR_NUMBER_RE = re.compile(r"\bpr\s*#?(\d+)\b", re.IGNORECASE)
 
 
 def _sig(pattern: str, weight: int, label: str) -> Tuple[re.Pattern, int, str]:
@@ -188,8 +196,61 @@ def _score_routes(text: str) -> Tuple[Dict[str, int], Dict[str, List[str]]]:
     return scores, hits
 
 
-def _ci_repair_hits(text: str) -> List[str]:
-    return [label for rx, _w, label in CI_REPAIR if rx.search(text)]
+def _pr_repair_settled(text: str, pr_states: Optional[Dict[str, str]]) -> bool:
+    """True when every PR number cited in `text` is known MERGED/CLOSED --
+    the pr-repair signal must not fire for delivery that's already settled.
+    No PR-state info (None/{}) means unknown, so this returns False and the
+    signal fires as before -- fail-open toward the original behavior."""
+    if not pr_states:
+        return False
+    numbers = _PR_NUMBER_RE.findall(text)
+    if not numbers:
+        return False
+    return all(pr_states.get(n, "").upper() in ("MERGED", "CLOSED") for n in numbers)
+
+
+def _ci_repair_hits(text: str, pr_states: Optional[Dict[str, str]] = None) -> List[str]:
+    hits = []
+    for rx, _w, label in CI_REPAIR:
+        if not rx.search(text):
+            continue
+        if label == "pr-repair" and _pr_repair_settled(text, pr_states):
+            continue
+        hits.append(label)
+    return hits
+
+
+def _pr_state(number: str, repo: Path, runner: Runner = subprocess.run) -> Optional[str]:
+    """`gh pr view <number> --json state` -> "OPEN"/"MERGED"/"CLOSED", or None
+    if unresolvable. Best-effort/fail-open: any subprocess or parse failure
+    returns None (unknown), never a guessed state."""
+    try:
+        result = runner(["gh", "pr", "view", number, "--json", "state"],
+                         cwd=str(repo), capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        return json.loads(result.stdout).get("state")
+    except json.JSONDecodeError:
+        return None
+
+
+def cited_pr_states(text: str, repo: Optional[Path],
+                     runner: Runner = subprocess.run) -> Dict[str, str]:
+    """Best-effort GitHub state for every `PR #NNN` cited in `text`, keyed by
+    PR number string. Returns {} when `repo` is None or every lookup is
+    unresolvable -- fail-open, so an unreachable `gh` never narrows scoring
+    beyond "no information available"."""
+    if not repo:
+        return {}
+    states: Dict[str, str] = {}
+    for number in sorted(set(_PR_NUMBER_RE.findall(text))):
+        state = _pr_state(number, repo, runner)
+        if state:
+            states[number] = state
+    return states
 
 
 def classify_risk(text: str) -> Tuple[str, List[str]]:
@@ -209,9 +270,14 @@ def protected_operations(text: str) -> List[str]:
 
 def classify(request: str,
              state: Optional[Dict[str, Any]] = None,
-             handoff_route: Optional[str] = None) -> Dict[str, Any]:
+             handoff_route: Optional[str] = None,
+             pr_states: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """Classify a request. `state` keys (all optional): active_specs (int),
-    pending_tasks (bool), open_prs (int), handoff_queue (int), worktrees (int)."""
+    pending_tasks (bool), open_prs (int), handoff_queue (int), worktrees (int).
+    `pr_states` (optional): GitHub state per cited PR number string (from
+    `cited_pr_states`), used to suppress the pr-repair signal for PRs already
+    MERGED/CLOSED. This function stays pure/deterministic given its inputs --
+    live `gh` lookups happen only in `main()`, never here."""
     text = (request or "").strip()
     state = state or {}
     reason_parts: List[str] = []
@@ -228,7 +294,7 @@ def classify(request: str,
 
     # CI/PR repair overrides bug wording: existing delivery is the controlling
     # artifact, so repair routes through E (restore state) with F secondary.
-    ci_hits = _ci_repair_hits(text)
+    ci_hits = _ci_repair_hits(text, pr_states)
     if ci_hits:
         scores["E"] = max(scores["E"] + 6, scores["F"] + 4)
         hits["E"].extend(ci_hits)
@@ -364,11 +430,17 @@ def main(argv=None) -> int:
                    help="JSON object of repo-state signals (active_specs, pending_tasks, ...)")
     p.add_argument("--handoff-route", default=None,
                    help="recommended-route letter from a handoff brief")
+    p.add_argument("--repo", default=None,
+                   help="repo path for a best-effort gh lookup of cited PR numbers' "
+                        "state, so the pr-repair signal doesn't fire for a PR that's "
+                        "already merged/closed (omit to skip; fail-open on any error)")
     p.add_argument("--json", action="store_true", help="emit JSON (default)")
     args = p.parse_args(argv)
 
     state = json.loads(args.state) if args.state else None
-    result = classify(args.request, state=state, handoff_route=args.handoff_route)
+    pr_states = cited_pr_states(args.request, Path(args.repo) if args.repo else None)
+    result = classify(args.request, state=state, handoff_route=args.handoff_route,
+                       pr_states=pr_states)
     print(json.dumps(result, indent=2))
     return 0
 
