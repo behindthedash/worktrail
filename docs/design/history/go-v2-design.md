@@ -240,6 +240,15 @@ decisions, evidence, deferred work, merge decision, final_status…). `finish`
 validates the final status against the ten allowed completion states. No secrets,
 no raw conversation.
 
+`finish` additionally code-enforces the `no_implementation_without_approval` gate
+(routes.md §A, classify.py's Route-A gate string): a run whose `selected_route`
+is `A` cannot `finish` on an implementation-completion state
+(`completed_and_merged`/`completed_pr_open`/`completed_awaiting_human_approval`)
+unless a `decisions` entry was recorded first — Route A's own completions
+(`investigation_complete`/`planned_ready_for_implementation`) are unaffected.
+Previously this gate was prose-only in routes.md with zero code consumer
+(`docs/specs/research/classify-gate-enforcement-audit.md`).
+
 ### 2.13 Self-improvement mechanism
 
 Improvement signals (misroutes, corrections, repeated clarifications, false
