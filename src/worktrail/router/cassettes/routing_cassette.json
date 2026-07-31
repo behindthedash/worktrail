@@ -48,6 +48,12 @@
       "expect": {"route": "E", "secondary_includes": ["F"]}
     },
     {
+      "id": "pr-repair-signal-ignores-merged-pr",
+      "request": "PR #214 is broken and needs fixing",
+      "pr_states": {"214": "MERGED"},
+      "expect": {"route": "F", "confidence": "medium"}
+    },
+    {
       "id": "auth-protected-ui-change",
       "request": "Add a new admin settings feature behind login",
       "expect": {"route": "C", "risk": "high", "gates_include": ["pause_before_merge"]}
