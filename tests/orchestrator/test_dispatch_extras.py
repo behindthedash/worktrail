@@ -106,6 +106,48 @@ class BuildGroupPromptTests(unittest.TestCase):
             self.assertIn(".github/workflows/**", prompt)
 
 
+class BuildStackConflictPromptTests(unittest.TestCase):
+    def _prompt(self, **kw):
+        task = kw.pop("task", {"id": "TASK-003", "files": ["src/a.ts"]})
+        spec_id = kw.pop("spec_id", "004-test")
+        conflicting_branch = kw.pop("conflicting_branch", "task/TASK-002")
+        worktree_path = kw.pop("worktree_path", "/tmp/wt/004-test/TASK-003")
+        return dispatch.build_stack_conflict_prompt(spec_id, task, conflicting_branch, worktree_path)
+
+    def test_renders_task_id(self):
+        prompt = self._prompt(task={"id": "TASK-003", "files": []})
+        self.assertIn("TASK-003", prompt)
+
+    def test_renders_conflicting_branch(self):
+        prompt = self._prompt(conflicting_branch="task/TASK-002")
+        self.assertIn("task/TASK-002", prompt)
+
+    def test_renders_worktree_path(self):
+        prompt = self._prompt(worktree_path="/tmp/wt/004-test/TASK-003")
+        self.assertIn("/tmp/wt/004-test/TASK-003", prompt)
+
+    def test_forbids_push_or_pr(self):
+        prompt = self._prompt()
+        self.assertIn("Do NOT push or open a PR", prompt)
+        self.assertNotIn("git push", prompt)
+        self.assertNotIn("gh pr create", prompt)
+
+    def test_includes_merge_conflict_resolution_steps(self):
+        prompt = self._prompt()
+        self.assertIn("git diff --name-only --diff-filter=U", prompt)
+        self.assertIn("git merge --continue", prompt)
+
+    def test_forbids_hand_rolled_wait_loop(self):
+        prompt = self._prompt()
+        self.assertIn("hand-roll a background-wait loop", prompt)
+
+    def test_ends_with_json_contract(self):
+        prompt = self._prompt(task={"id": "TASK-003", "files": []})
+        self.assertIn("```json", prompt)
+        self.assertIn('"task": "TASK-003"', prompt)
+        self.assertIn(f'"step": "{dispatch.ROLE_ASSEMBLY_RESOLVE}"', prompt)
+
+
 class ParseReportBackTests(unittest.TestCase):
     def _ok(self, **kw):
         base = {"task": "T-1", "step": "implement", "status": "success", "head_sha": "abc"}
