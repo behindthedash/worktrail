@@ -79,6 +79,52 @@ class AddStackedWorktreeSiblingConflict(unittest.TestCase):
             status = _git(wt, "status", "--porcelain").stdout
             self.assertEqual(status.strip(), "", "merge must have been aborted cleanly")
 
+    def test_unparseable_report_back_salvaged_when_git_state_clean(self):
+        """Mirrors `integrate._assembly_resolve_salvage`: a resolve worker's
+        report-back that fails to parse is not itself a failure -- if the git
+        state proves the merge actually concluded clean, the resolution is
+        salvaged as success rather than raised."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            _init_repo(repo)
+
+            spec_id = "102-x"
+            _branch_editing_shared_file(repo, f"{spec_id}/task-001", "from task-001\n")
+            _branch_editing_shared_file(repo, f"{spec_id}/task-002", "from task-002\n")
+
+            by_id = {
+                "TASK-001": {"id": "TASK-001", "deps": []},
+                "TASK-002": {"id": "TASK-002", "deps": []},
+                "TASK-003": {"id": "TASK-003", "deps": ["TASK-001", "TASK-002"]},
+            }
+            wt = Path(tmp) / "wt" / f"{spec_id}-task-003"
+            wt.parent.mkdir(parents=True)
+
+            def fake_spawn(prompt, worktree):
+                # Worker actually resolves and concludes the merge on disk, but
+                # its final message carries no parseable report-back JSON block.
+                (Path(worktree) / "shared.py").write_text("merged\n")
+                _git(worktree, "add", "-A")
+                _git(worktree, "commit", "-q", "--no-edit")
+                return "done -- merged it by hand, no report-back block here"
+
+            live.add_stacked_worktree(
+                repo,
+                spec_id,
+                by_id["TASK-003"],
+                by_id,
+                wt,
+                assembly_resolve_spawn=fake_spawn,
+            )
+
+            status = _git(wt, "status", "--porcelain").stdout
+            self.assertEqual(status.strip(), "", "salvaged merge must leave a clean tree")
+            self.assertEqual((wt / "shared.py").read_text(), "merged\n")
+            log = _git(wt, "log", "--format=%s").stdout
+            self.assertIn("task-001", log)
+            self.assertIn("task-002", log)
+
 
 if __name__ == "__main__":
     unittest.main()
