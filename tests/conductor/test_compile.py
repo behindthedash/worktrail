@@ -275,6 +275,37 @@ def test_kind_comes_from_the_artifact_not_the_model(change, tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# Cross-task overlap re-scan (go-20260730-133115: compile can under-report a
+# file shared by two sibling tasks when it decides each task's `files` in
+# isolation, leaving the file-collision check with nothing to catch)
+# --------------------------------------------------------------------------- #
+def test_the_prompt_instructs_a_final_cross_task_overlap_rescan():
+    """Pins the anti-omission instruction in place. Deciding each task's
+    `files` independently is exactly how a shared file ends up recorded on
+    only one of two tasks that both touch it -- the prompt must explicitly
+    tell the model to re-check for that before it answers, not just ask for
+    `files` per task and hope."""
+    prompt = conductor_compile.PROMPT
+    assert "Final pass" in prompt
+    assert "shared file declared by only one of them" in prompt
+    assert "in isolation" in prompt
+
+
+def test_the_rescan_instruction_reaches_the_formatted_prompt(change, tmp_path):
+    """The final-pass instruction is static text in `PROMPT`, but this proves
+    `.format()` doesn't accidentally consume or truncate it via a stray `{`/`}`
+    collision with the task list or spec path."""
+    spec_id, tasks = _load(change)
+    spawn = RecordingSpawn(
+        _reply(**{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks})
+    )
+    conductor_compile.compile_run_plan(
+        change, tasks, spec_id=spec_id, repo=change.parents[2], cache_dir=tmp_path / "plans", spawn=spawn
+    )
+    assert "Final pass" in spawn.prompts[0]
+
+
+# --------------------------------------------------------------------------- #
 # The CLI must not exit 0 on a plan that leaves impl tasks scope-less
 # --------------------------------------------------------------------------- #
 def test_the_cli_fails_loudly_when_impl_tasks_stay_scope_less(tmp_path, capsys):
