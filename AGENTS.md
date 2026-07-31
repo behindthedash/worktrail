@@ -119,4 +119,12 @@ after CI is green. Delete merged branches once their PR lands.
 
 Real semver in `pyproject.toml` (unlike `developer-kit`'s intentionally version-less/SHA-tracked
 plugins) — this package is consumed as a pinned dependency, so version bumps are how consumers
-pick up changes deliberately.
+pick up changes deliberately. Bump both `pyproject.toml` and `.codex-plugin/plugin.json` together
+in a standalone `chore: bump Worktrail to X.Y.Z` commit (see `0b62a12`, `#75`) — not bundled into
+a feature/fix PR.
+
+`CI: Version Bump Check` (`.github/workflows/version_bump_check.yml`) enforces this: any PR that
+changes `src/worktrail/**` without also changing `pyproject.toml`'s `version` line fails, unless
+the PR carries the `go:no-version-bump` label (for an intentionally deferred, later batch bump —
+this repo's actual practice is periodic multi-PR batches, not a bump on every PR). Apply the label
+deliberately, not as a default way to silence the check.
