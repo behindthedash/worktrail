@@ -14,8 +14,7 @@
 ## 3. Thread the seam through the two production call paths
 
 - [ ] 3.1 In `live_run_real`, construct `assembly_resolve_spawn_fn` the same way `_pipeline_scheduler` does (`_role_agent_model(dispatch.ROLE_ASSEMBLY_RESOLVE, ...)` + `verify_module._make_live_spawn(...)`) and pass it through `ensure_wt`'s `add_stacked_worktree()` calls
-- [ ] 3.2 In `full_real`'s non-pipeline `_ensure_wt`, thread the equivalent seam through its `add_stacked_worktree()` calls (mirroring the existing `assembly_resolve_spawn=` construction already used for `integrate.finish_real` at the same call site)
-- [ ] 3.3 Leave `live_run`'s cassette/demo `ensure_wt` unchanged (no seam) -- confirmed non-goal in design.md
+- [ ] 3.2 In `full_real`'s non-pipeline `_ensure_wt`, thread the equivalent seam through its `add_stacked_worktree()` calls (mirroring the existing `assembly_resolve_spawn=` construction already used for `integrate.finish_real` at the same call site); add a code comment there noting `live_run`'s cassette/demo `ensure_wt` is deliberately left without the seam (non-goal, see design.md)
 
 ## 4. Tests
 
@@ -23,11 +22,8 @@
 - [ ] 4.2 Same file: resolve spawn provided + worker raises/exception -> `git merge --abort` called, `WorktreeStackConflictError` raised (existing message format)
 - [ ] 4.3 Same file: resolve spawn provided + worker reports success but conflict markers remain / `MERGE_HEAD` still present -> treated as unverified, `WorktreeStackConflictError` raised
 - [ ] 4.4 Same file: resolve spawn provided + report-back unparseable but git state is clean -> salvaged as success (mirrors `_assembly_resolve_salvage`)
-- [ ] 4.5 Same file: `assembly_resolve_spawn=None` (or omitted) -> existing behavior unchanged, confirming no regression for current callers/tests
-- [ ] 4.6 Confirm `PYTHONPATH=src pytest -q && PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` stays green
+- [ ] 4.5 Same file: `assembly_resolve_spawn=None` (or omitted) -> existing behavior unchanged, confirming no regression for current callers/tests; then confirm `PYTHONPATH=src pytest -q && PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` stays green
 
 ## 5. Real-world validation (per incident lesson: unit tests alone missed this failure class)
 
-- [ ] 5.1 Construct or reuse a real multi-sibling-conflict spec (extending the existing two-independent-siblings-editing-the-same-file scenario from `test_worktree_stack_conflict.py`'s repro) and run it through the live orchestrator path with `assembly_resolve_spawn` wired to a real resolve worker
-- [ ] 5.2 Confirm the run completes unattended past the sibling conflict (no manual intervention), and that the resulting worktree/task output is correct (both siblings' changes present, task's own tests still pass)
-- [ ] 5.3 Record the validation run's evidence (run record / journal reference) in the PR before merging
+- [ ] 5.1 Construct or reuse a real multi-sibling-conflict spec (extending the existing two-independent-siblings-editing-the-same-file scenario from `test_worktree_stack_conflict.py`'s repro), add it as a fixture/scenario in that file, and run it through the live orchestrator path with `assembly_resolve_spawn` wired to a real resolve worker; confirm the run completes unattended past the sibling conflict (both siblings' changes present, task's own tests still pass), and record the validation run's evidence (run record / journal reference) in the PR before merging
