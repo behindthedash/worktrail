@@ -1595,6 +1595,9 @@ def live_run(
     def ensure_wt(task: dict) -> Path:
         wt = wt_base / task["id"].lower()
         if not wt.exists():
+            # No `assembly_resolve_spawn` seam here, deliberately: this is the
+            # cassette/demo recording path (`live_run`), not a production run
+            # path -- see design.md's Non-Goals for stacked-worktree-conflict-auto-resolve.
             add_stacked_worktree(repo, spec_id, task, by_id, wt)
         return wt
 
@@ -3100,12 +3103,28 @@ def _pipeline_scheduler(
         if not wt.exists():
             with git_lock:
                 if not wt.exists():
+                    # Same `assembly_resolve_spawn_fn` already constructed above for
+                    # the integrate step (`integrate_kwargs["assembly_resolve_spawn"]`)
+                    # -- one worker, reused here instead of building a second one.
                     if expected_head_sha:
                         add_stacked_worktree(
-                            repo, spec_id, task, by_id, wt, expected_head_sha=expected_head_sha
+                            repo,
+                            spec_id,
+                            task,
+                            by_id,
+                            wt,
+                            expected_head_sha=expected_head_sha,
+                            assembly_resolve_spawn=assembly_resolve_spawn_fn,
                         )
                     else:
-                        add_stacked_worktree(repo, spec_id, task, by_id, wt)
+                        add_stacked_worktree(
+                            repo,
+                            spec_id,
+                            task,
+                            by_id,
+                            wt,
+                            assembly_resolve_spawn=assembly_resolve_spawn_fn,
+                        )
                     drift_events = _require_dependency_files(wt, task, by_id)
                     if drift_events:
                         with state_lock:
