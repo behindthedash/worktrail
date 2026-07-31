@@ -21,7 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from worktrail.orchestrator import live  # noqa: E402
+from worktrail.orchestrator import live, verify  # noqa: E402
 
 
 def _git(repo, *args):
@@ -47,6 +47,38 @@ def _branch_editing_shared_file(repo, branch, content, start="HEAD"):
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", f"edit shared.py on {branch}")
     _git(repo, "checkout", "-q", base)
+
+
+def _build_multi_sibling_conflict_repo(
+    tmp, spec_id="102-x", sibling_count=3, dependent_id="TASK-004"
+):
+    """Multi-sibling extension of the 1.2/1.3 two-sibling repro: `sibling_count`
+    independent tasks (no dep edge between any of them) all edit `shared.py`
+    from the same base, and one dependent task depends on all of them. Building
+    the dependent's stacked worktree must therefore walk `sibling_count - 1`
+    SEQUENTIAL merge conflicts in a single `add_stacked_worktree` call (start on
+    the first sibling's branch, then merge each remaining sibling in turn) --
+    the two-sibling repro only ever exercises one such conflict per call.
+
+    Returns (repo, by_id, wt, sibling_branches).
+    """
+    repo = Path(tmp) / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+
+    sibling_ids = [f"TASK-{i:03d}" for i in range(1, sibling_count + 1)]
+    sibling_branches = []
+    for tid in sibling_ids:
+        branch = f"{spec_id}/{tid.lower()}"
+        _branch_editing_shared_file(repo, branch, f"from {tid.lower()}\n")
+        sibling_branches.append(branch)
+
+    by_id = {tid: {"id": tid, "deps": []} for tid in sibling_ids}
+    by_id[dependent_id] = {"id": dependent_id, "deps": list(sibling_ids)}
+
+    wt = Path(tmp) / "wt" / f"{spec_id}-{dependent_id.lower()}"
+    wt.parent.mkdir(parents=True)
+    return repo, by_id, wt, sibling_branches
 
 
 class AddStackedWorktreeSiblingConflict(unittest.TestCase):
@@ -365,6 +397,127 @@ class AddStackedWorktreeResolveSpawnUnverified(unittest.TestCase):
             # worker committed it. What matters is that we did NOT accept the
             # resolution and continue on as if the stack succeeded: the raise
             # above already confirms that.
+
+
+class AddStackedWorktreeMultiSiblingConflict(unittest.TestCase):
+    """5.1: extends the two-sibling repro to three independent siblings, so a
+    single `add_stacked_worktree` call must resolve two SEQUENTIAL sibling-merge
+    conflicts (start branch vs. sibling 2, then the result vs. sibling 3) rather
+    than just one. Uses a scripted (non-live) spawn -- the real-worker run is
+    `AddStackedWorktreeLiveValidation` below."""
+
+    def test_resolves_two_sequential_sibling_conflicts_no_raise(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, by_id, wt, sibling_branches = _build_multi_sibling_conflict_repo(
+                tmp, sibling_count=3, dependent_id="TASK-004"
+            )
+
+            resolve_calls = []
+
+            def _resolving_spawn(prompt, worktree):
+                resolve_calls.append(worktree)
+                # Actually clear the conflict markers -- a real worker's edit,
+                # not just a textual append on top of the still-conflicted file.
+                (Path(worktree) / "shared.py").write_text(
+                    f"merged (resolve #{len(resolve_calls)})\n"
+                )
+                subprocess.run(["git", "-C", str(worktree), "add", "-A"], check=True)
+                subprocess.run(
+                    ["git", "-C", str(worktree), "commit", "-q", "--no-edit"],
+                    check=True,
+                )
+                return (
+                    "```json\n"
+                    '{"task": "TASK-004", "step": "resolve", "status": "success"}\n'
+                    "```"
+                )
+
+            live.add_stacked_worktree(
+                repo,
+                "102-x",
+                by_id["TASK-004"],
+                by_id,
+                wt,
+                assembly_resolve_spawn=_resolving_spawn,
+            )
+
+            self.assertEqual(
+                len(resolve_calls), 2, "one resolve dispatch per sequential conflict"
+            )
+
+            status = _git(wt, "status", "--porcelain").stdout
+            self.assertEqual(status.strip(), "", "resolved merge must leave a clean tree")
+
+            for branch in sibling_branches:
+                self.assertEqual(
+                    _git(wt, "merge-base", "--is-ancestor", branch, "HEAD").returncode,
+                    0,
+                    f"{branch} commit must be an ancestor of the stacked worktree HEAD",
+                )
+
+
+class AddStackedWorktreeLiveValidation(unittest.TestCase):
+    """5.1 real-world validation (per incident lesson: unit tests alone missed
+    this failure class). Opt-in only -- set WORKTRAIL_LIVE_VALIDATION=1 to run
+    it; by default it is skipped so the ordinary hermetic test run (and CI)
+    never makes a real network/API call. Wires `assembly_resolve_spawn` to
+    `verify._make_live_spawn`, the exact factory the production call sites
+    (`live_run_real`, `full_real`'s `_ensure_wt`) use, so this exercises the
+    real orchestrator seam end to end: a real headless resolve worker is
+    spawned into the conflicted worktree and must resolve it unattended.
+    """
+
+    @unittest.skipUnless(
+        os.environ.get("WORKTRAIL_LIVE_VALIDATION") == "1",
+        "set WORKTRAIL_LIVE_VALIDATION=1 to run the real-headless-worker "
+        "validation (makes a real API call via `claude -p`)",
+    )
+    def test_real_resolve_worker_clears_multi_sibling_conflict_unattended(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, by_id, wt, sibling_branches = _build_multi_sibling_conflict_repo(
+                tmp, sibling_count=3, dependent_id="TASK-004"
+            )
+
+            live_spawn = verify._make_live_spawn(
+                model=os.environ.get("WORKTRAIL_LIVE_VALIDATION_MODEL", "haiku"),
+                timeout=int(os.environ.get("WORKTRAIL_LIVE_VALIDATION_TIMEOUT", "600")),
+                agent="claude",
+            )
+
+            live.add_stacked_worktree(
+                repo,
+                "102-x",
+                by_id["TASK-004"],
+                by_id,
+                wt,
+                assembly_resolve_spawn=live_spawn,
+            )
+
+            # Unattended: no raise above means both sequential conflicts were
+            # resolved by the real worker without any manual intervention here.
+            status = _git(wt, "status", "--porcelain").stdout
+            self.assertEqual(status.strip(), "", "resolved merge must leave a clean tree")
+            self.assertEqual(
+                subprocess.run(
+                    ["git", "-C", str(wt), "rev-parse", "-q", "--verify", "MERGE_HEAD"],
+                    capture_output=True,
+                ).returncode,
+                1,
+                "no lingering MERGE_HEAD after a real unattended resolution",
+            )
+
+            # Both siblings' commits (and therefore both siblings' intent) are
+            # present in the stacked worktree's history.
+            for branch in sibling_branches:
+                self.assertEqual(
+                    _git(wt, "merge-base", "--is-ancestor", branch, "HEAD").returncode,
+                    0,
+                    f"{branch} commit must be an ancestor of the stacked worktree HEAD",
+                )
+
+            content = (wt / "shared.py").read_text()
+            self.assertNotIn("<<<<<<<", content)
+            self.assertNotIn(">>>>>>>", content)
 
 
 if __name__ == "__main__":
