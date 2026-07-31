@@ -30,8 +30,20 @@ that independently edit the same files). A close match never flips the
 decision to "deny" -- a legitimate resume must still proceed -- it only
 surfaces a heads-up that a matching PR or worktree may already exist.
 
+When `run --risk` is supplied, the pass marker also records the exact
+`go:risk-*`/`go:no-automerge` label set `pre_pr_gate.resolve_pr_labels()`
+computes for that risk/gates/target-branch. `check --command "<gh pr create
+...>"` then holds that specific `gh pr create` invocation to those labels: if
+one or more required labels are absent from the command, the verdict denies
+even though the test gate itself passed. This is what makes the AUTOMERGE
+LABELS line code-enforced -- previously it was printed for the calling agent
+to copy into `gh pr create --label ...` by hand, and a skipped copy was
+indistinguishable from a genuinely label-free PR (see
+docs/specs/research/classify-gate-enforcement-audit.md). `gh pr ready` and
+any command without `--risk`-recorded labels are unaffected.
+
 Usage:
-  worktrail-preflight check [--repo PATH]
+  worktrail-preflight check [--repo PATH] [--command "<gh pr create ...>"]
   worktrail-preflight run [--repo PATH] [--risk low|medium|high|critical]
                            [--gates G1,G2] [--target-branch BRANCH]
                            [--run RUN_RECORD]
@@ -42,10 +54,11 @@ import argparse
 import hashlib
 import json
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from . import pre_pr_gate
 from .policy import load_policy
@@ -58,6 +71,31 @@ MARKER_NAME = "preflight-pass.json"
 _SLUG_WORD_RE = re.compile(r"[a-z0-9]+")
 _DUPLICATE_OVERLAP_THRESHOLD = 0.6
 _DUPLICATE_MIN_WORDS = 2
+
+# `gh pr ready` arms auto-merge on a PR that already carries its labels from
+# creation, so label enforcement only applies to `gh pr create` itself.
+PR_CREATE_RE = re.compile(r"\bgh\s+pr\s+create\b")
+
+
+def labels_in_command(command: str) -> Set[str]:
+    """`--label`/`--label=` values present in a shell command line.
+
+    `shlex.split` (not a flag regex) so quoted label values and the rest of
+    the command's quoting are handled the same way a real shell would; a
+    malformed/unparseable command yields no labels, which fails *closed* on
+    the label check below (a missing label denies) rather than open.
+    """
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return set()
+    found: Set[str] = set()
+    for i, token in enumerate(tokens):
+        if token == "--label" and i + 1 < len(tokens):
+            found.add(tokens[i + 1])
+        elif token.startswith("--label="):
+            found.add(token[len("--label="):])
+    return found
 
 
 def _git(repo: Path, *args: str) -> Optional[str]:
@@ -295,29 +333,47 @@ def read_marker(repo: Path) -> Optional[Dict[str, Any]]:
         return None
 
 
-def write_marker(repo: Path, state: str, cmd: Optional[str]) -> Optional[Path]:
+def write_marker(
+    repo: Path, state: str, cmd: Optional[str], labels: Optional[List[str]] = None,
+) -> Optional[Path]:
+    """Record a pass marker. ``labels`` (when the gate ran with ``--risk``) is
+    the exact `go:risk-*`/`go:no-automerge` set the PR must carry -- computed
+    once here so `check()` can hold `gh pr create` to it instead of trusting
+    the calling agent to have copied the AUTOMERGE LABELS line by hand."""
     path = marker_path(repo)
     if path is None:
         return None
-    path.write_text(json.dumps({"state": state, "cmd": cmd}) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps({"state": state, "cmd": cmd, "labels": labels or []}) + "\n",
+        encoding="utf-8",
+    )
     return path
 
 
-def check(repo: Path) -> Dict[str, str]:
+def check(repo: Path, command: Optional[str] = None) -> Dict[str, Any]:
     """Marker-aware verdict: {"decision": "allow"|"deny", "reason": str,
-    "warning": str (optional)}.
+    "warning": str (optional), "required_labels": [str] (optional)}.
 
     "warning" is populated by `duplicate_work_warning()` when set, on every
     decision path -- it is an independent, non-blocking signal, never a
     reason to flip allow to deny.
+
+    ``command`` is the raw `gh pr create ...` shell command being gated (the
+    hook's `tool_input.command`). When the pass marker recorded required PR
+    labels (`--risk` was passed to `run`) and ``command`` is a `gh pr create`
+    invocation missing one or more of them, the verdict flips to "deny" --
+    this is what makes the go:risk-*/go:no-automerge labels code-enforced
+    instead of an agent-narrated AUTOMERGE LABELS line the calling agent must
+    remember to copy. `gh pr ready` and any other command pass through
+    unaffected; so does an empty `required_labels` (no --risk was recorded).
     """
     if not repo.is_dir():
         return {"decision": "deny", "reason": f"repo path does not exist: {repo}"}
 
     warning = duplicate_work_warning(repo)
 
-    def _verdict(decision: str, reason: str) -> Dict[str, str]:
-        verdict = {"decision": decision, "reason": reason}
+    def _verdict(decision: str, reason: str) -> Dict[str, Any]:
+        verdict: Dict[str, Any] = {"decision": decision, "reason": reason}
         if warning:
             verdict["warning"] = warning
         return verdict
@@ -334,7 +390,22 @@ def check(repo: Path) -> Dict[str, str]:
     state = tree_state(repo)
     marker = read_marker(repo)
     if state is not None and marker is not None and marker.get("state") == state:
-        return _verdict("allow", "pass marker matches current tree")
+        required = list(marker.get("labels") or [])
+        if required and command is not None and PR_CREATE_RE.search(command):
+            missing = [label for label in required if label not in labels_in_command(command)]
+            if missing:
+                return _verdict(
+                    "deny",
+                    "this PR's recorded risk/gates require label(s) "
+                    f"{', '.join(missing)}, but this `gh pr create` command "
+                    "does not pass them. Add "
+                    + " ".join(f"--label {label}" for label in missing)
+                    + " and retry.",
+                )
+        verdict = _verdict("allow", "pass marker matches current tree")
+        if required:
+            verdict["required_labels"] = required
+        return verdict
 
     return _verdict(
         "deny",
@@ -371,14 +442,22 @@ def _run(args: argparse.Namespace) -> int:
         return 0
     policy = load_policy(repo)
     cmd = pre_pr_gate.resolve_cmd(policy)
-    marker = write_marker(repo, state, cmd)
+    labels: List[str] = []
+    if args.risk:
+        gates = [g for g in args.gates.split(",") if g]
+        labels, _eligible, _reason = pre_pr_gate.resolve_pr_labels(
+            repo, policy, args.risk, gates, args.target_branch
+        )
+    marker = write_marker(repo, state, cmd, labels)
     if marker is not None:
         print(f"preflight: marker recorded at {marker}")
+        if labels:
+            print(f"preflight: required PR label(s) recorded: {' '.join(labels)}")
     return 0
 
 
 def _check(args: argparse.Namespace) -> int:
-    verdict = check(Path(args.repo).resolve())
+    verdict = check(Path(args.repo).resolve(), command=args.gh_command)
     print(json.dumps(verdict))
     return 0 if verdict["decision"] == "allow" else 1
 
@@ -393,6 +472,12 @@ def main(argv=None) -> int:
         "check", help="marker-aware verdict as JSON (for hook consumption)",
     )
     check_p.add_argument("--repo", default=".", help="worktree root to check (default: cwd)")
+    check_p.add_argument(
+        "--command", default=None, dest="gh_command",
+        help="the gh pr create/ready command being gated; when the pass marker "
+             "recorded required PR labels and this is a `gh pr create` command "
+             "missing one or more of them, the verdict denies",
+    )
     check_p.set_defaults(func=_check)
 
     run_p = sub.add_parser(
