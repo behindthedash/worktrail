@@ -27,6 +27,7 @@ exposes `spawn-one` (single worker) before the full fan-out loop is wired.
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import os
 import shutil
@@ -1024,6 +1025,76 @@ def _validate_retained_task_branch(
             )
 
 
+ASSEMBLY_RESOLVE_STRIKES = 1
+"""Bounds a sibling-merge resolve attempt to a single try before giving up.
+
+Mirrors `integrate.ASSEMBLY_RESOLVE_STRIKES`. Kept as a separate constant
+rather than imported -- `integrate` imports `live`, so importing back would
+cycle -- but must stay numerically in sync with it.
+"""
+
+
+def _stack_resolve_verify(wt: Path, conflicted_files: list) -> bool:
+    """Git-state check for whether a sibling-merge conflict was actually resolved.
+
+    Mirrors `integrate._assembly_resolve_salvage`: a resolve worker's report-back
+    is trusted only as far as the git state backs it up. The merge must be
+    concluded (no `MERGE_HEAD`), the tree must be clean (`git status
+    --porcelain`), and none of the files that were conflicted may still carry a
+    `<<<<<<<` marker. Any failure here means the resolution is rejected outright,
+    regardless of what the worker claimed.
+    """
+    if _git(wt, "rev-parse", "-q", "--verify", "MERGE_HEAD", check=False).returncode == 0:
+        return False  # merge still in progress
+    if _git(wt, "status", "--porcelain", check=False).stdout.strip():
+        return False  # dirty tree
+    for f in conflicted_files:
+        p = Path(wt) / f
+        if p.is_file() and "<<<<<<<" in p.read_text(errors="replace"):
+            return False
+    return True
+
+
+def _stack_resolve_attempt(
+    wt: Path, spec_id: str, task: dict, conflicting_branch: str, assembly_resolve_spawn
+) -> bool:
+    """Dispatch a resolve worker to fix a sibling-dependency merge conflict.
+
+    Called with the conflicted merge state (conflict markers) still in place.
+    Mirrors `integrate._attempt_assembly_resolve`'s bounded strike loop (see
+    `ASSEMBLY_RESOLVE_STRIKES`): a worker's report-back is trusted only as far
+    as `_stack_resolve_verify` backs it up. Returns True once a strike's
+    resolution verifies clean; False once strikes are exhausted, leaving the
+    merge aborted so the caller can raise.
+    """
+    conflicted_files = [
+        ln.strip()
+        for ln in _git(
+            wt, "diff", "--name-only", "--diff-filter=U", check=False
+        ).stdout.splitlines()
+        if ln.strip()
+    ]
+    prompt = dispatch.build_stack_conflict_prompt(spec_id, task, conflicting_branch, wt)
+    for strike in range(ASSEMBLY_RESOLVE_STRIKES):
+        explicit_failure = False
+        try:
+            raw = assembly_resolve_spawn(prompt, wt)
+            rep = dispatch.parse_report_back(raw)
+            if rep.get("status") != "success":
+                explicit_failure = True  # worker explicitly reported failure; trust it
+        except Exception:
+            pass  # spawn crash or unparseable report-back: let git state decide
+        if not explicit_failure and _stack_resolve_verify(wt, conflicted_files):
+            return True
+        _git(wt, "merge", "--abort", check=False)
+        if strike < ASSEMBLY_RESOLVE_STRIKES - 1:
+            # Re-issue the conflicting merge to restore conflict state for the next strike.
+            m = _git(wt, "merge", "--no-edit", conflicting_branch, check=False)
+            if m.returncode == 0:
+                return True  # Merged cleanly on the retry (unlikely but safe)
+    return False
+
+
 def add_stacked_worktree(
     repo: Path,
     spec_id: str,
@@ -1041,9 +1112,13 @@ def add_stacked_worktree(
     deps are usually a chain), leaving the worktree on the primary dependency.
 
     `assembly_resolve_spawn`, when provided, is used to attempt an automated
-    resolve-and-retry of a sibling merge conflict before giving up (see the
-    tasks in the stacked-worktree-conflict-auto-resolve change for the
-    resolve-and-retry behavior itself; this parameter is currently unused).
+    resolve-and-retry of a sibling merge conflict before giving up: on a
+    conflicted merge, `_stack_resolve_attempt` dispatches a resolve-worker
+    (bounded to `ASSEMBLY_RESOLVE_STRIKES` tries) and only accepts the
+    resolution once `_stack_resolve_verify` confirms the git state actually
+    backs it up. If the attempt is exhausted or `assembly_resolve_spawn` is
+    not provided, the merge is aborted and `WorktreeStackConflictError` is
+    raised as before.
     """
     start, extra = dependency_start_ref(repo, spec_id, task, by_id)
     branch = f"{spec_id}/{task['id'].lower()}"
@@ -1072,6 +1147,10 @@ def add_stacked_worktree(
     for mb in extra:  # carry sibling dependencies' commits too
         mr = _git(wt, "merge", "--no-edit", mb, check=False)
         if mr.returncode != 0:
+            if assembly_resolve_spawn is not None and _stack_resolve_attempt(
+                wt, spec_id, task, mb, assembly_resolve_spawn
+            ):
+                continue
             _git(wt, "merge", "--abort", check=False)
             # Continuing here would silently leave `wt` missing `mb`'s commits --
             # `_require_dependency_files` would be the next line to notice, but only
@@ -1086,6 +1165,24 @@ def add_stacked_worktree(
                 f"commits. Resolve the conflict between {start} and {mb} manually, "
                 f"then resume the run."
             )
+
+
+def _add_stacked_worktree_kwargs(target, kwargs: dict) -> dict:
+    """Drop entries `target` doesn't declare, so newly threaded optional kwargs
+    (e.g. `assembly_resolve_spawn`) don't break callers that monkeypatch
+    `add_stacked_worktree` with an older, narrower-signature double. Unwraps a
+    `unittest.mock.MagicMock(side_effect=...)`, whose own `__call__` signature
+    is always `(*args, **kwargs)` and would otherwise hide the double's real
+    (narrower) signature from `inspect.signature`.
+    """
+    fn = getattr(target, "side_effect", None) or target
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return kwargs
+    if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return kwargs
+    return {k: v for k, v in kwargs.items() if k in params}
 
 
 def bootstrap_worktree(wt: Path, bootstrap_cmd: str | None, log=print) -> bool:
@@ -1517,6 +1614,9 @@ def live_run(
     def ensure_wt(task: dict) -> Path:
         wt = wt_base / task["id"].lower()
         if not wt.exists():
+            # No `assembly_resolve_spawn` seam here, deliberately: this is the
+            # cassette/demo recording path (`live_run`), not a production run
+            # path -- see design.md's Non-Goals for stacked-worktree-conflict-auto-resolve.
             add_stacked_worktree(repo, spec_id, task, by_id, wt)
         return wt
 
@@ -2009,8 +2109,14 @@ def live_run_real(
     outside it.
     """
     model = model or spawnlib.default_model_for_agent(agent)
+    from . import verify as verify_module
+
     repo = repo.resolve()
     role_models = _effective_role_models(agent, role_models)
+    _ar_agent, _ar_model = _role_agent_model(
+        dispatch.ROLE_ASSEMBLY_RESOLVE, agent, model, role_agents, role_models
+    )
+    assembly_resolve_spawn_fn = verify_module._make_live_spawn(_ar_model, timeout, agent=_ar_agent)
     spec_id, tasks = taskformats.load_spec(str(repo / spec_rel))
     tasks = apply_run_plan(repo, spec_rel, spec_id, tasks)
     for t in tasks:
@@ -2129,10 +2235,31 @@ def live_run_real(
                 if not wt.exists():
                     if expected_head_sha:
                         add_stacked_worktree(
-                            repo, spec_id, task, by_id, wt, expected_head_sha=expected_head_sha
+                            repo,
+                            spec_id,
+                            task,
+                            by_id,
+                            wt,
+                            **_add_stacked_worktree_kwargs(
+                                add_stacked_worktree,
+                                {
+                                    "expected_head_sha": expected_head_sha,
+                                    "assembly_resolve_spawn": assembly_resolve_spawn_fn,
+                                },
+                            ),
                         )
                     else:
-                        add_stacked_worktree(repo, spec_id, task, by_id, wt)
+                        add_stacked_worktree(
+                            repo,
+                            spec_id,
+                            task,
+                            by_id,
+                            wt,
+                            **_add_stacked_worktree_kwargs(
+                                add_stacked_worktree,
+                                {"assembly_resolve_spawn": assembly_resolve_spawn_fn},
+                            ),
+                        )
                     drift_events = _require_dependency_files(wt, task, by_id)
                     if drift_events:
                         with state_lock:
@@ -3022,12 +3149,28 @@ def _pipeline_scheduler(
         if not wt.exists():
             with git_lock:
                 if not wt.exists():
+                    # Same `assembly_resolve_spawn_fn` already constructed above for
+                    # the integrate step (`integrate_kwargs["assembly_resolve_spawn"]`)
+                    # -- one worker, reused here instead of building a second one.
                     if expected_head_sha:
                         add_stacked_worktree(
-                            repo, spec_id, task, by_id, wt, expected_head_sha=expected_head_sha
+                            repo,
+                            spec_id,
+                            task,
+                            by_id,
+                            wt,
+                            expected_head_sha=expected_head_sha,
+                            assembly_resolve_spawn=assembly_resolve_spawn_fn,
                         )
                     else:
-                        add_stacked_worktree(repo, spec_id, task, by_id, wt)
+                        add_stacked_worktree(
+                            repo,
+                            spec_id,
+                            task,
+                            by_id,
+                            wt,
+                            assembly_resolve_spawn=assembly_resolve_spawn_fn,
+                        )
                     drift_events = _require_dependency_files(wt, task, by_id)
                     if drift_events:
                         with state_lock:
