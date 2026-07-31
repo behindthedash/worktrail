@@ -94,6 +94,9 @@ from . import cluster_telemetry
 # policy_selfcheck is a sibling module (route:J go-policy-integrity-guards audit).
 from .policy_selfcheck import check_repo as _policy_check_repo, discover_repo_names as _discover_repo_names
 
+# automerge_selfcheck is a sibling module (route:J automerge-label-gate audit).
+from .automerge_selfcheck import check_repo as _automerge_check_repo
+
 from ..orchestrator.agent_capacity import gate_snapshot as _capacity_gate_snapshot
 
 # Policy routing is used only to annotate picker items.
@@ -1414,13 +1417,19 @@ def scan_repos(parent: Path) -> List[Dict[str, Any]]:
     verify/tail resume state. (See go SKILL.md "stale-worktree cleanup".)
 
     Each row: {repo, path, has_specs, total, active, active_ids, active_specs,
-    backlog, backlog_ids, worktrees, policy_findings}. Returns [] if the
-    sibling resolver is unavailable or `parent` holds no git repos.
+    backlog, backlog_ids, worktrees, policy_findings, automerge_findings}.
+    Returns [] if the sibling resolver is unavailable or `parent` holds no
+    git repos.
 
     `policy_findings` is `policy_selfcheck.check_repo()`'s cross-repo
     copy-paste signals for this repo's `go-policy.yaml` (empty = clean, or
     the sibling module is unavailable — degrades silently, matching every
     other optional import in this file).
+
+    `automerge_findings` is `automerge_selfcheck.check_repo()`'s signals for
+    this repo's `.github/workflows/*.yml` auto-merge automation not actually
+    gating `gh pr merge --auto` on the `go:no-automerge` PR label (empty =
+    clean or no automerge workflow present).
 
     detect_stage calls are parallelised with a flat ThreadPoolExecutor across
     all spec dirs in all repos -- no nested pools, one thread per spec dir.
@@ -1444,12 +1453,16 @@ def scan_repos(parent: Path) -> List[Dict[str, Any]]:
         policy_findings: List[Dict[str, Any]] = []
         if _policy_check_repo is not None:
             policy_findings = _policy_check_repo(repo, sibling_names)["findings"]
+        automerge_findings: List[Dict[str, Any]] = []
+        if _automerge_check_repo is not None:
+            automerge_findings = _automerge_check_repo(repo)["findings"]
         repo_info[repo_key] = {
             "name": repo.name,
             "path": str(repo),
             "has_specs": specs_root.is_dir() or bool(_openspec_change_dirs(repo)),
             "worktrees": [wt.name for wt in _find_worktrees(parent, repo.name)],
             "policy_findings": policy_findings,
+            "automerge_findings": automerge_findings,
         }
         if specs_root.is_dir():
             for d in sorted(specs_root.iterdir()):
@@ -1490,6 +1503,7 @@ def scan_repos(parent: Path) -> List[Dict[str, Any]]:
                     for s in active_specs
                 ],
                 "policy_findings": info["policy_findings"],
+                "automerge_findings": info["automerge_findings"],
                 "backlog": len(backlog_ids),
                 "backlog_ids": backlog_ids,
                 "worktrees": info["worktrees"],
@@ -1817,7 +1831,9 @@ def render_dashboard(
     _CATEGORY_ORDER; the unspec'd backlog collapses to a count + the first two; in-
     flight and queued handoffs show the top three; worktrees get a one-line cleanup
     nudge; cross-repo go-policy.yaml contamination signals (policy_selfcheck.py) get
-    a one-line review nudge; when a cluster section is shown and
+    a one-line review nudge; unguarded auto-merge workflow signals
+    (automerge_selfcheck.py) get their own one-line review nudge; when a cluster
+    section is shown and
     `cluster_precision` (cluster_telemetry.summarize()'s result) has at least
     CLUSTER_PRECISION_MIN_DECIDED decided outcomes, an extra precision line is
     appended under it. `recent_runs` (single-repo mode) or each repo row's own
@@ -1834,6 +1850,7 @@ def render_dashboard(
     backlog: List[str] = []
     wt: List[str] = list(worktrees or [])
     policy_flags: List[str] = []
+    automerge_flags: List[str] = []
     runs: List[Dict[str, Any]] = []
     if repo_rows is not None:
         for r in repo_rows:
@@ -1842,6 +1859,7 @@ def render_dashboard(
             backlog.extend(f"{r['repo']} {bid}" for bid in r.get("backlog_ids", []))
             wt.extend(f"{r['repo']}/{w}" for w in r.get("worktrees", []))
             policy_flags.extend(f"{r['repo']} ({f['signal']})" for f in r.get("policy_findings", []))
+            automerge_flags.extend(f"{r['repo']} ({f['signal']})" for f in r.get("automerge_findings", []))
             for run in r.get("recent_runs", []) or []:
                 runs.append({"who": r["repo"], **run})
         runs.sort(key=lambda x: x.get("completed_at") or x.get("started_at") or "", reverse=True)
@@ -1934,6 +1952,14 @@ def render_dashboard(
         head = ", ".join(policy_flags[:4])
         more = f" … +{len(policy_flags) - 4}" if len(policy_flags) > 4 else ""
         lines.append(f"🚩 Policy contamination ({len(policy_flags)}): {head}{more} → review go-policy.yaml")
+
+    if automerge_flags:
+        head = ", ".join(automerge_flags[:4])
+        more = f" … +{len(automerge_flags) - 4}" if len(automerge_flags) > 4 else ""
+        lines.append(
+            f"🚩 Unguarded auto-merge ({len(automerge_flags)}): {head}{more} "
+            "→ review .github/workflows/auto-merge.yml"
+        )
 
     if capacity and capacity.get("gated"):
         entries = ", ".join(

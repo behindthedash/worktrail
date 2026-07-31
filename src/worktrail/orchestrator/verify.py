@@ -549,6 +549,11 @@ class Verifier:
         `pre_sha` empty (rev-parse failed) -> can't diff; fail open, since this
         is a defense-in-depth backstop and a `gh pr view`/CI check downstream
         still gates the merge.
+
+        Also logs (never gates on) the same touched-vs-declared mismatch
+        `conductor.plan_audit` computes standalone, so the compile-accuracy
+        signal is captured automatically for every real run instead of only
+        when someone remembers to run the audit by hand.
         """
         if not pre_sha:
             return []
@@ -559,6 +564,13 @@ class Verifier:
         spec_root = forbidden_prefixes_for(self.spec_rel)[1]
         others = tuple(x for x in forbidden_prefixes_for(self.spec_rel) if x != spec_root)
         declared = set((self.declared_files or {}).get((group or {}).get("name"), ()))
+        if declared:
+            undeclared = sorted(set(touched) - declared)
+            if undeclared:
+                self.log(
+                    f"    [{(group or {}).get('name')}] plan-audit: "
+                    f"touched-not-declared {undeclared}"
+                )
         return [
             f
             for f in touched
