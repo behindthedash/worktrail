@@ -397,11 +397,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         log=lambda m: print(m, file=sys.stderr),
     )
 
+    merged, notes = runplan.apply_to_tasks(tasks, plan)
+    gaps = needs_compile(merged)
+
     if a.json:
         print(json.dumps(plan.to_dict(), indent=2, sort_keys=True))
+        if gaps:
+            _print_scope_gap_error(gaps)
+            return 1
         return 0
 
-    merged, notes = runplan.apply_to_tasks(tasks, plan)
     print(f"{plan.spec_id}  source={plan.source}  fingerprint={plan.fingerprint[:12]}")
     print(f"  cache: {runplan.cache_path(a.cache_dir or default_cache_dir(repo), spec_id, plan.fingerprint)}")
     for n in notes:
@@ -409,22 +414,27 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     for t in merged:
         print(f"  {t['id']:<10} deps={','.join(t.get('deps') or []) or '-':<24} files={len(t.get('files') or [])}")
 
-    gaps = needs_compile(merged)
     if gaps:
-        print(
-            f"ERROR: {len(gaps)} implementation task(s) still have no file scope after "
-            f"compiling: {', '.join(gaps)}",
-            file=sys.stderr,
-        )
-        print(
-            "  a live run will refuse to fan these out (validate_task_metadata). Give "
-            "them a tail kind (docs/e2e/cleanup) if they genuinely need none, add explicit "
-            "`files:` scope to the artifact, or retry compile (--force) with more context "
-            "in proposal.md/design.md so the model can determine it.",
-            file=sys.stderr,
-        )
+        _print_scope_gap_error(gaps)
         return 1
     return 0
+
+
+def _print_scope_gap_error(gaps: List[str]) -> None:
+    """Shared by both `main()` output modes -- stderr only, so `--json` stdout
+    stays a clean, parseable plan even when the exit code reports failure."""
+    print(
+        f"ERROR: {len(gaps)} implementation task(s) still have no file scope after "
+        f"compiling: {', '.join(gaps)}",
+        file=sys.stderr,
+    )
+    print(
+        "  a live run will refuse to fan these out (validate_task_metadata). Give "
+        "them a tail kind (docs/e2e/cleanup) if they genuinely need none, add explicit "
+        "`files:` scope to the artifact, or retry compile (--force) with more context "
+        "in proposal.md/design.md so the model can determine it.",
+        file=sys.stderr,
+    )
 
 
 if __name__ == "__main__":

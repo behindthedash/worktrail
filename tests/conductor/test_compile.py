@@ -301,6 +301,63 @@ def test_the_cli_fails_loudly_when_impl_tasks_stay_scope_less(tmp_path, capsys):
     assert "scope" in err.lower()
 
 
+def test_the_cli_json_mode_also_fails_loudly_when_impl_tasks_stay_scope_less(tmp_path, capsys):
+    """`--json` used to return 0 right after printing the plan, never reaching
+    the scope-gap check below -- so a caller that only checks the exit code
+    (rather than parsing stdout for empty `files`) saw a silent success even
+    though a live run would immediately refuse to fan these tasks out."""
+    import subprocess
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    d = repo / "openspec" / "changes" / "add-thing"
+    d.mkdir(parents=True)
+    (d / "proposal.md").write_text("## Why\nBecause.\n")
+    (d / "tasks.md").write_text("## 1. Core\n\n- [ ] 1.1 Add the parser\n- [ ] 1.2 Wire the endpoint\n")
+
+    rc = conductor_compile.main([str(d), "--no-llm", "--json"])
+    out, err = capsys.readouterr()
+    assert rc == 1
+    assert "1.1" in err and "1.2" in err
+    assert "scope" in err.lower()
+    # stdout must still be the plain compiled plan -- a caller piping it into
+    # `json.loads` must not see the error text mixed into the payload.
+    json.loads(out)
+
+
+def test_the_cli_json_mode_exits_zero_when_every_task_gets_scope(tmp_path, capsys):
+    """The counterpart: full scope in `--json` mode must not trip the gap check."""
+    import json as json_module
+    import subprocess
+    from unittest.mock import patch
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    d = repo / "openspec" / "changes" / "add-thing"
+    d.mkdir(parents=True)
+    (d / "proposal.md").write_text("## Why\nBecause.\n")
+    (d / "tasks.md").write_text("## 1. Core\n\n- [ ] 1.1 Add the parser\n- [ ] 1.2 Wire the endpoint\n")
+
+    reply = (
+        "```json\n"
+        + json_module.dumps(
+            {
+                "tasks": [
+                    {"id": "1.1", "files": ["src/parser.py"], "deps": []},
+                    {"id": "1.2", "files": ["src/api.py"], "deps": ["1.1"]},
+                ]
+            }
+        )
+        + "\n```\n"
+    )
+    with patch("worktrail.conductor.compile._default_spawn", return_value=reply):
+        rc = conductor_compile.main([str(d), "--json"])
+    assert rc == 0
+    assert "ERROR" not in capsys.readouterr().err
+
+
 def test_the_cli_exits_zero_when_every_task_gets_scope(tmp_path, capsys):
     """The counterpart: a plan with real scope for every task must not trip
     the new gap check."""
