@@ -129,7 +129,7 @@
     {
       "id": "bare-go-dashboard-fallback",
       "request": "go",
-      "expect": {"route": "E", "confidence": "low"}
+      "expect": {"route": "E", "confidence": "low", "route_source": "no-signal-default"}
     },
     {
       "id": "unknown-failure-investigation",

@@ -104,6 +104,26 @@ class TestOverridesAndSignals(unittest.TestCase):
         r = classify("fix the broken receipt date")
         self.assertEqual(r["route_source"], "classifier")
 
+    def test_zero_signal_default_reports_distinct_route_source(self):
+        # A content-free request that scores no route at all falls back to
+        # E/low, but must be distinguishable from a real (if low-confidence)
+        # classification so callers like create_handoff._route_for() can
+        # suppress stamping it as a recommended-route (20260731-151701).
+        r = classify("Standardize the shared helper used by two call sites")
+        self.assertEqual(r["route"], "E")
+        self.assertEqual(r["confidence"], "low")
+        self.assertEqual(r["ambiguous_between"], [])
+        self.assertEqual(r["route_source"], "no-signal-default")
+
+    def test_zero_signal_default_still_overridable_by_handoff_route(self):
+        # At dispatch time (handoff_route supplied), the zero-signal default
+        # must still be overridable like any other low-confidence pick --
+        # only brief-creation-time stamping (no handoff_route) is suppressed.
+        r = classify("Standardize the shared helper used by two call sites",
+                     handoff_route="H")
+        self.assertEqual(r["route"], "H")
+        self.assertEqual(r["route_source"], "handoff-recommended-override")
+
     def test_state_demotes_implementation_without_spec(self):
         with_spec = classify("implement the new widget",
                              state={"active_specs": 1})

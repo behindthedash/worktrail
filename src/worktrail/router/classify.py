@@ -314,6 +314,7 @@ def classify(request: str,
     # Pick the route.
     ambiguous_between: List[str] = []
     question = None
+    no_signal_default = False
     if forced:
         route = forced
         confidence = "high"
@@ -325,6 +326,7 @@ def classify(request: str,
             # No signals at all: resume/dashboard is the safe default ("go").
             route = "E"
             confidence = "low"
+            no_signal_default = True
             reason_parts.append("no signals; defaulting to dashboard/menu (E)")
         else:
             route = top_route
@@ -353,7 +355,7 @@ def classify(request: str,
     # (repo state may have drifted since the brief was written). This runs
     # after the pick above (not as a score boost) so the override decision is
     # never distorted by its own thumb on the scale.
-    route_source = "classifier"
+    route_source = "no-signal-default" if no_signal_default else "classifier"
     if (not forced and handoff_route_norm and confidence in ("low", "medium")
             and route != handoff_route_norm):
         reason_parts.append(
