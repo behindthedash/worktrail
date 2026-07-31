@@ -27,6 +27,7 @@ exposes `spawn-one` (single worker) before the full fan-out loop is wired.
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import os
 import shutil
@@ -1166,6 +1167,24 @@ def add_stacked_worktree(
             )
 
 
+def _add_stacked_worktree_kwargs(target, kwargs: dict) -> dict:
+    """Drop entries `target` doesn't declare, so newly threaded optional kwargs
+    (e.g. `assembly_resolve_spawn`) don't break callers that monkeypatch
+    `add_stacked_worktree` with an older, narrower-signature double. Unwraps a
+    `unittest.mock.MagicMock(side_effect=...)`, whose own `__call__` signature
+    is always `(*args, **kwargs)` and would otherwise hide the double's real
+    (narrower) signature from `inspect.signature`.
+    """
+    fn = getattr(target, "side_effect", None) or target
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return kwargs
+    if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return kwargs
+    return {k: v for k, v in kwargs.items() if k in params}
+
+
 def bootstrap_worktree(wt: Path, bootstrap_cmd: str | None, log=print) -> bool:
     """Install a freshly-created task worktree's local dependencies before a worker
     is spawned into it.
@@ -2087,8 +2106,14 @@ def live_run_real(
     outside it.
     """
     model = model or spawnlib.default_model_for_agent(agent)
+    from . import verify as verify_module
+
     repo = repo.resolve()
     role_models = _effective_role_models(agent, role_models)
+    _ar_agent, _ar_model = _role_agent_model(
+        dispatch.ROLE_ASSEMBLY_RESOLVE, agent, model, role_agents, role_models
+    )
+    assembly_resolve_spawn_fn = verify_module._make_live_spawn(_ar_model, timeout, agent=_ar_agent)
     spec_id, tasks = taskformats.load_spec(str(repo / spec_rel))
     tasks = apply_run_plan(repo, spec_rel, spec_id, tasks)
     for t in tasks:
@@ -2207,10 +2232,31 @@ def live_run_real(
                 if not wt.exists():
                     if expected_head_sha:
                         add_stacked_worktree(
-                            repo, spec_id, task, by_id, wt, expected_head_sha=expected_head_sha
+                            repo,
+                            spec_id,
+                            task,
+                            by_id,
+                            wt,
+                            **_add_stacked_worktree_kwargs(
+                                add_stacked_worktree,
+                                {
+                                    "expected_head_sha": expected_head_sha,
+                                    "assembly_resolve_spawn": assembly_resolve_spawn_fn,
+                                },
+                            ),
                         )
                     else:
-                        add_stacked_worktree(repo, spec_id, task, by_id, wt)
+                        add_stacked_worktree(
+                            repo,
+                            spec_id,
+                            task,
+                            by_id,
+                            wt,
+                            **_add_stacked_worktree_kwargs(
+                                add_stacked_worktree,
+                                {"assembly_resolve_spawn": assembly_resolve_spawn_fn},
+                            ),
+                        )
                     drift_events = _require_dependency_files(wt, task, by_id)
                     if drift_events:
                         with state_lock:
