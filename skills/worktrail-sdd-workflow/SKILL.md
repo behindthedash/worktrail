@@ -145,7 +145,7 @@ claude/codex workers included.** Before `gh pr create` (or updating an existing
 PR's head), run the gate from the worktree root and require exit 0:
 
 ```bash
-worktrail-preflight run --repo "$PWD" --run "$RUN" --risk "$RISK_LEVEL" --gates "$GATES" --target-branch "$BASE"
+worktrail-preflight run --repo "$PWD" --run "$RUN" --risk "$RISK_LEVEL" --gates "$GATES" --target-branch "$BASE" --route "$ROUTE"
 ```
 
 `worktrail-preflight run` executes `pre_pr_gate.py` in-process (identical

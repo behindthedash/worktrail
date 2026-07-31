@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import fnmatch
 import json
 import os
 import sys
@@ -48,17 +49,15 @@ DEFAULTS: Dict[str, Any] = {
         "max_risk": "low",            # low|medium — high/critical never eligible
         "target_branches": [],         # empty = base branch only
     },
-    # Paths whose changes always require a human merge decision. NOT YET
-    # ENFORCED: no script reads this key today (2026-07 key-vs-consumer audit,
-    # docs/specs/research/go-policy-integrity-audit.md) — a repo author who
-    # sets it gets no actual gate, only the `_meta.warnings` nudge below.
-    # Judgment (route:J audit) decided to surface-and-document rather than
-    # wire it through, since zero configured repos use it yet.
+    # Paths whose changes always require a human merge decision. Enforced by
+    # `automerge_eligible()`: any changed path matching one of these glob
+    # patterns makes the PR automerge-ineligible (`go:no-automerge`),
+    # independent of risk/gates. Callers pass the PR's changed paths in.
     "protected_paths": [],
-    # Route letters that always pause for explicit human approval. NOT YET
-    # ENFORCED: `classify.py`'s per-route gates (`require_human_approval`,
-    # `never_automerge`, ...) are hardcoded by route/risk signal and never
-    # consult this key (same audit as above). Same posture: warn, don't wire.
+    # Route letters that always pause for explicit human approval. Enforced by
+    # `automerge_eligible()`: a PR whose classified route is in this list is
+    # automerge-ineligible (`go:no-automerge`), independent of risk/gates.
+    # Callers pass the classified route in.
     "require_human_routes": [],
     # Free-form note: how to authenticate for local protected-route testing
     # (e.g. "Playwright storage state via npm run e2e:auth; creds in .env.local").
@@ -604,29 +603,47 @@ def load_policy(repo: Path) -> Dict[str, Any]:
                 "integrate_smoke_cmd unset: group PRs won't be smoke-tested before merge; "
                 "cross-task integration bugs will surface only at CI. Consider adding the "
                 "repo's fast test command to docs/specs/go-policy.yaml.")
-    # Nudge: these two keys are parsed and validated but have no enforcement
-    # consumer anywhere in go/scripts or parallel-orchestrator/scripts today
-    # (2026-07 key-vs-consumer audit). A repo author configuring them would
-    # get silent no-op protection, not the gate the key's name implies.
-    if policy.get("protected_paths"):
-        meta["warnings"].append(
-            "protected_paths is configured but not yet enforced by any script "
-            "(informational only) — see docs/specs/research/go-policy-integrity-audit.md")
-    if policy.get("require_human_routes"):
-        meta["warnings"].append(
-            "require_human_routes is configured but not yet enforced by any script "
-            "(informational only) — see docs/specs/research/go-policy-integrity-audit.md")
     meta["external_automerge"] = detect_external_automerge(repo)
     policy["_meta"] = meta
     return policy
 
 
+def _protected_path_match(path: str, patterns: List[str]) -> Optional[str]:
+    """First pattern matching `path`, or None. A trailing '/' pattern is a
+    directory-prefix match (`protected_paths` examples use "migrations/" to
+    mean everything under migrations/); anything else is an fnmatch glob."""
+    for pattern in patterns:
+        if pattern.endswith("/"):
+            if path == pattern.rstrip("/") or path.startswith(pattern):
+                return pattern
+        elif fnmatch.fnmatch(path, pattern):
+            return pattern
+    return None
+
+
 def automerge_eligible(policy: Dict[str, Any], risk: str, gates: List[str],
-                       target_branch: str) -> Tuple[bool, str]:
-    """The deterministic part of the merge gate (CI/review state is checked live)."""
+                       target_branch: str, route: Optional[str] = None,
+                       changed_paths: Optional[List[str]] = None) -> Tuple[bool, str]:
+    """The deterministic part of the merge gate (CI/review state is checked live).
+
+    `route` and `changed_paths` are optional and each check applies only when
+    its input is supplied: a caller that omits `route` skips the
+    `require_human_routes` check, and one that omits `changed_paths` skips the
+    `protected_paths` check, rather than failing closed on absent input.
+    Callers that want those two policy keys enforced must pass them in.
+    """
     am = policy["automerge"]
     if "never_automerge" in gates or "require_human_approval" in gates:
         return False, "protected operation or human-approval gate"
+    if route is not None and route in (policy.get("require_human_routes") or []):
+        return False, f"route {route} is in policy's require_human_routes"
+    if changed_paths is not None:
+        protected = policy.get("protected_paths") or []
+        for path in changed_paths:
+            matched = _protected_path_match(path, protected)
+            if matched:
+                return False, (
+                    f"changed path '{path}' matches protected_paths pattern '{matched}'")
     if not am.get("enabled"):
         external = policy.get("_meta", {}).get("external_automerge", {})
         if external.get("detected"):
@@ -682,6 +699,12 @@ def main(argv=None) -> int:
     p.add_argument("--gates", default="",
                     help="comma-separated classifier gates, e.g. never_automerge,require_human_approval")
     p.add_argument("--target-branch", default="main")
+    p.add_argument("--route", default=None,
+                    help="classified route letter, for --check-automerge's "
+                         "require_human_routes check")
+    p.add_argument("--changed-paths", default="",
+                    help="comma-separated changed paths, for --check-automerge's "
+                         "protected_paths check")
     p.add_argument(
         "--merge-method-for-branch", default=None, metavar="BRANCH",
         help="print the merge_method_by_base override for BRANCH (null if unset) "
@@ -698,7 +721,10 @@ def main(argv=None) -> int:
         return 0
     if args.check_automerge:
         gates = [g for g in args.gates.split(",") if g]
-        eligible, reason = automerge_eligible(policy, args.risk, gates, args.target_branch)
+        changed_paths = [p for p in args.changed_paths.split(",") if p]
+        eligible, reason = automerge_eligible(
+            policy, args.risk, gates, args.target_branch,
+            route=args.route, changed_paths=changed_paths or None)
         labels = automerge_labels(eligible, args.risk)
         print(json.dumps({"eligible": eligible, "reason": reason, "labels": labels}, indent=2))
         return 0

@@ -271,22 +271,93 @@ class TestIntegrateSmokeNudge(unittest.TestCase):
         self.assertFalse(self._has_nudge(load_policy(Path(tempfile.mkdtemp()))))
 
 
-class TestUnenforcedKeyWarnings(unittest.TestCase):
-    """protected_paths / require_human_routes are parsed but have no runtime
-    consumer (2026-07 key-vs-consumer audit) — configuring them must warn,
-    not silently no-op."""
+class TestProtectedPathsEnforcement(unittest.TestCase):
+    """protected_paths is enforced by automerge_eligible() via its
+    changed_paths param — a matching changed path denies eligibility
+    independent of risk/gates."""
 
-    def test_protected_paths_configured_warns(self):
-        repo = _repo_with('protected_paths:\n  - "migrations/"\n')
-        pol = load_policy(repo)
-        self.assertTrue(any("protected_paths is configured but not yet enforced" in w
-                            for w in pol["_meta"]["warnings"]))
+    def _policy(self, protected_paths):
+        return {
+            "automerge": {"enabled": True, "max_risk": "critical", "target_branches": []},
+            "protected_paths": protected_paths,
+            "_meta": {"external_automerge": {"detected": False}},
+        }
 
-    def test_require_human_routes_configured_warns(self):
-        repo = _repo_with('require_human_routes:\n  - "D"\n')
+    def test_directory_prefix_pattern_denies(self):
+        eligible, reason = automerge_eligible(
+            self._policy(["migrations/"]), "low", [], "main",
+            changed_paths=["migrations/0001_init.sql"])
+        self.assertFalse(eligible)
+        self.assertIn("migrations/", reason)
+
+    def test_glob_pattern_denies(self):
+        eligible, reason = automerge_eligible(
+            self._policy(["src/billing/*.py"]), "low", [], "main",
+            changed_paths=["src/billing/invoices.py"])
+        self.assertFalse(eligible)
+
+    def test_non_matching_path_eligible(self):
+        eligible, _ = automerge_eligible(
+            self._policy(["migrations/"]), "low", [], "main",
+            changed_paths=["README.md"])
+        self.assertTrue(eligible)
+
+    def test_omitted_changed_paths_skips_check(self):
+        # No changed_paths supplied at all -- the check does not fail closed.
+        eligible, _ = automerge_eligible(
+            self._policy(["migrations/"]), "low", [], "main")
+        self.assertTrue(eligible)
+
+    def test_unset_protected_paths_never_denies(self):
+        eligible, _ = automerge_eligible(
+            self._policy([]), "low", [], "main",
+            changed_paths=["migrations/0001_init.sql"])
+        self.assertTrue(eligible)
+
+
+class TestRequireHumanRoutesEnforcement(unittest.TestCase):
+    """require_human_routes is enforced by automerge_eligible() via its
+    route param — a listed route denies eligibility independent of
+    risk/gates."""
+
+    def _policy(self, require_human_routes):
+        return {
+            "automerge": {"enabled": True, "max_risk": "critical", "target_branches": []},
+            "require_human_routes": require_human_routes,
+            "_meta": {"external_automerge": {"detected": False}},
+        }
+
+    def test_listed_route_denies(self):
+        eligible, reason = automerge_eligible(
+            self._policy(["D"]), "low", [], "main", route="D")
+        self.assertFalse(eligible)
+        self.assertIn("D", reason)
+
+    def test_unlisted_route_eligible(self):
+        eligible, _ = automerge_eligible(
+            self._policy(["D"]), "low", [], "main", route="F")
+        self.assertTrue(eligible)
+
+    def test_omitted_route_skips_check(self):
+        eligible, _ = automerge_eligible(self._policy(["D"]), "low", [], "main")
+        self.assertTrue(eligible)
+
+    def test_unset_require_human_routes_never_denies(self):
+        eligible, _ = automerge_eligible(
+            self._policy([]), "low", [], "main", route="D")
+        self.assertTrue(eligible)
+
+
+class TestNoStaleUnenforcedWarning(unittest.TestCase):
+    """Configuring protected_paths/require_human_routes must not print the
+    old 'not yet enforced' nudge now that both are real gates."""
+
+    def test_no_warn_when_configured(self):
+        repo = _repo_with('protected_paths:\n  - "migrations/"\n'
+                           'require_human_routes:\n  - "D"\n')
         pol = load_policy(repo)
-        self.assertTrue(any("require_human_routes is configured but not yet enforced" in w
-                            for w in pol["_meta"]["warnings"]))
+        warnings = pol["_meta"]["warnings"]
+        self.assertFalse(any("not yet enforced" in w for w in warnings))
 
     def test_no_warn_when_unset(self):
         pol = load_policy(_repo_with(""))
