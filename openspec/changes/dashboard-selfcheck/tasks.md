@@ -32,9 +32,9 @@
 
 ## 3. Verification
 
-- [ ] 3.1 Run `PYTHONPATH=src pytest -q tests/router/test_dashboard_selfcheck.py`
+- [ ] 3.1 [cleanup] Run `PYTHONPATH=src pytest -q tests/router/test_dashboard_selfcheck.py`
       and the full `PYTHONPATH=src pytest -q` suite green.
-- [ ] 3.2 Run `PYTHONPATH=src pytest -q tests/test_plugin_surface.py` to
+- [ ] 3.2 [cleanup] Run `PYTHONPATH=src pytest -q tests/test_plugin_surface.py` to
       confirm the new console script and any skill/doc cross-references stay
       in lockstep (this change adds no new skill, but the script-registry
       check covers `pyproject.toml` entries).
