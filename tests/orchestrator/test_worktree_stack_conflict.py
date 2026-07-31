@@ -79,6 +79,65 @@ class AddStackedWorktreeSiblingConflict(unittest.TestCase):
             status = _git(wt, "status", "--porcelain").stdout
             self.assertEqual(status.strip(), "", "merge must have been aborted cleanly")
 
+    def test_resolve_spawn_provided_worker_succeeds_verified_clean_no_raise(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            _init_repo(repo)
+
+            spec_id = "102-x"
+            _branch_editing_shared_file(repo, f"{spec_id}/task-001", "from task-001\n")
+            _branch_editing_shared_file(repo, f"{spec_id}/task-002", "from task-002\n")
+
+            by_id = {
+                "TASK-001": {"id": "TASK-001", "deps": []},
+                "TASK-002": {"id": "TASK-002", "deps": []},
+                "TASK-003": {"id": "TASK-003", "deps": ["TASK-001", "TASK-002"]},
+            }
+            wt = Path(tmp) / "wt" / f"{spec_id}-task-003"
+            wt.parent.mkdir(parents=True)
+
+            def _resolving_spawn(prompt, worktree):
+                (Path(worktree) / "shared.py").write_text(
+                    "merged: task-001 + task-002\n"
+                )
+                subprocess.run(
+                    ["git", "-C", str(worktree), "add", "-A"], check=True
+                )
+                subprocess.run(
+                    ["git", "-C", str(worktree), "commit", "-q", "--no-edit"],
+                    check=True,
+                )
+                return (
+                    "```json\n"
+                    '{"task": "TASK-003", "step": "resolve", "status": "success"}\n'
+                    "```"
+                )
+
+            live.add_stacked_worktree(
+                repo,
+                spec_id,
+                by_id["TASK-003"],
+                by_id,
+                wt,
+                assembly_resolve_spawn=_resolving_spawn,
+            )
+
+            # No lingering merge state.
+            status = _git(wt, "status", "--porcelain").stdout
+            self.assertEqual(status.strip(), "", "resolved merge must leave a clean tree")
+
+            # Worktree carries both siblings' commits.
+            for branch in (f"{spec_id}/task-001", f"{spec_id}/task-002"):
+                self.assertEqual(
+                    _git(wt, "merge-base", "--is-ancestor", branch, "HEAD").returncode,
+                    0,
+                    f"{branch} commit must be an ancestor of the stacked worktree HEAD",
+                )
+            self.assertEqual(
+                (wt / "shared.py").read_text(), "merged: task-001 + task-002\n"
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
