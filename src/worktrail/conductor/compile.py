@@ -146,6 +146,14 @@ one can start, because this task consumes their output. Shared ownership of a \
 file is NOT a dependency -- that is what `files` already expresses. Only list a \
 real ordering constraint.
 
+Final pass, before you output anything: you decided each task's `files` in \
+isolation, which is exactly how a shared file gets recorded on only one task. \
+Re-read every task's `files` side by side. For each file that appears on at \
+least one task, check whether any OTHER task in the list also creates or \
+modifies it and is missing it from its own `files`. Add it there too. Two \
+tasks correctly declaring the same file is normal and expected; a shared file \
+declared by only one of them is the exact miss this pass exists to catch.
+
 Rules:
 - Every task id above must appear exactly once. Invent no ids.
 - `deps` may only contain ids from the list above.
