@@ -17,6 +17,15 @@ from worktrail.orchestrator import live
 from worktrail.orchestrator import spawnlib
 
 
+class ReviewerSystemPromptTests(unittest.TestCase):
+    """Handoff 20260731-082737: the reviewer must flag a diff that deviates from
+    the task's literal instruction rather than accept a rationale for it."""
+
+    def test_flags_deviation_as_failed_worthy_on_its_own(self):
+        self.assertIn("different approach than the task literally describes", live._REVIEWER_SYSTEM_PROMPT)
+        self.assertIn("does not substitute for flagging it", live._REVIEWER_SYSTEM_PROMPT)
+
+
 class RunLockTests(unittest.TestCase):
     def test_context_manager_enter_returns_self(self):
         with tempfile.TemporaryDirectory() as t:

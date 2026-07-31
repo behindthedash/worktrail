@@ -236,12 +236,32 @@ _REVIEW_CHECKLIST_OWN_FILE = (
     "`- [x]` ONLY when the diff evidence confirms that item is genuinely met -- "
     "leave any unconfirmed item unticked and record it as a finding. "
 )
+# A prompt instruction alone can be rationalized around under pressure (the same
+# reasoning behind verify.py's FORBIDDEN_WORKER_PATH_PREFIXES deterministic
+# backstop) -- but a diff's approach vs. a task's literally-described change is
+# not mechanically checkable, so the backstop here is a hard verdict rule
+# instead of a deterministic gate: a deviation is FAILED-worthy on its own,
+# never something the reviewer weighs a rationale against. Observed failure
+# (handoff 20260731-003657): a task instructed replacing one ORM lookup with
+# another; the diff instead added a dual-read fallback, and the reviewer passed
+# it because the fallback seemed "necessary" -- exactly the rationalization this
+# rule forecloses.
+_REVIEW_VERDICT_DEVIATION_RULE = (
+    "If the diff takes a different implementation approach than what the task "
+    "literally describes -- a workaround, fallback, or substitute technique in "
+    "place of the specified change -- that deviation is itself grounds for "
+    "`review_status: FAILED`, even when it looks technically justified. Record "
+    "it as a finding naming what the task said to do and what the diff did "
+    "instead; do not accept a plausible-sounding rationale in its place. "
+    "Whether a deviation is acceptable is a human/planner decision, not yours "
+    "to make silently."
+)
 _REVIEW_VERDICT_OWN_FILE = (
     "`review_status: PASSED` requires EVERY AC/DoD checkbox ticked -- a single "
     "unticked AC/DoD item after your review is itself sufficient grounds for "
     "`FAILED` plus a finding for that item. "
-    "Commit the task-file checkbox edit alongside the review file."
-)
+    "Commit the task-file checkbox edit alongside the review file. "
+) + _REVIEW_VERDICT_DEVIATION_RULE
 _REVIEW_CHECKLIST_SHARED_FILE = (
     "Your brief is ONE item in a file shared by every task in this change. "
     "Treat that file as strictly READ-ONLY: do not tick its checkbox, do not "
@@ -250,8 +270,8 @@ _REVIEW_CHECKLIST_SHARED_FILE = (
     "branch. "
 )
 _REVIEW_VERDICT_SHARED_FILE = (
-    "Record your verdict in the report-back JSON and the review file only."
-)
+    "Record your verdict in the report-back JSON and the review file only. "
+) + _REVIEW_VERDICT_DEVIATION_RULE
 
 
 def _review_clauses(anchor: str) -> tuple:
