@@ -1490,6 +1490,44 @@ class WorkerScopeViolation(unittest.TestCase):
         self.assertEqual(v._forbidden_paths_touched("presha", "gb", {"name": "feature-1"}),
                          [".github/workflows/x.yml"])
 
+    # -- compile-accuracy signal: same computation as plan_audit.audit_plan's
+    # `undeclared`, surfaced automatically per-run instead of manually --------
+
+    def test_touched_not_declared_is_logged_but_does_not_change_result(self):
+        run = self.ScopeCheckRun({}, touched=["src/ok.py", "src/surprise.py"])
+        logs = []
+        v = verify.Verifier(
+            Path("/repo"), "origin", "dev", "001-x",
+            run=run, spawn=FakeSpawn(), log=logs.append, sleep=lambda *_: None,
+            worktree_base=Path("/tmp/x"), max_polls=5,
+            declared_files={"feature-1": ["src/ok.py"]})
+        result = v._forbidden_paths_touched("presha", "gb", {"name": "feature-1"})
+        self.assertEqual(result, [])
+        self.assertTrue(any("src/surprise.py" in m for m in logs))
+
+    def test_no_undeclared_files_logs_nothing(self):
+        run = self.ScopeCheckRun({}, touched=["src/ok.py"])
+        logs = []
+        v = verify.Verifier(
+            Path("/repo"), "origin", "dev", "001-x",
+            run=run, spawn=FakeSpawn(), log=logs.append, sleep=lambda *_: None,
+            worktree_base=Path("/tmp/x"), max_polls=5,
+            declared_files={"feature-1": ["src/ok.py"]})
+        v._forbidden_paths_touched("presha", "gb", {"name": "feature-1"})
+        self.assertEqual(logs, [])
+
+    def test_no_declared_files_at_all_skips_the_compile_accuracy_check(self):
+        """Nothing declared to compare against -- same guard as
+        plan_audit.audit_plan's `if not tp.files: continue`."""
+        run = self.ScopeCheckRun({}, touched=["src/ok.py"])
+        logs = []
+        v = verify.Verifier(
+            Path("/repo"), "origin", "dev", "001-x",
+            run=run, spawn=FakeSpawn(), log=logs.append, sleep=lambda *_: None,
+            worktree_base=Path("/tmp/x"), max_polls=5)
+        v._forbidden_paths_touched("presha", "gb", {"name": "feature-1"})
+        self.assertEqual(logs, [])
+
 
 class WorkerSelfMergeViolation(unittest.TestCase):
     """Structural backstop for dispatch.py's second Hard rule ('do NOT run

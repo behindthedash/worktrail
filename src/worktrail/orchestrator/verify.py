@@ -559,6 +559,17 @@ class Verifier:
         spec_root = forbidden_prefixes_for(self.spec_rel)[1]
         others = tuple(x for x in forbidden_prefixes_for(self.spec_rel) if x != spec_root)
         declared = set((self.declared_files or {}).get((group or {}).get("name"), ()))
+        # Compile-accuracy signal (same computation as plan_audit.audit_plan's
+        # `undeclared`, but automatic and per-run instead of manual/after-the-fact):
+        # a file the group actually touched but never declared. Log-only -- must
+        # never change the deny-list result below.
+        if declared:
+            undeclared = sorted(set(touched) - declared)
+            if undeclared:
+                self.log(
+                    f"    [{(group or {}).get('name', '?')}] compile-accuracy: "
+                    f"touched but not declared: {', '.join(undeclared)}"
+                )
         return [
             f
             for f in touched
