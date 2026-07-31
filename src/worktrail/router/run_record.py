@@ -5,7 +5,11 @@ One YAML file per run under <dir>/<repo-name>/<run-id>.yaml (default dir
 ~/.go/runs — operational telemetry, deliberately outside the project repo;
 override via policy `run_record_dir`). Fields follow the assignment's §20
 structure. `finish` enforces the ten explicit completion states (§22) so a run
-can never end in vague language.
+can never end in vague language. It also code-enforces the
+`no_implementation_without_approval` gate (routes.md §A): a run whose
+`selected_route` is A cannot `finish` on an implementation-completion state
+(completed_and_merged/completed_pr_open/completed_awaiting_human_approval)
+unless a `decisions` entry was recorded first.
 
 Subcommands:
   start  --repo R --request "..." --route F --risk medium [--reason "..."]
@@ -55,6 +59,15 @@ COMPLETION_STATES = (
     "blocked_security_or_safety",
     "failed_recoverable",
     "failed_terminal",
+)
+
+# Route A's own completions (routes.md §A) never imply implementation happened.
+# Reaching one of these from Route A means the run crossed into building/merging
+# without recording the `no_implementation_without_approval` decision first.
+IMPLEMENTATION_COMPLETION_STATES = (
+    "completed_and_merged",
+    "completed_pr_open",
+    "completed_awaiting_human_approval",
 )
 
 # Run-level phase states (v2-design §2.3); informational, stamped via `set status`.
@@ -326,6 +339,16 @@ def cmd_finish(args: argparse.Namespace) -> int:
             + ", ".join(COMPLETION_STATES))
     path = Path(args.path)
     record = _load(path)
+    if (record.get("selected_route") == "A"
+            and args.status in IMPLEMENTATION_COMPLETION_STATES
+            and not record.get("decisions")):
+        raise SystemExit(
+            "no_implementation_without_approval: Route A cannot finish with "
+            f"'{args.status}' without a recorded decision. Route A's own "
+            "completions are investigation_complete or "
+            "planned_ready_for_implementation; proceeding to implementation "
+            "requires an explicit decision entry first "
+            f"(run_record.py append {path} decisions \"...\").")
     record["completed_at"] = _now()
     record["status"] = "done"
     record["final_status"] = args.status

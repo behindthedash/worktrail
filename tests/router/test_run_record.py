@@ -187,6 +187,40 @@ class TestLifecycle(unittest.TestCase):
         self.assertIsNotNone(rec["completed_at"])
         self.assertIn("pull/1", rec["pull_request"])
 
+    def test_route_a_blocks_implementation_completion_without_decision(self):
+        res = _start(self.tmp, route="A")
+        for state in ("completed_and_merged", "completed_pr_open",
+                      "completed_awaiting_human_approval"):
+            with self.assertRaises(SystemExit):
+                main(["finish", res["path"], "--status", state])
+            self.assertIsNone(_load(Path(res["path"]))["final_status"])
+
+    def test_route_a_allows_implementation_completion_with_recorded_decision(self):
+        res = _start(self.tmp, route="A")
+        main(["append", res["path"], "decisions",
+              "proceeding to Route D per user approval"])
+        out = StringIO()
+        with patch("sys.stdout", out):
+            main(["finish", res["path"], "--status", "completed_pr_open",
+                  "--pr", "https://github.com/x/y/pull/2"])
+        rec = _load(Path(res["path"]))
+        self.assertEqual(rec["final_status"], "completed_pr_open")
+
+    def test_route_a_own_completions_allowed_without_decision(self):
+        for state in ("investigation_complete", "planned_ready_for_implementation"):
+            res = _start(self.tmp, route="A")
+            out = StringIO()
+            with patch("sys.stdout", out):
+                main(["finish", res["path"], "--status", state])
+            self.assertEqual(_load(Path(res["path"]))["final_status"], state)
+
+    def test_non_route_a_unaffected_by_approval_gate(self):
+        res = _start(self.tmp, route="F")
+        out = StringIO()
+        with patch("sys.stdout", out):
+            main(["finish", res["path"], "--status", "completed_and_merged"])
+        self.assertEqual(_load(Path(res["path"]))["final_status"], "completed_and_merged")
+
     def test_all_ten_completion_states_accepted(self):
         self.assertEqual(len(COMPLETION_STATES), 10)
         for state in COMPLETION_STATES:
