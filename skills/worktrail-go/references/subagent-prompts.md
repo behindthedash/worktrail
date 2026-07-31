@@ -711,9 +711,10 @@ sibling already made.
 
 ```bash
 # $CHANGE_SLUG is already known (new change-name slug)
+CHANGE_ID="$SPEC_ID-$CHANGE_SLUG"
 WT="$REPO-worktrees/$SPEC_ID-chg-$CHANGE_SLUG"
-git -C "$REPO" worktree add -b "chg/$SPEC_ID-$CHANGE_SLUG" "$WT" "$BASE"
-CHANGE_DIR="$WT/docs/specs/$SPEC_ID/changes/$CHANGE_SLUG"
+git -C "$REPO" worktree add -b "chg/$CHANGE_ID" "$WT" "$BASE"
+CHANGE_DIR="$WT/openspec/changes/$CHANGE_ID"
 ```
 
 If `git worktree add` is sandbox-denied, surface it and stop — don't write on base.
