@@ -275,6 +275,37 @@ def test_kind_comes_from_the_artifact_not_the_model(change, tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# Cross-task overlap re-scan (go-20260730-133115: compile can under-report a
+# file shared by two sibling tasks when it decides each task's `files` in
+# isolation, leaving the file-collision check with nothing to catch)
+# --------------------------------------------------------------------------- #
+def test_the_prompt_instructs_a_final_cross_task_overlap_rescan():
+    """Pins the anti-omission instruction in place. Deciding each task's
+    `files` independently is exactly how a shared file ends up recorded on
+    only one of two tasks that both touch it -- the prompt must explicitly
+    tell the model to re-check for that before it answers, not just ask for
+    `files` per task and hope."""
+    prompt = conductor_compile.PROMPT
+    assert "Final pass" in prompt
+    assert "shared file declared by only one of them" in prompt
+    assert "in isolation" in prompt
+
+
+def test_the_rescan_instruction_reaches_the_formatted_prompt(change, tmp_path):
+    """The final-pass instruction is static text in `PROMPT`, but this proves
+    `.format()` doesn't accidentally consume or truncate it via a stray `{`/`}`
+    collision with the task list or spec path."""
+    spec_id, tasks = _load(change)
+    spawn = RecordingSpawn(
+        _reply(**{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks})
+    )
+    conductor_compile.compile_run_plan(
+        change, tasks, spec_id=spec_id, repo=change.parents[2], cache_dir=tmp_path / "plans", spawn=spawn
+    )
+    assert "Final pass" in spawn.prompts[0]
+
+
+# --------------------------------------------------------------------------- #
 # The CLI must not exit 0 on a plan that leaves impl tasks scope-less
 # --------------------------------------------------------------------------- #
 def test_the_cli_fails_loudly_when_impl_tasks_stay_scope_less(tmp_path, capsys):
@@ -299,6 +330,63 @@ def test_the_cli_fails_loudly_when_impl_tasks_stay_scope_less(tmp_path, capsys):
     assert rc == 1
     assert "1.1" in err and "1.2" in err
     assert "scope" in err.lower()
+
+
+def test_the_cli_json_mode_also_fails_loudly_when_impl_tasks_stay_scope_less(tmp_path, capsys):
+    """`--json` used to return 0 right after printing the plan, never reaching
+    the scope-gap check below -- so a caller that only checks the exit code
+    (rather than parsing stdout for empty `files`) saw a silent success even
+    though a live run would immediately refuse to fan these tasks out."""
+    import subprocess
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    d = repo / "openspec" / "changes" / "add-thing"
+    d.mkdir(parents=True)
+    (d / "proposal.md").write_text("## Why\nBecause.\n")
+    (d / "tasks.md").write_text("## 1. Core\n\n- [ ] 1.1 Add the parser\n- [ ] 1.2 Wire the endpoint\n")
+
+    rc = conductor_compile.main([str(d), "--no-llm", "--json"])
+    out, err = capsys.readouterr()
+    assert rc == 1
+    assert "1.1" in err and "1.2" in err
+    assert "scope" in err.lower()
+    # stdout must still be the plain compiled plan -- a caller piping it into
+    # `json.loads` must not see the error text mixed into the payload.
+    json.loads(out)
+
+
+def test_the_cli_json_mode_exits_zero_when_every_task_gets_scope(tmp_path, capsys):
+    """The counterpart: full scope in `--json` mode must not trip the gap check."""
+    import json as json_module
+    import subprocess
+    from unittest.mock import patch
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    d = repo / "openspec" / "changes" / "add-thing"
+    d.mkdir(parents=True)
+    (d / "proposal.md").write_text("## Why\nBecause.\n")
+    (d / "tasks.md").write_text("## 1. Core\n\n- [ ] 1.1 Add the parser\n- [ ] 1.2 Wire the endpoint\n")
+
+    reply = (
+        "```json\n"
+        + json_module.dumps(
+            {
+                "tasks": [
+                    {"id": "1.1", "files": ["src/parser.py"], "deps": []},
+                    {"id": "1.2", "files": ["src/api.py"], "deps": ["1.1"]},
+                ]
+            }
+        )
+        + "\n```\n"
+    )
+    with patch("worktrail.conductor.compile._default_spawn", return_value=reply):
+        rc = conductor_compile.main([str(d), "--json"])
+    assert rc == 0
+    assert "ERROR" not in capsys.readouterr().err
 
 
 def test_the_cli_exits_zero_when_every_task_gets_scope(tmp_path, capsys):

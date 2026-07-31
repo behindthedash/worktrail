@@ -1490,6 +1490,42 @@ class WorkerScopeViolation(unittest.TestCase):
         self.assertEqual(v._forbidden_paths_touched("presha", "gb", {"name": "feature-1"}),
                          [".github/workflows/x.yml"])
 
+    # -- plan-audit signal: log-only, never gates -------------------------- #
+
+    def test_touched_not_declared_is_logged_not_gated(self):
+        """A file outside the deny-list that the group never declared is the
+        same under-reporting signal `conductor.plan_audit` computes by hand --
+        surfaced automatically here, but still only a log line: the return
+        value (what actually gates a strike) is untouched."""
+        logged = []
+        run = self.ScopeCheckRun({}, touched=["src/ok.py", "src/surprise.py"])
+        v = mk(run, FakeSpawn(), "/tmp/x")
+        v.log = logged.append
+        v.declared_files = {"feature-1": ["src/ok.py"]}
+        result = v._forbidden_paths_touched("presha", "gb", {"name": "feature-1"})
+        self.assertEqual(result, [])
+        self.assertTrue(any("plan-audit" in m and "src/surprise.py" in m
+                             for m in logged), logged)
+
+    def test_no_mismatch_is_silent(self):
+        logged = []
+        run = self.ScopeCheckRun({}, touched=["src/ok.py"])
+        v = mk(run, FakeSpawn(), "/tmp/x")
+        v.log = logged.append
+        v.declared_files = {"feature-1": ["src/ok.py"]}
+        v._forbidden_paths_touched("presha", "gb", {"name": "feature-1"})
+        self.assertFalse(any("plan-audit" in m for m in logged), logged)
+
+    def test_no_declared_files_skips_the_plan_audit_signal(self):
+        """Mirrors `plan_audit.audit_plan`'s own skip: nothing declared means
+        nothing to compare against, not that every touched file is a mismatch."""
+        logged = []
+        run = self.ScopeCheckRun({}, touched=["src/ok.py"])
+        v = mk(run, FakeSpawn(), "/tmp/x")
+        v.log = logged.append
+        v._forbidden_paths_touched("presha", "gb", {"name": "feature-1"})
+        self.assertFalse(any("plan-audit" in m for m in logged), logged)
+
 
 class WorkerSelfMergeViolation(unittest.TestCase):
     """Structural backstop for dispatch.py's second Hard rule ('do NOT run

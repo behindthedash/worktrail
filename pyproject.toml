@@ -21,6 +21,7 @@ dev = [
 
 [project.scripts]
 worktrail-compile = "worktrail.conductor.compile:main"
+worktrail-plan-audit = "worktrail.conductor.plan_audit:main"
 worktrail-orchestrate = "worktrail.orchestrator.orchestrate:main"
 worktrail-live = "worktrail.orchestrator.live:main"
 worktrail-integrate = "worktrail.orchestrator.integrate:main"
@@ -55,6 +56,7 @@ worktrail-policy = "worktrail.router.policy:main"
 worktrail-policy-selfcheck = "worktrail.router.policy_selfcheck:main"
 worktrail-poll-run = "worktrail.router.poll_run:main"
 worktrail-pre-pr-gate = "worktrail.router.pre_pr_gate:main"
+worktrail-preflight = "worktrail.router.preflight:main"
 worktrail-resolve-repo = "worktrail.router.resolve_repo:main"
 worktrail-run-record = "worktrail.router.run_record:main"
 worktrail-skill-dispatch = "worktrail.router.skill_dispatch:main"
