@@ -138,6 +138,53 @@ class AddStackedWorktreeSiblingConflict(unittest.TestCase):
                 (wt / "shared.py").read_text(), "merged: task-001 + task-002\n"
             )
 
+    def test_resolve_spawn_raises_aborts_merge_and_raises(self):
+        """When a resolve spawn is provided but the worker itself raises/crashes,
+        the crash must not be trusted as a resolution: the merge is aborted and
+        `WorktreeStackConflictError` is raised with the same message format as
+        the no-resolve-spawn path."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            _init_repo(repo)
+
+            spec_id = "102-x"
+            _branch_editing_shared_file(repo, f"{spec_id}/task-001", "from task-001\n")
+            _branch_editing_shared_file(repo, f"{spec_id}/task-002", "from task-002\n")
+
+            by_id = {
+                "TASK-001": {"id": "TASK-001", "deps": []},
+                "TASK-002": {"id": "TASK-002", "deps": []},
+                "TASK-003": {"id": "TASK-003", "deps": ["TASK-001", "TASK-002"]},
+            }
+            wt = Path(tmp) / "wt" / f"{spec_id}-task-003"
+            wt.parent.mkdir(parents=True)
+
+            calls = []
+
+            def _spawn_raises(prompt, worktree):
+                calls.append((prompt, worktree))
+                raise RuntimeError("resolve worker crashed")
+
+            with self.assertRaises(live.WorktreeStackConflictError) as ctx:
+                live.add_stacked_worktree(
+                    repo,
+                    spec_id,
+                    by_id["TASK-003"],
+                    by_id,
+                    wt,
+                    assembly_resolve_spawn=_spawn_raises,
+                )
+            self.assertEqual(len(calls), 1, "resolve spawn must have been invoked once")
+            self.assertIn("TASK-003", str(ctx.exception))
+            self.assertIn("task-002", str(ctx.exception).lower())
+
+            # No lingering merge state left behind -- `git merge --abort` ran despite
+            # the spawn crash, exactly as it would with no resolve spawn at all.
+            status = _git(wt, "status", "--porcelain").stdout
+            self.assertEqual(status.strip(), "", "merge must have been aborted cleanly")
+            self.assertEqual((Path(wt) / "shared.py").read_text(), "from task-001\n")
+
 
 if __name__ == "__main__":
     unittest.main()
