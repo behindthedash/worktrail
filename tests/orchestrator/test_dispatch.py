@@ -196,6 +196,27 @@ class TestReviewChecksAcDodCheckboxes(unittest.TestCase):
         self.assertNotIn("Commit the task-file checkbox edit", action)
         self.assertNotIn("tick it to", action)
 
+    def test_review_verdict_flags_literal_instruction_deviation(self):
+        """Handoff 20260731-082737: a diff that takes a different approach than
+        the task literally describes is FAILED-worthy on its own -- the
+        reviewer must not accept a plausible rationale for the deviation."""
+        action = self._devkit_review_prompt()
+        self.assertIn("different implementation approach than what the task", action)
+        self.assertIn("human/planner decision", action)
+
+    def test_review_verdict_deviation_rule_applies_to_shared_file_too(self):
+        """Same rule for OpenSpec's shared-tasks.md review path, which uses a
+        different verdict clause than the devkit own-file path."""
+        ctx = dict(_make_ctx())
+        ctx["spec_folder"] = "openspec/changes/080-x/"
+        ctx["task_brief"] = {
+            "path_fmt": "openspec/changes/080-x/tasks.md",
+            "anchor_fmt": "{task_id}",
+        }
+        action = build_worker_prompt(ROLE_REVIEW, _make_task(), ctx)
+        self.assertIn("different implementation approach than what the task", action)
+        self.assertIn("human/planner decision", action)
+
     def test_other_roles_byte_for_byte_unchanged(self):
         """AC-CHG-012: ROLE_IMPLEMENT, ROLE_FIX, ROLE_CLEANUP action strings
         are exactly equal to their pre-change values (string equality, not

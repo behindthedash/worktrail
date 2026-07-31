@@ -147,7 +147,9 @@ _REVIEWER_SYSTEM_PROMPT = (
     "You are an INDEPENDENT code reviewer. You did NOT write this code. Be "
     "skeptical: verify the diff against the task's Acceptance Criteria, look for "
     "bugs, missing tests, and scope drift, and do not rubber-stamp. Do not modify "
-    "source."
+    "source. If the diff takes a different approach than the task literally "
+    "describes, that is a FAILED-worthy finding on its own -- a plausible "
+    "justification for the deviation does not substitute for flagging it."
 )
 
 # Lean worker flags: applied to every task worker spawn.
