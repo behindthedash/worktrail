@@ -186,5 +186,93 @@ class AddStackedWorktreeSiblingConflict(unittest.TestCase):
             self.assertEqual((Path(wt) / "shared.py").read_text(), "from task-001\n")
 
 
+class AddStackedWorktreeResolveSpawnUnverified(unittest.TestCase):
+    """4.3: resolve spawn provided, worker reports success, but the git state
+    doesn't back it up -- must be treated as unverified and raise, exactly as
+    if no resolve had been attempted at all."""
+
+    def _setup_conflict(self, tmp):
+        repo = Path(tmp) / "repo"
+        repo.mkdir()
+        _init_repo(repo)
+
+        spec_id = "102-x"
+        _branch_editing_shared_file(repo, f"{spec_id}/task-001", "from task-001\n")
+        _branch_editing_shared_file(repo, f"{spec_id}/task-002", "from task-002\n")
+
+        by_id = {
+            "TASK-001": {"id": "TASK-001", "deps": []},
+            "TASK-002": {"id": "TASK-002", "deps": []},
+            "TASK-003": {"id": "TASK-003", "deps": ["TASK-001", "TASK-002"]},
+        }
+        wt = Path(tmp) / "wt" / f"{spec_id}-task-003"
+        wt.parent.mkdir(parents=True)
+        return repo, spec_id, by_id, wt
+
+    def test_reports_success_but_merge_head_still_present(self):
+        # Worker claims success and even cleans up the conflict markers, but
+        # never runs `git merge --continue` -- MERGE_HEAD is still there.
+        def fake_spawn(prompt, wt):
+            (Path(wt) / "shared.py").write_text("resolved, but never committed\n")
+            _git(wt, "add", "shared.py")
+            return '```json\n{"task": "TASK-003", "step": "assembly-resolve", "status": "success"}\n```'
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, spec_id, by_id, wt = self._setup_conflict(tmp)
+
+            with self.assertRaises(live.WorktreeStackConflictError) as ctx:
+                live.add_stacked_worktree(
+                    repo,
+                    spec_id,
+                    by_id["TASK-003"],
+                    by_id,
+                    wt,
+                    assembly_resolve_spawn=fake_spawn,
+                )
+            self.assertIn("TASK-003", str(ctx.exception))
+            self.assertIn("task-002", str(ctx.exception).lower())
+
+            # Rejected resolution must leave no lingering merge state behind.
+            status = _git(wt, "status", "--porcelain").stdout
+            self.assertEqual(status.strip(), "", "merge must have been aborted cleanly")
+            self.assertNotEqual(
+                subprocess.run(
+                    ["git", "-C", str(wt), "rev-parse", "-q", "--verify", "MERGE_HEAD"],
+                    capture_output=True,
+                ).returncode,
+                0,
+                "MERGE_HEAD must not remain after a rejected resolution",
+            )
+
+    def test_reports_success_but_conflict_markers_remain(self):
+        # Worker claims success and completes the merge, but never actually
+        # removed the conflict markers from the file it staged/committed.
+        def fake_spawn(prompt, wt):
+            _git(wt, "add", "shared.py")  # stage as-is, markers still present
+            _git(wt, "commit", "-q", "-m", "resolve (bogus, markers left in)")
+            return '```json\n{"task": "TASK-003", "step": "assembly-resolve", "status": "success"}\n```'
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, spec_id, by_id, wt = self._setup_conflict(tmp)
+
+            with self.assertRaises(live.WorktreeStackConflictError) as ctx:
+                live.add_stacked_worktree(
+                    repo,
+                    spec_id,
+                    by_id["TASK-003"],
+                    by_id,
+                    wt,
+                    assembly_resolve_spawn=fake_spawn,
+                )
+            self.assertIn("TASK-003", str(ctx.exception))
+            self.assertIn("task-002", str(ctx.exception).lower())
+
+            # The worker's own (bogus) commit is not undone by our abort --
+            # `merge --abort` only undoes an in-progress merge, and this
+            # worker committed it. What matters is that we did NOT accept the
+            # resolution and continue on as if the stack succeeded: the raise
+            # above already confirms that.
+
+
 if __name__ == "__main__":
     unittest.main()
