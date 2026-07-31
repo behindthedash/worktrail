@@ -1105,8 +1105,16 @@ def add_stacked_worktree(
                     if ln.strip()
                 ]
                 prompt = dispatch.build_stack_conflict_prompt(spec_id, task, mb, wt)
-                assembly_resolve_spawn(prompt, wt)
-                continue
+                explicit_failure = False
+                try:
+                    raw = assembly_resolve_spawn(prompt, wt)
+                    rep = dispatch.parse_report_back(raw)
+                    if rep.get("status") != "success":
+                        explicit_failure = True
+                except Exception:
+                    pass  # spawn crash or unparseable report-back: let git state decide
+                if not explicit_failure and _stack_resolve_verify(wt, conflicted_files):
+                    continue
             _git(wt, "merge", "--abort", check=False)
             # Continuing here would silently leave `wt` missing `mb`'s commits --
             # `_require_dependency_files` would be the next line to notice, but only
