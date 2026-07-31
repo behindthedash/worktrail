@@ -187,6 +187,7 @@ Parse the positional arguments to detect:
 - **auto** — auto mode (spec 017): skip the picker, use `$DASHBOARD_JSON.auto_pick` per the Auto mode flow above; combinable with a repo arg (`/go REPO auto`)
 - **Bare integer** — resolves within the active Level-2 category picker (the level-2 rule above); there is no global numbered list, so a standalone `/go N` argument is treated as free-text (Phase 5)
 - **handoff:ID** — explicit brief ID from queue (delegate to sdd-workflow or direct work)
+- **Bare or prefix brief ID** — an argument not otherwise consumed by the rules above or below (not `help`/`drain`/`auto`/`route:X`/a v1 intent keyword, and not the resolved `$ARG_REPO`): before treating it as free-text, check it against the queue with `worktrail-work-queue resolve "$ARG" --json`. A `match` (full filename, stem, unique leading prefix, or `id` frontmatter — the same resolution `claim` uses) makes it `$BRIEF_ID`, with identical treatment to `handoff:ID`. `none` or `ambiguous` falls through to free-text (Phase 5) as before.
 - **route:X** — explicit route override A-J (skip classification, dispatch directly)
 - **v1 intent keywords** — new, implement, continue, pr, brainstorm (map to routes, skip classification)
 - **Free-text** — unstructured request (run classify.py)
@@ -196,7 +197,7 @@ Extract from the arguments:
 - `$ARG_INTENT` — free-text request or intent keyword
 - `$ARG_SPEC` — spec folder name (e.g., `003-payments`) if provided
 - `$ROUTE_OVERRIDE` — route:X if provided
-- `$BRIEF_ID` — handoff:ID if provided
+- `$BRIEF_ID` — handoff:ID if provided, or a bare/prefix argument that resolved via `worktrail-work-queue resolve` (see **Bare or prefix brief ID** above)
 
 ### Phase 3 — Resolve Repo
 
