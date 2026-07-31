@@ -231,6 +231,53 @@ class AddStackedWorktreeSiblingConflict(unittest.TestCase):
             self.assertEqual(status.strip(), "", "merge must have been aborted cleanly")
             self.assertEqual((Path(wt) / "shared.py").read_text(), "from task-001\n")
 
+    def test_resolve_spawn_none_or_omitted_existing_behavior_unchanged(self):
+        """`assembly_resolve_spawn=None` (or simply omitted, the default) must
+        behave identically to the pre-existing no-resolve-spawn path: raise
+        immediately on a sibling merge conflict with no resolve attempt, and
+        leave no lingering merge state. Covers both call styles explicitly so
+        a future default change or callsite regression is caught here."""
+        for pass_none_explicitly in (False, True):
+            with self.subTest(pass_none_explicitly=pass_none_explicitly):
+                with tempfile.TemporaryDirectory() as tmp:
+                    repo = Path(tmp) / "repo"
+                    repo.mkdir()
+                    _init_repo(repo)
+
+                    spec_id = "102-x"
+                    _branch_editing_shared_file(
+                        repo, f"{spec_id}/task-001", "from task-001\n"
+                    )
+                    _branch_editing_shared_file(
+                        repo, f"{spec_id}/task-002", "from task-002\n"
+                    )
+
+                    by_id = {
+                        "TASK-001": {"id": "TASK-001", "deps": []},
+                        "TASK-002": {"id": "TASK-002", "deps": []},
+                        "TASK-003": {"id": "TASK-003", "deps": ["TASK-001", "TASK-002"]},
+                    }
+                    wt = Path(tmp) / "wt" / f"{spec_id}-task-003"
+                    wt.parent.mkdir(parents=True)
+
+                    kwargs = {"assembly_resolve_spawn": None} if pass_none_explicitly else {}
+
+                    with self.assertRaises(live.WorktreeStackConflictError) as ctx:
+                        live.add_stacked_worktree(
+                            repo, spec_id, by_id["TASK-003"], by_id, wt, **kwargs
+                        )
+                    self.assertIn("TASK-003", str(ctx.exception))
+                    self.assertIn("task-002", str(ctx.exception).lower())
+
+                    # No lingering merge state left behind, exactly as before.
+                    status = _git(wt, "status", "--porcelain").stdout
+                    self.assertEqual(
+                        status.strip(), "", "merge must have been aborted cleanly"
+                    )
+                    self.assertEqual(
+                        (wt / "shared.py").read_text(), "from task-001\n"
+                    )
+
 
 class AddStackedWorktreeResolveSpawnUnverified(unittest.TestCase):
     """4.3: resolve spawn provided, worker reports success, but the git state
