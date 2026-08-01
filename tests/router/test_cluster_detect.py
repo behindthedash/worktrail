@@ -674,11 +674,20 @@ class ComputeClustersTests(unittest.TestCase):
 class VerifySameWorkFailOpenTests(unittest.TestCase):
     """Fail-open fixtures for `_verify_same_work` (design.md D5): a timeout,
     non-zero exit, empty/unparseable output, or no configured agent CLI must
-    each resolve to a None ("not verified") verdict and never raise —
-    callers treat None the same as an ordinary non-match, so the candidate
-    pair is not surfaced."""
+    each resolve to a None ("not verified") verdict and never raise.
 
-    def test_timeout_returns_none_not_surfaced(self):
+    Scope note: task 3.3 asks each fixture to assert "the pair is not
+    surfaced," i.e. an assertion on `compute_clusters()` /
+    `_filter_reportable()` output, the same sense task 3.2 uses. That
+    assertion cannot be written yet: task 2.2 ("wire the verification
+    function into `_filter_reportable()`") has not landed on this branch, so
+    `_verify_same_work` is not called from anywhere in `cluster_detect.py`
+    (confirmed by grep). These fixtures instead assert directly against
+    `_verify_same_work`'s return value. The cluster-level "not surfaced"
+    assertion should be added once task 2.2 lands and wires this function's
+    result into `_filter_reportable()`."""
+
+    def test_timeout_returns_none(self):
         with mock.patch.object(
             _cluster_detect_mod.subprocess,
             "run",
@@ -687,7 +696,7 @@ class VerifySameWorkFailOpenTests(unittest.TestCase):
             verdict = _verify_same_work("focus a", "focus b", agent_cli="claude")
         self.assertIsNone(verdict)
 
-    def test_nonzero_exit_returns_none_not_surfaced(self):
+    def test_nonzero_exit_returns_none(self):
         with mock.patch.object(
             _cluster_detect_mod.subprocess,
             "run",
@@ -698,7 +707,7 @@ class VerifySameWorkFailOpenTests(unittest.TestCase):
             verdict = _verify_same_work("focus a", "focus b", agent_cli="claude")
         self.assertIsNone(verdict)
 
-    def test_empty_output_returns_none_not_surfaced(self):
+    def test_empty_output_returns_none(self):
         with mock.patch.object(
             _cluster_detect_mod.subprocess,
             "run",
@@ -709,7 +718,7 @@ class VerifySameWorkFailOpenTests(unittest.TestCase):
             verdict = _verify_same_work("focus a", "focus b", agent_cli="claude")
         self.assertIsNone(verdict)
 
-    def test_no_agent_cli_configured_returns_none_not_surfaced(self):
+    def test_no_agent_cli_configured_returns_none(self):
         # No override and no repo_root -> _resolve_verification_agent_cli
         # short-circuits before subprocess.run is ever invoked.
         with mock.patch.object(_cluster_detect_mod.subprocess, "run") as mock_run:
