@@ -466,17 +466,28 @@ def _journaled_task_heads(entries: list) -> dict[str, str]:
 
 
 def validate_task_metadata(tasks: list) -> None:
-    """Refuse live fan-out when implementation tasks lack file scope metadata."""
+    """Refuse live fan-out when implementation tasks have no scope AND no serialization
+    boundary. `conductor/compile.py`'s own prompt tells the model that an empty `files`
+    list is "the safe answer" because `runplan.apply_to_tasks` keeps the task's baseline
+    dependency edge whenever either endpoint lacks file scope -- serialising it behind
+    its neighbour instead of leaving it to race unbounded. A task that still has that
+    edge (non-empty `deps`) is exactly the case the prompt promises is safe, so it is not
+    flagged here. A task with neither files nor a dependency boundary has no such
+    guarantee -- it would enter the frontier immediately and `runnable_frontier` reads
+    its empty file set as "collides with nothing", so it is the genuinely unbounded case
+    this check exists to catch."""
     missing = [
         t["id"]
         for t in tasks
         if t.get("status") == "pending"
         and t.get("kind", "impl") not in ("docs", "e2e", "cleanup")
         and not t.get("files")
+        and not t.get("deps")
     ]
     if missing:
         raise RuntimeError(
-            "implementation task(s) missing required frontmatter files: " + ", ".join(missing)
+            "implementation task(s) missing required frontmatter files and have no "
+            "dependency to serialize behind: " + ", ".join(missing)
         )
 
 
