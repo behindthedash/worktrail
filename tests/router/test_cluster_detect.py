@@ -10,6 +10,7 @@ signal dicts. Run with:
 from __future__ import annotations
 
 import re
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -30,6 +31,7 @@ from worktrail.router.cluster_detect import (
     _signal_matches,
     _slug,
     _tokenize,
+    _verify_same_work,
     compute_clusters,
 )
 
@@ -773,6 +775,72 @@ class RealPR93RegressionTests(unittest.TestCase):
         with mock.patch.object(_cluster_detect_mod, "_verify_same_work", return_value=False):
             clusters = compute_clusters(self.dir, _fake_parse_frontmatter, agent_cli="claude")
         self.assertEqual(clusters, [])
+
+    def test_not_surfaced_when_llm_call_fails_open(self):
+        """Cluster-level counterpart to VerifySameWorkFailOpenTests: now that
+        task 2.2 wires `_verify_same_work` into `_filter_reportable`, a real
+        `subprocess.run` failure for an in-band candidate must degrade to
+        "not surfaced" at the `compute_clusters()` level, not just at the
+        `_verify_same_work` unit level."""
+        a, b = self._write_pair()
+        with mock.patch.object(
+            _cluster_detect_mod.subprocess,
+            "run",
+            side_effect=subprocess.TimeoutExpired(cmd=["claude", "-p", "x"], timeout=10),
+        ):
+            clusters = compute_clusters(self.dir, _fake_parse_frontmatter, agent_cli="claude")
+        self.assertEqual(clusters, [])
+
+
+class VerifySameWorkFailOpenTests(unittest.TestCase):
+    """Fail-open fixtures for `_verify_same_work` (design.md D5): a timeout,
+    non-zero exit, empty/unparseable output, or no configured agent CLI must
+    each resolve to a None ("not verified") verdict and never raise.
+
+    `test_not_surfaced_when_llm_call_fails_open` on `RealPR93RegressionTests`
+    above covers the same fail-open contract at the `compute_clusters()`
+    level; these fixtures assert directly against `_verify_same_work`'s
+    return value so a failure mode is pinned at the smallest testable unit
+    too."""
+
+    def test_timeout_returns_none(self):
+        with mock.patch.object(
+            _cluster_detect_mod.subprocess,
+            "run",
+            side_effect=subprocess.TimeoutExpired(cmd=["claude", "-p", "x"], timeout=10),
+        ):
+            verdict = _verify_same_work("focus a", "focus b", agent_cli="claude")
+        self.assertIsNone(verdict)
+
+    def test_nonzero_exit_returns_none(self):
+        with mock.patch.object(
+            _cluster_detect_mod.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(
+                args=["claude"], returncode=1, stdout="YES", stderr=""
+            ),
+        ):
+            verdict = _verify_same_work("focus a", "focus b", agent_cli="claude")
+        self.assertIsNone(verdict)
+
+    def test_empty_output_returns_none(self):
+        with mock.patch.object(
+            _cluster_detect_mod.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(
+                args=["claude"], returncode=0, stdout="", stderr=""
+            ),
+        ):
+            verdict = _verify_same_work("focus a", "focus b", agent_cli="claude")
+        self.assertIsNone(verdict)
+
+    def test_no_agent_cli_configured_returns_none(self):
+        # No override and no repo_root -> _resolve_verification_agent_cli
+        # short-circuits before subprocess.run is ever invoked.
+        with mock.patch.object(_cluster_detect_mod.subprocess, "run") as mock_run:
+            verdict = _verify_same_work("focus a", "focus b")
+        mock_run.assert_not_called()
+        self.assertIsNone(verdict)
 
 
 class NoFilesystemWritesOrNetworkCallsTests(unittest.TestCase):
