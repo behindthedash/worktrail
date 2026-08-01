@@ -153,8 +153,9 @@ def _signal_matches(
     signal, so it overrides even the repo-independent duplicate-slug match).
 
     same-target-spec, related-link, and focus-overlap are repo-scoped: they
-    require both briefs to carry the same non-null repo. duplicate-slug is
-    unconditional on repo.
+    require both briefs to carry the same repo, where a pair of null repos
+    counts as the same repo (a mismatch is one null and one non-null, or two
+    different non-null values). duplicate-slug is unconditional on repo.
     """
     if _is_blocked_by_pair(sig_a, sig_b):
         return []
@@ -166,7 +167,12 @@ def _signal_matches(
 
     repo_a = sig_a["repo"]
     repo_b = sig_b["repo"]
-    same_repo = repo_a is not None and repo_b is not None and repo_a == repo_b
+    # A pair where both repos are null is treated as same-repo here too (per
+    # duplicate-brief-detection design.md), since a null repo means "not yet
+    # linked to a target repo" rather than "known to differ" — only an
+    # actual repo mismatch (one null, one set, or two different non-null
+    # values) excludes the pair.
+    same_repo = repo_a == repo_b
     if not same_repo:
         return matches
 
