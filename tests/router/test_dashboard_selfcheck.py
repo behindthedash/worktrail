@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from worktrail.router.dashboard_selfcheck import check_repo, sweep
+from worktrail.router.dashboard_selfcheck import check_repo, main, sweep
 
 
 def _spec_dir(repo: Path, spec_id: str, files: dict) -> Path:
@@ -107,6 +107,63 @@ class TestSweep(unittest.TestCase):
         self.assertEqual([r["repo"] for r in results], ["flagged-repo"])
         payload = json.loads(json.dumps({"results": results, "flagged": len(results)}))
         self.assertEqual(payload["flagged"], 1)
+
+
+class TestCli(unittest.TestCase):
+    def test_clean_repo_exits_zero(self):
+        import io
+        from contextlib import redirect_stdout
+
+        tmp = Path(tempfile.mkdtemp())
+        _spec_dir(tmp, "001-example", {"spec.md": "# example\n"})
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = main(["--repo", str(tmp)])
+        self.assertEqual(rc, 0)
+        self.assertIn("no ambiguous spec docs", buf.getvalue())
+
+    def test_flagged_repo_exits_one(self):
+        import io
+        from contextlib import redirect_stdout
+
+        tmp = Path(tempfile.mkdtemp())
+        _spec_dir(
+            tmp,
+            "001-example",
+            {
+                "misc-notes.md": "# misc\n",
+                "other-notes.md": "# other\n",
+            },
+        )
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = main(["--repo", str(tmp)])
+        self.assertEqual(rc, 1)
+        self.assertIn("ambiguous-spec-doc", buf.getvalue())
+
+    def test_json_output_matches_check_repo(self):
+        import io
+        from contextlib import redirect_stdout
+
+        tmp = Path(tempfile.mkdtemp())
+        _spec_dir(
+            tmp,
+            "001-example",
+            {
+                "misc-notes.md": "# misc\n",
+                "other-notes.md": "# other\n",
+            },
+        )
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = main(["--repo", str(tmp), "--json"])
+        self.assertEqual(rc, 1)
+        payload = json.loads(buf.getvalue())
+        self.assertEqual(payload["flagged"], 1)
+        self.assertEqual(payload["results"], [check_repo(tmp)])
 
 
 if __name__ == "__main__":
