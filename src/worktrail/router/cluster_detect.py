@@ -18,21 +18,30 @@ reporting-threshold filter that decides which components are surfaced (size
 The public `compute_clusters()` entry point wires queued briefs end-to-end
 through extraction/matching/assembly/filtering, skipping any unreadable
 brief and degrading to `[]` on any unexpected failure — the whole module
-performs no filesystem writes and issues no network calls.
+performs no filesystem writes.
+
+`_verify_same_work()` is the one exception to "no network calls": the
+duplicate-brief-detection change's LLM verification gate, which shells out to
+whichever headless agent CLI `router/policy.py` resolves (`claude`, `codex`,
+`opencode`) with a single-turn, read-only, non-worktree prompt asking whether
+two briefs' focus text describes the same underlying work. It never raises —
+any resolution/invocation/parsing failure is a `None` ("not verified")
+verdict, so the rest of the module's fail-open posture is unaffected.
 
 `parse_frontmatter` is injected by the caller (dashboard.py's already-resolved
 loader-backed `_parse_fm`) rather than reimplemented here, so this module
 contains no frontmatter-parsing logic and no cross-skill import into
 `handoff/scripts/`.
-
-Stdlib-only.
 """
 
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
+
+from .policy import VALID_AGENT_CLIS, load_policy
 
 # Leading YYYYMMDD-HHMMSS- timestamp prefix used by queued-brief filenames.
 _SLUG_PREFIX_RE = re.compile(r"^\d{8}-\d{6}-")
@@ -136,6 +145,7 @@ def _extract_signal(
         "related": _coerce_id_list(fm.get("related")),
         "blocked_by": _coerce_id_list(fm.get("blocked-by")),
         "slug": _slug(path.stem),
+        "focus_text": str(fm.get("focus") or ""),
         "focus_tokens": _tokenize(str(fm.get("focus") or "")),
     }
 
@@ -200,6 +210,181 @@ def _signal_matches(
         matches.append(("focus-overlap", overlap))
 
     return matches
+
+
+# LLM verification gate (duplicate-brief-detection design.md D3/D4/D5): asks
+# a headless agent CLI whether two briefs' focus text describes the same
+# underlying work. Per-agent invocation mirrors spawnlib.py's `build_cmd()`
+# binary/subcommand choice, but as a plain single-turn text prompt rather
+# than that function's worktree-oriented stream-json/permission-bypass
+# flags (D4: "non-worktree, non-git invocation" — this call reads no files
+# and writes nothing, so codex additionally gets `-s read-only`).
+_AGENT_VERIFY_CMD: Dict[str, Callable[[str], List[str]]] = {
+    "claude": lambda prompt: ["claude", "-p", prompt],
+    "codex": lambda prompt: ["codex", "exec", "-s", "read-only", prompt],
+    "opencode": lambda prompt: ["opencode", "run", prompt],
+}
+
+_VERDICT_RE = re.compile(r"^\s*(yes|no)\b", re.IGNORECASE)
+
+
+def _resolve_verification_agent_cli(repo_root: Optional[Path]) -> Optional[str]:
+    """Resolve the headless agent CLI for the LLM verification gate.
+
+    Mirrors dashboard.py's `_planned_agent_for_item()`: `router/policy.py`'s
+    `load_policy(repo_root)["agent_cli"]`, which defaults to `None` when
+    unconfigured (policy.py's own default — not a "claude" fallback), since
+    an unset `agent_cli` is a legitimate "no verification available" outcome
+    (D5), not an error. `repo_root` is caller-injected the same way
+    `parse_frontmatter` is; `None` (no repo context available) also resolves
+    to unconfigured. Any policy-load failure is swallowed, matching
+    dashboard.py's own `_load_dashboard_policy()`.
+    """
+    if repo_root is None:
+        return None
+    try:
+        agent_cli = load_policy(Path(repo_root)).get("agent_cli")
+    except Exception:  # noqa: BLE001 — unconfigured, not a crash
+        return None
+    return agent_cli if agent_cli in VALID_AGENT_CLIS else None
+
+
+def _verification_prompt(focus_a: str, focus_b: str) -> str:
+    """Build the LLM verification gate's single-turn prompt (D4)."""
+    return (
+        "Two queued work briefs matched on a weak text-overlap signal. Based "
+        "only on the focus text below, do they describe the SAME underlying "
+        "work (a likely duplicate)? Reply with exactly one line: the single "
+        "word YES or NO, optionally followed by a colon and a one-sentence "
+        "reason. Do not use any tools; do not write more than one line.\n\n"
+        f"Brief A focus:\n{focus_a}\n\nBrief B focus:\n{focus_b}\n"
+    )
+
+
+def _parse_verification_verdict(output: str) -> Optional[bool]:
+    """Parse a yes/no verdict from the verification call's stdout.
+
+    Returns True/False for the first non-empty line starting with YES/NO
+    (case-insensitive); None if the output is empty or that line doesn't
+    start with either word.
+    """
+    for line in (output or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        match = _VERDICT_RE.match(line)
+        return match.group(1).lower() == "yes" if match else None
+    return None
+
+
+def _verify_same_work(
+    focus_a: str,
+    focus_b: str,
+    *,
+    repo_root: Optional[Path] = None,
+    agent_cli: Optional[str] = None,
+) -> Optional[bool]:
+    """LLM verification gate: ask the configured headless agent CLI whether
+    two briefs' focus text describes the same underlying work.
+
+    `agent_cli` overrides the policy-resolved default
+    (`_resolve_verification_agent_cli`) — primarily for tests. Returns
+    True/False for a parsed verdict, or None when no agent CLI is
+    configured/recognized, the call fails, or its output can't be parsed as
+    a verdict — callers must treat None as "not verified" (fail-open, D5).
+    Never raises.
+    """
+    resolved = agent_cli or _resolve_verification_agent_cli(repo_root)
+    build_cmd = _AGENT_VERIFY_CMD.get(resolved) if resolved else None
+    if build_cmd is None:
+        return None
+    try:
+        proc = subprocess.run(
+            build_cmd(_verification_prompt(focus_a, focus_b)),
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, ValueError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return _parse_verification_verdict(proc.stdout)
+
+
+def _llm_gate_score(sig_a: Dict[str, Any], sig_b: Dict[str, Any]) -> Optional[float]:
+    """Return the focus-overlap coefficient if this pair falls in the LLM
+    verification gate's band (design.md D3): both `repo` null, not
+    blocked-by-excluded, and overlap in `[LLM_GATE_FLOOR,
+    NEAR_IDENTICAL_THRESHOLD)`. `None` if any of those don't hold. This band
+    starts below `OVERLAP_THRESHOLD`, so it deliberately overlaps pairs that
+    `_signal_matches` does not itself connect with a focus-overlap edge
+    (the motivating PR #93 case, at 0.44) as well as ones it does
+    (0.45 to <0.50).
+    """
+    if sig_a["repo"] is not None or sig_b["repo"] is not None:
+        return None
+    if _is_blocked_by_pair(sig_a, sig_b):
+        return None
+    overlap = _overlap_coefficient(sig_a["focus_tokens"], sig_b["focus_tokens"])
+    if LLM_GATE_FLOOR <= overlap < NEAR_IDENTICAL_THRESHOLD:
+        return overlap
+    return None
+
+
+def _llm_gate_clusters(
+    signals: List[Dict[str, Any]],
+    components: List[Dict[str, Any]],
+    *,
+    repo_root: Optional[Path],
+    agent_cli: Optional[str],
+) -> List[Dict[str, Any]]:
+    """Run the LLM verification gate over every size-2, null-vs-null
+    candidate pair in the gate band and return surfaced-shape cluster dicts
+    for the ones the LLM confirms describe the same underlying work
+    (design.md D3).
+
+    `components` is `_connected_components`'s raw (pre-filter) output, used
+    only to check that a candidate pair isn't already folded into a larger
+    or already-qualifying structure: a pair is only gated when neither brief
+    already belongs to a component with a third member, and (for a pair that
+    already forms an ordinary focus-overlap edge in the 0.45-0.50 sub-band)
+    that component isn't already near-identical by some other edge. This
+    keeps the gate scoped to genuine size-2 candidates, never promoting a
+    member of an already-decided cluster.
+    """
+    member_component: Dict[str, int] = {
+        member: idx for idx, comp in enumerate(components) for member in comp["members"]
+    }
+    gate_clusters: List[Dict[str, Any]] = []
+    for i in range(len(signals)):
+        for j in range(i + 1, len(signals)):
+            sig_a, sig_b = signals[i], signals[j]
+            if _llm_gate_score(sig_a, sig_b) is None:
+                continue
+            stem_a, stem_b = sig_a["stem"], sig_b["stem"]
+            comp_a = member_component.get(stem_a)
+            comp_b = member_component.get(stem_b)
+            if comp_a != comp_b:
+                continue  # one of the pair already belongs elsewhere
+
+            labels = ["focus-overlap"]
+            if comp_a is not None:
+                comp = components[comp_a]
+                if comp["size"] != 2:
+                    continue
+                if any(_is_near_identical(matches) for (_, _, matches) in comp["_edges"]):
+                    continue  # already surfaced without the LLM gate
+                labels = comp["signals"]
+
+            verdict = _verify_same_work(
+                sig_a["focus_text"], sig_b["focus_text"], repo_root=repo_root, agent_cli=agent_cli
+            )
+            if not verdict:
+                continue
+            gate_clusters.append(
+                {"members": sorted((stem_a, stem_b)), "signals": labels, "size": 2}
+            )
+    return gate_clusters
 
 
 _Edge = Tuple[str, str, List[Tuple[str, Optional[float]]]]
@@ -297,16 +482,46 @@ def _filter_reportable(components: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     return reportable
 
 
-def _assemble_clusters(edges: List[_Edge]) -> List[Dict[str, Any]]:
+def _assemble_clusters(
+    edges: List[_Edge],
+    *,
+    signals: Optional[List[Dict[str, Any]]] = None,
+    repo_root: Optional[Path] = None,
+    agent_cli: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     """Assemble Signal Match edges into surfaced clusters: connected-component
     assembly (`_connected_components`) followed by the reporting-threshold
     filter (`_filter_reportable`). An empty `edges` list yields an empty
-    cluster list."""
-    return _filter_reportable(_connected_components(edges))
+    cluster list.
+
+    `signals` (the original Cluster Signals the edges were computed from) is
+    optional and, when supplied, additionally runs the LLM verification gate
+    (`_llm_gate_clusters`, design.md D3) over the same-named candidates and
+    merges any it confirms into the surfaced list, deduplicated by member
+    set. Omitting `signals` (the default) preserves the pre-gate behavior
+    exactly — no LLM calls, gate-only candidates never surfaced.
+    """
+    components = _connected_components(edges)
+    reportable = _filter_reportable(components)
+    if signals:
+        existing = {tuple(c["members"]) for c in reportable}
+        for gated in _llm_gate_clusters(
+            signals, components, repo_root=repo_root, agent_cli=agent_cli
+        ):
+            key = tuple(gated["members"])
+            if key not in existing:
+                reportable.append(gated)
+                existing.add(key)
+        reportable.sort(key=lambda c: c["members"])
+    return reportable
 
 
 def _compute_clusters_inner(
-    queue_dir: Path, parse_frontmatter: Callable[[str], Dict[str, Any]]
+    queue_dir: Path,
+    parse_frontmatter: Callable[[str], Dict[str, Any]],
+    *,
+    repo_root: Optional[Path],
+    agent_cli: Optional[str],
 ) -> List[Dict[str, Any]]:
     """Unguarded body of `compute_clusters` (see there for the public
     contract). Split out so the broad exception handler wraps the whole
@@ -328,11 +543,15 @@ def _compute_clusters_inner(
             matches = _signal_matches(sig_a, sig_b)
             edges.append((sig_a["stem"], sig_b["stem"], matches))
 
-    return _assemble_clusters(edges)
+    return _assemble_clusters(edges, signals=signals, repo_root=repo_root, agent_cli=agent_cli)
 
 
 def compute_clusters(
-    queue_dir: Path, parse_frontmatter: Callable[[str], Dict[str, Any]]
+    queue_dir: Path,
+    parse_frontmatter: Callable[[str], Dict[str, Any]],
+    *,
+    repo_root: Optional[Path] = None,
+    agent_cli: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Public entry point: scan `queue_dir` for queued briefs, extract Cluster
     Signals (skipping any brief whose frontmatter can't be read or parsed),
@@ -345,8 +564,18 @@ def compute_clusters(
     render" boundary (mirrors dashboard.py's `_safe_detect_stage`), so any
     unexpected failure anywhere in extraction/matching/assembly degrades to
     an empty cluster list rather than propagating.
+
+    `repo_root` and `agent_cli` are optional and feed the LLM verification
+    gate (design.md D3/D4): `repo_root` lets it resolve the configured
+    headless agent CLI via `router/policy.py` the same way `parse_frontmatter`
+    is caller-injected; `agent_cli` overrides that resolution outright
+    (primarily for tests). Neither is required — omitting both simply means
+    the gate never has a CLI to call, so gate-band candidates fail open to
+    "not verified" (not surfaced), same as any other resolution failure.
     """
     try:
-        return _compute_clusters_inner(queue_dir, parse_frontmatter)
+        return _compute_clusters_inner(
+            queue_dir, parse_frontmatter, repo_root=repo_root, agent_cli=agent_cli
+        )
     except Exception:  # noqa: BLE001 — degrade, never crash the dashboard render
         return []
