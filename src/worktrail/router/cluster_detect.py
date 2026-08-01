@@ -145,6 +145,7 @@ def _extract_signal(
         "related": _coerce_id_list(fm.get("related")),
         "blocked_by": _coerce_id_list(fm.get("blocked-by")),
         "slug": _slug(path.stem),
+        "focus_text": str(fm.get("focus") or ""),
         "focus_tokens": _tokenize(str(fm.get("focus") or "")),
     }
 
@@ -310,6 +311,82 @@ def _verify_same_work(
     return _parse_verification_verdict(proc.stdout)
 
 
+def _llm_gate_score(sig_a: Dict[str, Any], sig_b: Dict[str, Any]) -> Optional[float]:
+    """Return the focus-overlap coefficient if this pair falls in the LLM
+    verification gate's band (design.md D3): both `repo` null, not
+    blocked-by-excluded, and overlap in `[LLM_GATE_FLOOR,
+    NEAR_IDENTICAL_THRESHOLD)`. `None` if any of those don't hold. This band
+    starts below `OVERLAP_THRESHOLD`, so it deliberately overlaps pairs that
+    `_signal_matches` does not itself connect with a focus-overlap edge
+    (the motivating PR #93 case, at 0.44) as well as ones it does
+    (0.45 to <0.50).
+    """
+    if sig_a["repo"] is not None or sig_b["repo"] is not None:
+        return None
+    if _is_blocked_by_pair(sig_a, sig_b):
+        return None
+    overlap = _overlap_coefficient(sig_a["focus_tokens"], sig_b["focus_tokens"])
+    if LLM_GATE_FLOOR <= overlap < NEAR_IDENTICAL_THRESHOLD:
+        return overlap
+    return None
+
+
+def _llm_gate_clusters(
+    signals: List[Dict[str, Any]],
+    components: List[Dict[str, Any]],
+    *,
+    repo_root: Optional[Path],
+    agent_cli: Optional[str],
+) -> List[Dict[str, Any]]:
+    """Run the LLM verification gate over every size-2, null-vs-null
+    candidate pair in the gate band and return surfaced-shape cluster dicts
+    for the ones the LLM confirms describe the same underlying work
+    (design.md D3).
+
+    `components` is `_connected_components`'s raw (pre-filter) output, used
+    only to check that a candidate pair isn't already folded into a larger
+    or already-qualifying structure: a pair is only gated when neither brief
+    already belongs to a component with a third member, and (for a pair that
+    already forms an ordinary focus-overlap edge in the 0.45-0.50 sub-band)
+    that component isn't already near-identical by some other edge. This
+    keeps the gate scoped to genuine size-2 candidates, never promoting a
+    member of an already-decided cluster.
+    """
+    member_component: Dict[str, int] = {
+        member: idx for idx, comp in enumerate(components) for member in comp["members"]
+    }
+    gate_clusters: List[Dict[str, Any]] = []
+    for i in range(len(signals)):
+        for j in range(i + 1, len(signals)):
+            sig_a, sig_b = signals[i], signals[j]
+            if _llm_gate_score(sig_a, sig_b) is None:
+                continue
+            stem_a, stem_b = sig_a["stem"], sig_b["stem"]
+            comp_a = member_component.get(stem_a)
+            comp_b = member_component.get(stem_b)
+            if comp_a != comp_b:
+                continue  # one of the pair already belongs elsewhere
+
+            labels = ["focus-overlap"]
+            if comp_a is not None:
+                comp = components[comp_a]
+                if comp["size"] != 2:
+                    continue
+                if any(_is_near_identical(matches) for (_, _, matches) in comp["_edges"]):
+                    continue  # already surfaced without the LLM gate
+                labels = comp["signals"]
+
+            verdict = _verify_same_work(
+                sig_a["focus_text"], sig_b["focus_text"], repo_root=repo_root, agent_cli=agent_cli
+            )
+            if not verdict:
+                continue
+            gate_clusters.append(
+                {"members": sorted((stem_a, stem_b)), "signals": labels, "size": 2}
+            )
+    return gate_clusters
+
+
 _Edge = Tuple[str, str, List[Tuple[str, Optional[float]]]]
 
 
@@ -405,16 +482,46 @@ def _filter_reportable(components: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     return reportable
 
 
-def _assemble_clusters(edges: List[_Edge]) -> List[Dict[str, Any]]:
+def _assemble_clusters(
+    edges: List[_Edge],
+    *,
+    signals: Optional[List[Dict[str, Any]]] = None,
+    repo_root: Optional[Path] = None,
+    agent_cli: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     """Assemble Signal Match edges into surfaced clusters: connected-component
     assembly (`_connected_components`) followed by the reporting-threshold
     filter (`_filter_reportable`). An empty `edges` list yields an empty
-    cluster list."""
-    return _filter_reportable(_connected_components(edges))
+    cluster list.
+
+    `signals` (the original Cluster Signals the edges were computed from) is
+    optional and, when supplied, additionally runs the LLM verification gate
+    (`_llm_gate_clusters`, design.md D3) over the same-named candidates and
+    merges any it confirms into the surfaced list, deduplicated by member
+    set. Omitting `signals` (the default) preserves the pre-gate behavior
+    exactly — no LLM calls, gate-only candidates never surfaced.
+    """
+    components = _connected_components(edges)
+    reportable = _filter_reportable(components)
+    if signals:
+        existing = {tuple(c["members"]) for c in reportable}
+        for gated in _llm_gate_clusters(
+            signals, components, repo_root=repo_root, agent_cli=agent_cli
+        ):
+            key = tuple(gated["members"])
+            if key not in existing:
+                reportable.append(gated)
+                existing.add(key)
+        reportable.sort(key=lambda c: c["members"])
+    return reportable
 
 
 def _compute_clusters_inner(
-    queue_dir: Path, parse_frontmatter: Callable[[str], Dict[str, Any]]
+    queue_dir: Path,
+    parse_frontmatter: Callable[[str], Dict[str, Any]],
+    *,
+    repo_root: Optional[Path],
+    agent_cli: Optional[str],
 ) -> List[Dict[str, Any]]:
     """Unguarded body of `compute_clusters` (see there for the public
     contract). Split out so the broad exception handler wraps the whole
@@ -436,11 +543,15 @@ def _compute_clusters_inner(
             matches = _signal_matches(sig_a, sig_b)
             edges.append((sig_a["stem"], sig_b["stem"], matches))
 
-    return _assemble_clusters(edges)
+    return _assemble_clusters(edges, signals=signals, repo_root=repo_root, agent_cli=agent_cli)
 
 
 def compute_clusters(
-    queue_dir: Path, parse_frontmatter: Callable[[str], Dict[str, Any]]
+    queue_dir: Path,
+    parse_frontmatter: Callable[[str], Dict[str, Any]],
+    *,
+    repo_root: Optional[Path] = None,
+    agent_cli: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Public entry point: scan `queue_dir` for queued briefs, extract Cluster
     Signals (skipping any brief whose frontmatter can't be read or parsed),
@@ -453,8 +564,18 @@ def compute_clusters(
     render" boundary (mirrors dashboard.py's `_safe_detect_stage`), so any
     unexpected failure anywhere in extraction/matching/assembly degrades to
     an empty cluster list rather than propagating.
+
+    `repo_root` and `agent_cli` are optional and feed the LLM verification
+    gate (design.md D3/D4): `repo_root` lets it resolve the configured
+    headless agent CLI via `router/policy.py` the same way `parse_frontmatter`
+    is caller-injected; `agent_cli` overrides that resolution outright
+    (primarily for tests). Neither is required — omitting both simply means
+    the gate never has a CLI to call, so gate-band candidates fail open to
+    "not verified" (not surfaced), same as any other resolution failure.
     """
     try:
-        return _compute_clusters_inner(queue_dir, parse_frontmatter)
+        return _compute_clusters_inner(
+            queue_dir, parse_frontmatter, repo_root=repo_root, agent_cli=agent_cli
+        )
     except Exception:  # noqa: BLE001 — degrade, never crash the dashboard render
         return []
