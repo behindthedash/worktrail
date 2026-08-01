@@ -91,8 +91,37 @@ class TestSweep(unittest.TestCase):
             "misc-notes.md": "prose",
             "investigation-summary.md": "prose",
         })
+
         results = sweep(tmp)
-        self.assertEqual({r["repo"] for r in results}, {"datalena"})
+
+        flagged_names = {r["repo"] for r in results}
+        self.assertEqual(flagged_names, {"datalena"})
+
+        flagged_result = next(r for r in results if r["repo"] == "datalena")
+        self.assertEqual(len(flagged_result["findings"]), 1)
+        self.assertEqual(flagged_result["findings"][0]["spec"], "001-bar")
+
+    def test_sweep_json_flagged_count_matches(self):
+        tmp = Path(tempfile.mkdtemp())
+        clean = _git_repo(tmp, "aperi")
+        _spec_dir(clean, "001-foo", {"spec.md": "spec"})
+        flagged_repo = _git_repo(tmp, "datalena")
+        _spec_dir(flagged_repo, "001-bar", {
+            "misc-notes.md": "prose",
+            "investigation-summary.md": "prose",
+        })
+
+        env = {**os.environ, "PYTHONPATH": _SRC}
+        proc = subprocess.run(
+            [sys.executable, "-m", "worktrail.router.dashboard_selfcheck",
+             "--repos-root", str(tmp), "--json"],
+            capture_output=True, text=True, env=env,
+        )
+        self.assertEqual(proc.returncode, 1)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(payload["flagged"], 1)
+        self.assertEqual(len(payload["results"]), 1)
+        self.assertEqual(payload["results"][0]["repo"], "datalena")
 
 
 class TestMain(unittest.TestCase):
