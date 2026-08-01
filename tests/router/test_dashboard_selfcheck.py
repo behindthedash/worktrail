@@ -103,17 +103,25 @@ class TestSweep(unittest.TestCase):
 
     def test_sweep_json_flagged_count_matches(self):
         tmp = Path(tempfile.mkdtemp())
-        _git_repo(tmp, "aperi")
+        clean = _git_repo(tmp, "aperi")
+        _spec_dir(clean, "001-foo", {"spec.md": "spec"})
         flagged_repo = _git_repo(tmp, "datalena")
         _spec_dir(flagged_repo, "001-bar", {
             "misc-notes.md": "prose",
             "investigation-summary.md": "prose",
         })
 
-        results = sweep(tmp)
-        flagged = [r for r in results if r["findings"]]
-        self.assertEqual(len(results), len(flagged))
-        self.assertEqual(len(flagged), 1)
+        env = {**os.environ, "PYTHONPATH": _SRC}
+        proc = subprocess.run(
+            [sys.executable, "-m", "worktrail.router.dashboard_selfcheck",
+             "--repos-root", str(tmp), "--json"],
+            capture_output=True, text=True, env=env,
+        )
+        self.assertEqual(proc.returncode, 1)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(payload["flagged"], 1)
+        self.assertEqual(len(payload["results"]), 1)
+        self.assertEqual(payload["results"][0]["repo"], "datalena")
 
 
 class TestMain(unittest.TestCase):
