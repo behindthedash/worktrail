@@ -3,6 +3,19 @@
 pre_pr_cmd: "PYTHONPATH=src pytest -q && PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check"
 integrate_smoke_cmd: "PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check"
 base_branch: main
+# docs_only_paths: when every changed path matches one of these globs, the
+# pre-PR gate skips pre_pr_cmd AND resolve_pr_labels() caps risk at low
+# (see #102 — the #86 authz false-positive on a docs-only spec PR).
+# Deliberately narrower than datalena's blanket "**/*.md": this repo's
+# skills/*/SKILL.md are load-bearing plugin surface (test_plugin_surface.py),
+# so a skill-text diff must still run tests and keep its classified risk.
+docs_only_paths:
+  - "docs/**"
+  - "openspec/**"
+  - "AGENTS.md"
+  - "README.md"
+  - "CLAUDE.md"
+  - ".gitignore"
 automerge:
   enabled: true
   max_risk: medium
