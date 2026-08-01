@@ -14,9 +14,11 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
+from unittest import mock
 
 from worktrail.router import cluster_detect as _cluster_detect_mod
 from worktrail.router.cluster_detect import (
+    LLM_GATE_FLOOR,
     NEAR_IDENTICAL_THRESHOLD,
     OVERLAP_THRESHOLD,
     _assemble_clusters,
@@ -666,6 +668,69 @@ class ComputeClustersTests(unittest.TestCase):
         self.assertEqual(len(clusters), 1)
         self.assertEqual(clusters[0]["members"], sorted([a.stem, b.stem]))
         self.assertIn("duplicate-slug", clusters[0]["signals"])
+
+
+class RealPR93RegressionTests(unittest.TestCase):
+    """Regression fixture for the real PR #93 pair (design.md D2/D3): two
+    briefs about the same underlying work (finishing contract-sentinel's
+    route-existence-gate rollout), both `repo: null`, differing slugs, and
+    a focus-overlap coefficient of 0.44 — below `OVERLAP_THRESHOLD` (0.45,
+    so `_signal_matches` itself draws no edge) and below
+    `NEAR_IDENTICAL_THRESHOLD` (0.50), but within the LLM gate band
+    `[LLM_GATE_FLOOR, NEAR_IDENTICAL_THRESHOLD)`. Focus text below is
+    token-engineered (4 tokens shared out of a 9-token minimum set, 4/9 =
+    0.4444) to reproduce that exact real-world 0.44 overlap."""
+
+    _FOCUS_A = "contract sentinel route gate finish rollout downstream consumers cutoff"
+    _FOCUS_B = "contract sentinel route gate verify existence missing coverage endpoints"
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _write_pair(self):
+        a = _write_brief(
+            self.dir,
+            "20260610-090000-finish-gate-rollout.md",
+            repo=None,
+            focus=self._FOCUS_A,
+        )
+        b = _write_brief(
+            self.dir,
+            "20260610-091000-verify-gate-coverage.md",
+            repo=None,
+            focus=self._FOCUS_B,
+        )
+        return a, b
+
+    def test_pair_reproduces_the_real_044_overlap_in_the_llm_gate_band(self):
+        a, b = self._write_pair()
+        sig_a = _extract_signal(a, _fake_parse_frontmatter)
+        sig_b = _extract_signal(b, _fake_parse_frontmatter)
+        assert sig_a is not None and sig_b is not None
+        score = _overlap_coefficient(sig_a["focus_tokens"], sig_b["focus_tokens"])
+        self.assertAlmostEqual(score, 4 / 9)
+        self.assertLess(score, OVERLAP_THRESHOLD)
+        self.assertGreaterEqual(score, LLM_GATE_FLOOR)
+        self.assertLess(score, NEAR_IDENTICAL_THRESHOLD)
+        # Below OVERLAP_THRESHOLD, so the ordinary heuristic draws no edge at all.
+        self.assertEqual(_signal_matches(sig_a, sig_b), [])
+
+    def test_surfaced_when_llm_verification_returns_positive(self):
+        a, b = self._write_pair()
+        with mock.patch.object(_cluster_detect_mod, "_verify_same_work", return_value=True):
+            clusters = compute_clusters(self.dir, _fake_parse_frontmatter, agent_cli="claude")
+        self.assertEqual(len(clusters), 1)
+        self.assertEqual(clusters[0]["members"], sorted([a.stem, b.stem]))
+
+    def test_not_surfaced_when_llm_verification_returns_negative(self):
+        a, b = self._write_pair()
+        with mock.patch.object(_cluster_detect_mod, "_verify_same_work", return_value=False):
+            clusters = compute_clusters(self.dir, _fake_parse_frontmatter, agent_cli="claude")
+        self.assertEqual(clusters, [])
 
 
 class NoFilesystemWritesOrNetworkCallsTests(unittest.TestCase):
