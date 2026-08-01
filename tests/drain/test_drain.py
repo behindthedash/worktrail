@@ -13,6 +13,7 @@ from worktrail.drain.drain import (
     acquire_lock,
     build_command,
     capacity_gated,
+    claimed_brief_ids,
     classify_outcome,
     count_ready_briefs,
     decide,
@@ -74,6 +75,39 @@ def test_count_ready_briefs_excludes_blocked_and_not_yet_due():
 def test_count_ready_briefs_empty_and_missing_key():
     assert count_ready_briefs({"briefs": []}) == 0
     assert count_ready_briefs({}) == 0
+
+
+# ---------------------------------------------------------------------------
+# brief-id capture via queue diff
+
+
+def test_claimed_brief_ids_single_disappearance_strips_md_suffix():
+    before = {"briefs": [{"filename": "a.md"}, {"filename": "b.md"}]}
+    after = {"briefs": [{"filename": "b.md"}]}
+    assert claimed_brief_ids(before, after) == ["a"]
+
+
+def test_claimed_brief_ids_no_change_is_empty():
+    before = {"briefs": [{"filename": "a.md"}]}
+    after = {"briefs": [{"filename": "a.md"}]}
+    assert claimed_brief_ids(before, after) == []
+
+
+def test_claimed_brief_ids_multiple_disappearances_all_returned_sorted():
+    before = {"briefs": [{"filename": "c.md"}, {"filename": "a.md"}, {"filename": "b.md"}]}
+    after = {"briefs": [{"filename": "c.md"}]}
+    assert claimed_brief_ids(before, after) == ["a", "b"]
+
+
+def test_claimed_brief_ids_missing_filename_key_ignored():
+    before = {"briefs": [{"filename": "a.md"}, {}]}
+    after = {"briefs": []}
+    assert claimed_brief_ids(before, after) == ["a"]
+
+
+def test_claimed_brief_ids_empty_or_missing_briefs_key():
+    assert claimed_brief_ids({}, {}) == []
+    assert claimed_brief_ids({"briefs": []}, {"briefs": []}) == []
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +207,68 @@ def test_classify_outcome_no_record_no_claim_clean_exit_is_no_pick():
 
 def test_classify_outcome_no_record_nonzero_exit_is_failure():
     assert classify_outcome(None, claimed_delta=0, exit_code=124).kind == "failed"
+
+
+def test_classify_outcome_attributes_single_claimed_brief():
+    out = classify_outcome({"final_status": "completed_pr_open"}, claimed_delta=1,
+                           exit_code=0, claimed_briefs=["20260716-171700-x"])
+    assert out.brief_id == "20260716-171700-x"
+
+
+def test_classify_outcome_ambiguous_multi_claim_leaves_brief_unattributed():
+    out = classify_outcome({"final_status": "completed_pr_open"}, claimed_delta=2,
+                           exit_code=0, claimed_briefs=["a", "b"])
+    assert out.brief_id is None
+
+
+def test_classify_outcome_no_claimed_briefs_leaves_brief_none():
+    out = classify_outcome({"final_status": "completed_pr_open"}, claimed_delta=1, exit_code=0)
+    assert out.brief_id is None
+
+
+def test_classify_outcome_no_record_failure_still_attributes_claimed_brief():
+    out = classify_outcome(None, claimed_delta=1, exit_code=1, claimed_briefs=["a"])
+    assert out.kind == "failed" and out.brief_id == "a"
+
+
+# ---------------------------------------------------------------------------
+# timeout-after-PR classification (defect: iteration-timeout wrap-up killed
+# after a PR was already captured used to count as a plain failure)
+
+
+def test_classify_outcome_timeout_with_pr_is_timeout_after_pr():
+    out = classify_outcome(
+        {"final_status": None, "pull_request": "https://github.com/x/y/pull/658"},
+        claimed_delta=1, exit_code=124, claimed_briefs=["b1"])
+    assert out.kind == "timeout_after_pr"
+    assert out.pr_url == "https://github.com/x/y/pull/658"
+    assert out.brief_id == "b1"
+
+
+def test_classify_outcome_timeout_without_pr_is_still_failed():
+    out = classify_outcome({"final_status": None}, claimed_delta=1, exit_code=124)
+    assert out.kind == "failed"
+
+
+def test_classify_outcome_timeout_without_record_is_still_failed():
+    assert classify_outcome(None, claimed_delta=0, exit_code=124).kind == "failed"
+
+
+def test_classify_outcome_non_timeout_exit_with_pr_but_unfinished_record_is_failed():
+    # A PR alone doesn't grant the timeout_after_pr pass — only exit 124 does.
+    out = classify_outcome(
+        {"final_status": None, "pull_request": "https://github.com/x/y/pull/1"},
+        claimed_delta=1, exit_code=1)
+    assert out.kind == "failed"
+
+
+def test_classify_outcome_timeout_with_pr_but_explicit_failed_state_stays_failed():
+    # An explicit failed_terminal from the record is a deliberate signal from
+    # the agent itself and outranks the timeout+PR heuristic.
+    out = classify_outcome(
+        {"final_status": "failed_terminal", "pull_request": "https://github.com/x/y/pull/1"},
+        claimed_delta=1, exit_code=124)
+    assert out.kind == "failed"
 
 
 # ---------------------------------------------------------------------------
@@ -444,6 +540,62 @@ def test_drain_awaiting_approval_noted_and_continues(tmp_path, monkeypatch):
     assert n["spawned"] == 2
     assert summary["pending_approvals"] == ["https://pr/1"]
     assert summary["stopped"].startswith("queue_empty")
+
+
+def test_drain_captures_brief_id_via_queue_diff(tmp_path, monkeypatch):
+    # pre-iter1=[b0,b1], post-iter1=[b0] -> iter1 claimed b1
+    # pre-iter2=[b0],    post-iter2=[]   -> iter2 claimed b0
+    fake = FakeQueue([2, 1, 1, 0, 0])
+    install_fake_queue(monkeypatch, fake)
+    config = make_config(tmp_path)
+    n = {"spawned": 0}
+
+    def spawner(cmd, timeout):
+        n["spawned"] += 1
+        write_run_record(config.runs_dir, f"go-{n['spawned']}",
+                         "completed_pr_open", pr=f"https://pr/{n['spawned']}")
+        return 0
+
+    summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
+    assert n["spawned"] == 2
+    assert [i["brief"] for i in summary["iterations"]] == ["b1", "b0"]
+
+
+def test_drain_timeout_after_pr_does_not_trip_circuit_breaker(tmp_path, monkeypatch):
+    # Queue never shrinks (these iterations don't complete a claim cleanly),
+    # so max_items -- not queue_empty -- bounds the loop. What's under test
+    # is that 3 consecutive timeout+PR iterations, with a breaker threshold
+    # of 2, never trip circuit_breaker the way 3 consecutive plain failures
+    # would.
+    fake = FakeQueue([5])
+    install_fake_queue(monkeypatch, fake)
+    config = make_config(tmp_path, max_items=3, failure_threshold=2)
+    calls = {"n": 0}
+
+    def spawner(cmd, timeout):
+        calls["n"] += 1
+        write_run_record(config.runs_dir, f"go-{calls['n']}", None,
+                         pr=f"https://pr/{calls['n']}")
+        return 124
+
+    summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
+    assert len(summary["iterations"]) == 3
+    assert all(i["kind"] == "timeout_after_pr" for i in summary["iterations"])
+    assert summary["stopped"].startswith("max_items")
+
+
+def test_drain_timeout_without_pr_still_trips_circuit_breaker(tmp_path, monkeypatch):
+    fake = FakeQueue([5])
+    install_fake_queue(monkeypatch, fake)
+    config = make_config(tmp_path)  # default failure_threshold=2
+
+    def spawner(cmd, timeout):
+        return 124  # no run record, no PR captured -> a plain failure
+
+    summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
+    assert len(summary["iterations"]) == 2
+    assert all(i["kind"] == "failed" for i in summary["iterations"])
+    assert summary["stopped"].startswith("circuit_breaker")
 
 
 def test_drain_capacity_gate_stops_after_blocked_iteration(tmp_path, monkeypatch):

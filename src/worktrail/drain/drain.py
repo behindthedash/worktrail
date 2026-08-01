@@ -19,6 +19,12 @@ Stop conditions (each printed, never silent):
 `completed_awaiting_human_approval` NOTES the pending PR and continues — that
 is a gate working, not a stall.
 
+An iteration killed by the iteration timeout (exit 124) whose run record
+already carries a PR is classified `timeout_after_pr`, not `failed`: the
+substantive work succeeded and only post-PR wrap-up was still running when
+the timeout fired, so it does not count toward `circuit_breaker`. A timeout
+with no PR remains a plain `failed` iteration.
+
 Permission posture is explicit: no permission-bypass flag is ever added by
 default; pass each one via a repeated --permission-arg.
 
@@ -101,6 +107,24 @@ def count_ready_briefs(queue_json: dict) -> int:
     briefs = queue_json.get("briefs") or []
     return sum(1 for b in briefs
                if not b.get("blocked") and not b.get("not_yet_due"))
+
+
+def _queue_filenames(queue_json: dict) -> set:
+    return {b["filename"] for b in (queue_json.get("briefs") or []) if b.get("filename")}
+
+
+def claimed_brief_ids(before: dict, after: dict) -> List[str]:
+    """Brief ids that left queue/ during an iteration (a claim moves a brief's
+    file from queue/ to picked/), by set difference between the `list_queue`
+    JSON snapshots taken immediately before and after the iteration.
+
+    Sorted for determinism; a batch-consuming iteration that claims more than
+    one brief returns all of them, but callers attribute a `brief_id` to the
+    iteration only when exactly one came back — an ambiguous multi-claim
+    iteration is left unattributed rather than guessed at.
+    """
+    gone = sorted(_queue_filenames(before) - _queue_filenames(after))
+    return [name[:-3] if name.endswith(".md") else name for name in gone]
 
 
 def list_queue(work_queue_py: Path, queue_dir: Optional[Path]) -> dict:
@@ -239,7 +263,8 @@ def release_lock(lock_file: Path) -> None:
 @dataclass
 class Outcome:
     """Classified result of one iteration."""
-    kind: str                 # "success" | "blocked" | "failed" | "no_pick"
+    kind: str                 # "success" | "blocked" | "failed"
+                               # | "timeout_after_pr" | "no_pick"
     state: Optional[str] = None      # run-record completion state, if any
     brief_id: Optional[str] = None
     pr_url: Optional[str] = None
@@ -287,17 +312,22 @@ def decide(state: LoopState, now: float) -> Decision:
 
 def classify_outcome(record_fields: Optional[Dict[str, Optional[str]]],
                      claimed_delta: int,
-                     exit_code: int) -> Outcome:
+                     exit_code: int,
+                     claimed_briefs: Iterable[str] = ()) -> Outcome:
     """Classify one iteration from its newest run record + queue movement.
 
-    record_fields — parsed run record created/updated during the iteration,
-                    or None when no record appeared.
-    claimed_delta — briefs that left queue/ during the iteration (>=0).
-    exit_code     — the one-shot process exit code.
+    record_fields  — parsed run record created/updated during the iteration,
+                     or None when no record appeared.
+    claimed_delta  — briefs that left queue/ during the iteration (>=0).
+    exit_code      — the one-shot process exit code.
+    claimed_briefs — brief ids (see `claimed_brief_ids`) that left queue/
+                     during this iteration; attributed to the iteration only
+                     when exactly one came back.
     """
+    claimed_briefs = list(claimed_briefs)
+    brief = claimed_briefs[0] if len(claimed_briefs) == 1 else None
     if record_fields is not None:
         state = record_fields.get("final_status") or record_fields.get("finish")
-        brief = record_fields.get("handoffs_consumed")  # scalar only when single
         pr = record_fields.get("pull_request") or record_fields.get("pr_url")
         if state in SUCCESS_STATES:
             return Outcome("success", state, brief, pr)
@@ -306,10 +336,17 @@ def classify_outcome(record_fields: Optional[Dict[str, Optional[str]]],
         if state in FAILED_STATES:
             return Outcome("failed", state, brief, pr)
         # Record exists but never finished — the one-shot died mid-run.
+        # A timeout (exit 124) with a PR already captured means the
+        # substantive work (claim, implement, open/merge PR) succeeded and
+        # only post-PR wrap-up was still running when the iteration timeout
+        # killed the process — that is not a failure to count against the
+        # circuit breaker. A timeout with no PR is a real failure.
+        if exit_code == 124 and pr:
+            return Outcome("timeout_after_pr", state, brief, pr)
         return Outcome("failed", state, brief, pr)
     if claimed_delta == 0 and exit_code == 0:
         return Outcome("no_pick")
-    return Outcome("failed")
+    return Outcome("failed", brief_id=brief)
 
 
 # ---------------------------------------------------------------------------
@@ -391,16 +428,22 @@ def drain(config: DrainConfig,
                     fields = parse_run_record(record_path.read_text(encoding="utf-8"))
                 except OSError:
                     fields = None
-            ready_after = count_ready_briefs(
-                list_queue(config.work_queue_py, config.queue_dir))
+            queue_after = list_queue(config.work_queue_py, config.queue_dir)
+            ready_after = count_ready_briefs(queue_after)
             claimed_delta = max(0, ready_before - ready_after)
-            outcome = classify_outcome(fields, claimed_delta, exit_code)
+            claimed_briefs = claimed_brief_ids(queue, queue_after)
+            outcome = classify_outcome(fields, claimed_delta, exit_code, claimed_briefs)
             state.iteration += 1
             state.last_outcome = outcome
             if outcome.kind in ("failed", "blocked"):
                 state.consecutive_failures += 1
             elif outcome.kind == "success":
                 state.consecutive_failures = 0
+            # "timeout_after_pr" leaves consecutive_failures unchanged: the
+            # substantive work succeeded (see classify_outcome), so it must
+            # not trip the breaker, but it is not a full `success` signal
+            # either (the run never reached a completion state), so it does
+            # not reset the counter.
             if outcome.state == "completed_awaiting_human_approval":
                 pending_approvals.append(outcome.pr_url or outcome.brief_id or "?")
             elapsed = int(clock() - iter_start)
