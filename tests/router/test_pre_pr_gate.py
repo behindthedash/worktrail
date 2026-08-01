@@ -458,5 +458,62 @@ class TestDodVerificationGate(unittest.TestCase):
         self.assertEqual(main(["--repo", repo]), 0)
 
 
+class TestOrphanedTestsWarning(unittest.TestCase):
+    """The orphaned-tests advisory is printed but must never gate the PR."""
+
+    def _git_repo(self, policy_yaml: str, test_files: list[str]) -> str:
+        d = tempfile.mkdtemp(prefix="prepr-drift-")
+        subprocess.run(["git", "init", "-q"], cwd=d, check=True)
+        spec = Path(d) / "docs" / "specs"
+        spec.mkdir(parents=True)
+        (spec / "go-policy.yaml").write_text(policy_yaml, encoding="utf-8")
+        for rel in test_files:
+            p = Path(d) / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("# test\n", encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], cwd=d, check=True)
+        return d
+
+    def _run(self, repo: str) -> tuple[int, str]:
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            code = main(["--repo", repo])
+        return code, err.getvalue()
+
+    def test_warns_but_still_passes_when_tests_are_orphaned(self) -> None:
+        repo = self._git_repo('pre_pr_cmd: "true"\n', ["tests/test_orphan.py"])
+        code, err = self._run(repo)
+        self.assertEqual(code, 0)
+        self.assertIn("WARNING", err)
+        self.assertIn("tests/test_orphan.py", err)
+
+    def test_no_warning_when_the_gate_runs_the_tests(self) -> None:
+        repo = self._git_repo('pre_pr_cmd: "pytest --version >/dev/null || true"\n',
+                              ["tests/test_covered.py"])
+        code, err = self._run(repo)
+        self.assertEqual(code, 0)
+        self.assertNotIn("WARNING", err)
+
+    def test_no_warning_when_repo_has_no_test_files(self) -> None:
+        repo = self._git_repo('pre_pr_cmd: "true"\n', [])
+        code, err = self._run(repo)
+        self.assertEqual(code, 0)
+        self.assertNotIn("WARNING", err)
+
+    def test_warning_does_not_rescue_a_failing_gate(self) -> None:
+        repo = self._git_repo('pre_pr_cmd: "false"\n', ["tests/test_orphan.py"])
+        code, err = self._run(repo)
+        self.assertNotEqual(code, 0)
+        self.assertIn("WARNING", err)
+
+    def test_detector_failure_cannot_break_the_gate(self) -> None:
+        repo = self._git_repo('pre_pr_cmd: "true"\n', ["tests/test_orphan.py"])
+        with patch("worktrail.router.pre_pr_gate.orphaned_test_paths",
+                   side_effect=RuntimeError("boom")):
+            code, err = self._run(repo)
+        self.assertEqual(code, 0)
+        self.assertNotIn("WARNING", err)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
