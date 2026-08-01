@@ -14,9 +14,11 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
+from unittest import mock
 
 from worktrail.router import cluster_detect as _cluster_detect_mod
 from worktrail.router.cluster_detect import (
+    LLM_GATE_FLOOR,
     NEAR_IDENTICAL_THRESHOLD,
     OVERLAP_THRESHOLD,
     _assemble_clusters,
@@ -717,6 +719,111 @@ class NoFilesystemWritesOrNetworkCallsTests(unittest.TestCase):
         self.assertNotRegex(source, r'open\([^)]*["\']w["\']')
         for forbidden in ("socket", "urllib", "http.client", "requests"):
             self.assertNotIn(forbidden, source)
+
+
+class NullRepoGateSignalMatchesTests(unittest.TestCase):
+    """duplicate-brief-detection design.md D1: a pair where both `repo`
+    values are null is now treated as same-repo for repo-scoped signals; a
+    one-null-one-real-repo pair remains excluded."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _sig(self, filename: str, **kwargs) -> Dict[str, Any]:
+        path = _write_brief(self.dir, filename, **kwargs)
+        sig = _extract_signal(path, _fake_parse_frontmatter)
+        assert sig is not None
+        return sig
+
+    def test_two_null_repo_briefs_match_via_focus_overlap(self):
+        a = self._sig(
+            "20260701-090000-alpha.md", repo=None, focus="alpha beta gamma delta"
+        )
+        b = self._sig(
+            "20260701-091000-beta.md", repo=None, focus="alpha beta gamma epsilon"
+        )
+        score = _overlap_coefficient(a["focus_tokens"], b["focus_tokens"])
+        self.assertGreaterEqual(score, OVERLAP_THRESHOLD)
+        matches = dict(_signal_matches(a, b))
+        self.assertIn("focus-overlap", matches)
+
+    def test_one_null_one_real_repo_focus_overlap_pair_still_excluded(self):
+        a = self._sig(
+            "20260701-090000-alpha.md", repo=None, focus="alpha beta gamma delta"
+        )
+        b = self._sig(
+            "20260701-091000-beta.md", repo="repo-x", focus="alpha beta gamma epsilon"
+        )
+        score = _overlap_coefficient(a["focus_tokens"], b["focus_tokens"])
+        self.assertGreaterEqual(score, OVERLAP_THRESHOLD)
+        matches = dict(_signal_matches(a, b))
+        self.assertNotIn("focus-overlap", matches)
+
+
+class LoweredNearIdenticalThresholdTests(unittest.TestCase):
+    """duplicate-brief-detection design.md D2: NEAR_IDENTICAL_THRESHOLD
+    dropped from 0.75 to 0.50, so a size-2 focus-overlap pair scoring
+    between the two is now surfaced."""
+
+    def test_size_two_pair_between_new_and_old_threshold_now_surfaced(self):
+        score = 0.60
+        self.assertGreaterEqual(score, NEAR_IDENTICAL_THRESHOLD)
+        self.assertLess(score, 0.75)
+        comp = {
+            "members": ["a", "b"],
+            "signals": ["focus-overlap"],
+            "size": 2,
+            "_edges": [("a", "b", [("focus-overlap", score)])],
+        }
+        reportable = _filter_reportable([comp])
+        self.assertEqual(len(reportable), 1)
+
+
+class LlmVerificationGateBandTests(unittest.TestCase):
+    """duplicate-brief-detection design.md D3: a size-2, null-vs-null pair
+    whose focus-overlap coefficient falls in [LLM_GATE_FLOOR,
+    NEAR_IDENTICAL_THRESHOLD) triggers a (mocked) LLM verification call."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_gate_band_candidate_triggers_mocked_verification_call(self):
+        a = _write_brief(
+            self.dir,
+            "20260701-090000-alpha.md",
+            repo=None,
+            focus="alpha beta gamma delta epsilon zeta eta theta",
+        )
+        b = _write_brief(
+            self.dir,
+            "20260701-091000-beta.md",
+            repo=None,
+            focus="alpha beta gamma iota kappa lambda omicron sigma",
+        )
+        sig_a = _extract_signal(a, _fake_parse_frontmatter)
+        sig_b = _extract_signal(b, _fake_parse_frontmatter)
+        assert sig_a is not None and sig_b is not None
+        score = _overlap_coefficient(sig_a["focus_tokens"], sig_b["focus_tokens"])
+        self.assertGreaterEqual(score, LLM_GATE_FLOOR)
+        self.assertLess(score, NEAR_IDENTICAL_THRESHOLD)
+
+        mock_result = mock.Mock(returncode=0, stdout="YES: same underlying work\n")
+        with mock.patch.object(
+            _cluster_detect_mod.subprocess, "run", return_value=mock_result
+        ) as mock_run:
+            clusters = compute_clusters(self.dir, _fake_parse_frontmatter, agent_cli="claude")
+
+        mock_run.assert_called_once()
+        self.assertEqual(len(clusters), 1)
+        self.assertEqual(clusters[0]["members"], sorted([a.stem, b.stem]))
 
 
 if __name__ == "__main__":
