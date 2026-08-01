@@ -815,6 +815,36 @@ class ReposScan(unittest.TestCase):
             self.assertIn("🚩 Policy contamination (3): repo-a", out)
             self.assertNotIn("repo-b (", out)
 
+    def test_policy_drift_surfaced_in_repos_and_rendered(self):
+        # route:A go-policy-drift-guard — a repo whose go-policy.yaml no longer
+        # describes reality (tests exist that no runner reaches) must show up as
+        # a flagged row AND a one-line nudge, leaving the honest sibling alone.
+        # Needs real git repos: the detector's file source is `git ls-files`.
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp)
+            for name, cmd in (("repo-a", "npm run lint"), ("repo-b", "pytest -q")):
+                repo = parent / name
+                repo.mkdir(parents=True)
+                subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+                specs = repo / "docs" / "specs"
+                specs.mkdir(parents=True)
+                (specs / "go-policy.yaml").write_text(
+                    f'# go conductor policy for {name}.\npre_pr_cmd: "{cmd}"\n'
+                )
+                (repo / "tests").mkdir()
+                (repo / "tests" / "test_thing.py").write_text("# test\n")
+                subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+
+            rows = dashboard.scan_repos(parent)
+            ra = next(r for r in rows if r["repo"] == "repo-a")
+            rb = next(r for r in rows if r["repo"] == "repo-b")
+            self.assertEqual(
+                {f["signal"] for f in ra["drift_findings"]}, {"orphaned-tests"}
+            )
+            self.assertEqual(rb["drift_findings"], [])
+            out = dashboard.render_dashboard(rows, None, [], [])
+            self.assertIn("🚩 Policy drift (1): repo-a (orphaned-tests)", out)
+
 
 class CategoryPickerAndRender(unittest.TestCase):
     """The deterministic two-level category picker and compact render."""

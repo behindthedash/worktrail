@@ -53,6 +53,14 @@ Exit codes:
   4   DoD-verification drift detected in changed, completed task file(s)
   N   the gate command's own non-zero exit code
 
+Before running the command, the gate also prints a non-blocking `WARNING` when
+`policy_drift_selfcheck.orphaned_test_paths()` finds git-tracked test files
+that neither this gate command nor any CI workflow appears to run. It is
+advisory and has **no exit code of its own** — it never blocks a PR. That
+signal is otherwise a dashboard-only passive detector; it is surfaced at PR
+time as well because the instances found in this workspace were functional
+gaps that shipped for weeks. See docs/specs/research/go-policy-drift-guard.md.
+
 On a PASS, passing `--risk` also prints an `AUTOMERGE LABELS:` line — the
 `go:risk-<level>` label (plus `go:no-automerge` when `automerge_eligible()`
 is false, OR when the base branch has no live GitHub-side required check —
@@ -88,6 +96,7 @@ from .check_spec_sync import check_spec
 from .policy import (
     POLICY_RELPATH, automerge_eligible, automerge_labels, load_policy,
 )
+from .policy_drift_selfcheck import orphaned_test_paths
 from .run_record import _load as load_run_record
 
 # Explicit opt-out sentinels for `pre_pr_cmd`. Deliberately narrow: an empty
@@ -245,6 +254,33 @@ def resolve_pr_labels(
     return automerge_labels(eligible, risk), eligible, reason
 
 
+def _warn_orphaned_tests(repo: Path) -> None:
+    """Print a non-blocking WARNING for test files no runner appears to reach.
+
+    Advisory only: never changes an exit code, never prevents the PR. The
+    signal is `policy_drift_selfcheck`'s, which is otherwise a dashboard-only
+    passive detector; it is surfaced here as well because the two instances
+    found in this workspace (behindthedash, roost-radar) were functional gaps
+    that shipped for weeks, and PR time is when someone can act on it. Any
+    failure to compute the signal is swallowed — a detector must never be able
+    to break the gate it advises.
+    """
+    try:
+        orphaned = orphaned_test_paths(repo)
+    except Exception:
+        return
+    if not orphaned:
+        return
+    print(f"PRE-PR GATE: WARNING — {len(orphaned)} test file(s) in this repo are run "
+          "by neither this gate command nor any CI workflow:", file=sys.stderr)
+    for rel in orphaned[:5]:
+        print(f"    {rel}", file=sys.stderr)
+    if len(orphaned) > 5:
+        print(f"    … +{len(orphaned) - 5} more", file=sys.stderr)
+    print(f"  Not blocking. Fix by extending pre_pr_cmd in {POLICY_RELPATH} or adding "
+          "a CI job, or delete the dead tests.", file=sys.stderr)
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--repo", default=".",
@@ -361,6 +397,7 @@ def main(argv=None) -> int:
 
     print(f"PRE-PR GATE: running in {repo}")
     print(f"  $ {cmd}", flush=True)
+    _warn_orphaned_tests(repo)
 
     if args.risk is not None:
         gates = [g for g in args.gates.split(",") if g]
