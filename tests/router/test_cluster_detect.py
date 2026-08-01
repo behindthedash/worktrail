@@ -10,10 +10,12 @@ signal dicts. Run with:
 from __future__ import annotations
 
 import re
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
+from unittest import mock
 
 from worktrail.router import cluster_detect as _cluster_detect_mod
 from worktrail.router.cluster_detect import (
@@ -25,9 +27,13 @@ from worktrail.router.cluster_detect import (
     _extract_signal,
     _filter_reportable,
     _overlap_coefficient,
+    _parse_verification_verdict,
+    _resolve_verification_agent_cli,
     _signal_matches,
     _slug,
     _tokenize,
+    _verification_prompt,
+    _verify_same_work,
     compute_clusters,
 )
 
@@ -666,6 +672,135 @@ class ComputeClustersTests(unittest.TestCase):
         self.assertEqual(len(clusters), 1)
         self.assertEqual(clusters[0]["members"], sorted([a.stem, b.stem]))
         self.assertIn("duplicate-slug", clusters[0]["signals"])
+
+
+class ResolveVerificationAgentCliTests(unittest.TestCase):
+    def test_none_repo_root_resolves_unconfigured(self):
+        self.assertIsNone(_resolve_verification_agent_cli(None))
+
+    def test_resolves_agent_cli_from_policy(self):
+        with mock.patch.object(
+            _cluster_detect_mod, "load_policy", return_value={"agent_cli": "codex"}
+        ):
+            self.assertEqual(_resolve_verification_agent_cli(Path("/tmp/repo")), "codex")
+
+    def test_unconfigured_policy_agent_cli_is_none(self):
+        with mock.patch.object(
+            _cluster_detect_mod, "load_policy", return_value={"agent_cli": None}
+        ):
+            self.assertIsNone(_resolve_verification_agent_cli(Path("/tmp/repo")))
+
+    def test_invalid_policy_agent_cli_is_none(self):
+        with mock.patch.object(
+            _cluster_detect_mod, "load_policy", return_value={"agent_cli": "not-a-real-cli"}
+        ):
+            self.assertIsNone(_resolve_verification_agent_cli(Path("/tmp/repo")))
+
+    def test_policy_load_failure_is_none(self):
+        with mock.patch.object(
+            _cluster_detect_mod, "load_policy", side_effect=OSError("boom")
+        ):
+            self.assertIsNone(_resolve_verification_agent_cli(Path("/tmp/repo")))
+
+
+class VerificationPromptTests(unittest.TestCase):
+    def test_prompt_includes_both_focus_texts(self):
+        prompt = _verification_prompt("fix the auth flow", "revamp login handling")
+        self.assertIn("fix the auth flow", prompt)
+        self.assertIn("revamp login handling", prompt)
+        self.assertIn("YES", prompt)
+        self.assertIn("NO", prompt)
+
+
+class ParseVerificationVerdictTests(unittest.TestCase):
+    def test_leading_yes_is_true(self):
+        self.assertTrue(_parse_verification_verdict("YES: same underlying work\n"))
+
+    def test_leading_no_is_false(self):
+        self.assertFalse(_parse_verification_verdict("no, unrelated work\n"))
+
+    def test_case_insensitive(self):
+        self.assertTrue(_parse_verification_verdict("yes\n"))
+
+    def test_empty_output_is_none(self):
+        self.assertIsNone(_parse_verification_verdict(""))
+
+    def test_whitespace_only_output_is_none(self):
+        self.assertIsNone(_parse_verification_verdict("   \n\n  "))
+
+    def test_unparseable_output_is_none(self):
+        self.assertIsNone(_parse_verification_verdict("I'm not sure, could go either way.\n"))
+
+    def test_skips_leading_blank_lines(self):
+        self.assertTrue(_parse_verification_verdict("\n\nYES: duplicate\n"))
+
+
+class VerifySameWorkTests(unittest.TestCase):
+    def _completed(self, stdout: str, returncode: int = 0) -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(args=["claude"], returncode=returncode, stdout=stdout)
+
+    def test_returns_true_for_positive_verdict(self):
+        with mock.patch.object(
+            _cluster_detect_mod.subprocess, "run", return_value=self._completed("YES\n")
+        ) as run:
+            result = _verify_same_work("focus a", "focus b", agent_cli="claude")
+        self.assertTrue(result)
+        run.assert_called_once()
+        cmd = run.call_args.args[0]
+        self.assertEqual(cmd[0], "claude")
+        self.assertIn("focus a", cmd[-1])
+        self.assertIn("focus b", cmd[-1])
+
+    def test_returns_false_for_negative_verdict(self):
+        with mock.patch.object(
+            _cluster_detect_mod.subprocess, "run", return_value=self._completed("NO\n")
+        ):
+            result = _verify_same_work("focus a", "focus b", agent_cli="claude")
+        self.assertFalse(result)
+
+    def test_none_when_no_agent_cli_configured(self):
+        with mock.patch.object(_cluster_detect_mod.subprocess, "run") as run:
+            result = _verify_same_work("focus a", "focus b", repo_root=None)
+        self.assertIsNone(result)
+        run.assert_not_called()
+
+    def test_none_when_agent_cli_unrecognized(self):
+        with mock.patch.object(_cluster_detect_mod.subprocess, "run") as run:
+            result = _verify_same_work("focus a", "focus b", agent_cli="not-a-real-cli")
+        self.assertIsNone(result)
+        run.assert_not_called()
+
+    def test_none_on_nonzero_exit(self):
+        with mock.patch.object(
+            _cluster_detect_mod.subprocess, "run", return_value=self._completed("", returncode=1)
+        ):
+            result = _verify_same_work("focus a", "focus b", agent_cli="claude")
+        self.assertIsNone(result)
+
+    def test_none_on_oserror(self):
+        with mock.patch.object(
+            _cluster_detect_mod.subprocess, "run", side_effect=FileNotFoundError("no claude")
+        ):
+            result = _verify_same_work("focus a", "focus b", agent_cli="claude")
+        self.assertIsNone(result)
+
+    def test_agent_cli_override_bypasses_policy_resolution(self):
+        with mock.patch.object(_cluster_detect_mod, "load_policy") as load_policy_mock, \
+                mock.patch.object(
+                    _cluster_detect_mod.subprocess, "run", return_value=self._completed("YES\n")
+                ):
+            _verify_same_work("focus a", "focus b", repo_root=Path("/tmp/repo"), agent_cli="opencode")
+        load_policy_mock.assert_not_called()
+
+    def test_uses_policy_resolved_agent_cli_when_no_override(self):
+        with mock.patch.object(
+            _cluster_detect_mod, "load_policy", return_value={"agent_cli": "opencode"}
+        ), mock.patch.object(
+            _cluster_detect_mod.subprocess, "run", return_value=self._completed("YES\n")
+        ) as run:
+            result = _verify_same_work("focus a", "focus b", repo_root=Path("/tmp/repo"))
+        self.assertTrue(result)
+        self.assertEqual(run.call_args.args[0][0], "opencode")
 
 
 class NoFilesystemWritesOrNetworkCallsTests(unittest.TestCase):
