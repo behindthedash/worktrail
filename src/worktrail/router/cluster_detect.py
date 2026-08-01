@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Cluster signal extraction and pairwise Signal Match computation for the go
-skill's Consume-time cluster detection (spec 018).
+skill's Consume-time cluster detection (see the `duplicate-brief-detection`
+change/spec).
 
 Extracts a Cluster Signal (repo, target-spec, related-ID list, blocked-by-ID
 list, descriptive slug, focus-text tokens) from each queued brief and computes
