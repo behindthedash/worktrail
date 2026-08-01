@@ -29,7 +29,7 @@
 - [x] 2.2 Add a `sweep()` test with 2+ repos (one clean, one flagged),
       asserting only the flagged repo appears in results and the JSON
       output's `flagged` count matches.
-- [ ] 2.3 Add a CLI/exit-code test (`main()` with `--repo`/`--json`) covering:
+- [x] 2.3 Add a CLI/exit-code test (`main()` with `--repo`/`--json`) covering:
       exit 0 on a clean repo, exit 1 with a flagged repo, `--json` output
       shape. `test_policy_selfcheck.py` has no CLI-level test to mirror (its
       coverage calls `check_repo`/`sweep` directly, never `main()`) — instead
@@ -40,9 +40,9 @@
 
 ## 3. Verification
 
-- [ ] 3.1 [cleanup] Run `PYTHONPATH=src pytest -q tests/router/test_dashboard_selfcheck.py`
+- [x] 3.1 [cleanup] Run `PYTHONPATH=src pytest -q tests/router/test_dashboard_selfcheck.py`
       and the full `PYTHONPATH=src pytest -q` suite green.
-- [ ] 3.2 [cleanup] Run `PYTHONPATH=src pytest -q tests/test_plugin_surface.py` to
+- [x] 3.2 [cleanup] Run `PYTHONPATH=src pytest -q tests/test_plugin_surface.py` to
       confirm the new console script and any skill/doc cross-references stay
       in lockstep (this change adds no new skill, but the script-registry
       check covers `pyproject.toml` entries).
