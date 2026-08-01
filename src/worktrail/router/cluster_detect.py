@@ -220,6 +220,11 @@ def _signal_matches(
 # than that function's worktree-oriented stream-json/permission-bypass
 # flags (D4: "non-worktree, non-git invocation" — this call reads no files
 # and writes nothing, so codex additionally gets `-s read-only`).
+
+# Wall-clock budget for the verification subprocess call (D3). A hang here
+# must never stall compute_clusters()'s dashboard-render path, so a timeout
+# is treated the same as every other fail-open outcome below: a None verdict.
+_VERIFY_TIMEOUT_SECONDS = 10
 _AGENT_VERIFY_CMD: Dict[str, Callable[[str], List[str]]] = {
     "claude": lambda prompt: ["claude", "-p", prompt],
     "codex": lambda prompt: ["codex", "exec", "-s", "read-only", prompt],
@@ -291,9 +296,11 @@ def _verify_same_work(
     `agent_cli` overrides the policy-resolved default
     (`_resolve_verification_agent_cli`) — primarily for tests. Returns
     True/False for a parsed verdict, or None when no agent CLI is
-    configured/recognized, the call fails, or its output can't be parsed as
-    a verdict — callers must treat None as "not verified" (fail-open, D5).
-    Never raises.
+    configured/recognized, the call times out (`_VERIFY_TIMEOUT_SECONDS`),
+    exits non-zero, or its output can't be parsed as a verdict — callers
+    must treat None as "not verified" (fail-open, D5). Never raises, so one
+    candidate pair's verification failure can't suppress unrelated clusters
+    found elsewhere in the same `compute_clusters()` scan.
     """
     resolved = agent_cli or _resolve_verification_agent_cli(repo_root)
     build_cmd = _AGENT_VERIFY_CMD.get(resolved) if resolved else None
@@ -304,8 +311,9 @@ def _verify_same_work(
             build_cmd(_verification_prompt(focus_a, focus_b)),
             capture_output=True,
             text=True,
+            timeout=_VERIFY_TIMEOUT_SECONDS,
         )
-    except (OSError, ValueError):
+    except (OSError, ValueError, subprocess.TimeoutExpired):
         return None
     if proc.returncode != 0:
         return None
