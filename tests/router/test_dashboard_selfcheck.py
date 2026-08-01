@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Tests for dashboard_selfcheck.py. Run: python3 -m pytest test_dashboard_selfcheck.py -q"""
+import json
 import tempfile
 import unittest
 from pathlib import Path
 
-from worktrail.router.dashboard_selfcheck import check_repo
+from worktrail.router.dashboard_selfcheck import check_repo, sweep
 
 
 def _spec_dir(repo: Path, spec_id: str, files: dict) -> Path:
@@ -14,6 +15,13 @@ def _spec_dir(repo: Path, spec_id: str, files: dict) -> Path:
     for name, content in files.items():
         (spec_dir / name).write_text(content)
     return spec_dir
+
+
+def _git_repo(root: Path, name: str) -> Path:
+    """A repo directory recognized by discover_repo_names() (has a `.git/`)."""
+    repo = root / name
+    (repo / ".git").mkdir(parents=True, exist_ok=True)
+    return repo
 
 
 class TestCheckRepo(unittest.TestCase):
@@ -77,6 +85,28 @@ class TestCheckRepo(unittest.TestCase):
         self.assertEqual(finding["spec"], "001-example")
         self.assertIn("misc-notes.md", finding["detail"])
         self.assertIn("other-notes.md", finding["detail"])
+
+
+class TestSweep(unittest.TestCase):
+    def test_sweep_flags_only_the_flagged_repo(self):
+        tmp = Path(tempfile.mkdtemp())
+        clean_repo = _git_repo(tmp, "clean-repo")
+        _spec_dir(clean_repo, "001-example", {"spec.md": "# example\n"})
+        flagged_repo = _git_repo(tmp, "flagged-repo")
+        _spec_dir(
+            flagged_repo,
+            "001-example",
+            {
+                "misc-notes.md": "# misc\n",
+                "other-notes.md": "# other\n",
+            },
+        )
+
+        results = sweep(tmp)
+
+        self.assertEqual([r["repo"] for r in results], ["flagged-repo"])
+        payload = json.loads(json.dumps({"results": results, "flagged": len(results)}))
+        self.assertEqual(payload["flagged"], 1)
 
 
 if __name__ == "__main__":
