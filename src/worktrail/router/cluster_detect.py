@@ -43,8 +43,18 @@ OVERLAP_THRESHOLD = 0.45
 
 # Stricter overlap-coefficient floor a size-2 component's focus-overlap edge
 # must clear to be treated as near-identical (and thus surfaced) rather than
-# an ordinary match (REQ-013). Deliberately well above OVERLAP_THRESHOLD.
-NEAR_IDENTICAL_THRESHOLD = 0.75
+# an ordinary match (REQ-013). Lowered from 0.75 per duplicate-brief-detection
+# design.md decision D2: a meaningful drop without collapsing onto
+# OVERLAP_THRESHOLD (0.45), which would eliminate the size-2 extra-scrutiny
+# concept entirely rather than loosening it.
+NEAR_IDENTICAL_THRESHOLD = 0.50
+
+# Lower overlap-coefficient floor, below NEAR_IDENTICAL_THRESHOLD, at/above
+# which a size-2, null-vs-null focus-overlap candidate becomes eligible for
+# LLM verification (see duplicate-brief-detection design.md decision D3).
+# Chosen to include the motivating PR #93 pair (0.44) with headroom, without
+# inviting near-zero-overlap pairs into an LLM call.
+LLM_GATE_FLOOR = 0.35
 
 
 def _slug(filename: str) -> str:
