@@ -339,30 +339,25 @@ class SignalMatchesTests(unittest.TestCase):
         self.assertNotIn("focus-overlap", matches)
 
     def test_both_null_repos_still_match_duplicate_slug(self):
-        a = self._sig("20260610-093000-fix-auth-flow.md", repo=None, focus="")
-        b = self._sig("20260611-101500-fix-auth-flow.md", repo=None, focus="")
-        matches = dict(_signal_matches(a, b))
-        self.assertIn("duplicate-slug", matches)
-
-    def test_both_null_repos_also_match_repo_scoped_signals(self):
         # Per the same-repo gate's null-vs-null carve-out, a pair where both
         # briefs carry a null repo is treated as same-repo, so
-        # same-target-spec, related-link, and focus-overlap all apply too —
-        # not just the repo-independent duplicate-slug match.
+        # same-target-spec, related-link, and focus-overlap all apply
+        # alongside the repo-independent duplicate-slug match.
         a = self._sig(
-            "20260610-093000-alpha.md",
+            "20260610-093000-fix-auth-flow.md",
             repo=None,
             target_spec="018",
-            related=["20260611-101500-beta"],
+            related=["20260611-101500-fix-auth-flow"],
             focus="alpha beta gamma delta",
         )
         b = self._sig(
-            "20260611-101500-beta.md",
+            "20260611-101500-fix-auth-flow.md",
             repo=None,
             target_spec="018",
             focus="alpha beta gamma delta",
         )
         matches = dict(_signal_matches(a, b))
+        self.assertIn("duplicate-slug", matches)
         self.assertIn("same-target-spec", matches)
         self.assertIn("related-link", matches)
         self.assertIn("focus-overlap", matches)
