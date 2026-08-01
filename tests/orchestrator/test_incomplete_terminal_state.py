@@ -87,15 +87,36 @@ class IncompleteTerminalState(unittest.TestCase):
 
         self.assertEqual(tasks[0]["status"], "pending")
 
-    def test_validate_task_metadata_rejects_impl_without_files(self):
+    def test_validate_task_metadata_rejects_impl_without_files_or_deps(self):
         with self.assertRaisesRegex(RuntimeError, "TASK-001"):
             live.validate_task_metadata(
-                [{"id": "TASK-001", "status": "pending", "kind": "impl", "files": []}]
+                [{"id": "TASK-001", "status": "pending", "kind": "impl", "files": [], "deps": []}]
             )
 
     def test_validate_task_metadata_allows_tail_without_files(self):
         live.validate_task_metadata(
             [{"id": "TASK-999", "status": "pending", "kind": "cleanup", "files": []}]
+        )
+
+    def test_validate_task_metadata_allows_scope_less_task_serialized_behind_a_dep(self):
+        """compile.py's own prompt tells the model an empty `files` list is "the safe
+        answer" because the task stays "serialised behind its neighbours" --
+        `runplan.apply_to_tasks` enforces exactly that by refusing to drop a baseline
+        dependency edge when either endpoint lacks file scope. A task that kept that
+        dependency edge is the case the prompt promises is safe and must not crash the
+        run; a task with neither files nor a dependency boundary has no such guarantee
+        and must still be rejected (covered above)."""
+        live.validate_task_metadata(
+            [
+                {"id": "TASK-001", "status": "done", "kind": "impl", "files": ["a.py"]},
+                {
+                    "id": "TASK-002",
+                    "status": "pending",
+                    "kind": "impl",
+                    "files": [],
+                    "deps": ["TASK-001"],
+                },
+            ]
         )
 
 
