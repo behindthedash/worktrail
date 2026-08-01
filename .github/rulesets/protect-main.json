@@ -26,7 +26,10 @@
     {
       "type": "required_status_checks",
       "parameters": {
-        "required_status_checks": [{ "context": "Lint, Test & Build" }],
+        "required_status_checks": [
+          { "context": "Lint, Test & Build" },
+          { "context": "Version bump check" }
+        ],
         "strict_required_status_checks_policy": false
       }
     }
