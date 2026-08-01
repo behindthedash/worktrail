@@ -69,6 +69,14 @@ see `automerge_preflight.required_checks_gate()`) to attach via
 `auto-merge.yml`) can act on that policy verdict as PR metadata instead of
 trusting the calling agent to have run Phase 8 by hand.
 
+The `--risk` value itself comes from the classifier's free-text heuristics
+(`classify.classify_risk()`), which have no visibility into the actual diff
+and can false-positive on incidental prose (see that function's docstring).
+`resolve_pr_labels()` corrects for this the same way it resolves every other
+label input: when `is_docs_only()` confirms from the real diff that only
+documentation paths changed, the risk used for labels/eligibility is capped
+to "low" regardless of what the classifier matched in the request text.
+
 The AUTOMERGE LABELS line is printed **before** the test command runs, not
 only after — the pre-print survives shell-output truncation that can occur
 when the test suite exceeds the calling agent's default bash timeout. The
@@ -245,7 +253,21 @@ def resolve_pr_labels(
     `route` (when supplied) feeds `automerge_eligible()`'s `require_human_routes`
     check. This function's own `changed_paths(repo, policy)` result feeds its
     `protected_paths` check unconditionally -- no separate flag needed, since
-    the diff is already resolvable from `repo`/`policy` here."""
+    the diff is already resolvable from `repo`/`policy` here.
+
+    Docs-only risk cap: `risk` is the classifier's verdict on free-text request
+    prose (see classify.classify_risk's docstring) and has no visibility into
+    the actual diff, so a keyword match like "authz" can fire on incidental
+    prose (e.g. a spec-folder name such as `038-authentication` cited as an
+    example) even when the PR is a docs-only change with no auth-code impact
+    (behindthedash/worktrail#86). When `is_docs_only(repo, policy)` is true,
+    the diff is real ground truth that no code was touched, so `risk` is
+    capped to "low" here -- the single place that computes final PR labels --
+    before eligibility/label computation. This reuses the exact
+    `docs_only_paths` definition `is_docs_only()` already applies to the
+    `pre_pr_cmd` skip, rather than adding a second docs-only check."""
+    if is_docs_only(repo, policy):
+        risk = "low"
     eligible, reason = automerge_eligible(
         policy, risk, gates, target_branch,
         route=route, changed_paths=changed_paths(repo, policy))
