@@ -115,6 +115,13 @@ Never commit or develop directly on `main`. Branch off `main` into a sibling wor
 (`git worktree add ../worktrail-worktrees/<branch> -b <branch> main`), open a PR, merge only
 after CI is green. Delete merged branches once their PR lands.
 
+Merges to `main` propagate to this machine's local install surfaces (pip editable checkout,
+Claude Code plugin cache, Codex plugin cache) automatically: a GitHub webhook relays the
+merge event through pullhook to a local bridge sweep (`pullhook-bridge.py` in
+`behindthedash/devops`, `*/2` cron) that runs `worktrail-plugin-refresh.sh` — typically
+within ~2 minutes, with the pre-existing `*/5` refresh cron as fallback. A running Claude
+Code session still needs a restart to pick up refreshed skill text.
+
 ## Versioning
 
 Real semver in `pyproject.toml` (unlike `developer-kit`'s intentionally version-less/SHA-tracked
