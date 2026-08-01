@@ -317,6 +317,9 @@ class SignalMatchesTests(unittest.TestCase):
         self.assertNotIn("focus-overlap", matches)
 
     def test_one_null_repo_blocks_repo_scoped_signals(self):
+        # A one-null-one-real-repo pair is a genuine mismatch (unlike
+        # both-null, which the same-repo gate now treats as "same repo") —
+        # it must still block every repo-scoped signal.
         a = self._sig(
             "20260610-093000-alpha.md",
             repo=None,
@@ -340,6 +343,29 @@ class SignalMatchesTests(unittest.TestCase):
         b = self._sig("20260611-101500-fix-auth-flow.md", repo=None, focus="")
         matches = dict(_signal_matches(a, b))
         self.assertIn("duplicate-slug", matches)
+
+    def test_both_null_repos_also_match_repo_scoped_signals(self):
+        # Per the same-repo gate's null-vs-null carve-out, a pair where both
+        # briefs carry a null repo is treated as same-repo, so
+        # same-target-spec, related-link, and focus-overlap all apply too —
+        # not just the repo-independent duplicate-slug match.
+        a = self._sig(
+            "20260610-093000-alpha.md",
+            repo=None,
+            target_spec="018",
+            related=["20260611-101500-beta"],
+            focus="alpha beta gamma delta",
+        )
+        b = self._sig(
+            "20260611-101500-beta.md",
+            repo=None,
+            target_spec="018",
+            focus="alpha beta gamma delta",
+        )
+        matches = dict(_signal_matches(a, b))
+        self.assertIn("same-target-spec", matches)
+        self.assertIn("related-link", matches)
+        self.assertIn("focus-overlap", matches)
 
     def test_related_link_matches_via_slug_only_identifier(self):
         # `related:` naming just the descriptive slug (no timestamp prefix) —
@@ -466,6 +492,18 @@ class FilterReportableTests(unittest.TestCase):
             ["a", "b"], ["focus-overlap"], [("a", "b", [("focus-overlap", below)])]
         )
         self.assertEqual(_filter_reportable([comp]), [])
+
+    def test_size_two_focus_overlap_between_old_and_new_threshold_now_surfaced(self):
+        # Between the lowered NEAR_IDENTICAL_THRESHOLD (0.50) and the old one
+        # (0.75): dropped before the threshold change, surfaced now.
+        score = 0.60
+        self.assertGreaterEqual(score, NEAR_IDENTICAL_THRESHOLD)
+        self.assertLess(score, 0.75)
+        comp = self._component(
+            ["a", "b"], ["focus-overlap"], [("a", "b", [("focus-overlap", score)])]
+        )
+        reportable = _filter_reportable([comp])
+        self.assertEqual(len(reportable), 1)
 
     def test_size_two_same_target_spec_only_not_surfaced(self):
         comp = self._component(
@@ -614,17 +652,26 @@ class ComputeClustersTests(unittest.TestCase):
         )
 
         # ordinary (non-near-identical) focus-overlap pair, size-2 -> dropped.
+        # 5 shared / 11 tokens each ~= 0.4545: above OVERLAP_THRESHOLD (0.45)
+        # so a focus-overlap match exists, but below the lowered
+        # NEAR_IDENTICAL_THRESHOLD (0.50) so it stays non-qualifying.
         _write_brief(
             self.dir,
             "20260610-097000-delta.md",
             repo="repo-e",
-            focus="apple banana cherry date",
+            focus=(
+                "apple banana cherry date fig "
+                "grape honey kiwi lemon mango nectarine"
+            ),
         )
         _write_brief(
             self.dir,
             "20260610-098000-epsilon.md",
             repo="repo-e",
-            focus="apple banana fig grape",
+            focus=(
+                "apple banana cherry date fig "
+                "quince plum peach pear grapefruit papaya"
+            ),
         )
 
         # unrelated brief matching nothing.
