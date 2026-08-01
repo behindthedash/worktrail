@@ -156,7 +156,20 @@ CI_REPAIR = [
     _sig(r"\bpipeline\b.*\b(fail|red|broken)\w*", 4, "pipeline-failing"),
 ]
 
-# Risk signals (highest matching tier wins).
+# Risk signals (highest matching tier wins). These are free-text keyword
+# heuristics over the request/PR prose only -- classify_risk() has no diff and
+# cannot tell a real code change from an incidental mention (e.g. citing a
+# spec folder named `038-authentication` as an example fires "authz" even
+# though no auth code is touched; see PR #86). Do not try to make these
+# regexes diff-aware -- there is no diff at classify() time. The correction
+# for a false-positive text match lives one layer up, in
+# pre_pr_gate.resolve_pr_labels(): when the *actual* diff is confirmed
+# docs-only via `is_docs_only()`, the risk these signals produced is capped to
+# "low" there before it becomes a PR label. A false-positive match on a
+# non-docs-only diff is not caught by that cap and still carries through as
+# elevated risk -- an intentional fail-safe/fail-loud default, not a bug: an
+# unrelated-but-real code change should get a human's attention at least once
+# rather than have its risk silently downgraded from prose analysis alone.
 RISK_SIGNALS = [
     ("critical", _sig(r"\bbilling\b|\bpayments?\b|\bstripe\b|\binvoic\w+\b", 0, "billing")),
     ("critical", _sig(r"\bsecrets?\b|\bcredentials?\b|\bapi[- _]?keys?\b|\btokens? rotation\b", 0, "secrets")),

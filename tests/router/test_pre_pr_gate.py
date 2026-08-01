@@ -321,6 +321,119 @@ class TestDocsOnlySkip(unittest.TestCase):
         self.assertFalse(is_docs_only(Path(repo), load_policy(Path(repo))))
 
 
+class TestDocsOnlyRiskCap(unittest.TestCase):
+    """PR #86 regression: a docs-only diff under openspec/changes/ whose
+    request prose incidentally matched the classifier's authz keyword
+    heuristic (citing a spec folder named `038-authentication` as an example)
+    came back go:risk-high/go:no-automerge and stalled an actually-safe
+    spec-only PR all day. The diff is real ground truth that no code was
+    touched, so resolve_pr_labels() must cap the classifier's risk verdict to
+    low whenever is_docs_only() confirms the diff -- regardless of which
+    keyword tier the classifier matched -- while leaving a genuinely
+    code-touching diff's risk uncapped (an authz signal must still carry
+    through to the label for a diff that actually touches auth-related code)."""
+
+    def _git(self, repo: str, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", *args], cwd=repo, capture_output=True,
+                              text=True, check=True)
+
+    _POLICY = (
+        'pre_pr_cmd: "true"\n'
+        "automerge:\n"
+        "  enabled: true\n"
+        "  max_risk: low\n"
+        "docs_only_paths:\n"
+        '  - "openspec/**"\n'
+        '  - "docs/**"\n'
+    )
+
+    def _init_repo(self) -> str:
+        d = tempfile.mkdtemp(prefix="prepr-riskcap-")
+        self._git(d, "init", "-q", "-b", "main")
+        self._git(d, "config", "user.email", "test@example.com")
+        self._git(d, "config", "user.name", "Test")
+        spec = Path(d) / "docs" / "specs"
+        spec.mkdir(parents=True)
+        (spec / "go-policy.yaml").write_text(self._POLICY, encoding="utf-8")
+        self._git(d, "add", ".")
+        self._git(d, "commit", "-q", "-m", "base")
+        return d
+
+    def _write(self, repo: str, relpath: str, content: str = "x\n") -> None:
+        path = Path(repo) / relpath
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    def _commit(self, repo: str, message: str) -> None:
+        self._git(repo, "add", ".")
+        self._git(repo, "commit", "-q", "-m", message)
+
+    def test_docs_only_diff_caps_authz_flavored_high_risk_to_low(self) -> None:
+        repo = self._init_repo()
+        self._git(repo, "checkout", "-q", "-b", "feature")
+        self._write(
+            repo, "openspec/changes/dashboard-selfcheck/tasks.md",
+            "- [ ] add authentication-ambiguity detector\n",
+        )
+        self._commit(repo, "spec(dashboard-selfcheck): add tasks")
+        self.assertTrue(is_docs_only(Path(repo), load_policy(Path(repo))))
+
+        out = io.StringIO()
+        with patch("worktrail.router.pre_pr_gate.required_checks_gate",
+                   return_value=(True, "checks ok")), \
+                contextlib.redirect_stdout(out):
+            self.assertEqual(
+                main(["--repo", repo, "--risk", "high", "--labels-only"]), 0)
+        self.assertEqual(out.getvalue().strip(), "go:risk-low")
+
+    def test_docs_only_diff_caps_critical_risk_too(self) -> None:
+        # The cap is unconditional on docs-only, not scoped to the authz
+        # signal specifically -- any keyword tier is capped the same way.
+        repo = self._init_repo()
+        self._git(repo, "checkout", "-q", "-b", "feature")
+        self._write(repo, "docs/notes.md", "mentions secrets rotation policy\n")
+        self._commit(repo, "docs change")
+
+        out = io.StringIO()
+        with patch("worktrail.router.pre_pr_gate.required_checks_gate",
+                   return_value=(True, "checks ok")), \
+                contextlib.redirect_stdout(out):
+            self.assertEqual(
+                main(["--repo", repo, "--risk", "critical", "--labels-only"]), 0)
+        self.assertEqual(out.getvalue().strip(), "go:risk-low")
+
+    def test_non_docs_only_diff_with_high_risk_is_not_capped(self) -> None:
+        # True-positive control: a diff that actually touches auth-related
+        # code is not docs-only, so the authz-derived high risk must still
+        # reach the PR label unchanged.
+        repo = self._init_repo()
+        self._git(repo, "checkout", "-q", "-b", "feature")
+        self._write(repo, "src/app/auth/permissions.py", "def check(): ...\n")
+        self._commit(repo, "feat: tighten permission checks")
+        self.assertFalse(is_docs_only(Path(repo), load_policy(Path(repo))))
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(
+                main(["--repo", repo, "--risk", "high", "--labels-only"]), 0)
+        self.assertEqual(out.getvalue().strip(), "go:risk-high go:no-automerge")
+
+    def test_mixed_diff_with_one_non_docs_path_is_not_capped(self) -> None:
+        # Mirrors is_docs_only's own mixed-diff behavior: one non-doc path in
+        # the diff means the whole PR is not docs-only, so no cap applies.
+        repo = self._init_repo()
+        self._git(repo, "checkout", "-q", "-b", "feature")
+        self._write(repo, "docs/notes.md")
+        self._write(repo, "src/app.py")
+        self._commit(repo, "docs + source change")
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(
+                main(["--repo", repo, "--risk", "high", "--labels-only"]), 0)
+        self.assertEqual(out.getvalue().strip(), "go:risk-high go:no-automerge")
+
+
 class TestClarificationIntegrityGate(unittest.TestCase):
     """Exercises pre_pr_gate.py's wiring of check_clarification_integrity.py
     against a real throwaway git repo (mirrors TestDocsOnlySkip's pattern)."""
