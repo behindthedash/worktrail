@@ -65,6 +65,8 @@ def _route_for(focus: str, requested: Optional[str]) -> Optional[str]:
     result = classify(focus)
     if result["confidence"] == "low" and result["ambiguous_between"]:
         return None
+    if result["route_source"] == "no-signal-default":
+        return None
     return result["route"]
 
 

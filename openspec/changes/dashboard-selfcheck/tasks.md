@@ -1,6 +1,6 @@
 ## 1. Implementation
 
-- [ ] 1.1 Add `src/worktrail/router/dashboard_selfcheck.py` implementing
+- [x] 1.1 Add `src/worktrail/router/dashboard_selfcheck.py` implementing
       `check_repo(repo: Path) -> Dict[str, Any]`, `sweep(repos_root: Path) ->
       List[Dict[str, Any]]`, and `main()`, following `policy_selfcheck.py`'s
       shape (module docstring, `--repo`/`--repos-root`/`--json` CLI, exit 0

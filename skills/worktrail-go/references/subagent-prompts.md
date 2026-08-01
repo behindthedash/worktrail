@@ -341,7 +341,7 @@ ROLE_AGENT_MAP_ARGS=()
 [ -n "$ROLE_AGENT_MAP" ] && ROLE_AGENT_MAP_ARGS=(--role-agent-map "$ROLE_AGENT_MAP")
 AGENT_MODEL_ARGS=(); [ -n "$AGENT_MODEL" ] && AGENT_MODEL_ARGS=(--model "$AGENT_MODEL")
 FALLBACK_AGENT_ARGS=(); [ -n "$FALLBACK_AGENT_CLI" ] && FALLBACK_AGENT_ARGS=(--fallback-agent "$FALLBACK_AGENT_CLI")
-PR_LABELS=$(worktrail-pre-pr-gate --repo "$SPEC_ROOT" --risk "$RISK_LEVEL" --gates "$GATES" --target-branch "$BASE" --labels-only)
+PR_LABELS=$(worktrail-pre-pr-gate --repo "$SPEC_ROOT" --risk "$RISK_LEVEL" --gates "$GATES" --route "$ROUTE" --target-branch "$BASE" --labels-only)
 PR_LABEL_ARGS=()
 for label in $PR_LABELS; do PR_LABEL_ARGS+=(--pr-label "$label"); done
 # An OpenSpec change's tasks.md never declares per-task file scope
@@ -361,7 +361,7 @@ if [ -d "$SPEC_ROOT/openspec/changes/$SPEC_ID" ]; then
     exit 1
   }
 fi
-worktrail-live full-real --repo "$SPEC_ROOT" --spec docs/specs/$SPEC_ID --base "$BASE" --agent "$AGENT_CLI" "${AGENT_MODEL_ARGS[@]}" "${FALLBACK_AGENT_ARGS[@]}" "${ROLE_AGENT_MAP_ARGS[@]}" "${PR_LABEL_ARGS[@]}"
+worktrail-live full-real --repo "$SPEC_ROOT" --spec docs/specs/$SPEC_ID --base "$BASE" --agent "$AGENT_CLI" "${AGENT_MODEL_ARGS[@]}" "${FALLBACK_AGENT_ARGS[@]}" "${ROLE_AGENT_MAP_ARGS[@]}" "${PR_LABEL_ARGS[@]}" --route "$ROUTE" --gates "$GATES"
 ```
 
 `AGENT_CLI` precedence is explicit invocation > repo policy `agent_cli` > machine-wide

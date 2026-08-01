@@ -472,6 +472,79 @@ class PRLabels(unittest.TestCase):
         labels = create_calls[0][create_calls[0].index("--label"):create_calls[0].index("--title")]
         self.assertEqual(labels, ["--label", "go:risk-low"])
 
+    def test_refresh_labels_passes_route_when_set(self):
+        """A classified route must reach pre_pr_gate.py --labels-only's --route so
+        policy's require_human_routes check applies to orchestrator group PRs the
+        same way it applies to one-off PRs (worktrail-preflight run)."""
+        fd, fake_gate = tempfile.mkstemp(suffix="pre_pr_gate.py")
+        os.close(fd)
+
+        try:
+            run = FakeRun(pr_view_responses={}, ls_remote_responses={})
+
+            with patch("worktrail.orchestrator.integrate.coordinator.plan_groups") as mock_groups:
+                with patch("worktrail.orchestrator.integrate._git", side_effect=run):
+                    with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
+                        with patch("worktrail.orchestrator.integrate._resolve_pre_pr_gate",
+                                   return_value=Path(fake_gate)):
+                            mock_groups.return_value = [mock_group("base", ["T001"])]
+
+                            integrate.finish_real(
+                                Path("/repo"),
+                                "spec-001",
+                                [mock_task("T001")],
+                                "origin",
+                                "run-route",
+                                "main",
+                                cleanup=False,
+                                pr_labels=["go:risk-high"],
+                                route="J",
+                                gates="routing_cassette_required",
+                            )
+
+            refresh_calls = [c for c in run.calls if "--labels-only" in c]
+            self.assertGreaterEqual(len(refresh_calls), 1)
+            route_idx = refresh_calls[0].index("--route") + 1
+            self.assertEqual(refresh_calls[0][route_idx], "J")
+            gates_idx = refresh_calls[0].index("--gates") + 1
+            self.assertEqual(refresh_calls[0][gates_idx], "routing_cassette_required")
+        finally:
+            os.unlink(fake_gate)
+
+    def test_refresh_labels_omits_route_when_unset(self):
+        """Existing callers that never pass route (e.g. finish() golden-record path,
+        callers on an unclassified run) must keep working unchanged: no --route flag
+        is sent to the gate script at all."""
+        fd, fake_gate = tempfile.mkstemp(suffix="pre_pr_gate.py")
+        os.close(fd)
+
+        try:
+            run = FakeRun(pr_view_responses={}, ls_remote_responses={})
+
+            with patch("worktrail.orchestrator.integrate.coordinator.plan_groups") as mock_groups:
+                with patch("worktrail.orchestrator.integrate._git", side_effect=run):
+                    with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
+                        with patch("worktrail.orchestrator.integrate._resolve_pre_pr_gate",
+                                   return_value=Path(fake_gate)):
+                            mock_groups.return_value = [mock_group("base", ["T001"])]
+
+                            integrate.finish_real(
+                                Path("/repo"),
+                                "spec-001",
+                                [mock_task("T001")],
+                                "origin",
+                                "run-noroute",
+                                "main",
+                                cleanup=False,
+                                pr_labels=["go:risk-high"],
+                            )
+
+            refresh_calls = [c for c in run.calls if "--labels-only" in c]
+            self.assertGreaterEqual(len(refresh_calls), 1)
+            self.assertNotIn("--route", refresh_calls[0])
+        finally:
+            os.unlink(fake_gate)
+
 
 class NoForceResetExistingRemoteBranch(unittest.TestCase):
     """AC-006: Do not force-reset existing remote branches."""

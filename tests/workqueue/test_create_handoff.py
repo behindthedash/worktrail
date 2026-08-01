@@ -39,6 +39,24 @@ def test_create_handoff_writes_valid_brief_and_classifies(tmp_path: Path):
     assert os.environ.get("WORK_QUEUE_DIR") != str(tmp_path)
 
 
+def test_create_handoff_omits_recommended_route_on_zero_signal_focus(tmp_path: Path):
+    # A content-free focus string classifies as a zero-signal default (E,
+    # low confidence, route_source="no-signal-default"), not a real pick --
+    # it must not be persisted as recommended-route frontmatter, the same as
+    # the ambiguous-tie omission (20260731-151701).
+    result = create_handoff(
+        "Standardize the shared helper used by two call sites",
+        queue_base=tmp_path,
+        repo="/tmp/example",
+        base_branch="main",
+    )
+
+    path = Path(result["path"])
+    assert result["recommended_route"] is None
+    assert "recommended-route" not in read_frontmatter(path)
+    assert "recommended-route" not in path.read_text(encoding="utf-8")
+
+
 def test_create_handoff_auto_links_high_confidence_candidate(tmp_path: Path):
     queue = tmp_path / "queue"
     queue.mkdir()

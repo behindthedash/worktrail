@@ -2687,6 +2687,8 @@ def full_real(
     merge_method: str | None = None,
     pr_labels: list[str] | None = None,
     pr_pacing_wait: int = 0,
+    route: str | None = None,
+    gates: str = "",
 ) -> dict:
     """End-to-end on a REAL repo (the public entry); see `_full_real_inner` for the
     full pipeline doc.
@@ -2734,6 +2736,8 @@ def full_real(
             merge_method=merge_method,
             pr_labels=pr_labels,
             pr_pacing_wait=pr_pacing_wait,
+            route=route,
+            gates=gates,
         )
     finally:
         _lock.release()
@@ -2758,6 +2762,8 @@ def _pipeline_scheduler(
     merge_method: str | None = None,
     pr_labels: list[str] | None = None,
     pr_pacing_wait: int = 0,
+    route: str | None = None,
+    gates: str = "",
     agent: str = DEFAULT_AGENT,
     role_agents: dict | None = None,
     fallback_agent: str | None = None,
@@ -2979,6 +2985,10 @@ def _pipeline_scheduler(
                     }
                     if pr_labels is not None:
                         integrate_kwargs["pr_labels"] = pr_labels
+                    if route is not None:
+                        integrate_kwargs["route"] = route
+                    if gates:
+                        integrate_kwargs["gates"] = gates
                     pr_tuple = integrate_one_fn(
                         g,
                         repo,
@@ -3506,6 +3516,8 @@ def _full_real_inner(
     merge_method: str | None = None,
     pr_labels: list[str] | None = None,
     pr_pacing_wait: int = 0,
+    route: str | None = None,
+    gates: str = "",
 ) -> dict:
     """End-to-end on a REAL repo: fan-out -> integrate -> grouped PRs into base branch.
 
@@ -3667,6 +3679,8 @@ def _full_real_inner(
             merge_method=merge_method,
             pr_labels=pr_labels,
             pr_pacing_wait=pr_pacing_wait,
+            route=route,
+            gates=gates,
         )
 
     # Read or generate a stable run_id (persists in journal across invocations).
@@ -3847,6 +3861,8 @@ def _full_real_inner(
             assembly_resolve_spawn=verify._make_live_spawn(_ar_model, timeout, agent=_ar_agent),
             pr_labels=pr_labels,
             pr_pacing_wait=pr_pacing_wait,
+            route=route,
+            gates=gates,
         )
 
     if not group_branch:
@@ -4330,6 +4346,20 @@ def main(argv=None) -> int:
         help="Exact PR label resolved by the GO pre-PR gate; may be repeated.",
     )
     fr.add_argument(
+        "--route",
+        default=None,
+        help="Classified route letter for this run, forwarded to the group-PR label "
+        "refresh's --route so policy's require_human_routes check applies to "
+        "orchestrator-created PRs. Sourced from the GO run record by the sdd-workflow "
+        "conductor; omit when unknown.",
+    )
+    fr.add_argument(
+        "--gates",
+        default="",
+        help="Comma-separated classifier gates for this run, forwarded to the group-PR "
+        "label refresh's --gates for the same eligibility check as the one-off PR path.",
+    )
+    fr.add_argument(
         "--fork-research",
         action="store_true",
         dest="fork_research",
@@ -4508,6 +4538,8 @@ def main(argv=None) -> int:
             merge_method=args.merge_method,
             pr_labels=args.pr_labels,
             pr_pacing_wait=args.pr_pacing_wait,
+            route=args.route,
+            gates=args.gates,
         )
         return 0
     if args.cmd == "precheck":
