@@ -13,20 +13,20 @@
       directory, collect `.md` candidates via `_is_spec_doc`, and if that
       set is non-empty, a finding fires exactly when `find_spec_file(spec_dir)
       is None` — the one condition under which it refuses to guess.
-- [ ] 1.2 Register `worktrail-dashboard-selfcheck =
+- [x] 1.2 Register `worktrail-dashboard-selfcheck =
       "worktrail.router.dashboard_selfcheck:main"` in `pyproject.toml`
       `[project.scripts]`, alongside the existing `worktrail-policy-selfcheck`
       and `worktrail-automerge-selfcheck` entries.
 
 ## 2. Tests
 
-- [ ] 2.1 Add `tests/router/test_dashboard_selfcheck.py` covering: a spec
+- [x] 2.1 Add `tests/router/test_dashboard_selfcheck.py` covering: a spec
       directory with zero candidates (no finding), one no-signal candidate
       (no finding), a dated or recognized-name candidate present alongside
       no-signal candidates (no finding — matches `find_spec_file()`
       resolving cleanly), and 2+ tied no-signal candidates (finding, naming
       the tied files).
-- [ ] 2.2 Add a `sweep()` test with 2+ repos (one clean, one flagged),
+- [x] 2.2 Add a `sweep()` test with 2+ repos (one clean, one flagged),
       asserting only the flagged repo appears in results and the JSON
       output's `flagged` count matches.
 - [ ] 2.3 Add a CLI/exit-code test (`main()` with `--repo`/`--json`) covering:
