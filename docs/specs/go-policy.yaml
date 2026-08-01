@@ -5,4 +5,4 @@ integrate_smoke_cmd: "PYTHONPATH=src python3 -m worktrail.orchestrator.orchestra
 base_branch: main
 automerge:
   enabled: true
-  max_risk: low
+  max_risk: medium
