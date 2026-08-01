@@ -1,6 +1,6 @@
 ## 1. Implementation
 
-- [ ] 1.1 Add `src/worktrail/router/dashboard_selfcheck.py` implementing
+- [x] 1.1 Add `src/worktrail/router/dashboard_selfcheck.py` implementing
       `check_repo(repo: Path) -> Dict[str, Any]`, `sweep(repos_root: Path) ->
       List[Dict[str, Any]]`, and `main()`, following `policy_selfcheck.py`'s
       shape (module docstring, `--repo`/`--repos-root`/`--json` CLI, exit 0
@@ -29,9 +29,14 @@
 - [ ] 2.2 Add a `sweep()` test with 2+ repos (one clean, one flagged),
       asserting only the flagged repo appears in results and the JSON
       output's `flagged` count matches.
-- [ ] 2.3 Add a CLI/exit-code test (`main()` with `--repo`/`--json`) mirroring
-      `test_policy_selfcheck.py`'s CLI coverage: exit 0 on a clean repo, exit
-      1 with a flagged repo, `--json` output shape.
+- [ ] 2.3 Add a CLI/exit-code test (`main()` with `--repo`/`--json`) covering:
+      exit 0 on a clean repo, exit 1 with a flagged repo, `--json` output
+      shape. `test_policy_selfcheck.py` has no CLI-level test to mirror (its
+      coverage calls `check_repo`/`sweep` directly, never `main()`) — instead
+      follow `test_check_spec_collision.py`'s `TestCli` pattern
+      (`redirect_stdout` + `main(argv)` + assert on captured stdout/return
+      code), the nearest actual precedent in `tests/router/` for testing a
+      router self-check's CLI entry point.
 
 ## 3. Verification
 
