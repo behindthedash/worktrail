@@ -10,13 +10,16 @@ signal dicts. Run with:
 from __future__ import annotations
 
 import re
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
+from unittest import mock
 
 from worktrail.router import cluster_detect as _cluster_detect_mod
 from worktrail.router.cluster_detect import (
+    LLM_GATE_FLOOR,
     NEAR_IDENTICAL_THRESHOLD,
     OVERLAP_THRESHOLD,
     _assemble_clusters,
@@ -28,6 +31,7 @@ from worktrail.router.cluster_detect import (
     _signal_matches,
     _slug,
     _tokenize,
+    _verify_same_work,
     compute_clusters,
 )
 
@@ -317,6 +321,9 @@ class SignalMatchesTests(unittest.TestCase):
         self.assertNotIn("focus-overlap", matches)
 
     def test_one_null_repo_blocks_repo_scoped_signals(self):
+        # A one-null-one-real-repo pair is a genuine mismatch (unlike
+        # both-null, which the same-repo gate now treats as "same repo") —
+        # it must still block every repo-scoped signal.
         a = self._sig(
             "20260610-093000-alpha.md",
             repo=None,
@@ -336,10 +343,28 @@ class SignalMatchesTests(unittest.TestCase):
         self.assertNotIn("focus-overlap", matches)
 
     def test_both_null_repos_still_match_duplicate_slug(self):
-        a = self._sig("20260610-093000-fix-auth-flow.md", repo=None, focus="")
-        b = self._sig("20260611-101500-fix-auth-flow.md", repo=None, focus="")
+        # Per the same-repo gate's null-vs-null carve-out, a pair where both
+        # briefs carry a null repo is treated as same-repo, so
+        # same-target-spec, related-link, and focus-overlap all apply
+        # alongside the repo-independent duplicate-slug match.
+        a = self._sig(
+            "20260610-093000-fix-auth-flow.md",
+            repo=None,
+            target_spec="018",
+            related=["20260611-101500-fix-auth-flow"],
+            focus="alpha beta gamma delta",
+        )
+        b = self._sig(
+            "20260611-101500-fix-auth-flow.md",
+            repo=None,
+            target_spec="018",
+            focus="alpha beta gamma delta",
+        )
         matches = dict(_signal_matches(a, b))
         self.assertIn("duplicate-slug", matches)
+        self.assertIn("same-target-spec", matches)
+        self.assertIn("related-link", matches)
+        self.assertIn("focus-overlap", matches)
 
     def test_related_link_matches_via_slug_only_identifier(self):
         # `related:` naming just the descriptive slug (no timestamp prefix) —
@@ -466,6 +491,18 @@ class FilterReportableTests(unittest.TestCase):
             ["a", "b"], ["focus-overlap"], [("a", "b", [("focus-overlap", below)])]
         )
         self.assertEqual(_filter_reportable([comp]), [])
+
+    def test_size_two_focus_overlap_between_old_and_new_threshold_now_surfaced(self):
+        # Between the lowered NEAR_IDENTICAL_THRESHOLD (0.50) and the old one
+        # (0.75): dropped before the threshold change, surfaced now.
+        score = 0.60
+        self.assertGreaterEqual(score, NEAR_IDENTICAL_THRESHOLD)
+        self.assertLess(score, 0.75)
+        comp = self._component(
+            ["a", "b"], ["focus-overlap"], [("a", "b", [("focus-overlap", score)])]
+        )
+        reportable = _filter_reportable([comp])
+        self.assertEqual(len(reportable), 1)
 
     def test_size_two_same_target_spec_only_not_surfaced(self):
         comp = self._component(
@@ -614,17 +651,26 @@ class ComputeClustersTests(unittest.TestCase):
         )
 
         # ordinary (non-near-identical) focus-overlap pair, size-2 -> dropped.
+        # 5 shared / 11 tokens each ~= 0.4545: above OVERLAP_THRESHOLD (0.45)
+        # so a focus-overlap match exists, but below the lowered
+        # NEAR_IDENTICAL_THRESHOLD (0.50) so it stays non-qualifying.
         _write_brief(
             self.dir,
             "20260610-097000-delta.md",
             repo="repo-e",
-            focus="apple banana cherry date",
+            focus=(
+                "apple banana cherry date fig "
+                "grape honey kiwi lemon mango nectarine"
+            ),
         )
         _write_brief(
             self.dir,
             "20260610-098000-epsilon.md",
             repo="repo-e",
-            focus="apple banana fig grape",
+            focus=(
+                "apple banana cherry date fig "
+                "quince plum peach pear grapefruit papaya"
+            ),
         )
 
         # unrelated brief matching nothing.
@@ -668,6 +714,135 @@ class ComputeClustersTests(unittest.TestCase):
         self.assertIn("duplicate-slug", clusters[0]["signals"])
 
 
+class RealPR93RegressionTests(unittest.TestCase):
+    """Regression fixture for the real PR #93 pair (design.md D2/D3): two
+    briefs about the same underlying work (finishing contract-sentinel's
+    route-existence-gate rollout), both `repo: null`, differing slugs, and
+    a focus-overlap coefficient of 0.44 — below `OVERLAP_THRESHOLD` (0.45,
+    so `_signal_matches` itself draws no edge) and below
+    `NEAR_IDENTICAL_THRESHOLD` (0.50), but within the LLM gate band
+    `[LLM_GATE_FLOOR, NEAR_IDENTICAL_THRESHOLD)`. Focus text below is
+    token-engineered (4 tokens shared out of a 9-token minimum set, 4/9 =
+    0.4444) to reproduce that exact real-world 0.44 overlap."""
+
+    _FOCUS_A = "contract sentinel route gate finish rollout downstream consumers cutoff"
+    _FOCUS_B = "contract sentinel route gate verify existence missing coverage endpoints"
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _write_pair(self):
+        a = _write_brief(
+            self.dir,
+            "20260610-090000-finish-gate-rollout.md",
+            repo=None,
+            focus=self._FOCUS_A,
+        )
+        b = _write_brief(
+            self.dir,
+            "20260610-091000-verify-gate-coverage.md",
+            repo=None,
+            focus=self._FOCUS_B,
+        )
+        return a, b
+
+    def test_pair_reproduces_the_real_044_overlap_in_the_llm_gate_band(self):
+        a, b = self._write_pair()
+        sig_a = _extract_signal(a, _fake_parse_frontmatter)
+        sig_b = _extract_signal(b, _fake_parse_frontmatter)
+        assert sig_a is not None and sig_b is not None
+        score = _overlap_coefficient(sig_a["focus_tokens"], sig_b["focus_tokens"])
+        self.assertAlmostEqual(score, 4 / 9)
+        self.assertLess(score, OVERLAP_THRESHOLD)
+        self.assertGreaterEqual(score, LLM_GATE_FLOOR)
+        self.assertLess(score, NEAR_IDENTICAL_THRESHOLD)
+        # Below OVERLAP_THRESHOLD, so the ordinary heuristic draws no edge at all.
+        self.assertEqual(_signal_matches(sig_a, sig_b), [])
+
+    def test_surfaced_when_llm_verification_returns_positive(self):
+        a, b = self._write_pair()
+        with mock.patch.object(_cluster_detect_mod, "_verify_same_work", return_value=True):
+            clusters = compute_clusters(self.dir, _fake_parse_frontmatter, agent_cli="claude")
+        self.assertEqual(len(clusters), 1)
+        self.assertEqual(clusters[0]["members"], sorted([a.stem, b.stem]))
+
+    def test_not_surfaced_when_llm_verification_returns_negative(self):
+        a, b = self._write_pair()
+        with mock.patch.object(_cluster_detect_mod, "_verify_same_work", return_value=False):
+            clusters = compute_clusters(self.dir, _fake_parse_frontmatter, agent_cli="claude")
+        self.assertEqual(clusters, [])
+
+    def test_not_surfaced_when_llm_call_fails_open(self):
+        """Cluster-level counterpart to VerifySameWorkFailOpenTests: now that
+        task 2.2 wires `_verify_same_work` into `_filter_reportable`, a real
+        `subprocess.run` failure for an in-band candidate must degrade to
+        "not surfaced" at the `compute_clusters()` level, not just at the
+        `_verify_same_work` unit level."""
+        a, b = self._write_pair()
+        with mock.patch.object(
+            _cluster_detect_mod.subprocess,
+            "run",
+            side_effect=subprocess.TimeoutExpired(cmd=["claude", "-p", "x"], timeout=10),
+        ):
+            clusters = compute_clusters(self.dir, _fake_parse_frontmatter, agent_cli="claude")
+        self.assertEqual(clusters, [])
+
+
+class VerifySameWorkFailOpenTests(unittest.TestCase):
+    """Fail-open fixtures for `_verify_same_work` (design.md D5): a timeout,
+    non-zero exit, empty/unparseable output, or no configured agent CLI must
+    each resolve to a None ("not verified") verdict and never raise.
+
+    `test_not_surfaced_when_llm_call_fails_open` on `RealPR93RegressionTests`
+    above covers the same fail-open contract at the `compute_clusters()`
+    level; these fixtures assert directly against `_verify_same_work`'s
+    return value so a failure mode is pinned at the smallest testable unit
+    too."""
+
+    def test_timeout_returns_none(self):
+        with mock.patch.object(
+            _cluster_detect_mod.subprocess,
+            "run",
+            side_effect=subprocess.TimeoutExpired(cmd=["claude", "-p", "x"], timeout=10),
+        ):
+            verdict = _verify_same_work("focus a", "focus b", agent_cli="claude")
+        self.assertIsNone(verdict)
+
+    def test_nonzero_exit_returns_none(self):
+        with mock.patch.object(
+            _cluster_detect_mod.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(
+                args=["claude"], returncode=1, stdout="YES", stderr=""
+            ),
+        ):
+            verdict = _verify_same_work("focus a", "focus b", agent_cli="claude")
+        self.assertIsNone(verdict)
+
+    def test_empty_output_returns_none(self):
+        with mock.patch.object(
+            _cluster_detect_mod.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(
+                args=["claude"], returncode=0, stdout="", stderr=""
+            ),
+        ):
+            verdict = _verify_same_work("focus a", "focus b", agent_cli="claude")
+        self.assertIsNone(verdict)
+
+    def test_no_agent_cli_configured_returns_none(self):
+        # No override and no repo_root -> _resolve_verification_agent_cli
+        # short-circuits before subprocess.run is ever invoked.
+        with mock.patch.object(_cluster_detect_mod.subprocess, "run") as mock_run:
+            verdict = _verify_same_work("focus a", "focus b")
+        mock_run.assert_not_called()
+        self.assertIsNone(verdict)
+
+
 class NoFilesystemWritesOrNetworkCallsTests(unittest.TestCase):
     def test_source_contains_no_write_open_or_network_imports(self):
         source = Path(_cluster_detect_mod.__file__).read_text(encoding="utf-8")
@@ -675,6 +850,111 @@ class NoFilesystemWritesOrNetworkCallsTests(unittest.TestCase):
         self.assertNotRegex(source, r'open\([^)]*["\']w["\']')
         for forbidden in ("socket", "urllib", "http.client", "requests"):
             self.assertNotIn(forbidden, source)
+
+
+class NullRepoGateSignalMatchesTests(unittest.TestCase):
+    """duplicate-brief-detection design.md D1: a pair where both `repo`
+    values are null is now treated as same-repo for repo-scoped signals; a
+    one-null-one-real-repo pair remains excluded."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _sig(self, filename: str, **kwargs) -> Dict[str, Any]:
+        path = _write_brief(self.dir, filename, **kwargs)
+        sig = _extract_signal(path, _fake_parse_frontmatter)
+        assert sig is not None
+        return sig
+
+    def test_two_null_repo_briefs_match_via_focus_overlap(self):
+        a = self._sig(
+            "20260701-090000-alpha.md", repo=None, focus="alpha beta gamma delta"
+        )
+        b = self._sig(
+            "20260701-091000-beta.md", repo=None, focus="alpha beta gamma epsilon"
+        )
+        score = _overlap_coefficient(a["focus_tokens"], b["focus_tokens"])
+        self.assertGreaterEqual(score, OVERLAP_THRESHOLD)
+        matches = dict(_signal_matches(a, b))
+        self.assertIn("focus-overlap", matches)
+
+    def test_one_null_one_real_repo_focus_overlap_pair_still_excluded(self):
+        a = self._sig(
+            "20260701-090000-alpha.md", repo=None, focus="alpha beta gamma delta"
+        )
+        b = self._sig(
+            "20260701-091000-beta.md", repo="repo-x", focus="alpha beta gamma epsilon"
+        )
+        score = _overlap_coefficient(a["focus_tokens"], b["focus_tokens"])
+        self.assertGreaterEqual(score, OVERLAP_THRESHOLD)
+        matches = dict(_signal_matches(a, b))
+        self.assertNotIn("focus-overlap", matches)
+
+
+class LoweredNearIdenticalThresholdTests(unittest.TestCase):
+    """duplicate-brief-detection design.md D2: NEAR_IDENTICAL_THRESHOLD
+    dropped from 0.75 to 0.50, so a size-2 focus-overlap pair scoring
+    between the two is now surfaced."""
+
+    def test_size_two_pair_between_new_and_old_threshold_now_surfaced(self):
+        score = 0.60
+        self.assertGreaterEqual(score, NEAR_IDENTICAL_THRESHOLD)
+        self.assertLess(score, 0.75)
+        comp = {
+            "members": ["a", "b"],
+            "signals": ["focus-overlap"],
+            "size": 2,
+            "_edges": [("a", "b", [("focus-overlap", score)])],
+        }
+        reportable = _filter_reportable([comp])
+        self.assertEqual(len(reportable), 1)
+
+
+class LlmVerificationGateBandTests(unittest.TestCase):
+    """duplicate-brief-detection design.md D3: a size-2, null-vs-null pair
+    whose focus-overlap coefficient falls in [LLM_GATE_FLOOR,
+    NEAR_IDENTICAL_THRESHOLD) triggers a (mocked) LLM verification call."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_gate_band_candidate_triggers_mocked_verification_call(self):
+        a = _write_brief(
+            self.dir,
+            "20260701-090000-alpha.md",
+            repo=None,
+            focus="alpha beta gamma delta epsilon zeta eta theta",
+        )
+        b = _write_brief(
+            self.dir,
+            "20260701-091000-beta.md",
+            repo=None,
+            focus="alpha beta gamma iota kappa lambda omicron sigma",
+        )
+        sig_a = _extract_signal(a, _fake_parse_frontmatter)
+        sig_b = _extract_signal(b, _fake_parse_frontmatter)
+        assert sig_a is not None and sig_b is not None
+        score = _overlap_coefficient(sig_a["focus_tokens"], sig_b["focus_tokens"])
+        self.assertGreaterEqual(score, LLM_GATE_FLOOR)
+        self.assertLess(score, NEAR_IDENTICAL_THRESHOLD)
+
+        mock_result = mock.Mock(returncode=0, stdout="YES: same underlying work\n")
+        with mock.patch.object(
+            _cluster_detect_mod.subprocess, "run", return_value=mock_result
+        ) as mock_run:
+            clusters = compute_clusters(self.dir, _fake_parse_frontmatter, agent_cli="claude")
+
+        mock_run.assert_called_once()
+        self.assertEqual(len(clusters), 1)
+        self.assertEqual(clusters[0]["members"], sorted([a.stem, b.stem]))
 
 
 if __name__ == "__main__":

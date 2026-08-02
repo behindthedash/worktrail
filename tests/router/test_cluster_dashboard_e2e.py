@@ -140,19 +140,28 @@ def _build_realistic_queue(queue_dir: Path) -> Dict[str, str]:
         focus="Queue dashboard shows duplicate briefs without any warning today",
     )
 
-    # (d) ordinary overlap pair (~0.57, at/above OVERLAP_THRESHOLD == 0.45 but
-    # below NEAR_IDENTICAL_THRESHOLD) with no third brief -- must NOT surface.
+    # (d) ordinary overlap pair (~0.4545, at/above OVERLAP_THRESHOLD == 0.45
+    # but below NEAR_IDENTICAL_THRESHOLD == 0.50) with no third brief -- must
+    # NOT surface. Retuned for the duplicate-brief-detection change's lowered
+    # NEAR_IDENTICAL_THRESHOLD (was 0.75; this pair's original ~0.57 overlap
+    # cleared the new 0.50 bar and started surfacing).
     ids["d1"] = _write_brief(
         queue_dir,
         "20260704-070000-network-retry-noise.md",
         repo="repo-d",
-        focus="Render pipeline retries flaky network calls occasionally timeout",
+        focus=(
+            "Render pipeline retries flaky network calls occasionally "
+            "timeout latency spike retry"
+        ),
     )
     ids["d2"] = _write_brief(
         queue_dir,
         "20260704-071000-response-latency-tuning.md",
         repo="repo-d",
-        focus="Render pipeline retries occasionally causing slow response",
+        focus=(
+            "Render pipeline retries occasionally timeout causing slow "
+            "response jitter backend service"
+        ),
     )
 
     # (e) blocked-by-linked pair that would otherwise match on same-target-spec
