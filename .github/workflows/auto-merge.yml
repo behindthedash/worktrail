@@ -48,7 +48,24 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - run: gh pr merge --auto --squash "${{ github.event.pull_request.number }}" -R "${{ github.repository }}"
+      # Native GitHub auto-merge persists once armed regardless of later label
+      # changes -- an eligibility re-check on a later `labeled` event that
+      # only skips re-arming does nothing to stop a merge already armed on an
+      # earlier, more permissive trigger. Verified live 2026-08-01 (devops
+      # PR #89): go:no-automerge was applied AFTER the PR's `opened` event
+      # had already armed auto-merge on the (then-eligible) old logic, and
+      # with no trigger or disarm step to catch it, the PR merged anyway
+      # once checks passed. Disarming on every ineligible re-check closes
+      # that gap; `|| true` because disabling auto-merge on a PR that was
+      # never armed is a harmless no-op, not a failure.
+      - name: Disarm on ineligible
+        if: steps.check-automerge.outputs.eligible != 'true'
+        run: gh pr merge --disable-auto "${{ github.event.pull_request.number }}" -R "${{ github.repository }}" || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Arm auto-merge
         if: steps.check-automerge.outputs.eligible == 'true'
+        run: gh pr merge --auto --squash "${{ github.event.pull_request.number }}" -R "${{ github.repository }}"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
