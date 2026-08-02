@@ -10,7 +10,8 @@ iteration means fresh context by construction — nothing accumulates.
 Stop conditions (each printed, never silent):
   queue_empty            no ready briefs before an iteration
   no_pick                an iteration claimed nothing and produced no run record
-  capacity_gated         persisted capacity gate for the configured agent
+  capacity_gated         every configured agent (primary + --fallback-agent
+                         chain) is capacity-gated
   circuit_breaker        N consecutive failed iterations (default 2)
   max_items              iteration ceiling reached
   budget_exhausted       wall-clock budget reached
@@ -25,15 +26,27 @@ substantive work succeeded and only post-PR wrap-up was still running when
 the timeout fired, so it does not count toward `circuit_breaker`. A timeout
 with no PR remains a plain `failed` iteration.
 
+A record-less iteration whose captured output classifies as an account-level
+failure (agent_capacity.classify_failure: auth/billing -- the latter now also
+covers "usage limit"/"session limit" wording) is `blocked`, not `failed`: it
+does not count toward `circuit_breaker`, and it persists a capacity gate
+(agent_capacity cache, bare-agent-keyed) with a retry_after parsed from the
+notice itself when present, else the class's generic cooldown. Every
+iteration re-selects the first non-gated agent from `[--agent] +
+--fallback-agent...` in that fixed priority order (see
+select_available_agent) -- a gated primary is skipped in favor of a fallback
+automatically, and picked back up automatically once its gate expires. Only
+`capacity_gated` (every configured agent gated) stops the drain.
+
 Permission posture is explicit: no permission-bypass flag is ever added by
 default; pass each one via a repeated --permission-arg.
 
 Usage:
   drain.py [--max-items N] [--budget-minutes M] [--agent claude|codex|opencode]
-           [--agent-cmd TEMPLATE] [--permission-arg FLAG]...
-           [--consecutive-failures N] [--iteration-timeout-minutes M]
-           [--queue-dir DIR] [--runs-dir DIR] [--capacity-cache PATH]
-           [--lock-file PATH] [--dry-run] [--json]
+           [--fallback-agent AGENT]... [--agent-cmd TEMPLATE]
+           [--permission-arg FLAG]... [--consecutive-failures N]
+           [--iteration-timeout-minutes M] [--queue-dir DIR] [--runs-dir DIR]
+           [--capacity-cache PATH] [--lock-file PATH] [--dry-run] [--json]
 
 Exit codes: 0 = drained/stopped cleanly with a reported reason; 2 = refused to
 start (lock held, bad args, missing queue dir).
@@ -48,10 +61,20 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional
 
+from ..orchestrator import agent_capacity
+
 PROMPT = "/go auto"
+
+# Failure classes (see agent_capacity.classify_failure) that mean the account
+# itself is blocked -- retrying the same agent is pointless until the cache's
+# retry_after passes. Other classes (sandbox/startup/transport) stay plain
+# "failed" iterations so the existing circuit breaker still catches genuine
+# environment/code problems rather than gating the whole agent.
+CAPACITY_FAILURE_CLASSES = frozenset({"auth", "billing"})
 
 SUPPORTED_AGENTS = ("claude", "codex", "opencode")
 
@@ -213,6 +236,43 @@ def read_capacity_cache(path: Path) -> dict:
         return {}
 
 
+def select_available_agent(cache: dict, candidates: List[str]) -> Optional[str]:
+    """First candidate (in configured order) that is not capacity-gated; None
+    when every candidate is gated. A candidate with no cache entry at all
+    counts as available, matching capacity_gated()'s own semantics -- an
+    agent never tried, or genuinely broken in a way that has not yet been
+    classified, is not pre-emptively excluded.
+
+    Called fresh every iteration (not cached across the drain run), so a
+    higher-priority agent is picked back up automatically once its persisted
+    gate's retry_after passes -- no restart or config edit needed.
+    """
+    for candidate in candidates:
+        if not capacity_gated(cache, candidate):
+            return candidate
+    return None
+
+
+def record_capacity_gate(cache_path: Path, agent: str, failure_class: str,
+                         retry_after: datetime) -> None:
+    """Persist a bare-agent-keyed capacity gate so the next iteration's
+    select_available_agent()/capacity_gated() check sees it immediately.
+
+    Keyed by plain agent name (no model), unlike agent_capacity.record()'s
+    "agent:model" keys -- drain.py has no model concept of its own, and
+    capacity_gated() already matches a bare key by exact agent-name equality.
+    """
+    data = agent_capacity.load(cache_path)
+    data.setdefault("providers", {})[agent] = {
+        "status": "unavailable",
+        "failure_class": failure_class,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "retry_after": retry_after.isoformat(),
+        "source": "drain",
+    }
+    agent_capacity.save(data, cache_path)
+
+
 # ---------------------------------------------------------------------------
 # Lockfile
 
@@ -313,7 +373,8 @@ def decide(state: LoopState, now: float) -> Decision:
 def classify_outcome(record_fields: Optional[Dict[str, Optional[str]]],
                      claimed_delta: int,
                      exit_code: int,
-                     claimed_briefs: Iterable[str] = ()) -> Outcome:
+                     claimed_briefs: Iterable[str] = (),
+                     failure_class: Optional[str] = None) -> Outcome:
     """Classify one iteration from its newest run record + queue movement.
 
     record_fields  — parsed run record created/updated during the iteration,
@@ -323,6 +384,14 @@ def classify_outcome(record_fields: Optional[Dict[str, Optional[str]]],
     claimed_briefs — brief ids (see `claimed_brief_ids`) that left queue/
                      during this iteration; attributed to the iteration only
                      when exactly one came back.
+    failure_class  — agent_capacity.classify_failure() result for this
+                     iteration's captured output, when the process produced
+                     no run record at all. A class in CAPACITY_FAILURE_CLASSES
+                     (account-level: auth/billing) is a "blocked" outcome, not
+                     a plain "failed" one -- it should not count toward the
+                     circuit breaker (the agent itself is unavailable, not
+                     misbehaving) and should stop the drain via the existing
+                     capacity_gated path once the cache reflects it.
     """
     claimed_briefs = list(claimed_briefs)
     brief = claimed_briefs[0] if len(claimed_briefs) == 1 else None
@@ -346,6 +415,8 @@ def classify_outcome(record_fields: Optional[Dict[str, Optional[str]]],
         return Outcome("failed", state, brief, pr)
     if claimed_delta == 0 and exit_code == 0:
         return Outcome("no_pick")
+    if failure_class in CAPACITY_FAILURE_CLASSES:
+        return Outcome("blocked", f"blocked_capacity_{failure_class}", brief_id=brief)
     return Outcome("failed", brief_id=brief)
 
 
@@ -360,6 +431,7 @@ class DrainConfig:
     capacity_cache: Path
     lock_file: Path
     agent: str = "claude"
+    fallback_agents: List[str] = field(default_factory=list)
     agent_cmd: Optional[str] = None
     go_repo: Optional[str] = None
     permission_args: List[str] = field(default_factory=list)
@@ -371,19 +443,33 @@ class DrainConfig:
     dry_run: bool = False
 
 
-def run_one_shot(cmd: List[str], timeout: int) -> int:
+@dataclass
+class SpawnOutcome:
+    """One-shot process result, including captured output so a record-less
+    failure can still be classified (see agent_capacity.classify_failure) --
+    the prior stdout/stderr=DEVNULL discipline made that classification
+    impossible, so every record-less failure looked identical regardless of
+    cause (confirmed live 2026-08-02: a Codex usage-cap exhaustion produced
+    the same bare `outcome=failed exit=1` as a generic crash)."""
+    exit_code: int
+    stdout: str = ""
+    stderr: str = ""
+
+
+def run_one_shot(cmd: List[str], timeout: int) -> SpawnOutcome:
     try:
-        proc = subprocess.run(cmd, timeout=timeout,
-                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return proc.returncode
-    except subprocess.TimeoutExpired:
-        return 124
+        proc = subprocess.run(cmd, timeout=timeout, capture_output=True, text=True)
+        return SpawnOutcome(proc.returncode, proc.stdout or "", proc.stderr or "")
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout if isinstance(exc.stdout, str) else ""
+        stderr = exc.stderr if isinstance(exc.stderr, str) else ""
+        return SpawnOutcome(124, stdout, stderr)
     except FileNotFoundError:
-        return 127
+        return SpawnOutcome(127)
 
 
 def drain(config: DrainConfig,
-          spawner: Optional[Callable[[List[str], int], int]] = None,
+          spawner: Optional[Callable[[List[str], int], SpawnOutcome]] = None,
           clock: Callable[[], float] = time.time,
           log: Callable[[str], None] = print) -> Dict[str, object]:
     """Run the drain loop. Returns a summary dict (also the --json payload)."""
@@ -400,14 +486,34 @@ def drain(config: DrainConfig,
     )
     iterations: List[Dict[str, object]] = []
     pending_approvals: List[str] = []
+    # Candidates are evaluated in this fixed priority order every iteration
+    # (see select_available_agent) -- a fallback is never "sticky": once a
+    # higher-priority agent's persisted gate expires, the very next iteration
+    # picks it back up automatically, no restart or config edit required.
+    candidates = [config.agent] + list(config.fallback_agents)
+    active_agent = config.agent
     try:
-        cmd = build_command(config.agent, config.permission_args,
+        cmd = build_command(active_agent, config.permission_args,
                             config.agent_cmd, config.go_repo)
         while True:
             queue = list_queue(config.work_queue_py, config.queue_dir)
             state.ready_count = count_ready_briefs(queue)
-            state.agent_capacity_gated = capacity_gated(
-                read_capacity_cache(config.capacity_cache), config.agent)
+            cache = read_capacity_cache(config.capacity_cache)
+            # A templated --agent-cmd has no per-agent identity to switch, so
+            # fallback selection only applies to the named-agent shapes.
+            if config.agent_cmd is None:
+                chosen = select_available_agent(cache, candidates)
+                if chosen is None:
+                    state.agent_capacity_gated = True
+                else:
+                    state.agent_capacity_gated = False
+                    if chosen != active_agent:
+                        log(f"agent switch: {active_agent} -> {chosen} (capacity)")
+                        active_agent = chosen
+                        cmd = build_command(active_agent, config.permission_args,
+                                            config.agent_cmd, config.go_repo)
+            else:
+                state.agent_capacity_gated = capacity_gated(cache, active_agent)
             decision = decide(state, clock())
             if not decision.proceed:
                 log(f"drain stop: {decision.reason}")
@@ -420,7 +526,8 @@ def drain(config: DrainConfig,
             ready_before = state.ready_count
             known_records = (set(config.runs_dir.glob("*/*.yaml"))
                               if config.runs_dir.is_dir() else set())
-            exit_code = spawner(cmd, config.iteration_timeout)
+            spawned = spawner(cmd, config.iteration_timeout)
+            exit_code = spawned.exit_code
             record_path = newest_run_record(config.runs_dir, known_records)
             fields = None
             if record_path is not None:
@@ -432,7 +539,25 @@ def drain(config: DrainConfig,
             ready_after = count_ready_briefs(queue_after)
             claimed_delta = max(0, ready_before - ready_after)
             claimed_briefs = claimed_brief_ids(queue, queue_after)
-            outcome = classify_outcome(fields, claimed_delta, exit_code, claimed_briefs)
+            # classify_outcome only consults failure_class on its record-less
+            # fallback path (and there only past the no_pick check), so it is
+            # harmless to compute unconditionally whenever no run record
+            # appeared -- a clean no-claim exit still resolves to "no_pick".
+            failure_class = (agent_capacity.classify_failure(
+                                 exit_code, spawned.stdout, spawned.stderr)
+                             if fields is None else None)
+            outcome = classify_outcome(fields, claimed_delta, exit_code,
+                                       claimed_briefs, failure_class)
+            if outcome.state and outcome.state.startswith("blocked_capacity_"):
+                # Only classify_outcome's own CAPACITY_FAILURE_CLASSES check
+                # produces this state, and only when failure_class was a
+                # member of that (non-None) set -- see classify_outcome.
+                assert failure_class is not None
+                reset_at = (agent_capacity.parse_explicit_reset(
+                                f"{spawned.stdout}\n{spawned.stderr}")
+                            or agent_capacity.retry_time(failure_class))
+                record_capacity_gate(config.capacity_cache, active_agent,
+                                     failure_class, reset_at)
             state.iteration += 1
             state.last_outcome = outcome
             if outcome.kind in ("failed", "blocked"):
@@ -449,12 +574,14 @@ def drain(config: DrainConfig,
             elapsed = int(clock() - iter_start)
             line = (f"[{state.iteration}"
                     f"{'/' + str(config.max_items) if config.max_items else ''}] "
+                    f"agent={active_agent} "
                     f"outcome={outcome.state or outcome.kind} "
                     f"brief={outcome.brief_id or '-'} pr={outcome.pr_url or '-'} "
                     f"exit={exit_code} elapsed={elapsed}s")
             log(line)
             iterations.append({
-                "n": state.iteration, "kind": outcome.kind, "state": outcome.state,
+                "n": state.iteration, "agent": active_agent,
+                "kind": outcome.kind, "state": outcome.state,
                 "brief": outcome.brief_id, "pr": outcome.pr_url,
                 "exit_code": exit_code, "elapsed_s": elapsed,
             })
@@ -489,6 +616,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--budget-minutes", type=int, default=0,
                         help="wall-clock budget (0 = none)")
     parser.add_argument("--agent", default="claude", choices=SUPPORTED_AGENTS)
+    parser.add_argument("--fallback-agent", action="append", default=[],
+                        dest="fallback_agents", choices=SUPPORTED_AGENTS, metavar="AGENT",
+                        help="additional agent to try, in priority order, when a "
+                             "higher-priority agent is capacity-gated (repeatable). "
+                             "Re-checked every iteration, so a fallback is never "
+                             "sticky -- the primary is used again automatically "
+                             "once its gate's retry_after passes.")
     parser.add_argument("--go-repo", default=None, metavar="REPO",
                         help="restrict picks to one repo: prompt becomes '/go REPO auto'")
     parser.add_argument("--agent-cmd", default=None,
@@ -527,6 +661,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         capacity_cache=args.capacity_cache,
         lock_file=args.lock_file,
         agent=args.agent,
+        fallback_agents=list(args.fallback_agents),
         agent_cmd=args.agent_cmd,
         go_repo=args.go_repo,
         permission_args=list(args.permission_args),

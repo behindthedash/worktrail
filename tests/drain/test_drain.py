@@ -2,6 +2,7 @@
 
 import json
 import os
+from datetime import datetime
 
 import pytest
 
@@ -10,6 +11,7 @@ from worktrail.drain.drain import (
     DrainConfig,
     LoopState,
     Outcome,
+    SpawnOutcome,
     acquire_lock,
     build_command,
     capacity_gated,
@@ -20,6 +22,7 @@ from worktrail.drain.drain import (
     newest_run_record,
     parse_run_record,
     release_lock,
+    select_available_agent,
 )
 
 
@@ -272,6 +275,42 @@ def test_classify_outcome_timeout_with_pr_but_explicit_failed_state_stays_failed
 
 
 # ---------------------------------------------------------------------------
+# capacity-classified failures (account-level, not a generic "failed")
+
+
+def test_classify_outcome_billing_failure_class_is_blocked_not_failed():
+    out = classify_outcome(None, claimed_delta=0, exit_code=1, failure_class="billing")
+    assert out.kind == "blocked"
+    assert out.state == "blocked_capacity_billing"
+
+
+def test_classify_outcome_auth_failure_class_is_blocked_not_failed():
+    out = classify_outcome(None, claimed_delta=0, exit_code=1, failure_class="auth")
+    assert out.kind == "blocked"
+    assert out.state == "blocked_capacity_auth"
+
+
+def test_classify_outcome_transport_failure_class_stays_plain_failed():
+    # transport/sandbox/startup are not account-level -- unchanged behavior,
+    # still counted by the ordinary circuit breaker.
+    out = classify_outcome(None, claimed_delta=0, exit_code=1, failure_class="transport")
+    assert out.kind == "failed"
+
+
+def test_classify_outcome_no_failure_class_unchanged_default():
+    assert classify_outcome(None, claimed_delta=0, exit_code=1).kind == "failed"
+
+
+def test_classify_outcome_no_pick_outranks_failure_class():
+    # A clean exit with nothing claimed is no_pick even if failure_class were
+    # (nonsensically) populated -- exit_code=0 never reaches classify_failure
+    # in the real drain() loop, but classify_outcome's own precedence must not
+    # depend on that caller discipline.
+    out = classify_outcome(None, claimed_delta=0, exit_code=0, failure_class="billing")
+    assert out.kind == "no_pick"
+
+
+# ---------------------------------------------------------------------------
 # capacity cache
 
 
@@ -298,6 +337,37 @@ def test_capacity_gated_no_entries_or_bad_cache():
     assert capacity_gated({"providers": "garbage"}, "claude") is False
     # flat layout (no "providers" wrapper)
     assert capacity_gated({"claude": {"status": "gated"}}, "claude") is True
+
+
+# ---------------------------------------------------------------------------
+# agent fallback selection
+
+
+def test_select_available_agent_prefers_primary_when_ungated():
+    cache = {"providers": {"claude": {"status": "gated"}}}
+    assert select_available_agent(cache, ["codex", "claude"]) == "codex"
+
+
+def test_select_available_agent_skips_gated_primary_for_fallback():
+    cache = {"providers": {"codex": {"status": "unavailable"}}}
+    assert select_available_agent(cache, ["codex", "claude"]) == "claude"
+
+
+def test_select_available_agent_none_when_every_candidate_gated():
+    cache = {"providers": {
+        "codex": {"status": "gated"},
+        "claude": {"status": "unavailable"},
+    }}
+    assert select_available_agent(cache, ["codex", "claude"]) is None
+
+
+def test_select_available_agent_never_tried_counts_as_available():
+    assert select_available_agent({}, ["codex", "claude"]) == "codex"
+
+
+def test_select_available_agent_single_candidate_no_fallback_configured():
+    cache = {"providers": {"claude": {"status": "gated"}}}
+    assert select_available_agent(cache, ["claude"]) is None
 
 
 # ---------------------------------------------------------------------------
@@ -453,7 +523,7 @@ def test_drain_two_briefs_then_empty(tmp_path, monkeypatch):
         n["spawned"] += 1
         write_run_record(config.runs_dir, f"go-{n['spawned']}",
                          "completed_pr_open", pr=f"https://pr/{n['spawned']}")
-        return 0
+        return SpawnOutcome(0)
 
     logs = []
     summary = drain.drain(config, spawner=spawner, log=logs.append)
@@ -470,7 +540,7 @@ def test_drain_circuit_breaker_after_two_failures(tmp_path, monkeypatch):
     config = make_config(tmp_path)
 
     def spawner(cmd, timeout):
-        return 1  # no run record, nonzero exit → failure
+        return SpawnOutcome(1)  # no run record, nonzero exit → failure
 
     summary = drain.drain(config, spawner=spawner, log=lambda _line: None)
     assert len(summary["iterations"]) == 2
@@ -481,7 +551,7 @@ def test_drain_stops_on_no_pick(tmp_path, monkeypatch):
     fake = FakeQueue([3])  # queue never shrinks
     install_fake_queue(monkeypatch, fake)
     config = make_config(tmp_path)
-    summary = drain.drain(config, spawner=lambda c, t: 0, log=lambda _l: None)
+    summary = drain.drain(config, spawner=lambda c, t: SpawnOutcome(0), log=lambda _l: None)
     assert len(summary["iterations"]) == 1
     assert summary["iterations"][0]["kind"] == "no_pick"
     assert summary["stopped"].startswith("no_pick")
@@ -496,7 +566,7 @@ def test_drain_max_items(tmp_path, monkeypatch):
     def spawner(cmd, timeout):
         n["spawned"] += 1
         write_run_record(config.runs_dir, f"go-{n['spawned']}", "completed_and_merged")
-        return 0
+        return SpawnOutcome(0)
 
     summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
     assert n["spawned"] == 2
@@ -515,7 +585,7 @@ def test_drain_budget_exhausted(tmp_path, monkeypatch):
     def spawner(cmd, timeout):
         clock_state["t"] += 120.0  # each iteration costs 2 minutes
         write_run_record(config.runs_dir, "go-x", "completed_pr_open")
-        return 0
+        return SpawnOutcome(0)
 
     summary = drain.drain(config, spawner=spawner, clock=clock, log=lambda _l: None)
     assert len(summary["iterations"]) == 1
@@ -534,7 +604,7 @@ def test_drain_awaiting_approval_noted_and_continues(tmp_path, monkeypatch):
                  else "completed_pr_open")
         write_run_record(config.runs_dir, f"go-{n['spawned']}", state,
                          pr=f"https://pr/{n['spawned']}")
-        return 0
+        return SpawnOutcome(0)
 
     summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
     assert n["spawned"] == 2
@@ -554,7 +624,7 @@ def test_drain_captures_brief_id_via_queue_diff(tmp_path, monkeypatch):
         n["spawned"] += 1
         write_run_record(config.runs_dir, f"go-{n['spawned']}",
                          "completed_pr_open", pr=f"https://pr/{n['spawned']}")
-        return 0
+        return SpawnOutcome(0)
 
     summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
     assert n["spawned"] == 2
@@ -576,7 +646,7 @@ def test_drain_timeout_after_pr_does_not_trip_circuit_breaker(tmp_path, monkeypa
         calls["n"] += 1
         write_run_record(config.runs_dir, f"go-{calls['n']}", None,
                          pr=f"https://pr/{calls['n']}")
-        return 124
+        return SpawnOutcome(124)
 
     summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
     assert len(summary["iterations"]) == 3
@@ -590,7 +660,7 @@ def test_drain_timeout_without_pr_still_trips_circuit_breaker(tmp_path, monkeypa
     config = make_config(tmp_path)  # default failure_threshold=2
 
     def spawner(cmd, timeout):
-        return 124  # no run record, no PR captured -> a plain failure
+        return SpawnOutcome(124)  # no run record, no PR captured -> a plain failure
 
     summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
     assert len(summary["iterations"]) == 2
@@ -607,7 +677,96 @@ def test_drain_capacity_gate_stops_after_blocked_iteration(tmp_path, monkeypatch
 
     def spawner(cmd, timeout):
         write_run_record(config.runs_dir, "go-1", "blocked_external_dependency")
-        return 0
+        return SpawnOutcome(0)
+
+    summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
+    assert len(summary["iterations"]) == 1
+    assert summary["stopped"].startswith("capacity_gated")
+
+
+def test_drain_usage_limit_output_becomes_blocked_and_persists_gate(tmp_path, monkeypatch):
+    # End-to-end regression for the live incident (2026-08-02): the nightly
+    # drain's iteration 2 died in 16s against Codex's usage cap, but the old
+    # DEVNULL discipline meant it was indistinguishable from any other bare
+    # "failed exit=1" -- no cache entry, no real retry_after, and it counted
+    # toward the circuit breaker exactly like a code bug would.
+    fake = FakeQueue([3, 3])
+    install_fake_queue(monkeypatch, fake)
+    config = make_config(tmp_path, agent="codex")
+    usage_limit_text = (
+        "ERROR: You've hit your usage limit. Upgrade to Pro "
+        "(https://chatgpt.com/explore/pro), visit "
+        "https://chatgpt.com/codex/settings/usage to purchase more credits "
+        "or try again at Aug 8th, 2026 2:17 AM.")
+
+    def spawner(cmd, timeout):
+        return SpawnOutcome(1, usage_limit_text, "")
+
+    summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
+    assert len(summary["iterations"]) == 1
+    assert summary["iterations"][0]["kind"] == "blocked"
+    assert summary["iterations"][0]["state"] == "blocked_capacity_billing"
+    # circuit breaker never even entered the picture -- capacity_gated fired
+    # on the very next iteration check instead.
+    assert summary["stopped"].startswith("capacity_gated")
+
+    cache = json.loads(config.capacity_cache.read_text())
+    entry = cache["providers"]["codex"]
+    assert entry["status"] == "unavailable"
+    assert entry["failure_class"] == "billing"
+    retry_at = datetime.fromisoformat(entry["retry_after"])
+    assert (retry_at.year, retry_at.month, retry_at.day) == (2026, 8, 8)
+
+
+def test_drain_generic_failure_stays_plain_failed_with_no_cache_write(tmp_path, monkeypatch):
+    # A code bug or transient blip must not be mistaken for an account-level
+    # cap: still a plain "failed" iteration, circuit breaker still applies,
+    # and nothing is written to the capacity cache.
+    fake = FakeQueue([5])
+    install_fake_queue(monkeypatch, fake)
+    config = make_config(tmp_path)
+
+    def spawner(cmd, timeout):
+        return SpawnOutcome(1, "", "Traceback (most recent call last): ...")
+
+    summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
+    assert all(i["kind"] == "failed" for i in summary["iterations"])
+    assert summary["stopped"].startswith("circuit_breaker")
+    assert not config.capacity_cache.exists()
+
+
+def test_drain_falls_back_to_configured_agent_when_primary_gated(tmp_path, monkeypatch):
+    fake = FakeQueue([1, 0])
+    install_fake_queue(monkeypatch, fake)
+    config = make_config(tmp_path, agent="claude", fallback_agents=["opencode"])
+    config.capacity_cache.write_text(json.dumps(
+        {"providers": {"claude": {"status": "gated"}}}))
+    seen_cmds = []
+
+    def spawner(cmd, timeout):
+        seen_cmds.append(cmd)
+        write_run_record(config.runs_dir, "go-1", "completed_pr_open", pr="https://pr/1")
+        return SpawnOutcome(0)
+
+    summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
+    # Selected before the first spawn -- claude never gets a chance to fail.
+    assert seen_cmds == [["opencode", "run", "/go auto"]]
+    assert summary["iterations"][0]["agent"] == "opencode"
+    assert summary["stopped"].startswith("queue_empty")
+
+
+def test_drain_capacity_gated_requires_every_configured_agent_exhausted(tmp_path, monkeypatch):
+    fake = FakeQueue([2])
+    install_fake_queue(monkeypatch, fake)
+    config = make_config(tmp_path, agent="claude", fallback_agents=["opencode"])
+    config.capacity_cache.write_text(json.dumps({"providers": {
+        "claude": {"status": "gated"},
+        "opencode": {"status": "unavailable"},
+    }}))
+
+    def spawner(cmd, timeout):
+        write_run_record(config.runs_dir, "go-1", "blocked_external_dependency")
+        return SpawnOutcome(0)
 
     summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
     assert len(summary["iterations"]) == 1
@@ -619,7 +778,7 @@ def test_drain_refuses_when_lock_held(tmp_path, monkeypatch):
     install_fake_queue(monkeypatch, fake)
     config = make_config(tmp_path)
     assert acquire_lock(config.lock_file) is True  # our own live pid holds it
-    summary = drain.drain(config, spawner=lambda c, t: 0, log=lambda _l: None)
+    summary = drain.drain(config, spawner=lambda c, t: SpawnOutcome(0), log=lambda _l: None)
     assert summary["stopped"] == "lock_held"
     release_lock(config.lock_file)
 

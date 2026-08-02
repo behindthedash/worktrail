@@ -198,13 +198,52 @@ def classify_failure(returncode: int, stdout: str, stderr: str) -> str:
     text = f"{stdout}\n{stderr}".lower()
     if any(token in text for token in ("authentication", "unauthorized", "invalid api key")):
         return "auth"
-    if any(token in text for token in ("billing", "payment", "quota exceeded")):
+    # "usage limit"/"session limit" cover Codex's and Claude's own wording for a
+    # provider-side usage cap (confirmed live 2026-08-02: codex's "You've hit
+    # your usage limit ... try again at Aug 8th, 2026 2:17 AM." previously fell
+    # through to "transport", giving it a 30s cooldown instead of the real
+    # multi-day reset — see parse_explicit_reset for extracting that timestamp.
+    if any(token in text for token in
+           ("billing", "payment", "quota exceeded", "usage limit", "session limit")):
         return "billing"
     if any(token in text for token in ("sandbox", "permission denied", "not permitted")):
         return "sandbox"
     if returncode != 0 and any(token in text for token in ("not found", "command", "startup")):
         return "startup"
     return "transport"
+
+
+# Matches Codex's usage-cap wording: "... try again at Aug 8th, 2026 2:17 AM."
+# Month name may be abbreviated or full; day may carry an ordinal suffix.
+_EXPLICIT_RESET_RE = re.compile(
+    r"try again at\s+([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+"
+    r"(\d{4})\s+(\d{1,2}:\d{2}\s*[AaPp][Mm])",
+)
+
+
+def parse_explicit_reset(text: str) -> Optional[datetime]:
+    """Extract an explicit reset timestamp from a usage-cap notice, e.g. Codex's
+    "try again at Aug 8th, 2026 2:17 AM." Returns None when no such timestamp
+    is present, so callers fall back to the generic per-failure-class cooldown
+    (`retry_time`) instead of guessing.
+
+    The CLI reports the reset time in local wall-clock time (same convention as
+    Claude's own session-limit notice), so the naive parsed value is treated as
+    local time and converted to UTC-aware for storage/comparison consistency
+    with every other timestamp in this cache.
+    """
+    m = _EXPLICIT_RESET_RE.search(text or "")
+    if not m:
+        return None
+    month, day, year, clock = m.groups()
+    candidate = f"{month} {day} {year} {clock.replace(' ', '').upper()}"
+    for fmt in ("%b %d %Y %I:%M%p", "%B %d %Y %I:%M%p"):
+        try:
+            parsed = datetime.strptime(candidate, fmt)
+        except ValueError:
+            continue
+        return parsed.astimezone(timezone.utc)
+    return None
 
 
 def retry_time(failure_class: str, now: Optional[datetime] = None) -> datetime:
