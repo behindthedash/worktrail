@@ -369,7 +369,12 @@ class E2EBackwardCompatTest(unittest.TestCase):
     orchestrator cassette/golden test still passes unchanged."""
 
     def test_no_routing_no_tier_matches_pre_spec_dispatch(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        # Isolate the machine-wide routing file: an operator-configured
+        # ~/.go/routing.yaml (e.g. a claude/codex/opencode fallback chain) must
+        # not leak into a test asserting "no routing configured anywhere".
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.dict(os.environ,
+                                {"GO_ROUTING_FILE": str(Path(tmp) / "no-such-routing.yaml")}):
             repo = _init_routing_repo(Path(tmp), tier_stamps=False)
             # No go-policy.yaml at all -- the "no routing anywhere" case.
             policy = policy_mod.load_policy(repo)
@@ -461,7 +466,12 @@ class E2EFallbackChainTest(unittest.TestCase):
         routing.fallback list) resolves through policy.resolve_routing() to a
         single-entry chain -- today's shape -- and spawn_agent walks exactly
         that one hop when the primary is gated, unchanged from pre-spec."""
-        with tempfile.TemporaryDirectory() as tmp:
+        # Isolate the machine-wide routing file: this test asserts the LEGACY
+        # single-entry shape specifically, which only holds when no machine-wide
+        # fallback chain (e.g. an operator's real ~/.go/routing.yaml) is in play.
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.dict(os.environ,
+                                {"GO_ROUTING_FILE": str(Path(tmp) / "no-such-routing.yaml")}):
             repo = Path(tmp) / "repo"
             specs = repo / "docs" / "specs"
             specs.mkdir(parents=True)

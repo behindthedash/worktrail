@@ -326,7 +326,6 @@ instead of the CLI call — `Skill(...)` is a tool invocation, not a shell comma
 ```bash
 POLICY_AGENT_CLI=$(echo "$POLICY" | python3 -c "import json,sys; print(json.load(sys.stdin).get('agent_cli') or '')")
 POLICY_AGENT_MODEL=$(echo "$POLICY" | python3 -c "import json,sys; print(json.load(sys.stdin).get('agent_model') or '')")
-POLICY_FALLBACK_AGENT=$(echo "$POLICY" | python3 -c "import json,sys; print(json.load(sys.stdin).get('fallback_agent_cli') or '')")
 # AGENT_CLI is resolved per invocation, in order:
 # 1. Explicit invocation context (from seed prompt / --agent flag) — highest
 # 2. Repo policy agent_cli
@@ -335,12 +334,34 @@ POLICY_FALLBACK_AGENT=$(echo "$POLICY" | python3 -c "import json,sys; print(json
 # 5. Fallback (claude — compatibility only; invocation context always preferred)
 if [ -n "${AGENT_CLI:-}" ]; then :; elif [ -n "$POLICY_AGENT_CLI" ]; then AGENT_CLI="$POLICY_AGENT_CLI"; elif [ -n "${GO_AGENT_CLI:-}" ]; then AGENT_CLI="$GO_AGENT_CLI"; elif [ -n "${ORCH_AGENT:-}" ]; then AGENT_CLI="$ORCH_AGENT"; elif [ -n "${OPENCODE_PARENT:-}" ]; then AGENT_CLI="opencode"; else AGENT_CLI="claude"; fi
 if [ -n "${AGENT_MODEL:-}" ]; then :; elif [ -n "$POLICY_AGENT_MODEL" ]; then AGENT_MODEL="$POLICY_AGENT_MODEL"; else AGENT_MODEL=""; fi
-if [ -n "${FALLBACK_AGENT_CLI:-}" ]; then :; elif [ -n "$POLICY_FALLBACK_AGENT" ]; then FALLBACK_AGENT_CLI="$POLICY_FALLBACK_AGENT"; else FALLBACK_AGENT_CLI=""; fi
+# FALLBACK_CHAIN: an explicit env var override wins outright; otherwise derive
+# the ordered chain from the resolved policy's routing.fallback (which already
+# falls through repo-local routing -> the machine-wide ~/.go/routing.yaml ->
+# the flat fallback_agent_cli key -- see resolve_routing()/policy.py), minus
+# AGENT_CLI itself (already tried first by live.py's own chain walk) and
+# de-duplicated. Empty when nothing is configured anywhere, matching the old
+# single-hop behavior's "no fallback" case exactly.
+if [ -n "${FALLBACK_CHAIN:-}" ]; then :; elif [ -n "${FALLBACK_AGENT_CLI:-}" ]; then FALLBACK_CHAIN="$FALLBACK_AGENT_CLI"; else
+  FALLBACK_CHAIN=$(echo "$POLICY" | AGENT_CLI="$AGENT_CLI" python3 -c "
+import json, os, sys
+policy = json.load(sys.stdin)
+primary = os.environ.get('AGENT_CLI', '')
+names = [e.get('agent_cli') for e in ((policy.get('routing') or {}).get('fallback') or [])
+         if isinstance(e, dict) and e.get('agent_cli')]
+if not names and policy.get('fallback_agent_cli'):
+    names = [policy['fallback_agent_cli']]
+seen, ordered = set(), []
+for n in names:
+    if n and n != primary and n not in seen:
+        seen.add(n); ordered.append(n)
+print(','.join(ordered))
+")
+fi
 if [ -n "${ROLE_AGENT_MAP:-}" ]; then :; elif [ -n "${GO_ROLE_AGENT_MAP:-}" ]; then ROLE_AGENT_MAP="$GO_ROLE_AGENT_MAP"; elif [ -n "${ORCH_ROLE_AGENT_MAP:-}" ]; then ROLE_AGENT_MAP="$ORCH_ROLE_AGENT_MAP"; else ROLE_AGENT_MAP=""; fi
 ROLE_AGENT_MAP_ARGS=()
 [ -n "$ROLE_AGENT_MAP" ] && ROLE_AGENT_MAP_ARGS=(--role-agent-map "$ROLE_AGENT_MAP")
 AGENT_MODEL_ARGS=(); [ -n "$AGENT_MODEL" ] && AGENT_MODEL_ARGS=(--model "$AGENT_MODEL")
-FALLBACK_AGENT_ARGS=(); [ -n "$FALLBACK_AGENT_CLI" ] && FALLBACK_AGENT_ARGS=(--fallback-agent "$FALLBACK_AGENT_CLI")
+FALLBACK_AGENT_ARGS=(); [ -n "$FALLBACK_CHAIN" ] && FALLBACK_AGENT_ARGS=(--fallback-chain "$FALLBACK_CHAIN")
 PR_LABELS=$(worktrail-pre-pr-gate --repo "$SPEC_ROOT" --risk "$RISK_LEVEL" --gates "$GATES" --route "$ROUTE" --target-branch "$BASE" --labels-only)
 PR_LABEL_ARGS=()
 for label in $PR_LABELS; do PR_LABEL_ARGS+=(--pr-label "$label"); done
@@ -365,8 +386,15 @@ worktrail-live full-real --repo "$SPEC_ROOT" --spec docs/specs/$SPEC_ID --base "
 ```
 
 `AGENT_CLI` precedence is explicit invocation > repo policy `agent_cli` > machine-wide
-`GO_AGENT_CLI`/`ORCH_AGENT` > detected `OPENCODE_PARENT` harness > `claude`. `agent_model` and `fallback_agent_cli` use the
+`GO_AGENT_CLI`/`ORCH_AGENT` > detected `OPENCODE_PARENT` harness > `claude`. `agent_model` uses the
 same repo-policy layer while retaining explicit invocation precedence.
+
+`FALLBACK_CHAIN` is an explicit `FALLBACK_CHAIN`/`FALLBACK_AGENT_CLI` env var, else the resolved
+policy's `routing.fallback` ordered list (repo-local `routing:` block, else the machine-wide
+`~/.go/routing.yaml`, else the flat `fallback_agent_cli` key — see `resolve_routing()` in
+`policy.py`), with `AGENT_CLI` itself removed. Passed as `--fallback-chain` (comma-separated) so
+`worktrail-live full-real` re-picks the first non-capacity-gated agent from the whole configured
+set rather than stopping the moment the primary is exhausted.
 
 `ROLE_AGENT_MAP` (same precedence as `AGENT_CLI`: explicit env var > `GO_ROLE_AGENT_MAP` >
 `ORCH_ROLE_AGENT_MAP` > unset) overrides the spawn agent for individual roles, e.g.
