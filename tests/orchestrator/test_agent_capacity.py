@@ -61,6 +61,46 @@ def test_unknown_transport_does_not_get_a_reset_time():
     assert agent_capacity.classify_failure(1, "", "network disconnected") == "transport"
 
 
+def test_usage_limit_wording_classifies_as_billing():
+    # Live reproduction 2026-08-02 (drain-nightly iteration 2): Codex's own
+    # usage-cap wording used to fall through to the generic "transport" class
+    # (30s cooldown) instead of the multi-hour/day reset a real account-level
+    # cap needs.
+    stdout = ("ERROR: You've hit your usage limit. Upgrade to Pro "
+              "(https://chatgpt.com/explore/pro), visit "
+              "https://chatgpt.com/codex/settings/usage to purchase more "
+              "credits or try again at Aug 8th, 2026 2:17 AM.")
+    assert agent_capacity.classify_failure(1, stdout, "") == "billing"
+
+
+def test_session_limit_wording_also_classifies_as_billing():
+    assert agent_capacity.classify_failure(
+        1, "", "You've hit your session limit. Your limit resets at 3:00pm.") == "billing"
+
+
+def test_parse_explicit_reset_extracts_codex_notice():
+    stdout = ("ERROR: You've hit your usage limit. Upgrade to Pro "
+              "(https://chatgpt.com/explore/pro), visit "
+              "https://chatgpt.com/codex/settings/usage to purchase more "
+              "credits or try again at Aug 8th, 2026 2:17 AM.")
+    reset = agent_capacity.parse_explicit_reset(stdout)
+    assert reset is not None
+    assert (reset.year, reset.month, reset.day) == (2026, 8, 8)
+    local_naive = datetime(2026, 8, 8, 2, 17)
+    assert reset == local_naive.astimezone(timezone.utc)
+
+
+def test_parse_explicit_reset_accepts_full_month_name_no_ordinal():
+    reset = agent_capacity.parse_explicit_reset(
+        "try again at August 8, 2026 2:17AM.")
+    assert reset is not None and (reset.year, reset.month, reset.day) == (2026, 8, 8)
+
+
+def test_parse_explicit_reset_returns_none_without_a_timestamp():
+    assert agent_capacity.parse_explicit_reset("some unrelated crash text") is None
+    assert agent_capacity.parse_explicit_reset("") is None
+
+
 def test_opencode_generic_error_event_classifies_as_transport():
     # Real shape from a live reproduction (handoff 20260722-152514,
     # /tmp/opencode-error-repro.jsonl): opencode's own error surface only exposed
