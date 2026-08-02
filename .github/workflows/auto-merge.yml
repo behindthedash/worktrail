@@ -3,7 +3,11 @@ on:
   pull_request:
     # `ready_for_review` so auto-merge engages when a draft is marked ready;
     # the `opened`/`reopened` runs are skipped below while it is still a draft.
-    types: [opened, reopened, ready_for_review]
+    # `labeled` so a go:risk-low/medium label applied AFTER PR creation (the
+    # normal case for a PR the classifier never touched) re-triggers
+    # eligibility instead of leaving the PR stuck with no way to arm
+    # auto-merge short of a manual `gh pr merge --auto` or a new push.
+    types: [opened, reopened, ready_for_review, labeled, unlabeled]
 
 jobs:
   test-automerge-eligibility:
@@ -32,10 +36,15 @@ jobs:
           if echo "$labels" | grep -q "^go:no-automerge$"; then
             has_no_automerge="true"
           fi
+          has_risk_label="false"
+          if echo "$labels" | grep -qE "^go:risk-(low|medium)$"; then
+            has_risk_label="true"
+          fi
 
           bash scripts/ci/automerge_eligibility.sh \
             --github-output "$GITHUB_OUTPUT" \
-            --has-no-automerge-label "$has_no_automerge"
+            --has-no-automerge-label "$has_no_automerge" \
+            --has-risk-label "$has_risk_label"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
