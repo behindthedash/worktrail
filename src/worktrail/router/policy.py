@@ -222,16 +222,17 @@ def _validate_agent_entry(value: Any, meta: Dict[str, Any], label: str) -> Optio
     """Normalize one routing agent entry (`"claude"` or `{agent_cli, agent_model}`,
     also accepting the `{agent, model}` shorthand used by `routing.tiers`).
 
-    Returns `{"agent_cli": str, "agent_model": Optional[str]}`, or `None` (with a
-    `_meta.warnings` entry naming `label`) if `value` is malformed or names an
-    agent literal outside `VALID_AGENT_CLIS`. Mirrors the existing
+    Returns `{"agent_cli": str, "agent_model": Optional[str], "effort": Optional[str]}`,
+    or `None` (with a `_meta.warnings` entry naming `label`) if `value` is malformed or
+    names an agent literal outside `VALID_AGENT_CLIS`. Mirrors the existing
     `agent_cli`/`fallback_agent_cli` validation (policy.py `load_policy()`).
     """
     if isinstance(value, str):
-        agent_cli, agent_model = value, None
+        agent_cli, agent_model, effort = value, None, None
     elif isinstance(value, dict):
         agent_cli = value.get("agent_cli", value.get("agent"))
         agent_model = value.get("agent_model", value.get("model"))
+        effort = value.get("effort")
     else:
         meta["warnings"].append(f"{label}: malformed entry {value!r}; dropped")
         return None
@@ -242,7 +243,10 @@ def _validate_agent_entry(value: Any, meta: Dict[str, Any], label: str) -> Optio
     if agent_model is not None and not isinstance(agent_model, str):
         meta["warnings"].append(f"{label}: agent_model must be a string; dropped")
         agent_model = None
-    return {"agent_cli": agent_cli, "agent_model": agent_model}
+    if effort is not None and not isinstance(effort, str):
+        meta["warnings"].append(f"{label}: effort must be a string; dropped")
+        effort = None
+    return {"agent_cli": agent_cli, "agent_model": agent_model, "effort": effort}
 
 
 def _validate_routing_defaults(raw: Any, meta: Dict[str, Any]) -> Dict[str, Dict[str, Dict[str, Any]]]:
