@@ -1,11 +1,26 @@
 #!/usr/bin/env python3
-"""Queue-drain driver: repeatedly launch fresh-context one-shots of `/go auto`
-until the work queue is empty or a stop condition fires.
+"""Queue-drain driver: repeatedly launch fresh-context one-shots of the
+worktrail-go skill's auto mode until the work queue is empty or a stop
+condition fires.
 
-Each iteration spawns ONE headless agent CLI process (`claude -p "/go auto"` by
-default), waits for it to exit, classifies the outcome from the newest run
-record under the runs dir, then re-checks the queue. A fresh process per
-iteration means fresh context by construction — nothing accumulates.
+Each iteration spawns ONE headless agent CLI process (`claude -p
+"worktrail-go auto"` by default), waits for it to exit, classifies the
+outcome from the newest run record under the runs dir, then re-checks the
+queue. A fresh process per iteration means fresh context by construction —
+nothing accumulates.
+
+The prompt is "worktrail-go auto", NOT "/go auto" -- worktrail-go has never
+been a registered slash command (only a skill; confirmed live 2026-08-03: no
+commands/go.md exists anywhere in this plugin, and plugin.json has no
+top-level "commands" key at all). Codex and opencode apparently tolerate an
+unrecognized leading "/" and fall through to normal skill-trigger matching
+regardless; Claude Code's own CLI does not -- `claude -p "/go auto"` fails
+immediately with "Unknown command: /go. Did you mean /goal?" and exits 0,
+which this module's own no_pick classification then reads as "nothing was
+eligible to claim" rather than "the one-shot never even started." Every
+drain iteration that used agent=claude was silently a no-op for this reason
+until this fix, and no_pick's own stop condition means no fallback agent ever
+got a chance to run either.
 
 Stop conditions (each printed, never silent):
   queue_empty            no ready briefs before an iteration
@@ -74,7 +89,7 @@ from typing import Callable, Dict, Iterable, List, Optional
 
 from ..orchestrator import agent_capacity
 
-PROMPT = "/go auto"
+PROMPT = "worktrail-go auto"
 
 # Failure classes (see agent_capacity.classify_failure) that mean the account
 # itself is blocked -- retrying the same agent is pointless until the cache's
@@ -113,7 +128,7 @@ def build_command(agent: str, permission_args: List[str],
                   go_repo: Optional[str] = None) -> List[str]:
     """Build the one-shot CLI argv. A template with {prompt} overrides the
     per-agent shape entirely (permission args are the caller's job then)."""
-    prompt = f"/go {go_repo} auto" if go_repo else PROMPT
+    prompt = f"worktrail-go {go_repo} auto" if go_repo else PROMPT
     if template:
         parts = template.split()
         if "{prompt}" not in parts:
@@ -419,7 +434,7 @@ def decide(state: LoopState, now: float) -> Decision:
     last = state.last_outcome
     if last is not None:
         if last.kind == "no_pick":
-            return Decision(False, "no_pick: /go auto claimed nothing "
+            return Decision(False, "no_pick: worktrail-go auto claimed nothing "
                                    "(null auto_pick or picks not eligible)")
         if state.consecutive_failures >= state.failure_threshold:
             return Decision(False, f"circuit_breaker: {state.consecutive_failures} "
@@ -682,7 +697,7 @@ def default_work_queue_py() -> Optional[Path]:
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Drain the work queue via fresh-context /go auto one-shots.")
+        description="Drain the work queue via fresh-context worktrail-go auto one-shots.")
     parser.add_argument("--max-items", type=int, default=0,
                         help="iteration ceiling (0 = until queue empty)")
     parser.add_argument("--budget-minutes", type=int, default=0,
@@ -696,7 +711,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                              "sticky -- the primary is used again automatically "
                              "once its gate's retry_after passes.")
     parser.add_argument("--go-repo", default=None, metavar="REPO",
-                        help="restrict picks to one repo: prompt becomes '/go REPO auto'")
+                        help="restrict picks to one repo: prompt becomes "
+                             "'worktrail-go REPO auto'")
     parser.add_argument("--agent-cmd", default=None,
                         help="full command template with {prompt}; overrides --agent shape")
     parser.add_argument("--permission-arg", action="append", default=[],

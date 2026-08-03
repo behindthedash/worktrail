@@ -34,24 +34,24 @@ from worktrail.drain.drain import (
 
 
 def test_build_command_claude_default_has_no_permission_flags():
-    assert build_command("claude", []) == ["claude", "-p", "/go auto"]
+    assert build_command("claude", []) == ["claude", "-p", "worktrail-go auto"]
 
 
 def test_build_command_claude_permission_args_are_explicit_passthrough():
     cmd = build_command("claude", ["--dangerously-skip-permissions"])
-    assert cmd == ["claude", "-p", "/go auto", "--dangerously-skip-permissions"]
+    assert cmd == ["claude", "-p", "worktrail-go auto", "--dangerously-skip-permissions"]
 
 
 def test_build_command_opencode_and_codex_shapes():
-    assert build_command("opencode", []) == ["opencode", "run", "/go auto"]
+    assert build_command("opencode", []) == ["opencode", "run", "worktrail-go auto"]
     assert build_command("codex", []) == [
-        "codex", "exec", "-s", "workspace-write", "/go auto"]
+        "codex", "exec", "-s", "workspace-write", "worktrail-go auto"]
 
 
 def test_build_command_template_overrides_agent_shape():
     cmd = build_command("claude", ["--ignored-by-template"],
                         template="mycli --oneshot {prompt}")
-    assert cmd == ["mycli", "--oneshot", "/go auto"]
+    assert cmd == ["mycli", "--oneshot", "worktrail-go auto"]
 
 
 def test_build_command_template_without_prompt_placeholder_rejected():
@@ -836,7 +836,7 @@ def test_drain_falls_back_to_configured_agent_when_primary_gated(tmp_path, monke
 
     summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
     # Selected before the first spawn -- claude never gets a chance to fail.
-    assert seen_cmds == [["opencode", "run", "/go auto"]]
+    assert seen_cmds == [["opencode", "run", "worktrail-go auto"]]
     assert summary["iterations"][0]["agent"] == "opencode"
     assert summary["stopped"].startswith("queue_empty")
 
@@ -884,6 +884,6 @@ def test_drain_dry_run_launches_nothing(tmp_path, monkeypatch):
 
 def test_build_command_go_repo_scopes_the_prompt():
     assert build_command("claude", [], go_repo="ggb") == [
-        "claude", "-p", "/go ggb auto"]
+        "claude", "-p", "worktrail-go ggb auto"]
     assert build_command("claude", [], template="x {prompt}",
-                         go_repo="ggb") == ["x", "/go ggb auto"]
+                         go_repo="ggb") == ["x", "worktrail-go ggb auto"]
