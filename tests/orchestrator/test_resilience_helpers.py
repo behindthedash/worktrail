@@ -186,7 +186,12 @@ class DefaultModelSelection(unittest.TestCase):
         )
 
     def test_opencode_defaults_to_sonnet_family(self):
-        with patch.dict(os.environ, {}, clear=True):
+        # clear=True wipes the conftest-level GO_MODEL_DEFAULTS_FILE isolation
+        # too, so it must be re-supplied here -- without it this test would
+        # read whatever is actually at ~/.go/model-defaults.yaml on a real
+        # operator machine instead of falling through to the hardcoded default.
+        with patch.dict(os.environ, {"GO_MODEL_DEFAULTS_FILE": "/nonexistent-model-defaults.yaml"},
+                        clear=True):
             self.assertEqual(
                 spawnlib.default_model_for_agent("opencode"), "deepseek/deepseek-v4-flash"
             )
@@ -198,6 +203,80 @@ class DefaultModelSelection(unittest.TestCase):
     def test_opencode_model_override_remains_supported(self):
         with patch.dict(os.environ, {"ORCH_OPENCODE_MODEL": "provider/custom"}, clear=True):
             self.assertEqual(spawnlib.default_model_for_agent("opencode"), "provider/custom")
+
+
+class ModelDefaultsFileTest(unittest.TestCase):
+    """~/.go/model-defaults.yaml (GO_MODEL_DEFAULTS_FILE): an operator-maintained
+    override so a vendor renaming/retiring a model doesn't need a code change --
+    confirmed live 2026-08-03: DEFAULT_CODEX_MODEL had drifted to "gpt-5.4-mini"
+    while the operator's actual codex CLI listed "gpt-5.6-sol" as current."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.defaults_file = Path(self._tmp.name) / "model-defaults.yaml"
+        self._env_patch = patch.dict(
+            os.environ, {"GO_MODEL_DEFAULTS_FILE": str(self.defaults_file)}, clear=False
+        )
+        self._env_patch.start()
+        # Saved and restored explicitly (not just popped) so a real
+        # ORCH_CODEX_MODEL/ORCH_OPENCODE_MODEL in the ambient environment
+        # survives this test class rather than being silently dropped.
+        self._removed_env = {}
+        for var in ("ORCH_CODEX_MODEL", "ORCH_OPENCODE_MODEL"):
+            if var in os.environ:
+                self._removed_env[var] = os.environ.pop(var)
+
+    def tearDown(self):
+        os.environ.update(self._removed_env)
+        self._env_patch.stop()
+        self._tmp.cleanup()
+
+    def test_missing_file_falls_through_to_hardcoded_default(self):
+        self.assertEqual(spawnlib.default_model_for_agent("codex"), "gpt-5.4-mini")
+
+    def test_file_value_overrides_hardcoded_default(self):
+        self.defaults_file.write_text("codex: gpt-5.6-luna\n")
+        self.assertEqual(spawnlib.default_model_for_agent("codex"), "gpt-5.6-luna")
+
+    def test_file_covers_all_three_agents(self):
+        self.defaults_file.write_text(
+            "claude: opus\ncodex: gpt-5.6-luna\nopencode: opencode/gpt-5.6-luna\n"
+        )
+        self.assertEqual(spawnlib.default_model_for_agent("claude"), "opus")
+        self.assertEqual(spawnlib.default_model_for_agent("codex"), "gpt-5.6-luna")
+        self.assertEqual(spawnlib.default_model_for_agent("opencode"), "opencode/gpt-5.6-luna")
+
+    def test_agent_absent_from_file_falls_through(self):
+        self.defaults_file.write_text("claude: opus\n")
+        self.assertEqual(spawnlib.default_model_for_agent("codex"), "gpt-5.4-mini")
+
+    def test_explicit_env_var_wins_over_file(self):
+        self.defaults_file.write_text("codex: gpt-5.6-luna\n")
+        with patch.dict(os.environ, {"ORCH_CODEX_MODEL": "gpt-5.6-sol"}):
+            self.assertEqual(spawnlib.default_model_for_agent("codex"), "gpt-5.6-sol")
+
+    def test_malformed_yaml_degrades_to_hardcoded_default(self):
+        self.defaults_file.write_text("codex: [unterminated\n")
+        self.assertEqual(spawnlib.default_model_for_agent("codex"), "gpt-5.4-mini")
+
+    def test_non_mapping_yaml_degrades_to_hardcoded_default(self):
+        self.defaults_file.write_text("- just\n- a\n- list\n")
+        self.assertEqual(spawnlib.default_model_for_agent("codex"), "gpt-5.4-mini")
+
+    def test_non_string_value_ignored(self):
+        self.defaults_file.write_text("codex: 123\n")
+        self.assertEqual(spawnlib.default_model_for_agent("codex"), "gpt-5.4-mini")
+
+    def test_codex_role_models_pick_up_file_value(self):
+        # Regression: CODEX_DEFAULT_ROLE_MODELS used to be a dict frozen at
+        # live.py's import time from spawnlib.DEFAULT_CODEX_MODEL directly --
+        # the exact staleness bug this file exists to fix, just one layer up.
+        self.defaults_file.write_text("codex: gpt-5.6-luna\n")
+        role_models = live._effective_role_models("codex", None)
+        assert role_models is not None
+        self.assertEqual(role_models["implement"], "gpt-5.6-luna")
+        self.assertEqual(role_models["review"], "gpt-5.6-luna")
+        self.assertEqual(set(role_models), {"implement", "review", "fix", "cleanup", "ci-fix"})
 
 
 class RunLockTest(unittest.TestCase):

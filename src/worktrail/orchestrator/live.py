@@ -129,14 +129,12 @@ def _default_smoke_cmd(repo: Path) -> "str | None":
 # --agent, policy agent_cli, and GO_AGENT_CLI env var all override this.
 DEFAULT_AGENT = _detect_default_agent()
 DEFAULT_MODEL = spawnlib.DEFAULT_CLAUDE_MODEL
-DEFAULT_CODEX_MODEL = spawnlib.DEFAULT_CODEX_MODEL
-CODEX_DEFAULT_ROLE_MODELS = {
-    "implement": DEFAULT_CODEX_MODEL,
-    "review": DEFAULT_CODEX_MODEL,
-    "fix": DEFAULT_CODEX_MODEL,
-    "cleanup": DEFAULT_CODEX_MODEL,
-    "ci-fix": DEFAULT_CODEX_MODEL,
-}
+
+# Every codex role defaults to the SAME model (spawnlib.default_model_for_agent
+# resolved fresh per call, not a frozen snapshot -- a stale frozen copy of
+# spawnlib's default here is exactly the staleness bug spawnlib.py itself was
+# just fixed for; see _effective_role_models below).
+_CODEX_DEFAULT_ROLES = ("implement", "review", "fix", "cleanup", "ci-fix")
 
 # Reviewer independence (locked decision 13.3): the headless review worker is the
 # same binary as the implementer, so we enforce independence with an appended
@@ -4091,7 +4089,8 @@ def _effective_role_models(agent: str, role_models: dict | None) -> dict | None:
     if role_models is not None:
         return role_models
     if agent == "codex":
-        return dict(CODEX_DEFAULT_ROLE_MODELS)
+        model = spawnlib.default_model_for_agent("codex")
+        return {role: model for role in _CODEX_DEFAULT_ROLES}
     return None
 
 

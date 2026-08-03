@@ -59,6 +59,8 @@ import tempfile
 from pathlib import Path
 from typing import Callable, Dict, List, NamedTuple, Optional, Sequence
 
+import yaml
+
 from . import agent_capacity
 
 
@@ -328,19 +330,53 @@ def is_infra_failure(returncode: int, stdout: Optional[str]) -> bool:
     return _opencode_error_event(stdout) is not None
 
 
+# Last-resort fallbacks only -- never the sole source of truth. Codex and
+# opencode ship new model generations under new names on their own schedule
+# (confirmed live 2026-08-03: DEFAULT_CODEX_MODEL had drifted to a
+# discontinued-looking "gpt-5.4-mini" while the operator's actual codex CLI
+# listed "gpt-5.6-sol" as current), and Claude's own "sonnet"/"opus"/"haiku"
+# aliases are the only one of the three that don't go stale this way.
+# default_model_for_agent() resolves, in order: an explicit ORCH_*_MODEL env
+# var (an intentional per-invocation choice) > the operator-maintained
+# ~/.go/model-defaults.yaml (kept current without a code change) > these
+# constants (only reached when neither is set -- e.g. a fresh machine with no
+# config file yet).
 DEFAULT_CLAUDE_MODEL = "sonnet"
-DEFAULT_CODEX_MODEL = os.environ.get("ORCH_CODEX_MODEL", "gpt-5.4-mini")
+DEFAULT_CODEX_MODEL = "gpt-5.4-mini"
 DEFAULT_OPENCODE_MODEL = "deepseek/deepseek-v4-flash"
 
 SUPPORTED_AGENTS = {"claude", "codex", "opencode"}
 
+MODEL_DEFAULTS_FILE_ENV = "GO_MODEL_DEFAULTS_FILE"
+DEFAULT_MODEL_DEFAULTS_FILE = "~/.go/model-defaults.yaml"
+
+
+def _load_model_defaults() -> Dict[str, str]:
+    """`{agent: model}` from the operator-maintained model-defaults file, or
+    `{}` on anything short of a valid mapping -- malformed/missing/unreadable
+    all degrade the same way agent_capacity.py's own cache loads do: never
+    raise, never block a spawn over a config-file problem.
+    """
+    path = Path(os.environ.get(MODEL_DEFAULTS_FILE_ENV, DEFAULT_MODEL_DEFAULTS_FILE)).expanduser()
+    if not path.is_file():
+        return {}
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {k: v for k, v in data.items() if isinstance(k, str) and isinstance(v, str) and v}
+
 
 def default_model_for_agent(agent: str) -> str:
+    defaults = _load_model_defaults()
     if agent == "codex":
-        return DEFAULT_CODEX_MODEL
+        return os.environ.get("ORCH_CODEX_MODEL") or defaults.get("codex") or DEFAULT_CODEX_MODEL
     if agent == "opencode":
-        return os.environ.get("ORCH_OPENCODE_MODEL", DEFAULT_OPENCODE_MODEL)
-    return DEFAULT_CLAUDE_MODEL
+        return (os.environ.get("ORCH_OPENCODE_MODEL")
+                or defaults.get("opencode") or DEFAULT_OPENCODE_MODEL)
+    return defaults.get("claude") or DEFAULT_CLAUDE_MODEL
 
 
 def _with_default_setting_sources(
