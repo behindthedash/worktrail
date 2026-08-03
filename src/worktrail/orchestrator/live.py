@@ -1261,6 +1261,7 @@ def run_research_session(
     spec_folder: Path,
     agent: str = DEFAULT_AGENT,
     model: str | None = None,
+    effort: str | None = None,
     timeout: int = WORKER_TIMEOUT_DEFAULT,
 ) -> str:
     """Pre-load shared source files into a single agent session and return its session_id.
@@ -1336,6 +1337,7 @@ def run_research_session(
         spec_folder.parent.parent,
         agent=agent,
         model=model,
+        effort=effort,
         timeout=timeout,
         extra_args=extra_args,
         log=print,
@@ -3725,7 +3727,9 @@ def _full_real_inner(
     research_spawn = None
     if fork_research:
         spec_folder = repo / spec_rel
-        sid = run_research_session(spec_folder, agent=agent, model=model, timeout=timeout)
+        sid = run_research_session(
+            spec_folder, agent=agent, model=model, effort=effort, timeout=timeout
+        )
         if sid:
             spec_id_tmp, _ = taskformats.load_spec(str(spec_folder))
             research_spawn = LiveSpawn(
@@ -4114,16 +4118,20 @@ def _verifier_role_spawns(
 
 
 def _effective_role_models(agent: str, role_models: dict | None) -> dict | None:
-    # model-tier-routing 3.3: this function has no `effort` equivalent. Its whole
-    # job is auto-populating a PER-ROLE MODEL override for codex (every codex role
-    # otherwise shares one model, see the module comment above LiveSpawn) when the
-    # caller passed none. There is no `default_effort_for_agent()` an analogous
-    # "codex roles need a shared non-None effort" gap could exist for, and
-    # LiveSpawn already treats an unset effort as a valid, common state (the
-    # `effort` flag is only added `if effort:` — see spawnlib.build_cmd). A
-    # role-level effort override, if ever needed, is a new feature (a
-    # `role_efforts` map alongside `role_models`), not something this function's
-    # existing codex special-case generalizes to for free.
+    # model-tier-routing 3.3: this function has no `effort` equivalent, and none
+    # is needed -- verified, not assumed. Its whole job is auto-populating a
+    # PER-ROLE MODEL override for codex (every codex role otherwise shares one
+    # model, see the module comment above LiveSpawn) when the caller passed
+    # none, working around a gap in `role_models`'s own precedence (it has no
+    # per-agent default to fall back to, unlike `self.model`). A per-role
+    # EFFORT override already exists through a different, already-shipped path:
+    # `role_agents` (routing.roles / --role-agent-map) entries carry their own
+    # `effort` key, resolved by `dispatch.agent_for()` into `resolved["effort"]`
+    # and consumed directly in `LiveSpawn.spawn()` -- see
+    # `test_role_override_effort_reaches_spawn_agent` in test_live_extras.py.
+    # `role_models`/`_effective_role_models()` is a separate, narrower {role:
+    # model} convenience surface with no `role_agents`-equivalent precedence
+    # gap for effort to fill, so there is nothing for this function to thread.
     if role_models is not None:
         return role_models
     if agent == "codex":
