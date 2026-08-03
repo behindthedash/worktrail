@@ -350,8 +350,9 @@ Dispatch policy is simple:
 independently of the run's default agent — for example, to force an independent
 code-reviewer model regardless of which agent implemented the task. Add it under either the
 repo-local policy's `routing:` block or the machine-wide `~/.go/routing.yaml`
-(`GO_ROUTING_FILE`, machine-wide file loses to a repo-local `routing:` block when both set
-the same role):
+(`GO_ROUTING_FILE`) — same wholesale, block-level fallback as `routing.fallback`: a
+non-empty repo-local `routing:` block is used in full and the machine-wide file is not
+read at all, so it is not merged per-role with the machine-wide file:
 
 ```yaml
 routing:
