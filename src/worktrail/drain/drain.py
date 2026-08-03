@@ -41,11 +41,18 @@ automatically, and picked back up automatically once its gate expires. Only
 Permission posture is explicit: no permission-bypass flag is ever added by
 default; pass each one via a repeated --permission-arg.
 
+Pass --transcript-dir to persist each iteration's raw one-shot stdout/stderr
+(bounded to the most recent 50 files) -- omitted by default, since a no_pick
+or a clean success leaves no other trace of what the one-shot actually did,
+and reconstructing that after the fact otherwise means a fresh manual
+reproduction (confirmed live 2026-08-03).
+
 Usage:
   drain.py [--max-items N] [--budget-minutes M] [--agent claude|codex|opencode]
-           [--fallback-agent AGENT]... [--agent-cmd TEMPLATE]
-           [--permission-arg FLAG]... [--consecutive-failures N]
-           [--iteration-timeout-minutes M] [--queue-dir DIR] [--runs-dir DIR]
+           [--fallback-agent AGENT]... [--transcript-dir DIR]
+           [--agent-cmd TEMPLATE] [--permission-arg FLAG]...
+           [--consecutive-failures N] [--iteration-timeout-minutes M]
+           [--queue-dir DIR] [--runs-dir DIR]
            [--capacity-cache PATH] [--lock-file PATH] [--dry-run] [--json]
 
 Exit codes: 0 = drained/stopped cleanly with a reported reason; 2 = refused to
@@ -253,6 +260,65 @@ def select_available_agent(cache: dict, candidates: List[str]) -> Optional[str]:
     return None
 
 
+MAX_TRANSCRIPT_FILES = 50  # bounded like agent_capacity.py's audit log / dashboard.py's miss log
+
+
+def write_iteration_transcript(
+    transcript_dir: Optional[Path],
+    iteration: int,
+    agent: str,
+    exit_code: int,
+    outcome: "Outcome",
+    stdout: str,
+    stderr: str,
+    now: Optional[datetime] = None,
+) -> Optional[Path]:
+    """Persist one iteration's raw one-shot output so a later "why did this
+    outcome happen" question has evidence to inspect, instead of only the
+    classified outcome drain already logs.
+
+    Live incident (2026-08-03): a `no_pick` iteration left no trace of WHAT
+    the one-shot actually did -- run_one_shot() captures stdout/stderr per
+    iteration (PR #109), but drain() only ever fed them into
+    agent_capacity.classify_failure() for a record-less failure and then
+    discarded them; a clean no-claim exit (no_pick) never even reached that
+    branch, so its transcript was gone the moment the iteration ended.
+    Reproducing the one-shot by hand afterward was the only way to see it.
+
+    None when `transcript_dir` is None -- callers that never configure a
+    directory (every existing test, the interactive `/go drain` skill path
+    until wired) get no transcripts and no new disk usage, matching prior
+    behavior exactly. Best-effort like record_capacity_gate/log_auto_pick_miss:
+    a write failure never raises.
+    """
+    if transcript_dir is None:
+        return None
+    now = now or datetime.now(timezone.utc)
+    try:
+        transcript_dir.mkdir(parents=True, exist_ok=True)
+        stamp = now.strftime("%Y%m%dT%H%M%SZ")
+        path = transcript_dir / f"{stamp}-iter{iteration}-{agent}.log"
+        header = (
+            f"iteration: {iteration}\n"
+            f"agent: {agent}\n"
+            f"exit_code: {exit_code}\n"
+            f"outcome: {outcome.state or outcome.kind}\n"
+            f"brief: {outcome.brief_id or '-'}\n"
+            f"pr: {outcome.pr_url or '-'}\n"
+            f"at: {now.isoformat()}\n"
+        )
+        path.write_text(
+            f"{header}\n=== STDOUT ===\n{stdout}\n=== STDERR ===\n{stderr}\n",
+            encoding="utf-8",
+        )
+        existing = sorted(transcript_dir.glob("*.log"))
+        for stale in existing[:-MAX_TRANSCRIPT_FILES] if len(existing) > MAX_TRANSCRIPT_FILES else []:
+            stale.unlink(missing_ok=True)
+        return path
+    except OSError:
+        return None
+
+
 def record_capacity_gate(cache_path: Path, agent: str, failure_class: str,
                          retry_after: datetime) -> None:
     """Persist a bare-agent-keyed capacity gate so the next iteration's
@@ -432,6 +498,7 @@ class DrainConfig:
     lock_file: Path
     agent: str = "claude"
     fallback_agents: List[str] = field(default_factory=list)
+    transcript_dir: Optional[Path] = None
     agent_cmd: Optional[str] = None
     go_repo: Optional[str] = None
     permission_args: List[str] = field(default_factory=list)
@@ -572,18 +639,23 @@ def drain(config: DrainConfig,
             if outcome.state == "completed_awaiting_human_approval":
                 pending_approvals.append(outcome.pr_url or outcome.brief_id or "?")
             elapsed = int(clock() - iter_start)
+            transcript_path = write_iteration_transcript(
+                config.transcript_dir, state.iteration, active_agent,
+                exit_code, outcome, spawned.stdout, spawned.stderr)
             line = (f"[{state.iteration}"
                     f"{'/' + str(config.max_items) if config.max_items else ''}] "
                     f"agent={active_agent} "
                     f"outcome={outcome.state or outcome.kind} "
                     f"brief={outcome.brief_id or '-'} pr={outcome.pr_url or '-'} "
-                    f"exit={exit_code} elapsed={elapsed}s")
+                    f"exit={exit_code} elapsed={elapsed}s"
+                    f"{' transcript=' + str(transcript_path) if transcript_path else ''}")
             log(line)
             iterations.append({
                 "n": state.iteration, "agent": active_agent,
                 "kind": outcome.kind, "state": outcome.state,
                 "brief": outcome.brief_id, "pr": outcome.pr_url,
                 "exit_code": exit_code, "elapsed_s": elapsed,
+                "transcript": str(transcript_path) if transcript_path else None,
             })
     finally:
         release_lock(config.lock_file)
@@ -644,6 +716,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                             Path.home() / ".go" / "agent-capacity.json")))
     parser.add_argument("--lock-file", type=Path,
                         default=Path.home() / ".go" / "drain.lock")
+    parser.add_argument("--transcript-dir", type=Path, default=None,
+                        help="persist each iteration's raw one-shot stdout/stderr here "
+                             "(bounded to the most recent 50 files); omit to write "
+                             "nothing, matching prior behavior")
     parser.add_argument("--work-queue-py", type=Path, default=default_work_queue_py(),
                         help="path to work_queue.py (auto-resolved from sibling skill)")
     parser.add_argument("--dry-run", action="store_true",
@@ -662,6 +738,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         lock_file=args.lock_file,
         agent=args.agent,
         fallback_agents=list(args.fallback_agents),
+        transcript_dir=args.transcript_dir,
         agent_cmd=args.agent_cmd,
         go_repo=args.go_repo,
         permission_args=list(args.permission_args),

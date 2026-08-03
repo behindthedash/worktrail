@@ -2,12 +2,14 @@
 
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
 from worktrail.drain import drain
 from worktrail.drain.drain import (
+    MAX_TRANSCRIPT_FILES,
     DrainConfig,
     LoopState,
     Outcome,
@@ -23,6 +25,7 @@ from worktrail.drain.drain import (
     parse_run_record,
     release_lock,
     select_available_agent,
+    write_iteration_transcript,
 )
 
 
@@ -371,6 +374,54 @@ def test_select_available_agent_single_candidate_no_fallback_configured():
 
 
 # ---------------------------------------------------------------------------
+# iteration transcripts (why did THIS outcome happen, not just what it was)
+
+
+def test_write_iteration_transcript_none_dir_writes_nothing(tmp_path):
+    assert write_iteration_transcript(
+        None, 1, "claude", 0, Outcome("no_pick"), "out", "err") is None
+
+
+def test_write_iteration_transcript_content_and_naming(tmp_path):
+    out_dir = tmp_path / "transcripts"
+    outcome = Outcome("blocked", "blocked_capacity_billing", "brief-1", "https://pr/1")
+    path = write_iteration_transcript(
+        out_dir, 3, "codex", 1, outcome, "the stdout body", "the stderr body")
+    assert path is not None
+    assert path.parent == out_dir
+    assert path.name.endswith("-iter3-codex.log")
+    text = path.read_text()
+    assert "iteration: 3" in text
+    assert "agent: codex" in text
+    assert "exit_code: 1" in text
+    assert "outcome: blocked_capacity_billing" in text
+    assert "brief: brief-1" in text
+    assert "pr: https://pr/1" in text
+    assert "=== STDOUT ===\nthe stdout body" in text
+    assert "=== STDERR ===\nthe stderr body" in text
+
+
+def test_write_iteration_transcript_bounded_retention(tmp_path):
+    out_dir = tmp_path / "transcripts"
+    for i in range(MAX_TRANSCRIPT_FILES + 5):
+        write_iteration_transcript(
+            out_dir, i, "claude", 0, Outcome("no_pick"), f"out-{i}", "",
+            now=datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=i))
+    remaining = sorted(out_dir.glob("*.log"))
+    assert len(remaining) == MAX_TRANSCRIPT_FILES
+    assert "iter4-" not in remaining[0].name  # oldest 5 pruned
+    assert f"iter{MAX_TRANSCRIPT_FILES + 4}-" in remaining[-1].name
+
+
+def test_write_iteration_transcript_write_failure_returns_none(tmp_path):
+    blocker = tmp_path / "blocker"
+    blocker.write_text("x")
+    bad_dir = blocker / "transcripts"  # parent is a file -> mkdir must fail
+    assert write_iteration_transcript(
+        bad_dir, 1, "claude", 0, Outcome("no_pick"), "out", "err") is None
+
+
+# ---------------------------------------------------------------------------
 # decision function
 
 
@@ -716,6 +767,41 @@ def test_drain_usage_limit_output_becomes_blocked_and_persists_gate(tmp_path, mo
     assert entry["failure_class"] == "billing"
     retry_at = datetime.fromisoformat(entry["retry_after"])
     assert (retry_at.year, retry_at.month, retry_at.day) == (2026, 8, 8)
+
+
+def test_drain_writes_transcript_when_transcript_dir_configured(tmp_path, monkeypatch):
+    # End-to-end regression for the live incident (2026-08-03): a no_pick
+    # iteration left no trace of what the one-shot actually did, so answering
+    # "why" required a fresh manual reproduction. With --transcript-dir set,
+    # the raw stdout/stderr survives the iteration.
+    fake = FakeQueue([3])
+    install_fake_queue(monkeypatch, fake)
+    transcript_dir = tmp_path / "transcripts"
+    config = make_config(tmp_path, transcript_dir=transcript_dir)
+
+    def spawner(cmd, timeout):
+        return SpawnOutcome(0, "here is what the one-shot printed", "")
+
+    summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
+    assert summary["iterations"][0]["kind"] == "no_pick"
+    transcript_ref = summary["iterations"][0]["transcript"]
+    assert transcript_ref is not None
+    transcript_path = Path(transcript_ref)
+    assert transcript_path.is_file()
+    assert "here is what the one-shot printed" in transcript_path.read_text()
+
+
+def test_drain_no_transcript_dir_writes_nothing_by_default(tmp_path, monkeypatch):
+    fake = FakeQueue([3])
+    install_fake_queue(monkeypatch, fake)
+    config = make_config(tmp_path)  # transcript_dir defaults to None
+
+    def spawner(cmd, timeout):
+        return SpawnOutcome(0, "output that must not be persisted", "")
+
+    summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
+    assert summary["iterations"][0]["transcript"] is None
+    assert not (tmp_path / "transcripts").exists()
 
 
 def test_drain_generic_failure_stays_plain_failed_with_no_cache_write(tmp_path, monkeypatch):
