@@ -1,17 +1,47 @@
 ## 1. Pre-implementation verification (do first — later tasks depend on the answers)
 
-- [ ] 1.1 Confirm codex's full accepted `model_reasoning_effort` value set (only `"low"`
+- [x] 1.1 Confirm codex's full accepted `model_reasoning_effort` value set (only `"low"`
       observed live in the operator's `~/.codex/config.toml`) against `codex exec
       --help` / official Codex docs
-- [ ] 1.2 Live-verify opencode's `--variant` support for `deepseek-v4-flash`
+      **Finding (2026-08-03):** `codex exec --help` documents no explicit enum for
+      `-c model_reasoning_effort=`; the canonical value set is defined in the Codex
+      Rust source, `codex-rs/protocol/src/openai_models.rs`, `enum ReasoningEffort`:
+      `minimal | low | medium | high | xhigh`. The enum also carries a `Custom(String)`
+      fallback variant that accepts *any* other string with zero client-side
+      validation — confirmed live: `codex exec -c model_reasoning_effort=bogus ...`
+      was accepted and echoed in the startup banner (`reasoning effort: bogus`) with
+      no parse error; the run only failed downstream on an unrelated usage-limit
+      error, never on the effort value itself. Task 3.1's codex translation should
+      pass through the canonical 5 values unchanged and NOT attempt client-side
+      validation beyond that (matching codex's own permissive `FromStr`).
+- [x] 1.2 Live-verify opencode's `--variant` support for `deepseek-v4-flash`
       specifically: run `opencode run --model opencode/deepseek-v4-flash --variant
       <value> "<trivial prompt>"` for each of `high`, `max`, `minimal` (the CLI's own
       documented examples) and record which are accepted vs. rejected vs. silently
       ignored, and whether any observable behavior change confirms the flag actually
       took effect
-- [ ] 1.3 Decide the tier-key naming convention (`T1`/`T2`/`T3`/`T4` literal vs. a
+      **Finding (2026-08-03):** All of `high`, `max`, `minimal`, and a deliberately
+      invalid probe value (`bogus-invalid-xyz`) were accepted identically — opencode
+      1.17.13's CLI performs no client-side validation of `--variant` for this model.
+      `--log-level DEBUG` tracing of the actual chat request (the `llm runtime
+      selected` event with `llm.provider=opencode llm.model=deepseek-v4-flash` —
+      distinct from an earlier internal `gpt-5.4-nano` call used for session/title
+      bookkeeping) shows no mention of "variant" anywhere in the pipeline from CLI
+      parse through provider dispatch, for any of the four values tested. Verdict:
+      **silently ignored** for `deepseek-v4-flash` — no observable evidence the flag
+      reaches the provider or changes behavior. Task 3.1's opencode translation
+      should still emit `--variant` when an effort is configured (forward-compatible
+      if opencode adds real support later, and it is the CLI's own documented flag
+      name) but must not assume it has any effect on this specific model today, and
+      the 3-tier fallback example (task 4.2) should not claim a verified behavior
+      change for `deepseek-v4-flash` specifically.
+- [x] 1.3 Decide the tier-key naming convention (`T1`/`T2`/`T3`/`T4` literal vs. a
       lowercase/hyphenated form) for consistency with existing `trivial`/`standard`/
       `hard` complexity values
+      **Decision (2026-08-03):** Lowercase-hyphenated form — `t1-deep`, `t2-build`,
+      `t3-bulk`, `t4-trivia` — matching design.md's own suggested example ("a
+      repo/operator-preferred lowercase like `t1-deep`") and the existing
+      lowercase-word convention already used by `trivial`/`standard`/`hard`.
 
 ## 2. Schema: effort field on agent-entry
 
