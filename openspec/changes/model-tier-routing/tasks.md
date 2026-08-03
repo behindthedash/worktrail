@@ -76,7 +76,7 @@
 - [ ] 4.2 Document the 3-tier complexity fallback
       (`trivial`/`standard`/`hard` → `gpt-5.6-luna`/`gpt-5.6-terra`/`gpt-5.6-sol`, or
       whatever values 1.1 confirms) as a `routing.tiers` example
-- [ ] 4.3 Regression test: full suite + golden check (`orchestrate check`) green with
+- [ ] 4.3 [e2e] Regression test: full suite + golden check (`orchestrate check`) green with
       these entries populated, confirming no interaction with existing
       `dispatch.agent_for()` precedence rules for `JUDGMENT_ROLES`
 
