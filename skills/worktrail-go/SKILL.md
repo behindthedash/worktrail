@@ -345,6 +345,30 @@ Dispatch policy is simple:
   `references/subagent-prompts.md#subprocess-dispatch`.
 - If subprocess dispatch is unavailable: fall back to the direct Skill call and say so.
 
+**Pinning a role to a specific agent/model.** `routing.roles` overrides one JUDGMENT_ROLE
+(`review`/`resolve`/`ci-fix`/`assembly-resolve`) or task role (`implement`/`fix`/`cleanup`)
+independently of the run's default agent — for example, to force an independent
+code-reviewer model regardless of which agent implemented the task. Add it under either the
+repo-local policy's `routing:` block or the machine-wide `~/.go/routing.yaml`
+(`GO_ROUTING_FILE`, machine-wide file loses to a repo-local `routing:` block when both set
+the same role):
+
+```yaml
+routing:
+  roles:
+    review:
+      agent_cli: claude
+      agent_model: opus
+```
+
+This resolves through `resolve_routing()` into `roles.review = {agent_cli: "claude",
+agent_model: "opus"}`, which the bullet above maps onto `--role-agent-map`/`--model-map` for
+the orchestrator invocation. For `review`/`resolve`/`ci-fix`/`assembly-resolve` this is the
+*only* override that can beat the run default (DEC-003) — a per-task `agent` field or
+`routing.tiers` match is never consulted for those roles, by design (independent-reviewer
+guarantee, 13.3). No `routing.roles` entry for a role → unchanged pre-spec behavior for that
+role.
+
 **Native Skill capability fallback.** `Skill(...)` is a host capability, not a shell
 command. If the current host does not expose it (for example, an embedded Codex
 session), run `worktrail-skill-dispatch` with the resolved `--agent`, `--skill`,
