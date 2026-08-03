@@ -1224,6 +1224,69 @@ def auto_pick_brief(
     return {"pick": None, "skipped": skipped}
 
 
+AUTO_PICK_MISS_LOG_ENV = "GO_AUTO_PICK_MISS_LOG"
+DEFAULT_AUTO_PICK_MISS_LOG = "~/.go/auto-pick-misses.jsonl"
+MAX_AUTO_PICK_MISS_ENTRIES = 200  # bounded like agent_capacity.py's audit log
+
+
+def auto_pick_miss_log_path(path: Optional[Path] = None) -> Path:
+    return path or Path(os.environ.get(AUTO_PICK_MISS_LOG_ENV, DEFAULT_AUTO_PICK_MISS_LOG)).expanduser()
+
+
+def log_auto_pick_miss(
+    auto_pick: Dict[str, Any],
+    total_briefs: int,
+    repo_filter: Optional[str] = None,
+    path: Optional[Path] = None,
+) -> None:
+    """Append a JSONL record of WHY `--auto` found nothing to pick, when it found
+    nothing to pick.
+
+    drain.py's own run log only ever recorded the `no_pick` outcome itself --
+    not `auto_pick_brief()`'s per-brief skip reasons -- so a "62 briefs looked
+    ready, why did no_pick fire" question was unanswerable after the fact
+    (confirmed live 2026-08-03: no evidence existed to reconstruct the prior
+    night's miss). This closes that gap at the source: auto_pick_brief() is the
+    only place that computes the skip reasons, regardless of caller (an
+    interactive `/go auto` session or a drain-spawned one-shot), so logging
+    here covers both without threading anything through drain.py.
+
+    Best-effort: a write failure (permissions, missing parent, full disk) is
+    swallowed rather than breaking the dashboard render this is a side effect
+    of -- an unlogged miss is a regression in observability, not correctness.
+    """
+    if auto_pick.get("pick") is not None:
+        return
+    log_path = auto_pick_miss_log_path(path)
+    skipped = auto_pick.get("skipped") or []
+    reasons: Dict[str, int] = {}
+    for entry in skipped:
+        reason = str(entry.get("reason", "")).split(":", 1)[0]
+        reasons[reason] = reasons.get(reason, 0) + 1
+    record = {
+        "at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "repo_filter": repo_filter,
+        "total_briefs": total_briefs,
+        "skipped_count": len(skipped),
+        "reasons": reasons,
+        "skipped": skipped,
+    }
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        existing = []
+        if log_path.is_file():
+            for line in log_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line:
+                    existing.append(line)
+        existing.append(json.dumps(record))
+        if len(existing) > MAX_AUTO_PICK_MISS_ENTRIES:
+            existing = existing[-MAX_AUTO_PICK_MISS_ENTRIES:]
+        log_path.write_text("\n".join(existing) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
 def _hours_since_claim(claimed_at: Any) -> Optional[float]:
     """Hours elapsed since an ISO-8601 `claimed-at` stamp; None if absent/unparseable."""
     if not claimed_at:
@@ -2239,6 +2302,8 @@ def main(argv=None) -> int:
     auto_pick = (
         auto_pick_brief(queue_briefs, repo_filter=args.auto_repo) if args.auto else None
     )
+    if auto_pick is not None:
+        log_auto_pick_miss(auto_pick, len(queue_briefs), repo_filter=args.auto_repo)
 
     if args.repos:
         repo_rows = scan_repos(Path(args.repos))
