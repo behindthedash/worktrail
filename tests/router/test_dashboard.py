@@ -1982,6 +1982,88 @@ class AutoPick(unittest.TestCase):
         )
 
 
+class AutoPickMissLogging(unittest.TestCase):
+    """log_auto_pick_miss(): why `--auto` found nothing, recorded for later.
+
+    Regression for a live incident (2026-08-03): a nightly drain iteration
+    reported `no_pick` with 62 of 63 queue briefs nominally ready, and there
+    was no way to reconstruct which auto_pick_brief() skip reason actually
+    applied at that moment -- only the outcome was ever logged, never why.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.log_path = Path(self._tmp.name) / "auto-pick-misses.jsonl"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _lines(self) -> list[dict]:
+        if not self.log_path.is_file():
+            return []
+        return [json.loads(line) for line in self.log_path.read_text().splitlines() if line.strip()]
+
+    def test_a_real_pick_logs_nothing(self):
+        dashboard.log_auto_pick_miss(
+            {"pick": {"id": "x"}, "skipped": []}, total_briefs=1, path=self.log_path
+        )
+        self.assertFalse(self.log_path.exists())
+
+    def test_a_miss_logs_reason_tally_and_full_skip_list(self):
+        auto_pick = {
+            "pick": None,
+            "skipped": [
+                {"id": "a", "reason": "orchestrator-run-active:run-x.lock"},
+                {"id": "b", "reason": "orchestrator-run-active:run-y.lock"},
+                {"id": "c", "reason": "not-yet-due"},
+            ],
+        }
+        dashboard.log_auto_pick_miss(auto_pick, total_briefs=62, repo_filter="myapp",
+                                     path=self.log_path)
+        lines = self._lines()
+        self.assertEqual(len(lines), 1)
+        record = lines[0]
+        self.assertEqual(record["total_briefs"], 62)
+        self.assertEqual(record["repo_filter"], "myapp")
+        self.assertEqual(record["skipped_count"], 3)
+        self.assertEqual(record["reasons"], {"orchestrator-run-active": 2, "not-yet-due": 1})
+        self.assertEqual(record["skipped"], auto_pick["skipped"])
+        datetime.datetime.fromisoformat(record["at"])  # parses; raises if malformed
+
+    def test_an_empty_queue_miss_still_logs(self):
+        dashboard.log_auto_pick_miss({"pick": None, "skipped": []}, total_briefs=0,
+                                     path=self.log_path)
+        lines = self._lines()
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0]["total_briefs"], 0)
+        self.assertEqual(lines[0]["skipped_count"], 0)
+
+    def test_log_is_bounded_and_fifo(self):
+        for i in range(dashboard.MAX_AUTO_PICK_MISS_ENTRIES + 5):
+            dashboard.log_auto_pick_miss(
+                {"pick": None, "skipped": [{"id": str(i), "reason": "not-yet-due"}]},
+                total_briefs=1, path=self.log_path,
+            )
+        lines = self._lines()
+        self.assertEqual(len(lines), dashboard.MAX_AUTO_PICK_MISS_ENTRIES)
+        # Oldest entries were dropped; the newest survive.
+        self.assertEqual(lines[-1]["skipped"][0]["id"], str(dashboard.MAX_AUTO_PICK_MISS_ENTRIES + 4))
+        self.assertEqual(lines[0]["skipped"][0]["id"], "5")
+
+    def test_env_var_override_resolves_path(self):
+        with mock.patch.dict(os.environ, {dashboard.AUTO_PICK_MISS_LOG_ENV: str(self.log_path)}):
+            self.assertEqual(dashboard.auto_pick_miss_log_path(), self.log_path)
+
+    def test_write_failure_is_swallowed_not_raised(self):
+        # A path whose parent cannot be created (a file occupying that name)
+        # must degrade silently -- this is a side effect of a JSON render,
+        # never the reason a dashboard call fails.
+        blocker = Path(self._tmp.name) / "blocker"
+        blocker.write_text("x")
+        bad_path = blocker / "misses.jsonl"
+        dashboard.log_auto_pick_miss({"pick": None, "skipped": []}, total_briefs=1, path=bad_path)
+
+
 class ClusterRendering(unittest.TestCase):
     """render_dashboard's new `clusters` parameter (TASK-004, AC-011/AC-012)."""
 
