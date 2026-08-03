@@ -407,6 +407,7 @@ def build_cmd(
     *,
     agent: str = "claude",
     model: Optional[str] = None,
+    effort: Optional[str] = None,
     extra_args: Optional[Sequence[str]] = None,
     resume_session_id: Optional[str] = None,
     output_last_message: Optional[str] = None,
@@ -419,6 +420,8 @@ def build_cmd(
         cmd = ["claude", "-p", prompt, *PERM_FLAGS, *JSON_OUTPUT_FLAGS]
         if model:
             cmd += ["--model", model]
+        if effort:
+            cmd += ["--effort", effort]
         if resume_session_id:
             cmd += ["--resume", resume_session_id, "--fork-session"]
         if extra_args:
@@ -429,6 +432,8 @@ def build_cmd(
         cmd = ["opencode", "run", "--format", "json"]
         if model:
             cmd += ["--model", model]
+        if effort:
+            cmd += ["--variant", effort]
         if resume_session_id:
             cmd += ["--session", resume_session_id, "--fork"]
         if extra_args:
@@ -439,6 +444,8 @@ def build_cmd(
     cmd = ["codex", "exec", "--json", "-s", "workspace-write"]
     if model:
         cmd += ["--model", model]
+    if effort:
+        cmd += ["-c", f"model_reasoning_effort={effort}"]
     if output_last_message:
         cmd += ["--output-last-message", output_last_message]
     if extra_args:
