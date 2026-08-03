@@ -492,6 +492,7 @@ def spawn_agent(
     *,
     agent: str = "claude",
     model: Optional[str] = None,
+    effort: Optional[str] = None,
     fallback_agent: "Optional[str | Sequence[str]]" = None,
     timeout: int = 3600,
     retries: int = SPAWN_RETRIES_DEFAULT,
@@ -581,6 +582,7 @@ def spawn_agent(
         prompt,
         agent=agent,
         model=model,
+        effort=effort,
         extra_args=extra_args,
         resume_session_id=resume_session_id,
         output_last_message=output_file,
@@ -627,8 +629,10 @@ def spawn_agent(
                 prompt,
                 agent=agent,
                 model=model,
-                # Primary-agent flags are CLI-specific and cannot safely cross
-                # the fallback boundary.
+                # effort is a CLI-agnostic tier semantic (build_cmd translates it
+                # per agent) so it carries across the fallback boundary; unlike
+                # extra_args, which are primary-agent-specific and cannot.
+                effort=effort,
                 extra_args=None,
                 resume_session_id=None,
                 output_last_message=output_file,
@@ -711,6 +715,7 @@ def spawn_claude_p(
     cwd: "str | Path",
     *,
     model: Optional[str] = None,
+    effort: Optional[str] = None,
     timeout: int = 3600,
     retries: int = SPAWN_RETRIES_DEFAULT,
     session_limit_waits: int = SESSION_LIMIT_WAITS_DEFAULT,
@@ -735,6 +740,7 @@ def spawn_claude_p(
         cwd,
         agent="claude",
         model=model,
+        effort=effort,
         fallback_agent=fallback_agent,
         timeout=timeout,
         retries=retries,

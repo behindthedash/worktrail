@@ -1385,6 +1385,7 @@ class LiveSpawn:
         fallback_agent: str | None = None,
         tier_map: dict | None = None,
         fallback_chain: "list[str] | None" = None,
+        effort: str | None = None,
     ) -> None:
         self.agent = agent
         self.label = f"LIVE {agent}"
@@ -1392,6 +1393,11 @@ class LiveSpawn:
         self.spec_folder_rel = spec_folder_rel.rstrip("/") + "/"
         self.timeout = timeout
         self.model = model or spawnlib.default_model_for_agent(agent)
+        # Run-level default effort (model-tier-routing 3.3). Unlike `model`, effort
+        # has no per-agent default to fall back to -- omitting it is always a valid,
+        # common state (spawnlib.build_cmd only adds the flag `if effort:`), so no
+        # `spawnlib.default_effort_for_agent()` equivalent exists or is needed.
+        self.effort = effort
         self.role_models = role_models or {}  # per-role overrides (production)
         # per-role agent CLI overrides (e.g. review=claude while implement/fix
         # stay on a cheaper --agent) -- lets the reviewer run on a genuinely
@@ -1496,6 +1502,11 @@ class LiveSpawn:
         else:
             default_model = resolved["agent_model"] or spawnlib.default_model_for_agent(agent)
         model = self.role_models.get(role, default_model)
+        # Effort mirrors the model precedence above, minus the cross-agent default
+        # fallback: there's no `default_effort_for_agent()` (no agent requires one),
+        # so a role/tier pinned to a different agent than the run's default only
+        # gets an effort when the resolution itself carried one (AC-011 parity).
+        effort = resolved["effort"] or (self.effort if agent == self.agent else None)
         # Claude workers get lean flags (bare + measured tool set).
         # Reviewer independence (13.3): review role additionally gets an appended
         # system prompt; implement/fix/cleanup keep the DEFAULT system prompt so
@@ -1528,6 +1539,7 @@ class LiveSpawn:
                 prompt,
                 worktree,
                 model=model,
+                effort=effort,
                 timeout=effective_timeout,
                 extra_args=extra_args,
                 resume_session_id=resume_session_id,
@@ -1539,6 +1551,7 @@ class LiveSpawn:
             worktree,
             agent=agent,
             model=model,
+            effort=effort,
             fallback_agent=effective_fallback,
             timeout=effective_timeout,
             extra_args=extra_args,

@@ -449,6 +449,7 @@ class ReviewerIndependence(unittest.TestCase):
             wt,
             *,
             model=None,
+            effort=None,
             timeout=None,
             extra_args=None,
             resume_session_id=None,
