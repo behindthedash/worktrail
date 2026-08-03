@@ -336,6 +336,31 @@ Dispatch policy is simple:
 - Tiers resolve on a separate axis (per-task `(complexity, domain)`, not `$ROUTE:$RISK_LEVEL`): call `policy.resolve_tier_map(policy)` and map each `(complexity, domain) -> {agent_cli, agent_model}` entry onto `live.py full-real`'s `--tier-map` flag, joined `,`-separated as `complexity:domain=agent_cli[:agent_model]` (omit the `:agent_model` segment when unset). A domain-less tier (`domain is None`) has no CLI-string form — `live.py`'s `_parse_tier_map()` always yields an empty-string domain, never `None` — so a domain-less `routing.tiers` entry only reaches `dispatch.agent_for` through a native in-process `tier_map` dict (e.g. `RoutingFakeSpawn`/test fixtures), not this flag.
 - Explicit invocation flags or caller-supplied `AGENT_CLI` always win over the derived routing values. The routing table slots into the existing precedence at the repository-policy tier: explicit invocation > repository policy (routing table here) > machine-wide env > detected host > `claude`.
 - no routing table → behavior identical to today (flat keys, single fallback). Likewise, no `routing.tiers` → omit `--tier-map` entirely (dispatch behavior unchanged, REQ-NR005).
+
+  Example `routing.tiers` in `~/.go/routing.yaml` — a 3-tier complexity fallback keyed by a
+  task's `complexity` frontmatter value (`trivial` / `standard` / `hard`), routing each to a
+  progressively more capable model on the same CLI:
+
+  ```yaml
+  routing:
+    tiers:
+      trivial:
+        agent_cli: codex
+        agent_model: gpt-5.6-luna
+      standard:
+        agent_cli: codex
+        agent_model: gpt-5.6-terra
+      hard:
+        agent_cli: codex
+        agent_model: gpt-5.6-sol
+  ```
+
+  Model names above are illustrative — substitute whatever tier models the operator's provider
+  actually exposes. A key may carry a `/domain` suffix (e.g. `trivial/frontend`) to scope by
+  `(complexity, domain)` instead of complexity alone; omit `/domain` to match every domain at
+  that complexity. Tasks whose format has no `complexity` field, or whose value has no matching
+  tier entry, fall through to `routing.defaults`/`routing.roles` unaffected — `routing.tiers` is
+  purely additive.
 - Record the resolved routing decision at dispatch time with `worktrail-run-record start ... --routing-decision "$ROUTING_JSON"` so the audit trail captures the exact route/risk-derived policy.
 - Codex / in-session host: call `Skill("worktrail-sdd-workflow", ...)` directly.
 - OpenCode parent sessions use the seeded subprocess path with `opencode` when the harness
