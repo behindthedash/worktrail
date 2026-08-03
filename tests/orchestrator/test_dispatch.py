@@ -625,7 +625,9 @@ class TestExtraReadsContextWidening(unittest.TestCase):
 class TestAgentForPrecedence(unittest.TestCase):
     """worktrail.orchestrator.dispatch.agent_for(): 4-tier precedence + judgment-role guard (TASK-006)."""
 
-    TIER_MAP = {("complex", "backend"): {"agent_cli": "codex", "agent_model": "gpt-tier"}}
+    TIER_MAP = {
+        ("complex", "backend"): {"agent_cli": "codex", "agent_model": "gpt-tier", "effort": "high"}
+    }
     ROLE_MAP = {"implement": {"agent_cli": "opencode", "agent_model": "oc-model"}}
 
     def _task(self, **overrides):
@@ -639,16 +641,19 @@ class TestAgentForPrecedence(unittest.TestCase):
         return task
 
     def test_tier_match_no_overrides_resolves_to_tier_agent(self):
-        """AC-011: implement + tier match + no per-task/role override -> tier's agent+model."""
+        """AC-011: implement + tier match + no per-task/role override -> tier's
+        agent+model+effort (model-tier-routing 3.2)."""
         task = self._task()
         result = agent_for(ROLE_IMPLEMENT, task, tier_map=self.TIER_MAP)
-        self.assertEqual(result, {"agent_cli": "codex", "agent_model": "gpt-tier"})
+        self.assertEqual(
+            result, {"agent_cli": "codex", "agent_model": "gpt-tier", "effort": "high"}
+        )
 
     def test_tier_match_no_match_falls_through_to_run_default(self):
         """A tier_map with no entry for this task's (complexity, domain) falls through."""
         task = self._task(complexity="simple", domain="frontend")
         result = agent_for(ROLE_IMPLEMENT, task, default_agent="claude", tier_map=self.TIER_MAP)
-        self.assertEqual(result, {"agent_cli": "claude", "agent_model": None})
+        self.assertEqual(result, {"agent_cli": "claude", "agent_model": None, "effort": None})
 
     def test_per_task_override_beats_tier_match(self):
         """AC-012: task['agent'] outranks a tier match, for implement/fix/cleanup."""
@@ -657,7 +662,7 @@ class TestAgentForPrecedence(unittest.TestCase):
             result = agent_for(role, task, tier_map=self.TIER_MAP, role_agent_map=self.ROLE_MAP)
             self.assertEqual(
                 result,
-                {"agent_cli": "claude", "agent_model": None},
+                {"agent_cli": "claude", "agent_model": None, "effort": None},
                 f"per-task override must win for role={role!r}",
             )
 
@@ -667,7 +672,9 @@ class TestAgentForPrecedence(unittest.TestCase):
         result = agent_for(
             ROLE_IMPLEMENT, task, tier_map=self.TIER_MAP, role_agent_map=self.ROLE_MAP
         )
-        self.assertEqual(result, {"agent_cli": "opencode", "agent_model": "oc-model"})
+        self.assertEqual(
+            result, {"agent_cli": "opencode", "agent_model": "oc-model", "effort": None}
+        )
 
     def test_review_ignores_per_task_override_and_tier_match(self):
         """AC-014: review uses only role override / run default, even with both
@@ -680,7 +687,7 @@ class TestAgentForPrecedence(unittest.TestCase):
             tier_map=self.TIER_MAP,
             role_agent_map={},
         )
-        self.assertEqual(result, {"agent_cli": "code-reviewer", "agent_model": None})
+        self.assertEqual(result, {"agent_cli": "code-reviewer", "agent_model": None, "effort": None})
 
     def test_review_role_override_still_applies(self):
         """A role_agent_map entry for review IS consulted (it's tier 2, judgment
@@ -692,7 +699,25 @@ class TestAgentForPrecedence(unittest.TestCase):
             tier_map=self.TIER_MAP,
             role_agent_map={"review": "gemini"},
         )
-        self.assertEqual(result, {"agent_cli": "gemini", "agent_model": None})
+        self.assertEqual(result, {"agent_cli": "gemini", "agent_model": None, "effort": None})
+
+    def test_role_override_carries_effort(self):
+        """model-tier-routing 3.2: an effort on a role_agent_map entry reaches
+        the resolved result, for both an implement/fix/cleanup role and a
+        judgment role (tier 2 for both)."""
+        role_map = {
+            "implement": {"agent_cli": "opencode", "agent_model": "oc-model", "effort": "low"},
+            "review": {"agent_cli": "gemini", "agent_model": None, "effort": "medium"},
+        }
+        task = self._task()
+        self.assertEqual(
+            agent_for(ROLE_IMPLEMENT, task, role_agent_map=role_map),
+            {"agent_cli": "opencode", "agent_model": "oc-model", "effort": "low"},
+        )
+        self.assertEqual(
+            agent_for(ROLE_REVIEW, task, role_agent_map=role_map),
+            {"agent_cli": "gemini", "agent_model": None, "effort": "medium"},
+        )
 
     def test_resolve_ci_fix_assembly_resolve_ignore_per_task_and_tier(self):
         """AC-015: resolve, ci-fix, and assembly-resolve behave identically to review."""
@@ -707,7 +732,7 @@ class TestAgentForPrecedence(unittest.TestCase):
             )
             self.assertEqual(
                 result,
-                {"agent_cli": "claude-run-default", "agent_model": None},
+                {"agent_cli": "claude-run-default", "agent_model": None, "effort": None},
                 f"judgment-role guard must hold for role={role!r}",
             )
             override_result = agent_for(
@@ -719,7 +744,7 @@ class TestAgentForPrecedence(unittest.TestCase):
             )
             self.assertEqual(
                 override_result,
-                {"agent_cli": "codex", "agent_model": None},
+                {"agent_cli": "codex", "agent_model": None, "effort": None},
                 f"role override must still apply for role={role!r}",
             )
 
@@ -731,55 +756,55 @@ class TestAgentForPrecedence(unittest.TestCase):
                 ROLE_IMPLEMENT,
                 self._task(agent="claude"),
                 {"default_agent": "codex"},
-                {"agent_cli": "claude", "agent_model": None},
+                {"agent_cli": "claude", "agent_model": None, "effort": None},
             ),
             (
                 ROLE_IMPLEMENT,
                 self._task(agent=None),
                 {"default_agent": "codex"},
-                {"agent_cli": "codex", "agent_model": None},
+                {"agent_cli": "codex", "agent_model": None, "effort": None},
             ),
             (
                 ROLE_IMPLEMENT,
                 self._task(agent=None),
                 {},
-                {"agent_cli": "claude", "agent_model": None},
+                {"agent_cli": "claude", "agent_model": None, "effort": None},
             ),
             (
                 ROLE_FIX,
                 self._task(agent="opencode"),
                 {"default_agent": "codex"},
-                {"agent_cli": "opencode", "agent_model": None},
+                {"agent_cli": "opencode", "agent_model": None, "effort": None},
             ),
             (
                 ROLE_CLEANUP,
                 self._task(agent=None),
                 {"default_agent": "codex"},
-                {"agent_cli": "codex", "agent_model": None},
+                {"agent_cli": "codex", "agent_model": None, "effort": None},
             ),
             (
                 ROLE_REVIEW,
                 self._task(agent="claude"),
                 {"reviewer_agent": "code-reviewer"},
-                {"agent_cli": "code-reviewer", "agent_model": None},
+                {"agent_cli": "code-reviewer", "agent_model": None, "effort": None},
             ),
             (
                 ROLE_RESOLVE,
                 self._task(agent="claude"),
                 {"default_agent": "codex"},
-                {"agent_cli": "codex", "agent_model": None},
+                {"agent_cli": "codex", "agent_model": None, "effort": None},
             ),
             (
                 ROLE_CI_FIX,
                 self._task(agent="claude"),
                 {"default_agent": "codex"},
-                {"agent_cli": "codex", "agent_model": None},
+                {"agent_cli": "codex", "agent_model": None, "effort": None},
             ),
             (
                 ROLE_ASSEMBLY_RESOLVE,
                 self._task(agent="claude"),
                 {},
-                {"agent_cli": "claude", "agent_model": None},
+                {"agent_cli": "claude", "agent_model": None, "effort": None},
             ),
         ]
         for role, task, kwargs, expected in cases:
