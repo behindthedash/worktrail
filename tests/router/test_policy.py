@@ -534,6 +534,46 @@ class Routing(unittest.TestCase):
                          [{"agent_cli": "codex", "agent_model": None, "effort": None},
                           {"agent_cli": "opencode", "agent_model": None, "effort": None}])
 
+    def test_effort_field_validates_and_resolves(self):
+        # AC-CHG-003: an agent entry with a string `effort` validates and
+        # carries the value through to the resolved dict.
+        repo = _repo_with(
+            "routing:\n"
+            "  defaults:\n"
+            "    A:\n"
+            "      low:\n"
+            "        agent_cli: codex\n"
+            "        effort: high\n")
+        with self._no_mw_env():
+            pol = load_policy(repo)
+        self.assertEqual(pol["routing"]["defaults"],
+                         {"A": {"low": {"agent_cli": "codex", "agent_model": None, "effort": "high"}}})
+        self.assertEqual(pol["_meta"]["warnings"], [])
+
+    def test_effort_field_absent_resolves_to_none(self):
+        # AC-CHG-003: an agent entry with no `effort` key resolves with
+        # `effort: None`, not a missing key.
+        repo = _repo_with("routing:\n  roles:\n    reviewer:\n      agent_cli: codex\n")
+        with self._no_mw_env():
+            pol = load_policy(repo)
+        self.assertEqual(pol["routing"]["roles"],
+                         {"reviewer": {"agent_cli": "codex", "agent_model": None, "effort": None}})
+
+    def test_effort_field_invalid_type_dropped_with_warning(self):
+        # AC-CHG-003: a non-string `effort` is dropped (resolves to None) with
+        # a warning, matching the existing agent_model validation pattern.
+        repo = _repo_with(
+            "routing:\n"
+            "  tiers:\n"
+            "    hard/backend:\n"
+            "      agent: codex\n"
+            "      effort: 123\n")
+        with self._no_mw_env():
+            pol = load_policy(repo)
+        self.assertEqual(pol["routing"]["tiers"],
+                         {("hard", "backend"): {"agent_cli": "codex", "agent_model": None, "effort": None}})
+        self.assertTrue(any("effort must be a string" in w for w in pol["_meta"]["warnings"]))
+
     def test_invalid_agent_literal_in_defaults_dropped(self):
         # AC-002
         repo = _repo_with(

@@ -778,6 +778,88 @@ class LiveSpawnTierRoutingTests(unittest.TestCase):
         self.assertTrue(claude_captured)
 
 
+class LiveSpawnEffortTests(unittest.TestCase):
+    """model-tier-routing 3.3: LiveSpawn threads effort through the same
+    dispatch.agent_for() resolution as agent/model, down to the spawn call."""
+
+    def _make_task(self, **overrides):
+        task = {"id": "TASK-001", "status": "pending", "files": ["src/foo.py"]}
+        task.update(overrides)
+        return task
+
+    def _call(self, role, task, agent="claude", effort=None, role_agents=None, tier_map=None):
+        claude_captured = {}
+        agent_captured = {}
+        fake_result = type(
+            "R", (), {"text": "ok", "usage": {}, "tools_used": [], "skills_used": [], "paused_s": 0.0}
+        )()
+        with patch("worktrail.orchestrator.live.dispatch.build_worker_prompt", return_value="prompt"), \
+             patch("worktrail.orchestrator.live.spawnlib.spawn_claude_p",
+                   side_effect=lambda *_, **kw: claude_captured.update(kw) or fake_result), \
+             patch("worktrail.orchestrator.live.spawnlib.spawn_agent",
+                   side_effect=lambda *_, **kw: agent_captured.update(kw) or fake_result):
+            spawn = live.LiveSpawn(
+                "spec-001", "docs/specs/001-spec",
+                agent=agent, effort=effort, role_agents=role_agents, tier_map=tier_map,
+            )
+            spawn(role, task, Path("/tmp/wt"))
+        return claude_captured, agent_captured
+
+    def test_run_default_effort_reaches_spawn_claude_p(self):
+        task = self._make_task()
+        claude_captured, _ = self._call("implement", task, agent="claude", effort="high")
+        self.assertEqual(claude_captured.get("effort"), "high")
+
+    def test_no_effort_configured_passes_none(self):
+        task = self._make_task()
+        claude_captured, _ = self._call("implement", task, agent="claude")
+        self.assertIsNone(claude_captured.get("effort"))
+
+    def test_tier_effort_reaches_spawn_agent(self):
+        """A configured tier's effort (model-tier-routing 3.2's dispatch.agent_for
+        resolved shape) reaches the spawned command."""
+        tier_map = {
+            ("complex", "backend"): {"agent_cli": "codex", "agent_model": None, "effort": "low"}
+        }
+        task = self._make_task(complexity="complex", domain="backend")
+        _, agent_captured = self._call(
+            "implement", task, agent="claude", tier_map=tier_map,
+        )
+        self.assertEqual(agent_captured.get("agent"), "codex")
+        self.assertEqual(agent_captured.get("effort"), "low")
+
+    def test_tier_effort_outranks_run_default(self):
+        tier_map = {
+            ("complex", "backend"): {"agent_cli": "codex", "agent_model": None, "effort": "low"}
+        }
+        task = self._make_task(complexity="complex", domain="backend")
+        _, agent_captured = self._call(
+            "implement", task, agent="claude", effort="high", tier_map=tier_map,
+        )
+        self.assertEqual(agent_captured.get("effort"), "low")
+
+    def test_role_override_effort_reaches_spawn_agent(self):
+        role_agents = {"implement": {"agent_cli": "opencode", "agent_model": None, "effort": "medium"}}
+        task = self._make_task()
+        _, agent_captured = self._call(
+            "implement", task, agent="claude", role_agents=role_agents,
+        )
+        self.assertEqual(agent_captured.get("agent"), "opencode")
+        self.assertEqual(agent_captured.get("effort"), "medium")
+
+    def test_run_default_effort_not_carried_to_a_different_pinned_agent(self):
+        """No default_effort_for_agent() equivalent exists (unlike model): a
+        role/tier pinned to a different agent than the run default only gets
+        an effort when the resolution itself carried one."""
+        tier_map = {("complex", "backend"): {"agent_cli": "codex", "agent_model": None}}
+        task = self._make_task(complexity="complex", domain="backend")
+        _, agent_captured = self._call(
+            "implement", task, agent="claude", effort="high", tier_map=tier_map,
+        )
+        self.assertEqual(agent_captured.get("agent"), "codex")
+        self.assertIsNone(agent_captured.get("effort"))
+
+
 class LiveSpawnPreSpecParityTests(unittest.TestCase):
     """AC-016/REQ-016/REQ-019: with no tier_map/fallback_chain configured, every
     role's resolved agent is exactly `self.role_agents.get(role, self.agent)` --

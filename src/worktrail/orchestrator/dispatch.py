@@ -78,22 +78,27 @@ MAX_REVIEW_RETRIES = 3
 # Agent selection
 # --------------------------------------------------------------------------- #
 def _entry(value: Any) -> Dict[str, Any]:
-    """Normalize one agent-resolution entry into `{"agent_cli", "agent_model"}`.
+    """Normalize one agent-resolution entry into
+    `{"agent_cli", "agent_model", "effort"}`.
 
     `value` is either a bare agent_cli string (`"codex"`) or a
-    `{"agent_cli":.., "agent_model":..}` dict -- the same shape
+    `{"agent_cli":.., "agent_model":.., "effort":..}` dict -- the same shape
     `policy.py`'s `_validate_agent_entry()` / `resolve_routing()` produce for
-    `routing.roles`/`routing.tiers` entries (TASK-001), so callers can pass
-    those dicts straight through. Anything else normalizes to
-    `{"agent_cli": None, "agent_model": None}` so callers can treat a missing
-    match and a malformed entry identically (fall through to the next tier of
-    precedence).
+    `routing.roles`/`routing.tiers` entries (TASK-001, model-tier-routing),
+    so callers can pass those dicts straight through. Anything else
+    normalizes to `{"agent_cli": None, "agent_model": None, "effort": None}`
+    so callers can treat a missing match and a malformed entry identically
+    (fall through to the next tier of precedence).
     """
     if isinstance(value, str):
-        return {"agent_cli": value, "agent_model": None}
+        return {"agent_cli": value, "agent_model": None, "effort": None}
     if isinstance(value, dict):
-        return {"agent_cli": value.get("agent_cli"), "agent_model": value.get("agent_model")}
-    return {"agent_cli": None, "agent_model": None}
+        return {
+            "agent_cli": value.get("agent_cli"),
+            "agent_model": value.get("agent_model"),
+            "effort": value.get("effort"),
+        }
+    return {"agent_cli": None, "agent_model": None, "effort": None}
 
 
 def agent_for(
@@ -105,10 +110,11 @@ def agent_for(
     role_agent_map: Optional[Dict[str, Any]] = None,
     tier_map: Optional[Dict[Tuple[Any, Any], Any]] = None,
 ) -> Dict[str, Any]:
-    """Resolve `{"agent_cli", "agent_model"}` for one spawn -- the canonical
-    per-spawn agent-resolution function (REQ-015/016/017). Pure, stdlib-only,
-    deterministic (REQ-NR002): same inputs always produce the same output.
-    Called by TASK-007's `LiveSpawn.__call__` for every task/group spawn.
+    """Resolve `{"agent_cli", "agent_model", "effort"}` for one spawn -- the
+    canonical per-spawn agent-resolution function (REQ-015/016/017). Pure,
+    stdlib-only, deterministic (REQ-NR002): same inputs always produce the
+    same output. Called by TASK-007's `LiveSpawn.__call__` for every
+    task/group spawn.
 
     Args:
         role: one of ROLES (implement/review/fix/cleanup) or GROUP_ROLES
@@ -149,12 +155,13 @@ def agent_for(
         if override and override["agent_cli"]:
             return override
         if role == ROLE_REVIEW:
-            return {"agent_cli": reviewer_agent, "agent_model": None}  # independent reviewer (13.3)
-        return {"agent_cli": default_agent or "claude", "agent_model": None}
+            # independent reviewer (13.3)
+            return {"agent_cli": reviewer_agent, "agent_model": None, "effort": None}
+        return {"agent_cli": default_agent or "claude", "agent_model": None, "effort": None}
 
     # implement / fix / cleanup
     if task.get("agent"):
-        return {"agent_cli": task["agent"], "agent_model": None}
+        return {"agent_cli": task["agent"], "agent_model": None, "effort": None}
     if role in role_agent_map:
         override = _entry(role_agent_map[role])
         if override["agent_cli"]:
@@ -165,7 +172,7 @@ def agent_for(
             resolved = _entry(match)
             if resolved["agent_cli"]:
                 return resolved
-    return {"agent_cli": default_agent or "claude", "agent_model": None}
+    return {"agent_cli": default_agent or "claude", "agent_model": None, "effort": None}
 
 
 # --------------------------------------------------------------------------- #

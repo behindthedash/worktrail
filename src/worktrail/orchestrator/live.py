@@ -1261,6 +1261,7 @@ def run_research_session(
     spec_folder: Path,
     agent: str = DEFAULT_AGENT,
     model: str | None = None,
+    effort: str | None = None,
     timeout: int = WORKER_TIMEOUT_DEFAULT,
 ) -> str:
     """Pre-load shared source files into a single agent session and return its session_id.
@@ -1336,6 +1337,7 @@ def run_research_session(
         spec_folder.parent.parent,
         agent=agent,
         model=model,
+        effort=effort,
         timeout=timeout,
         extra_args=extra_args,
         log=print,
@@ -1385,6 +1387,7 @@ class LiveSpawn:
         fallback_agent: str | None = None,
         tier_map: dict | None = None,
         fallback_chain: "list[str] | None" = None,
+        effort: str | None = None,
     ) -> None:
         self.agent = agent
         self.label = f"LIVE {agent}"
@@ -1392,6 +1395,11 @@ class LiveSpawn:
         self.spec_folder_rel = spec_folder_rel.rstrip("/") + "/"
         self.timeout = timeout
         self.model = model or spawnlib.default_model_for_agent(agent)
+        # Run-level default effort (model-tier-routing 3.3). Unlike `model`, effort
+        # has no per-agent default to fall back to -- omitting it is always a valid,
+        # common state (spawnlib.build_cmd only adds the flag `if effort:`), so no
+        # `spawnlib.default_effort_for_agent()` equivalent exists or is needed.
+        self.effort = effort
         self.role_models = role_models or {}  # per-role overrides (production)
         # per-role agent CLI overrides (e.g. review=claude while implement/fix
         # stay on a cheaper --agent) -- lets the reviewer run on a genuinely
@@ -1496,6 +1504,11 @@ class LiveSpawn:
         else:
             default_model = resolved["agent_model"] or spawnlib.default_model_for_agent(agent)
         model = self.role_models.get(role, default_model)
+        # Effort mirrors the model precedence above, minus the cross-agent default
+        # fallback: there's no `default_effort_for_agent()` (no agent requires one),
+        # so a role/tier pinned to a different agent than the run's default only
+        # gets an effort when the resolution itself carried one (AC-011 parity).
+        effort = resolved["effort"] or (self.effort if agent == self.agent else None)
         # Claude workers get lean flags (bare + measured tool set).
         # Reviewer independence (13.3): review role additionally gets an appended
         # system prompt; implement/fix/cleanup keep the DEFAULT system prompt so
@@ -1528,6 +1541,7 @@ class LiveSpawn:
                 prompt,
                 worktree,
                 model=model,
+                effort=effort,
                 timeout=effective_timeout,
                 extra_args=extra_args,
                 resume_session_id=resume_session_id,
@@ -1539,6 +1553,7 @@ class LiveSpawn:
             worktree,
             agent=agent,
             model=model,
+            effort=effort,
             fallback_agent=effective_fallback,
             timeout=effective_timeout,
             extra_args=extra_args,
@@ -2084,6 +2099,7 @@ def live_run_real(
     fallback_agent: str | None = None,
     tier_map: dict | None = None,
     fallback_chain: "list[str] | None" = None,
+    effort: str | None = None,
     run_budget: float | None = None,
     spawn=None,
     git_lock=None,
@@ -2110,6 +2126,9 @@ def live_run_real(
                (TASK-001/006), threaded straight into LiveSpawn's construction.
     fallback_chain — optional ordered fallback agent list; wins over the legacy
                single `fallback_agent` when configured (REQ-018).
+    effort — optional run-level default effort, threaded straight into LiveSpawn's
+               construction (model-tier-routing 3.3); a configured tier's own
+               `effort` still wins per dispatch.agent_for's precedence.
     run_budget — optional whole-run wall-clock cap (s); once exceeded the fan-out
                stops dispatching NEW tasks. None -> RUN_BUDGET_DEFAULT (0 = off).
 
@@ -2166,6 +2185,7 @@ def live_run_real(
         fallback_agent=fallback_agent,
         tier_map=tier_map,
         fallback_chain=fallback_chain,
+        effort=effort,
     )
     # Set unconditionally (default-constructed or caller-injected, e.g. the
     # --fork-research spawn built in _full_real_inner) so ROLE_IMPLEMENT prompts
@@ -2685,6 +2705,7 @@ def full_real(
     fallback_agent: str | None = None,
     tier_map: dict | None = None,
     fallback_chain: "list[str] | None" = None,
+    effort: str | None = None,
     run_budget: int | None = None,
     pipeline: bool = False,
     re_integrate: bool = False,
@@ -2735,6 +2756,7 @@ def full_real(
             fallback_agent=fallback_agent,
             tier_map=tier_map,
             fallback_chain=fallback_chain,
+            effort=effort,
             pipeline=pipeline,
             re_integrate=re_integrate,
             smoke_cmd=smoke_cmd,
@@ -2778,6 +2800,7 @@ def _pipeline_scheduler(
     fallback_agent: str | None = None,
     tier_map: dict | None = None,
     fallback_chain: "list[str] | None" = None,
+    effort: str | None = None,
     re_integrate: bool = False,
     # Injectable seams (default to production implementations)
     _spawn=None,
@@ -2850,6 +2873,7 @@ def _pipeline_scheduler(
         fallback_agent=fallback_agent,
         tier_map=tier_map,
         fallback_chain=fallback_chain,
+        effort=effort,
     )
     # See live_run_real's identical guard: surfaces dependency files to
     # ROLE_IMPLEMENT prompts, default-constructed or caller-injected alike.
@@ -3515,6 +3539,7 @@ def _full_real_inner(
     fallback_agent: str | None = None,
     tier_map: dict | None = None,
     fallback_chain: "list[str] | None" = None,
+    effort: str | None = None,
     pipeline: bool = False,
     re_integrate: bool = False,
     smoke_cmd: str | None = None,
@@ -3547,6 +3572,8 @@ def _full_real_inner(
                   (e.g. review="claude" for an independent reviewer while
                   implement/fix stay on a cheaper `agent`).
     run_budget  — optional whole-run wall-clock cap (s) for the fan-out (0 = off).
+    effort      — optional run-level default effort, threaded to every LiveSpawn
+                  this run constructs (pipeline and non-pipeline paths alike).
 
     Run this DETACHED (background), never as a blocking foreground call: it fans
     out N tasks then blocks on each PR's CI, routinely exceeding a 10-minute
@@ -3680,6 +3707,7 @@ def _full_real_inner(
             fallback_agent=fallback_agent,
             tier_map=tier_map,
             fallback_chain=fallback_chain,
+            effort=effort,
             run_budget=run_budget,
             journal_path=journal_path,
             run_id=run_id,
@@ -3699,7 +3727,9 @@ def _full_real_inner(
     research_spawn = None
     if fork_research:
         spec_folder = repo / spec_rel
-        sid = run_research_session(spec_folder, agent=agent, model=model, timeout=timeout)
+        sid = run_research_session(
+            spec_folder, agent=agent, model=model, effort=effort, timeout=timeout
+        )
         if sid:
             spec_id_tmp, _ = taskformats.load_spec(str(spec_folder))
             research_spawn = LiveSpawn(
@@ -3713,6 +3743,7 @@ def _full_real_inner(
                 fallback_agent=fallback_agent,
                 tier_map=tier_map,
                 fallback_chain=fallback_chain,
+                effort=effort,
             )
             research_spawn.research_session_id = sid
 
@@ -3733,6 +3764,7 @@ def _full_real_inner(
         fallback_agent=fallback_agent,
         tier_map=tier_map,
         fallback_chain=fallback_chain,
+        effort=effort,
         run_budget=run_budget,
         spawn=research_spawn,
         notify_cmd=notify_cmd,
@@ -4086,6 +4118,20 @@ def _verifier_role_spawns(
 
 
 def _effective_role_models(agent: str, role_models: dict | None) -> dict | None:
+    # model-tier-routing 3.3: this function has no `effort` equivalent, and none
+    # is needed -- verified, not assumed. Its whole job is auto-populating a
+    # PER-ROLE MODEL override for codex (every codex role otherwise shares one
+    # model, see the module comment above LiveSpawn) when the caller passed
+    # none, working around a gap in `role_models`'s own precedence (it has no
+    # per-agent default to fall back to, unlike `self.model`). A per-role
+    # EFFORT override already exists through a different, already-shipped path:
+    # `role_agents` (routing.roles / --role-agent-map) entries carry their own
+    # `effort` key, resolved by `dispatch.agent_for()` into `resolved["effort"]`
+    # and consumed directly in `LiveSpawn.spawn()` -- see
+    # `test_role_override_effort_reaches_spawn_agent` in test_live_extras.py.
+    # `role_models`/`_effective_role_models()` is a separate, narrower {role:
+    # model} convenience surface with no `role_agents`-equivalent precedence
+    # gap for effort to fill, so there is nothing for this function to thread.
     if role_models is not None:
         return role_models
     if agent == "codex":
@@ -4205,6 +4251,14 @@ def main(argv=None) -> int:
         "through to spawn_agent's fallback machinery).",
     )
     fr.add_argument("--model", default=None)
+    fr.add_argument(
+        "--effort",
+        default=None,
+        help="Run-level default reasoning effort (e.g. 'high'), threaded to every "
+        "LiveSpawn this run constructs; a configured tier's own effort still wins "
+        "per dispatch.agent_for's precedence (model-tier-routing 3.3). Omit for "
+        "no effort flag (pre-spec behavior).",
+    )
     fr.add_argument(
         "--max-workers",
         type=int,
@@ -4537,6 +4591,7 @@ def main(argv=None) -> int:
             fallback_agent=args.fallback_agent,
             tier_map=tier_map,
             fallback_chain=fallback_chain,
+            effort=args.effort,
             run_budget=args.run_budget * 60 if args.run_budget else args.run_budget,
             pipeline=args.pipeline,
             re_integrate=args.re_integrate,

@@ -407,6 +407,7 @@ def build_cmd(
     *,
     agent: str = "claude",
     model: Optional[str] = None,
+    effort: Optional[str] = None,
     extra_args: Optional[Sequence[str]] = None,
     resume_session_id: Optional[str] = None,
     output_last_message: Optional[str] = None,
@@ -419,6 +420,8 @@ def build_cmd(
         cmd = ["claude", "-p", prompt, *PERM_FLAGS, *JSON_OUTPUT_FLAGS]
         if model:
             cmd += ["--model", model]
+        if effort:
+            cmd += ["--effort", effort]
         if resume_session_id:
             cmd += ["--resume", resume_session_id, "--fork-session"]
         if extra_args:
@@ -429,6 +432,8 @@ def build_cmd(
         cmd = ["opencode", "run", "--format", "json"]
         if model:
             cmd += ["--model", model]
+        if effort:
+            cmd += ["--variant", effort]
         if resume_session_id:
             cmd += ["--session", resume_session_id, "--fork"]
         if extra_args:
@@ -439,6 +444,8 @@ def build_cmd(
     cmd = ["codex", "exec", "--json", "-s", "workspace-write"]
     if model:
         cmd += ["--model", model]
+    if effort:
+        cmd += ["-c", f"model_reasoning_effort={effort}"]
     if output_last_message:
         cmd += ["--output-last-message", output_last_message]
     if extra_args:
@@ -485,6 +492,7 @@ def spawn_agent(
     *,
     agent: str = "claude",
     model: Optional[str] = None,
+    effort: Optional[str] = None,
     fallback_agent: "Optional[str | Sequence[str]]" = None,
     timeout: int = 3600,
     retries: int = SPAWN_RETRIES_DEFAULT,
@@ -574,6 +582,7 @@ def spawn_agent(
         prompt,
         agent=agent,
         model=model,
+        effort=effort,
         extra_args=extra_args,
         resume_session_id=resume_session_id,
         output_last_message=output_file,
@@ -620,8 +629,10 @@ def spawn_agent(
                 prompt,
                 agent=agent,
                 model=model,
-                # Primary-agent flags are CLI-specific and cannot safely cross
-                # the fallback boundary.
+                # effort is a CLI-agnostic tier semantic (build_cmd translates it
+                # per agent) so it carries across the fallback boundary; unlike
+                # extra_args, which are primary-agent-specific and cannot.
+                effort=effort,
                 extra_args=None,
                 resume_session_id=None,
                 output_last_message=output_file,
@@ -704,6 +715,7 @@ def spawn_claude_p(
     cwd: "str | Path",
     *,
     model: Optional[str] = None,
+    effort: Optional[str] = None,
     timeout: int = 3600,
     retries: int = SPAWN_RETRIES_DEFAULT,
     session_limit_waits: int = SESSION_LIMIT_WAITS_DEFAULT,
@@ -728,6 +740,7 @@ def spawn_claude_p(
         cwd,
         agent="claude",
         model=model,
+        effort=effort,
         fallback_agent=fallback_agent,
         timeout=timeout,
         retries=retries,
