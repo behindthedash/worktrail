@@ -282,6 +282,32 @@ class Helpers(unittest.TestCase):
         with self.assertRaises(ValueError):
             spawnlib.build_cmd("hi", agent="bogus")
 
+    def test_build_cmd_no_effort_byte_identical_to_pre_change(self):
+        # model-tier-routing 3.4: effort=None must not perturb any agent's
+        # command line -- byte-identical to the pre-effort build_cmd() output.
+        for agent in ("claude", "opencode", "codex"):
+            with_effort_none = spawnlib.build_cmd("hi", agent=agent, effort=None)
+            without_effort_kwarg = spawnlib.build_cmd("hi", agent=agent)
+            self.assertEqual(with_effort_none, without_effort_kwarg)
+            self.assertNotIn("--effort", with_effort_none)
+            self.assertNotIn("--variant", with_effort_none)
+            self.assertFalse(any("model_reasoning_effort" in part for part in with_effort_none))
+
+    def test_build_cmd_claude_effort_flag(self):
+        c = spawnlib.build_cmd("hi", agent="claude", effort="high")
+        self.assertIn("--effort", c)
+        self.assertEqual(c[c.index("--effort") + 1], "high")
+
+    def test_build_cmd_opencode_effort_variant_flag(self):
+        c = spawnlib.build_cmd("hi", agent="opencode", effort="max")
+        self.assertIn("--variant", c)
+        self.assertEqual(c[c.index("--variant") + 1], "max")
+
+    def test_build_cmd_codex_effort_reasoning_config(self):
+        c = spawnlib.build_cmd("hi", agent="codex", effort="xhigh")
+        self.assertIn("-c", c)
+        self.assertEqual(c[c.index("-c") + 1], "model_reasoning_effort=xhigh")
+
 
 class DefaultSettingSourcesStructural(unittest.TestCase):
     """Structural guard for handoff 20260714-120009 item 3: three PRs
