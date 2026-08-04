@@ -525,14 +525,14 @@ class Routing(unittest.TestCase):
         with self._no_mw_env():
             pol = load_policy(repo)
         self.assertEqual(pol["routing"]["defaults"],
-                         {"A": {"low": {"agent_cli": "claude", "agent_model": "sonnet"}}})
+                         {"A": {"low": {"agent_cli": "claude", "agent_model": "sonnet", "effort": None}}})
         self.assertEqual(pol["routing"]["roles"],
-                         {"reviewer": {"agent_cli": "codex", "agent_model": None}})
+                         {"reviewer": {"agent_cli": "codex", "agent_model": None, "effort": None}})
         self.assertEqual(pol["routing"]["tiers"],
-                         {("hard", "backend"): {"agent_cli": "codex", "agent_model": None}})
+                         {("hard", "backend"): {"agent_cli": "codex", "agent_model": None, "effort": None}})
         self.assertEqual(pol["routing"]["fallback"],
-                         [{"agent_cli": "codex", "agent_model": None},
-                          {"agent_cli": "opencode", "agent_model": None}])
+                         [{"agent_cli": "codex", "agent_model": None, "effort": None},
+                          {"agent_cli": "opencode", "agent_model": None, "effort": None}])
 
     def test_invalid_agent_literal_in_defaults_dropped(self):
         # AC-002
@@ -581,7 +581,7 @@ class Routing(unittest.TestCase):
         with self._mw_env(mw):
             pol = load_policy(repo)
         self.assertEqual(pol["routing"]["defaults"],
-                         {"A": {"low": {"agent_cli": "codex", "agent_model": None}}})
+                         {"A": {"low": {"agent_cli": "codex", "agent_model": None, "effort": None}}})
 
     def test_repo_routing_wins_over_machine_wide_file(self):
         # AC-003 precedence
@@ -608,7 +608,7 @@ class Routing(unittest.TestCase):
         repo = _repo_with("routing:\n  fallback:\n    - codex\n    - openrouter\n")
         with self._no_mw_env():
             pol = load_policy(repo)
-        self.assertEqual(pol["routing"]["fallback"], [{"agent_cli": "codex", "agent_model": None}])
+        self.assertEqual(pol["routing"]["fallback"], [{"agent_cli": "codex", "agent_model": None, "effort": None}])
         self.assertTrue(any("openrouter" in w and "excluded" in w
                             for w in pol["_meta"]["warnings"]))
 
@@ -623,8 +623,8 @@ class Routing(unittest.TestCase):
         with self._no_mw_env():
             pol = load_policy(repo)
         self.assertEqual(pol["routing"]["fallback"],
-                         [{"agent_cli": "codex", "agent_model": None},
-                          {"agent_cli": "openrouter", "agent_model": None, "api": True}])
+                         [{"agent_cli": "codex", "agent_model": None, "effort": None},
+                          {"agent_cli": "openrouter", "agent_model": None, "effort": None, "api": True}])
 
     def test_validate_routing_tiers_complexity_and_domain(self):
         # AC-CHG-004
@@ -632,14 +632,14 @@ class Routing(unittest.TestCase):
         resolved = _validate_routing_tiers(
             {"hard/backend": {"agent": "codex", "model": "gpt-5"}}, meta)
         self.assertEqual(resolved,
-                         {("hard", "backend"): {"agent_cli": "codex", "agent_model": "gpt-5"}})
+                         {("hard", "backend"): {"agent_cli": "codex", "agent_model": "gpt-5", "effort": None}})
         self.assertEqual(meta["warnings"], [])
 
     def test_validate_routing_tiers_no_domain_yields_none(self):
         # AC-CHG-005
         meta = {"warnings": []}
         resolved = _validate_routing_tiers({"easy": {"agent": "claude"}}, meta)
-        self.assertEqual(resolved, {("easy", None): {"agent_cli": "claude", "agent_model": None}})
+        self.assertEqual(resolved, {("easy", None): {"agent_cli": "claude", "agent_model": None, "effort": None}})
 
     def test_validate_routing_tiers_invalid_agent_dropped_others_kept(self):
         # AC-CHG-006
@@ -647,7 +647,7 @@ class Routing(unittest.TestCase):
         resolved = _validate_routing_tiers(
             {"hard/backend": {"agent": "bogus"},
              "easy": {"agent": "claude"}}, meta)
-        self.assertEqual(resolved, {("easy", None): {"agent_cli": "claude", "agent_model": None}})
+        self.assertEqual(resolved, {("easy", None): {"agent_cli": "claude", "agent_model": None, "effort": None}})
         self.assertTrue(any("routing.tiers.hard/backend" in w for w in meta["warnings"]))
 
     def test_resolve_tier_map_populated(self):
@@ -656,7 +656,7 @@ class Routing(unittest.TestCase):
         with self._no_mw_env():
             pol = load_policy(repo)
         self.assertEqual(resolve_tier_map(pol),
-                         {("hard", "backend"): {"agent_cli": "codex", "agent_model": None}})
+                         {("hard", "backend"): {"agent_cli": "codex", "agent_model": None, "effort": None}})
 
     def test_resolve_tier_map_no_routing_returns_empty(self):
         # AC-CHG-002
@@ -697,8 +697,8 @@ class Routing(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(first["agent_cli"], "claude")
         self.assertEqual(first["agent_model"], "opus")
-        self.assertEqual(first["roles"], {"reviewer": {"agent_cli": "codex", "agent_model": None}})
-        self.assertEqual(first["fallback"], [{"agent_cli": "opencode", "agent_model": None}])
+        self.assertEqual(first["roles"], {"reviewer": {"agent_cli": "codex", "agent_model": None, "effort": None}})
+        self.assertEqual(first["fallback"], [{"agent_cli": "opencode", "agent_model": None, "effort": None}])
 
     def test_resolve_routing_unmatched_falls_back_to_flat_agent_cli(self):
         # REQ-002
