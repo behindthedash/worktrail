@@ -242,7 +242,7 @@ class E2ERoutedDispatchJourneyTest(unittest.TestCase):
             policy = policy_mod.load_policy(repo)
             resolved = policy_mod.resolve_routing(policy, "B", "medium")
             self.assertEqual(resolved["agent_cli"], "claude")
-            self.assertEqual(resolved["roles"], {"review": {"agent_cli": "opencode", "agent_model": None}})
+            self.assertEqual(resolved["roles"], {"review": {"agent_cli": "opencode", "agent_model": None, "effort": None}})
 
             # `routing.tiers` now validates to the `(complexity, domain) -> agent`
             # shape documented in
@@ -251,7 +251,7 @@ class E2ERoutedDispatchJourneyTest(unittest.TestCase):
             # from the real `go-policy.yaml` block above via `resolve_tier_map()`
             # rather than hand-building the dict.
             tier_map = policy_mod.resolve_tier_map(policy)
-            self.assertEqual(tier_map, {("hard", "backend"): {"agent_cli": "codex", "agent_model": None}})
+            self.assertEqual(tier_map, {("hard", "backend"): {"agent_cli": "codex", "agent_model": None, "effort": None}})
 
             spawn = RoutingFakeSpawn(
                 default_agent=resolved["agent_cli"],
