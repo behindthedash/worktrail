@@ -489,6 +489,26 @@ def resolve_tier_map(policy: Dict[str, Any]) -> Dict[Tuple[str, Optional[str]], 
     return routing.get("tiers") or {}
 
 
+def _json_safe(obj: Any) -> Any:
+    """Recursively convert `policy["routing"]["tiers"]`'s `(complexity, domain)`
+    tuple keys (built eagerly by `_validate_routing_tiers()`) back into their
+    `"complexity/domain"` (or bare `"complexity"`) string form so `load_policy()`'s
+    return value can be `json.dumps`-ed. Only affects the CLI `--json` display
+    path — `resolve_tier_map()` and every other in-memory consumer still read the
+    tuple-keyed dict produced by `load_policy()` directly, unchanged."""
+    if isinstance(obj, dict):
+        safe: Dict[Any, Any] = {}
+        for key, value in obj.items():
+            if isinstance(key, tuple):
+                complexity, domain = key
+                key = f"{complexity}/{domain}" if domain else complexity
+            safe[key] = _json_safe(value)
+        return safe
+    if isinstance(obj, list):
+        return [_json_safe(item) for item in obj]
+    return obj
+
+
 def detect_external_automerge(repo: Path) -> Dict[str, Any]:
     """Scan `.github/workflows/*.yml`/`*.yaml` for a repo's own auto-merge automation.
 
@@ -740,7 +760,7 @@ def main(argv=None) -> int:
         method = merge_method_for_branch(policy, args.merge_method_for_branch)
         print(json.dumps({"merge_method": method}, indent=2))
         return 0
-    print(json.dumps(policy, indent=2))
+    print(json.dumps(_json_safe(policy), indent=2))
     return 0
 
 

@@ -491,6 +491,46 @@ class TestMergeMethodForBranchCli(unittest.TestCase):
         self.assertIsNone(result["merge_method"])
 
 
+class TestPolicyJsonCli(unittest.TestCase):
+    """--json on the raw policy dict: `routing.tiers` is stored with
+    `(complexity, domain)` tuple keys (see `Routing.test_validate_routing_tiers_*`
+    below) for the in-memory `resolve_tier_map()` contract, but `json.dumps`
+    cannot serialize tuple keys. Any repo with a `routing.tiers` block used to
+    crash `worktrail-policy --repo . --json` (Phase 4 of every `/go` invocation
+    against it) with `TypeError: keys must be str, int, float, bool or None, not
+    tuple`."""
+
+    def _run(self, repo):
+        import json
+        import subprocess
+        import sys
+        cmd = [sys.executable, "-m", "worktrail.router.policy",
+               "--repo", str(repo), "--json"]
+        out = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        return json.loads(out.stdout)
+
+    def test_json_with_tiers_domain_does_not_crash(self):
+        repo = _repo_with("routing:\n  tiers:\n    hard/backend:\n      agent: codex\n")
+        result = self._run(repo)
+        self.assertEqual(
+            result["routing"]["tiers"],
+            {"hard/backend": {"agent_cli": "codex", "agent_model": None, "effort": None}})
+
+    def test_json_with_tiers_no_domain_does_not_crash(self):
+        repo = _repo_with("routing:\n  tiers:\n    easy:\n      agent: claude\n")
+        result = self._run(repo)
+        self.assertEqual(
+            result["routing"]["tiers"],
+            {"easy": {"agent_cli": "claude", "agent_model": None, "effort": None}})
+
+    def test_json_without_tiers_unaffected(self):
+        repo = _repo_with("routing:\n  roles:\n    reviewer:\n      agent_cli: codex\n")
+        result = self._run(repo)
+        self.assertEqual(
+            result["routing"]["roles"],
+            {"reviewer": {"agent_cli": "codex", "agent_model": None, "effort": None}})
+
+
 class Routing(unittest.TestCase):
     """routing: schema, machine-wide fallback file, and resolve_routing() —
     TASK-001 (023-subscription-aware-routing)."""
