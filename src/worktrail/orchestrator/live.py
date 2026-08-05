@@ -1523,12 +1523,22 @@ class LiveSpawn:
         if agent != "claude":
             resume_session_id = None
         # An ordered fallback chain (routing-table-resolved) wins over the
-        # legacy single --fallback-agent when configured (REQ-018); either way
-        # only applies when this spawn is running on the run's OWN default
-        # agent (a role/tier override has no sensible fallback of its own),
-        # unchanged from the pre-spec gating.
+        # legacy single --fallback-agent when configured (REQ-018). It applies
+        # to every spawn EXCEPT judgment roles pinned to a non-default agent:
+        # a role/tier override on implement/fix/cleanup still deserves the
+        # run's configured recovery path (a pinned tier model going unavailable
+        # for any reason should not leave the task with zero automatic
+        # recovery), but a JUDGMENT_ROLES spawn (review is the only one that
+        # reaches this call -- resolve/ci-fix/assembly-resolve never do, see
+        # dispatch.JUDGMENT_ROLES) deliberately pinned to a different reviewer
+        # agent keeps the old no-fallback gating so a silent fallback can never
+        # erode the independent-reviewer guarantee (13.3, DEC-003). spawn_agent/
+        # spawn_claude_p already drop any hop equal to the spawned `agent`
+        # itself (spawnlib._normalize_fallback_chain), so passing the run-level
+        # chain through unchanged for a tier-resolved agent is safe as-is.
         fallback = self.fallback_chain if self.fallback_chain else self.fallback_agent
-        effective_fallback = fallback if agent == self.agent else None
+        judgment_pinned = role in dispatch.JUDGMENT_ROLES and agent != self.agent
+        effective_fallback = None if judgment_pinned else fallback
         self.last_agent = agent
         if effective_fallback:
             # Claude task workers now carry real fallback machinery too (see

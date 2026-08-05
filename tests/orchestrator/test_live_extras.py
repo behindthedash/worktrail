@@ -934,9 +934,11 @@ class LiveSpawnFallbackChainTests(unittest.TestCase):
         captured = self._call(agent="opencode", fallback_agent=None, fallback_chain=None)
         self.assertIsNone(captured.get("fallback_agent"))
 
-    def test_role_overridden_agent_gets_no_fallback(self):
-        """A role/tier override away from self.agent has no sensible fallback of
-        its own -- unchanged pre-spec gating."""
+    def test_role_overridden_non_judgment_agent_still_gets_fallback(self):
+        """A role/tier override on a non-judgment role (implement/fix/cleanup)
+        away from self.agent still gets the run's configured fallback chain --
+        a pinned tier/role model going unavailable must not leave the task with
+        zero automatic recovery (brief 20260805-144349)."""
         captured = {}
         fake_result = type(
             "R", (), {"text": "ok", "usage": {}, "tools_used": [], "skills_used": [], "paused_s": 0.0}
@@ -949,7 +951,73 @@ class LiveSpawnFallbackChainTests(unittest.TestCase):
                 role_agents={"implement": "opencode"}, fallback_chain=["codex"],
             )
             spawn("implement", {"id": "TASK-001", "status": "pending", "files": ["src/foo.py"]}, Path("/tmp/wt"))
-        self.assertIsNone(captured.get("fallback_agent"))
+        self.assertEqual(captured.get("fallback_agent"), ["codex"])
+
+    def test_tier_overridden_fix_and_cleanup_also_get_fallback(self):
+        """Same as implement above, for fix/cleanup -- all non-judgment roles
+        share the extended gate."""
+        tier_map = {("complex", "backend"): {"agent_cli": "opencode", "agent_model": None}}
+        for role in ("fix", "cleanup"):
+            captured = {}
+            fake_result = type(
+                "R", (), {"text": "ok", "usage": {}, "tools_used": [], "skills_used": [], "paused_s": 0.0}
+            )()
+            with patch("worktrail.orchestrator.live.dispatch.build_worker_prompt", return_value="prompt"), \
+                 patch("worktrail.orchestrator.live.spawnlib.spawn_agent",
+                       side_effect=lambda *_, **kw: captured.update(kw) or fake_result):
+                spawn = live.LiveSpawn(
+                    "spec-001", "docs/specs/001-spec", agent="claude",
+                    tier_map=tier_map, fallback_chain=["codex"],
+                )
+                spawn(
+                    role,
+                    {
+                        "id": "TASK-001", "status": "pending", "files": ["src/foo.py"],
+                        "complexity": "complex", "domain": "backend",
+                    },
+                    Path("/tmp/wt"),
+                )
+            self.assertEqual(captured.get("fallback_agent"), ["codex"], role)
+
+    def test_role_overridden_judgment_agent_gets_no_fallback(self):
+        """A judgment role (review here -- resolve/ci-fix/assembly-resolve never
+        reach LiveSpawn.__call__) pinned to a different agent than self.agent
+        keeps the old no-fallback gating: a silent fallback must never erode
+        the independent-reviewer guarantee (13.3, DEC-003)."""
+        claude_captured = {}
+        agent_captured = {}
+        fake_result = type(
+            "R", (), {"text": "ok", "usage": {}, "tools_used": [], "skills_used": [], "paused_s": 0.0}
+        )()
+        with patch("worktrail.orchestrator.live.dispatch.build_worker_prompt", return_value="prompt"), \
+             patch("worktrail.orchestrator.live.spawnlib.spawn_claude_p",
+                   side_effect=lambda *_, **kw: claude_captured.update(kw) or fake_result), \
+             patch("worktrail.orchestrator.live.spawnlib.spawn_agent",
+                   side_effect=lambda *_, **kw: agent_captured.update(kw) or fake_result):
+            spawn = live.LiveSpawn(
+                "spec-001", "docs/specs/001-spec", agent="opencode",
+                role_agents={"review": "claude"}, fallback_chain=["codex"],
+            )
+            spawn("review", {"id": "TASK-001", "status": "pending", "files": ["src/foo.py"]}, Path("/tmp/wt"))
+        self.assertEqual(agent_captured, {}, "review must spawn via the claude path")
+        self.assertIsNone(claude_captured.get("fallback_agent"))
+
+    def test_review_on_run_default_agent_still_gets_fallback(self):
+        """A judgment role NOT pinned away from self.agent (the common case --
+        no role_agents override for review) is unaffected: fallback still
+        applies exactly as it did pre-spec."""
+        claude_captured = {}
+        fake_result = type(
+            "R", (), {"text": "ok", "usage": {}, "tools_used": [], "skills_used": [], "paused_s": 0.0}
+        )()
+        with patch("worktrail.orchestrator.live.dispatch.build_worker_prompt", return_value="prompt"), \
+             patch("worktrail.orchestrator.live.spawnlib.spawn_claude_p",
+                   side_effect=lambda *_, **kw: claude_captured.update(kw) or fake_result):
+            spawn = live.LiveSpawn(
+                "spec-001", "docs/specs/001-spec", agent="claude", fallback_chain=["codex"],
+            )
+            spawn("review", {"id": "TASK-001", "status": "pending", "files": ["src/foo.py"]}, Path("/tmp/wt"))
+        self.assertEqual(claude_captured.get("fallback_agent"), ["codex"])
 
 
 class LiveSpawnServingAgentLabelTests(unittest.TestCase):
@@ -988,6 +1056,39 @@ class LiveSpawnServingAgentLabelTests(unittest.TestCase):
         # here (this is a best-effort label, not a re-implementation of gating).
         spawn = self._call(agent="opencode", fallback_chain=None, gated_agents=("opencode",))
         self.assertEqual(spawn.last_agent, "opencode")
+
+    def test_tier_resolved_primary_gated_serving_agent_is_fallback_hop(self):
+        """Cost-visibility (brief 20260805-144349): a cheap tier-pinned agent
+        that falls back to a more expensive configured hop must show up as
+        such in the journal's `agent` label (last_agent), not silently stay
+        labeled as the (never-actually-serving) tier-pinned agent -- this is
+        the existing last_agent/_serving_agent_guess machinery, now reachable
+        for tier-resolved spawns since the fallback gate covers them too."""
+        tier_map = {("cheap", "trivia"): {"agent_cli": "opencode", "agent_model": None}}
+        fake_result = type(
+            "R", (), {"text": "ok", "usage": {}, "tools_used": [], "skills_used": [], "paused_s": 0.0}
+        )()
+
+        def fake_check(cand_agent, cand_model, *_a, **_kw):
+            if cand_agent == "opencode":
+                raise agent_capacity.ProviderUnavailable("opencode:x", {})
+
+        with patch("worktrail.orchestrator.live.dispatch.build_worker_prompt", return_value="prompt"), \
+             patch("worktrail.orchestrator.live.spawnlib.spawn_agent", return_value=fake_result), \
+             patch("worktrail.orchestrator.live.agent_capacity.check", side_effect=fake_check):
+            spawn = live.LiveSpawn(
+                "spec-001", "docs/specs/001-spec", agent="claude",
+                tier_map=tier_map, fallback_chain=["codex"],
+            )
+            spawn(
+                "implement",
+                {
+                    "id": "TASK-001", "status": "pending", "files": ["src/foo.py"],
+                    "complexity": "cheap", "domain": "trivia",
+                },
+                Path("/tmp/wt"),
+            )
+        self.assertEqual(spawn.last_agent, "codex")
 
     def test_serving_agent_guess_never_raises_on_capacity_error(self):
         """Best-effort: an unexpected error reading the capacity cache must not
