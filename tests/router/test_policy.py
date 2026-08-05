@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 from worktrail.router.policy import (
-    DEFAULTS, _validate_routing_tiers, automerge_eligible,
+    DEFAULTS, _json_safe, _validate_routing_tiers, automerge_eligible,
     automerge_labels, detect_external_automerge, load_policy,
     merge_method_for_branch, parse_policy_yaml,
     resolve_routing, resolve_tier_map,
@@ -529,6 +529,106 @@ class TestPolicyJsonCli(unittest.TestCase):
         self.assertEqual(
             result["routing"]["roles"],
             {"reviewer": {"agent_cli": "codex", "agent_model": None, "effort": None}})
+
+
+class TestPolicyJsonSafetyMatrix(unittest.TestCase):
+    """Regression coverage for the risk pattern behind PR #122 (not just the
+    exact tuple-key shape it fixed): `json.dumps(_json_safe(load_policy(repo)))`
+    must never raise for any valid `routing.*` configuration, so a future
+    validator that stores another non-JSON-safe key (following the
+    `routing.tiers` precedent) is caught here instead of live during a `/go`
+    Phase 4 policy load. Covers `defaults`/`roles`/`tiers`/`fallback`, each
+    with and without a domain/model/effort segment present."""
+
+    POLICY_YAMLS = {
+        "empty_routing_block": "routing: {}\n",
+        "defaults_only": (
+            "routing:\n"
+            "  defaults:\n"
+            "    A:\n"
+            "      low:\n"
+            "        agent_cli: claude\n"
+            "        agent_model: sonnet\n"
+            "        effort: high\n"),
+        "roles_only": (
+            "routing:\n"
+            "  roles:\n"
+            "    review:\n"
+            "      agent_cli: codex\n"),
+        "tiers_with_domain": (
+            "routing:\n"
+            "  tiers:\n"
+            "    hard/backend:\n"
+            "      agent: codex\n"
+            "      effort: xhigh\n"),
+        "tiers_without_domain": (
+            "routing:\n"
+            "  tiers:\n"
+            "    easy:\n"
+            "      agent: claude\n"),
+        "fallback_only": (
+            "routing:\n"
+            "  fallback:\n"
+            "    - codex\n"
+            "    - agent_cli: opencode\n"
+            "      agent_model: deepseek-v4-flash\n"),
+        "all_four_combined": (
+            "routing:\n"
+            "  defaults:\n"
+            "    F:\n"
+            "      high:\n"
+            "        agent_cli: claude\n"
+            "  roles:\n"
+            "    review:\n"
+            "      agent_cli: claude\n"
+            "      agent_model: opus\n"
+            "  tiers:\n"
+            "    t1-deep/frontend:\n"
+            "      agent: codex\n"
+            "      agent_model: gpt-5.6-sol\n"
+            "    t4-trivia:\n"
+            "      agent: claude\n"
+            "  fallback:\n"
+            "    - claude\n"
+            "    - codex\n"
+            "    - opencode\n"),
+        "multiple_tiers_mixed_domains": (
+            "routing:\n"
+            "  tiers:\n"
+            "    trivial:\n"
+            "      agent: claude\n"
+            "    trivial/frontend:\n"
+            "      agent: codex\n"
+            "    standard/backend:\n"
+            "      agent: opencode\n"),
+    }
+
+    def test_json_dumps_never_raises_and_round_trips(self):
+        import json
+        for name, policy_text in self.POLICY_YAMLS.items():
+            with self.subTest(policy=name):
+                repo = _repo_with(policy_text)
+                pol = load_policy(repo)
+                safe = _json_safe(pol)
+                try:
+                    dumped = json.dumps(safe)
+                except TypeError as exc:
+                    self.fail(f"{name}: json.dumps raised on _json_safe(load_policy(...)): {exc}")
+                # Round-trip: re-loading the dump must not raise either, and
+                # every routing.tiers key comes back as its "complexity[/domain]"
+                # string form (the tuple keys are gone after _json_safe).
+                reloaded = json.loads(dumped)
+                for key in (reloaded.get("routing") or {}).get("tiers", {}):
+                    self.assertIsInstance(key, str)
+
+    def test_json_safe_is_idempotent_when_no_tuple_keys_present(self):
+        # A policy with no routing.tiers has nothing for _json_safe to convert;
+        # it must still return a plain, json.dumps-able structure unchanged.
+        import json
+        repo = _repo_with("routing:\n  roles:\n    review:\n      agent_cli: codex\n")
+        pol = load_policy(repo)
+        self.assertEqual(_json_safe(pol), pol)
+        json.dumps(_json_safe(pol))  # must not raise
 
 
 class Routing(unittest.TestCase):
