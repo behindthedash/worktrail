@@ -287,7 +287,7 @@ def apply_to_tasks(
         m["files"] = sorted(files[t["id"]])
         if kind:
             m["kind"] = kind
-        for field in ("complexity", "review"):
+        for field in ("complexity", "review", "purpose"):
             if not m.get(field) and getattr(tp, field):
                 m[field] = getattr(tp, field)
         merged.append(m)

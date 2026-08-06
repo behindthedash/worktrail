@@ -223,6 +223,18 @@ def test_complexity_and_review_fill_but_never_override():
     assert merged[1]["review"] == "light"
 
 
+def test_purpose_fills_but_never_overrides():
+    tasks = [_task("1.1", files=["a.py"]), _task("1.2", files=["b.py"])]
+    tasks[0]["purpose"] = "authored"
+    plan = _plan(
+        TaskPlan(id="1.1", files=("a.py",), purpose="inferred"),
+        TaskPlan(id="1.2", files=("b.py",), purpose="inferred"),
+    )
+    merged, _ = runplan.apply_to_tasks(tasks, plan)
+    assert merged[0]["purpose"] == "authored"  # authored value wins
+    assert merged[1]["purpose"] == "inferred"  # absent -> filled
+
+
 def test_apply_never_mutates_the_caller_list():
     tasks = [_task("1.1"), _task("1.2", deps=["1.1"])]
     before = [dict(t) for t in tasks]
