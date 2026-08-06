@@ -134,22 +134,22 @@ def agent_for(
             `(complexity, domain)` pair.
         purpose_tier_map: `{purpose: tier}` -- a resolved
             `routing.purpose_tiers` table mapping the task's own
-            `task.get("purpose")` to a tier name. Not yet consulted by this
-            function (task-purpose-classification 4.2/4.3 wire it into the
-            tier-resolution precedence); accepted here so call sites can
-            start threading it through ahead of that.
+            `task.get("purpose")` to a tier name, consulted ahead of
+            `task.get("complexity")` when resolving the tier_map key for
+            implement/fix/cleanup roles (task-purpose-classification 4.2).
 
     Precedence for JUDGMENT_ROLES (review/resolve/ci-fix/assembly-resolve --
     DEC-003, REQ-017, REQ-NR003): only (2) role_agent_map override, else
     (4) run default (reviewer_agent for review, default_agent/"claude"
-    otherwise) are ever consulted. The task's own per-task override and
-    tier_map are NEVER consulted for these roles, regardless of what they
-    contain.
+    otherwise) are ever consulted. The task's own per-task override,
+    tier_map, and purpose_tier_map are NEVER consulted for these roles,
+    regardless of what they contain.
 
     Precedence for implement/fix/cleanup (REQ-015): (1) task["agent"]
     explicit per-task override, (2) role_agent_map override, (3) tier_map
-    match on (complexity, domain), (4) run default (default_agent or
-    "claude").
+    match on (tier, domain) -- tier is `purpose_tier_map.get(task.get
+    ("purpose"))` when that resolves, else `task.get("complexity")` --
+    (4) run default (default_agent or "claude").
 
     With no role_agent_map, no tier_map, and no per-task override, this
     returns exactly the run default for every role -- pre-spec behavior
@@ -174,7 +174,12 @@ def agent_for(
         if override["agent_cli"]:
             return override
     if tier_map:
-        match = tier_map.get((task.get("complexity"), task.get("domain")))
+        tier = None
+        if purpose_tier_map:
+            tier = purpose_tier_map.get(task.get("purpose"))
+        if tier is None:
+            tier = task.get("complexity")
+        match = tier_map.get((tier, task.get("domain")))
         if match is not None:
             resolved = _entry(match)
             if resolved["agent_cli"]:
