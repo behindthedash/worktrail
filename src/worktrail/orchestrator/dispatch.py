@@ -129,9 +129,13 @@ def agent_for(
         role_agent_map: `{role_name: agent-entry}` -- `routing.roles` /
             `--role-agent-map` (TASK-001), keyed by role name (`"implement"`,
             `"review"`, ...).
-        tier_map: `{(complexity, domain): agent-entry}` -- a resolved
+        tier_map: `{(tier, domain): agent-entry}` -- a resolved
             `routing.tiers` match table keyed by the task's own
-            `(complexity, domain)` pair.
+            `(tier, domain)` pair, where `tier` is `complexity` or a
+            purpose-derived tier (see `purpose_tier_map` below). Looked up
+            two ways: first `(f"{tier}-{agent}", domain)` where `agent` is
+            `default_agent or "claude"` (agent-aware entry, e.g.
+            `"t1-deep-codex"`), then plain `(tier, domain)` if that misses.
         purpose_tier_map: `{purpose: tier}` -- a resolved
             `routing.purpose_tiers` table mapping the task's own
             `task.get("purpose")` to a tier name, consulted ahead of
@@ -148,8 +152,10 @@ def agent_for(
     Precedence for implement/fix/cleanup (REQ-015): (1) task["agent"]
     explicit per-task override, (2) role_agent_map override, (3) tier_map
     match on (tier, domain) -- tier is `purpose_tier_map.get(task.get
-    ("purpose"))` when that resolves, else `task.get("complexity")` --
-    (4) run default (default_agent or "claude").
+    ("purpose"))` when that resolves, else `task.get("complexity")`;
+    within this step, an agent-aware key (`f"{tier}-{agent}"`, domain) is
+    tried before the plain (tier, domain) key -- (4) run default
+    (default_agent or "claude").
 
     With no role_agent_map, no tier_map, and no per-task override, this
     returns exactly the run default for every role -- pre-spec behavior
@@ -179,7 +185,11 @@ def agent_for(
             tier = purpose_tier_map.get(task.get("purpose"))
         if tier is None:
             tier = task.get("complexity")
-        match = tier_map.get((tier, task.get("domain")))
+        domain = task.get("domain")
+        agent = default_agent or "claude"
+        match = tier_map.get((f"{tier}-{agent}", domain))
+        if match is None:
+            match = tier_map.get((tier, domain))
         if match is not None:
             resolved = _entry(match)
             if resolved["agent_cli"]:
