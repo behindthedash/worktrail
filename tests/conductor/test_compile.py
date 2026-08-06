@@ -457,6 +457,87 @@ def test_the_cli_json_mode_auto_repairs_an_unordered_file_collision(tmp_path, ca
     assert any("auto-repaired" in n for n in notes)
 
 
+# --------------------------------------------------------------------------- #
+# CI's structural scope-check gate (worktrail.router.check_compile_markers)
+# reads this marker instead of re-running compile with a live model -- it must
+# exist exactly when the CLI reports success, and never on a failing run.
+# --------------------------------------------------------------------------- #
+def test_a_passing_cli_run_writes_the_compile_marker(tmp_path, capsys):
+    import subprocess
+    from unittest.mock import patch
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    d = repo / "openspec" / "changes" / "add-thing"
+    d.mkdir(parents=True)
+    (d / "proposal.md").write_text("## Why\nBecause.\n")
+    (d / "tasks.md").write_text("## 1. Core\n\n- [ ] 1.1 Add the parser\n- [ ] 1.2 Wire the endpoint\n")
+
+    reply = _reply(
+        **{
+            "1.1": {"files": ["src/parser.py"], "deps": []},
+            "1.2": {"files": ["src/api.py"], "deps": ["1.1"]},
+        }
+    )
+    with patch("worktrail.conductor.compile._default_spawn", return_value=reply):
+        rc = conductor_compile.main([str(d)])
+    capsys.readouterr()
+    assert rc == 0
+
+    marker = d / conductor_compile.COMPILE_MARKER_NAME
+    assert marker.is_file()
+
+    from worktrail.taskformats import resolve
+
+    spec_id, tasks = resolve.load_spec(str(d))
+    assert marker.read_text(encoding="utf-8").strip() == runplan.fingerprint(d, tasks)
+
+
+def test_a_failing_cli_run_does_not_write_the_compile_marker(tmp_path, capsys):
+    """`--no-llm` degrades every task to an empty-files baseline (see the
+    scope-gap test above), so this reproduces a failing run without a fake
+    model reply. A marker recorded here would be worse than no marker at all
+    -- CI would read it as "this content passed" when it never did."""
+    import subprocess
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    d = repo / "openspec" / "changes" / "add-thing"
+    d.mkdir(parents=True)
+    (d / "proposal.md").write_text("## Why\nBecause.\n")
+    (d / "tasks.md").write_text("## 1. Core\n\n- [ ] 1.1 Add the parser\n- [ ] 1.2 Wire the endpoint\n")
+
+    rc = conductor_compile.main([str(d), "--no-llm"])
+    capsys.readouterr()
+    assert rc == 1
+    assert not (d / conductor_compile.COMPILE_MARKER_NAME).exists()
+
+
+def test_a_stale_marker_is_overwritten_by_the_next_passing_compile(tmp_path, capsys):
+    import subprocess
+    from unittest.mock import patch
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    d = repo / "openspec" / "changes" / "add-thing"
+    d.mkdir(parents=True)
+    (d / "proposal.md").write_text("## Why\nBecause.\n")
+    (d / "tasks.md").write_text("## 1. Core\n\n- [ ] 1.1 Add the parser\n")
+
+    marker = d / conductor_compile.COMPILE_MARKER_NAME
+    marker.write_text("stale-fingerprint-from-a-previous-content-version\n")
+
+    reply = _reply(**{"1.1": {"files": ["src/parser.py"], "deps": []}})
+    with patch("worktrail.conductor.compile._default_spawn", return_value=reply):
+        rc = conductor_compile.main([str(d)])
+    capsys.readouterr()
+    assert rc == 0
+    assert marker.read_text(encoding="utf-8").strip() != "stale-fingerprint-from-a-previous-content-version"
+
+
 def test_the_cli_json_mode_exits_zero_when_every_task_gets_scope(tmp_path, capsys):
     """The counterpart: full scope in `--json` mode must not trip the gap check."""
     import json as json_module

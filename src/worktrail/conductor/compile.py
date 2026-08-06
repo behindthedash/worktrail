@@ -36,6 +36,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 from worktrail.conductor import runplan
 from worktrail.orchestrator.coordinator import TAIL_KINDS
 from worktrail.conductor.runplan import (
+    COMPILE_MARKER_NAME,
     SOURCE_BASELINE,
     SOURCE_COMPILED,
     SOURCE_SEED,
@@ -44,6 +45,22 @@ from worktrail.conductor.runplan import (
 )
 
 COMPILE_TIMEOUT_DEFAULT = 900
+
+
+def marker_path(spec_dir: "str | Path") -> Path:
+    """Where a passing compile records its validated content fingerprint."""
+    return Path(spec_dir) / COMPILE_MARKER_NAME
+
+
+def write_marker(spec_dir: "str | Path", fp: str) -> None:
+    """Record a passing compile so CI can verify it later without an LLM call.
+
+    Overwritten on every passing compile -- a marker left over from a prior
+    fingerprint is exactly the "stale" case the CI check needs to catch, and
+    it naturally does: the next fingerprint comparison simply won't match
+    until this is re-run and the marker moves to the new content version.
+    """
+    Path(marker_path(spec_dir)).write_text(fp + "\n", encoding="utf-8")
 
 
 def default_cache_dir(repo: "str | Path") -> Path:
@@ -485,6 +502,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     merged, notes = runplan.apply_to_tasks(tasks, plan)
     gaps = needs_compile(merged)
     collisions = runplan.unordered_file_collisions(merged)
+
+    if not (gaps or collisions):
+        write_marker(spec_dir, plan.fingerprint)
 
     if a.json:
         print(json.dumps(plan.to_dict(), indent=2, sort_keys=True))
