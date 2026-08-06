@@ -232,6 +232,31 @@ class TestAllCheckboxesChecked:
         )
         assert _all_checkboxes_checked(body, sections=COMPLETION_AUDIT_SECTIONS) is True
 
+    def test_scoped_falls_back_to_whole_body_when_named_sections_absent(self):
+        # devops TASK-001/TASK-002 shape: checkboxes directly under the H1
+        # title, no ## Acceptance Criteria / ## Definition of Done (DoD)
+        # subheadings at all -- neither named section exists, but the body
+        # is fully checked, so this must not be flagged as drift.
+        body = "# Task\n\n- [x] step one\n- [x] step two\n"
+        assert _all_checkboxes_checked(body, sections=COMPLETION_AUDIT_SECTIONS) is True
+
+    def test_scoped_falls_back_to_whole_body_and_still_detects_drift(self):
+        body = "# Task\n\n- [x] step one\n- [ ] step two\n"
+        assert _all_checkboxes_checked(body, sections=COMPLETION_AUDIT_SECTIONS) is False
+
+    def test_scoped_zero_checkboxes_anywhere_is_not_drift(self):
+        # mailbox-service TASK-002/003/004 shape: the checklist lives in
+        # frontmatter (success-criteria:), not the body -- zero checkboxes
+        # in the named sections AND zero in the whole body means there is
+        # nothing to audit, not drift.
+        body = "# Task\n\nSee frontmatter `success-criteria:` for the checklist.\n"
+        assert _all_checkboxes_checked(body, sections=COMPLETION_AUDIT_SECTIONS) is True
+
+    def test_unscoped_no_checkboxes_is_still_false(self):
+        # sections=None (whole-body call, no fallback to apply) keeps its
+        # existing "nothing checked" contract.
+        assert _all_checkboxes_checked("No checkboxes here") is False
+
 
 class TestExtractSections:
     """Unit tests for _extract_sections helper."""

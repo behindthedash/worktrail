@@ -123,9 +123,22 @@ def _extract_sections(body: str, sections: Tuple[str, ...]) -> str:
 
 def _all_checkboxes_checked(body: str, sections: Optional[Tuple[str, ...]] = None) -> bool:
     """Whether every checkbox in the body (or in the given sections) is ticked
-    (and at least one exists)."""
+    (and at least one exists).
+
+    When `sections` is given and none of the named headings contain a
+    checkbox (e.g. the checklist sits directly under the file's H1 title with
+    no `##` subheading), falls back to scanning the whole body. If the whole
+    body also has zero checkboxes (e.g. the checklist lives in frontmatter,
+    not the body), there is nothing to audit and this returns True rather
+    than False -- a zero-checkbox body is not the same as an unchecked one.
+    """
     text = body if sections is None else _extract_sections(body, sections)
     total = len(re.findall(r"- \[ \]", text)) + len(re.findall(r"- \[x\]", text))
+    if sections is not None and total == 0:
+        text = body
+        total = len(re.findall(r"- \[ \]", text)) + len(re.findall(r"- \[x\]", text))
+        if total == 0:
+            return True
     checked = len(re.findall(r"- \[x\]", text))
     return total > 0 and checked == total
 
