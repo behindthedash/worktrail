@@ -191,6 +191,31 @@ class TestCheckHistorySearch(unittest.TestCase):
         self.assertIn(root_sha, found)
         self.assertIn(nested_sha, found)
 
+    def test_commit_naming_symbol_only_in_its_message_is_found(self):
+        # `-S` only sees commits that change a symbol's occurrence count, so a
+        # commit that moved, reverted, or merely described the work is
+        # invisible to it while naming the symbol plainly in its subject. The
+        # `--grep` pass covers that; `kind` distinguishes the two.
+        repo = _init_repo()
+        _write(repo, "notes.txt", "nothing relevant here\n")
+        sha = _commit(repo, "Rework apply_to_tasks ordering", "2026-06-01T00:00:00")
+
+        res = cbs.check(Path(repo), "Concerns apply_to_tasks behaviour.", "2026-01-01T00:00:00")
+
+        self.assertTrue(res["checked"])
+        message_hits = [m for m in res["matches"] if m["kind"] == "message"]
+        self.assertIn(sha, {m["sha"] for m in message_hits})
+
+    def test_symbol_found_both_ways_is_reported_once(self):
+        repo = _init_repo()
+        _write(repo, "src/mod.py", "def apply_to_tasks():\n    pass\n")
+        sha = _commit(repo, "Add apply_to_tasks helper", "2026-06-01T00:00:00")
+
+        res = cbs.check(Path(repo), "Concerns apply_to_tasks behaviour.", "2026-01-01T00:00:00")
+
+        hits = [m for m in res["matches"] if m["sha"] == sha and m["probe"] == "apply_to_tasks"]
+        self.assertEqual(len(hits), 1)
+
     def test_commit_after_created_is_reported_with_sha_date_subject(self):
         repo = _init_repo()
         _write(repo, "src/widget.py", "print('v2')\n")

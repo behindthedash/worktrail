@@ -653,6 +653,23 @@ def check(repo: Path, text: str, since: Any, base: Optional[str] = None) -> Dict
             continue
         matches.extend(_parse_log(out, probe, "symbol"))
 
+    # Commit-message search, complementing `-S` above. `-S` only sees commits
+    # that changed a symbol's occurrence count, so a commit that moved, wrapped,
+    # or merely *described* the work can be invisible to it while naming the
+    # symbol plainly in its subject -- e.g. "fix(conductor): deterministic
+    # same-file ordering repair in apply_to_tasks()". Deduplicated against the
+    # `-S` hits so a commit found both ways is reported once.
+    seen_message_hits = {(m["sha"], m["probe"]) for m in matches}
+    for probe in probes["symbols"]:
+        out = _search_probe(repo, base_ref, since_str, [f"--grep={probe}", "--"])
+        if out is None:
+            warnings.append(f"git log --grep timed out or failed for symbol probe {probe!r}")
+            continue
+        for hit in _parse_log(out, probe, "message"):
+            if (hit["sha"], hit["probe"]) not in seen_message_hits:
+                seen_message_hits.add((hit["sha"], hit["probe"]))
+                matches.append(hit)
+
     result["checked"] = True
     result["matches"] = matches
     if warnings:
