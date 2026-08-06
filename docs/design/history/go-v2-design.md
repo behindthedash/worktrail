@@ -298,6 +298,22 @@ orchestrator's own group-PR path (`integrate.py`'s `_refresh_pr_labels()`)
 was already exempt from this gap since it applies labels programmatically at
 `gh pr create` time; it is unaffected by this change.
 
+Every fix above closed one *call site* in the same failure class
+(#74/#80/#82/#128/#137): drain.py's queue-drain loop, go's own Phase 7
+headless-dispatch poll-exit path, and interactive/Codex in-session dispatch
+each independently learned to call `ensure_pr_risk_label()` after the fact.
+A future dispatch surface (new agent CLI, new headless spawn shape, new
+orchestrator entrypoint) can still silently reintroduce the identical gap by
+not calling it. `reconcile_pr_labels.py` (`worktrail-reconcile-pr-labels`)
+closes the class structurally instead: a periodic sweep of every open PR
+across `go-policy.yaml`-declared repos, reusing the same
+`ensure_pr_risk_label()` correction and matching a PR back to the run record
+that produced it (`pull_request` field) for its `risk_level`, so any
+call-site gap self-heals on the next scheduled run rather than needing a
+6th manual patch. It is a safety net behind the call sites above, not a
+replacement for them — the correction remains best-effort and never
+touches `go:no-automerge`.
+
 ---
 
 ## 3. Migration plan (v1 → v2)
