@@ -98,6 +98,23 @@ def labels_in_command(command: str) -> Set[str]:
     return found
 
 
+def is_unparseable_command(command: str) -> bool:
+    """True when `shlex.split(command)` can't tokenize it (e.g. an apostrophe
+    in unquoted prose inside a `--body $(cat <<'EOF' ...)` heredoc trips
+    shlex's own quote-tracking, even though the real shell parses it fine).
+
+    Mirrors `preflight-gate.py`'s `_is_unparseable_command` byte-for-byte.
+    Callers use this to give a distinct, actionable deny reason instead of
+    the generic "label not passed" message when the real cause is a parse
+    failure, not a missing `--label` flag.
+    """
+    try:
+        shlex.split(command)
+    except ValueError:
+        return True
+    return False
+
+
 def _git(repo: Path, *args: str) -> Optional[str]:
     try:
         result = subprocess.run(
@@ -392,6 +409,15 @@ def check(repo: Path, command: Optional[str] = None) -> Dict[str, Any]:
     if state is not None and marker is not None and marker.get("state") == state:
         required = list(marker.get("labels") or [])
         if required and command is not None and PR_CREATE_RE.search(command):
+            if is_unparseable_command(command):
+                return _verdict(
+                    "deny",
+                    "this `gh pr create` command could not be parsed to verify its "
+                    f"required label(s) ({', '.join(required)}) -- likely an apostrophe or "
+                    "unescaped quote in the PR title/body breaking shell-token parsing "
+                    "(e.g. inside a `--body $(cat <<'EOF' ...)` heredoc). Use "
+                    "`--body-file <path>` instead of an inline `--body` and retry.",
+                )
             missing = [label for label in required if label not in labels_in_command(command)]
             if missing:
                 return _verdict(
