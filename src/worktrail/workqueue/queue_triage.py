@@ -6,6 +6,7 @@ from __future__ import annotations
 import datetime
 import json
 import re
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -173,6 +174,36 @@ def _memory_index_path(cwd: "str | Path") -> Path:
     return Path.home() / ".claude" / "projects" / slug / "memory" / "MEMORY.md"
 
 
+def _check_repo_archived(repo: str, cwd: "str | Path") -> Optional[bool]:
+    """Run `gh repo view --json isArchived,name -- <repo>`, confirming archival status.
+
+    Returns `True` only on a clean, well-formed confirmation that the repo is
+    archived; `False` on a clean confirmation that it is not; `None` on any check
+    failure (missing `gh`, non-zero exit, timeout, unparsable JSON) -- the spec's
+    "on any check failure, proceed to 2.2 unchanged" rule treats `None` the same
+    as "not archived", it just can't be trusted as a `stale-close` reason on its own.
+    """
+    try:
+        result = subprocess.run(
+            ["gh", "repo", "view", "--json", "isArchived,name", "--", repo],
+            capture_output=True,
+            text=True,
+            cwd=str(cwd),
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        data = json.loads(result.stdout)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data.get("isArchived") is True
+
+
 def evaluate_group(
     repo: str,
     briefs: List[Path],
@@ -190,13 +221,37 @@ def evaluate_group(
     when `repo` is not `NO_REPO_KEY` (so the evaluator's `git`/`gh` calls run
     against real repo state), else the worktrail repo itself.
 
+    Before spawning, and only when `repo` is not `NO_REPO_KEY`, runs
+    `_check_repo_archived()`. A confirmed `True` short-circuits: every brief in
+    the group is synthesized as `stale-close` (as evaluator-shaped JSON text, so
+    `parse_verdicts()` consumes it identically to real agent output) without
+    spawning an evaluator at all. A `False` or `None` (check failure or
+    inconclusive) falls through to the normal spawn unchanged.
+
     Returns a single-element list -- `[{"repo", "brief_ids", "raw_text"}]` --
     rather than the raw string directly, so a caller fanning out across multiple
-    groups can `.extend()` every call's result into one flat list alongside 2.4's
-    synthesized archived-repo short-circuit entries, without a shape special-case.
-    `raw_text` is untouched worker output; parsing/validation is `parse_verdicts`'s
-    job, not this function's.
+    groups can `.extend()` every call's result into one flat list, without a
+    shape special-case for the archived short-circuit. `raw_text` is untouched
+    worker output (or, in the archived case, the synthesized equivalent);
+    parsing/validation is `parse_verdicts`'s job, not this function's.
     """
+    brief_ids = [path.stem for path in briefs]
+
+    if repo != NO_REPO_KEY and _check_repo_archived(repo, cwd) is True:
+        raw_text = "\n".join(
+            json.dumps(
+                {
+                    "brief_id": bid,
+                    "verdict": "stale-close",
+                    "duplicate_of": None,
+                    "evidence": f"gh repo view confirmed repo '{repo}' is archived",
+                    "confidence": "high",
+                }
+            )
+            for bid in brief_ids
+        )
+        return [{"repo": repo, "brief_ids": brief_ids, "raw_text": raw_text}]
+
     from ..orchestrator import spawnlib
 
     brief_lines = "\n".join(
@@ -211,13 +266,7 @@ def evaluate_group(
         memory_index=_memory_index_path(cwd),
     )
     result = spawnlib.spawn_agent(prompt, cwd, agent=agent, model=model)
-    return [
-        {
-            "repo": repo,
-            "brief_ids": [path.stem for path in briefs],
-            "raw_text": result.text,
-        }
-    ]
+    return [{"repo": repo, "brief_ids": brief_ids, "raw_text": result.text}]
 
 
 @dataclass
