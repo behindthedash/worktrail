@@ -3,10 +3,14 @@
 
 from __future__ import annotations
 
+import argparse
 import datetime
 import json
+import os
 import re
 import subprocess
+import sys
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -461,3 +465,128 @@ def write_report(verdicts: List[Verdict], skipped: List[Path], out_dir: "str | P
 
     path.write_text("\n".join(lines), encoding="utf-8")
     return path
+
+
+# --------------------------------------------------------------------------- #
+# CLI
+# --------------------------------------------------------------------------- #
+
+
+def _worktrail_repo_root() -> Path:
+    """This checkout's repo root, for `evaluate_group()`'s repo-less-group `cwd`.
+
+    File-relative resolution, mirroring `drain.default_work_queue_py()`: AGENTS.md
+    guarantees the editable install always points at the canonical worktrail
+    checkout (never a task worktree), so walking up from `__file__` reliably
+    lands on the real repo root without a separate lookup.
+    """
+    return Path(__file__).resolve().parents[3]
+
+
+def _default_out_dir() -> Path:
+    """`~/.go/triage/<run-id>/`, per design.md -- run output lives beside `~/.go/runs`."""
+    run_id = f"triage-{time.strftime('%Y%m%d-%H%M%S')}"
+    return Path.home() / ".go" / "triage" / run_id
+
+
+def cmd_evaluate(args: argparse.Namespace) -> int:
+    """`evaluate` subcommand: wires 1.3 `inventory()` -> 2.x per group -> 3.1 write.
+
+    `--queue-dir` is applied as a temporary `WORK_QUEUE_DIR` override (restored in
+    a `finally`, matching `create_handoff.create()`'s pattern) since `inventory()`
+    reaches `queue_dir()` with no override parameter of its own.
+    """
+    previous_queue_dir = os.environ.get("WORK_QUEUE_DIR")
+    if args.queue_dir:
+        os.environ["WORK_QUEUE_DIR"] = str(args.queue_dir)
+    try:
+        groups, skipped = inventory(args.skip_if_triaged_within_days)
+    finally:
+        if args.queue_dir:
+            if previous_queue_dir is None:
+                os.environ.pop("WORK_QUEUE_DIR", None)
+            else:
+                os.environ["WORK_QUEUE_DIR"] = previous_queue_dir
+
+    out_dir = Path(args.out_dir) if args.out_dir else _default_out_dir()
+
+    verdicts: List[Verdict] = []
+    for repo, briefs in groups.items():
+        cwd = repo if repo != NO_REPO_KEY else _worktrail_repo_root()
+        for result in evaluate_group(repo, briefs, agent=args.agent, cwd=cwd):
+            verdicts.extend(parse_verdicts(result["raw_text"], result["brief_ids"]))
+
+    verdict_path = write_verdict_file(verdicts, out_dir)
+    report_path = write_report(verdicts, skipped, out_dir)
+
+    counts: Dict[str, int] = {}
+    for v in verdicts:
+        counts[v.verdict] = counts.get(v.verdict, 0) + 1
+
+    if args.as_json:
+        print(json.dumps(
+            {
+                "groups_evaluated": len(groups),
+                "briefs_skipped": len(skipped),
+                "verdict_counts": counts,
+                "verdict_file": str(verdict_path),
+                "report_file": str(report_path),
+            },
+            indent=2,
+        ))
+    else:
+        counts_str = ", ".join(
+            f"{vtype}={counts.get(vtype, 0)}" for vtype in sorted(VALID_VERDICT_TYPES)
+        )
+        print(f"report: {report_path}")
+        print(
+            f"groups evaluated: {len(groups)}, briefs skipped: {len(skipped)}, "
+            f"verdicts: {counts_str}"
+        )
+    return 0
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Repo-scoped dedup/staleness triage of the work queue. "
+                     "Recommended cadence: monthly, or pre-drain weekly -- not "
+                     "nightly (~1M tokens per full run over a non-trivial queue)."
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    from ..orchestrator.spawnlib import SUPPORTED_AGENTS
+
+    evaluate_parser = subparsers.add_parser(
+        "evaluate",
+        help="evaluate every repo group and write a verdict file + report",
+    )
+    evaluate_parser.add_argument(
+        "--skip-if-triaged-within-days", type=int, default=25,
+        dest="skip_if_triaged_within_days",
+        help="dedup window: briefs with a recent '## Triage' section are skipped (default 25)",
+    )
+    evaluate_parser.add_argument(
+        "--agent", default="claude", choices=sorted(SUPPORTED_AGENTS),
+        help="evaluator agent to spawn per repo group (default claude)",
+    )
+    evaluate_parser.add_argument(
+        "--out-dir", default=None,
+        help="where to write verdict.json + report.md (default ~/.go/triage/<run-id>/)",
+    )
+    evaluate_parser.add_argument(
+        "--queue-dir", default=None,
+        help="WORK_QUEUE_DIR override for this run",
+    )
+    evaluate_parser.add_argument(
+        "--json", action="store_true", dest="as_json",
+        help="print the run summary as JSON on exit",
+    )
+
+    args = parser.parse_args(argv)
+    if args.command == "evaluate":
+        return cmd_evaluate(args)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
