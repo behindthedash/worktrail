@@ -3,8 +3,6 @@ name: 'CI: Scope Check'
 on:
   pull_request:
     branches: [main]
-    paths:
-      - 'openspec/changes/**/tasks.md'
 
 concurrency:
   group: scope-check-${{ github.event.pull_request.number }}
