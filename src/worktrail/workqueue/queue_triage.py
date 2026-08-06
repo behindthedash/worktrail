@@ -6,7 +6,7 @@ from __future__ import annotations
 import datetime
 import re
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 from ..shared.brief_frontmatter import read_frontmatter, split_frontmatter
 from .work_queue import queue_dir
@@ -62,3 +62,25 @@ def is_recently_triaged(path: Path, within_days: int) -> bool:
     most_recent = max(dates)
     age_days = (datetime.date.today() - most_recent).days
     return age_days <= within_days
+
+
+def inventory(within_days: int) -> Tuple[Dict[str, List[Path]], List[Path]]:
+    """Compose `group_queue_by_repo()` + `is_recently_triaged()` into an evaluation set.
+
+    Briefs whose most recent `## Triage` section falls within `within_days` fail the
+    dedup check and are excluded from the returned groups (so 2.x never re-evaluates
+    them) but collected into `skipped` for report visibility. A group left empty by
+    filtering is dropped entirely rather than kept as an empty bucket.
+    """
+    skipped: List[Path] = []
+    groups: Dict[str, List[Path]] = {}
+    for key, paths in group_queue_by_repo().items():
+        kept: List[Path] = []
+        for path in paths:
+            if is_recently_triaged(path, within_days):
+                skipped.append(path)
+            else:
+                kept.append(path)
+        if kept:
+            groups[key] = kept
+    return groups, skipped
