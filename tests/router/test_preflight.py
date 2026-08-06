@@ -10,8 +10,8 @@ from pathlib import Path
 from unittest import mock
 
 from worktrail.router.preflight import (
-    check, duplicate_work_warning, labels_in_command, main, marker_path,
-    read_marker, tree_state, write_marker,
+    check, duplicate_work_warning, is_unparseable_command, labels_in_command,
+    main, marker_path, read_marker, tree_state, write_marker,
 )
 from worktrail.router.preflight import _pr_touched_files, _resolve_base_ref, _touched_files
 
@@ -148,6 +148,25 @@ class TestLabelsInCommand(unittest.TestCase):
         self.assertEqual(labels_in_command("gh pr create --title 'unterminated"), set())
 
 
+class TestIsUnparseableCommand(unittest.TestCase):
+    def test_apostrophe_in_heredoc_prose_is_unparseable(self) -> None:
+        # A real-world case: `don't`/`isn't` inside an unquoted `--body $(cat
+        # <<'EOF' ...)` heredoc trips shlex's own quote-tracking, even though
+        # the shell parses it fine.
+        command = (
+            "gh pr create --title x --label go:risk-low --body $(cat <<'EOF'\n"
+            "This isn't going to break anything.\n"
+            "EOF\n"
+            ")"
+        )
+        self.assertTrue(is_unparseable_command(command))
+
+    def test_well_formed_command_is_parseable(self) -> None:
+        self.assertFalse(
+            is_unparseable_command("gh pr create --title x --label go:risk-low")
+        )
+
+
 class TestCheckVerdict(_GitRepoCase):
     def test_unconfigured_repo_allows(self) -> None:
         repo = self._init_repo("base_branch: main\n")
@@ -243,6 +262,26 @@ class TestCheckVerdict(_GitRepoCase):
         write_marker(Path(repo), state, "true", ["go:risk-high", "go:no-automerge"])
         verdict = check(Path(repo))
         self.assertEqual(verdict["decision"], "allow")
+
+    def test_unparseable_command_denies_with_distinct_message(self) -> None:
+        """A `--label go:risk-high` IS present, but the apostrophe in the
+        heredoc body breaks shlex parsing -- the deny reason must name the
+        real cause (unparseable command) instead of claiming the label is
+        missing, so the actual fix (--body-file) is discoverable."""
+        repo = self._init_repo('pre_pr_cmd: "true"\n')
+        state = tree_state(Path(repo))
+        write_marker(Path(repo), state, "true", ["go:risk-high"])
+        command = (
+            "gh pr create --title x --label go:risk-high --body $(cat <<'EOF'\n"
+            "This isn't going to break anything.\n"
+            "EOF\n"
+            ")"
+        )
+        verdict = check(Path(repo), command=command)
+        self.assertEqual(verdict["decision"], "deny")
+        self.assertIn("could not be parsed", verdict["reason"])
+        self.assertIn("--body-file", verdict["reason"])
+        self.assertNotIn("does not pass them", verdict["reason"])
 
 
 class TestCheckCli(_GitRepoCase):

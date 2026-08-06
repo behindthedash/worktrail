@@ -33,6 +33,17 @@ supplies no scope reduces to the conservative baseline it started from.
 Everything else the plan touches is either additive (`complexity`, `review`,
 fill-only) or sticky in the safe direction (`kind`: a task the artifact declared
 as a tail stays a tail, so the plan can never un-hold-out an e2e task).
+
+The invariant above says nothing about *overlapping* scope: it only asks that
+both endpoints declare *some* files, not that a dropped edge's two tasks are
+file-disjoint. Two tasks that both declare the same file can still end up with
+no ordering edge between them (go-20260805-172326) -- `runnable_frontier`'s
+per-tick file lock happens to serialise them anyway at runtime, but nothing in
+this module asserts that, and a caller reading the merged plan has no way to
+tell the two cases apart without re-deriving the dependency closure itself.
+`unordered_file_collisions()` is that assertion, meant to run once right after
+`apply_to_tasks()` and fail loud rather than rely on a human reading the
+printed dep table before launch.
 """
 
 from __future__ import annotations
@@ -314,3 +325,63 @@ def apply_to_tasks(
         f"{scoped}/{len(merged)} tasks scoped, {loosened} loosened"
     )
     return merged, notes
+
+
+def unordered_file_collisions(tasks: Sequence[Dict[str, Any]]) -> List[Tuple[str, str, str]]:
+    """Merged tasks that declare the same file with no dependency order between them.
+
+    Meant to run once, right after `apply_to_tasks()`, on the merged task list --
+    never on a RunPlan alone, since the violation is about the *merged* edges a
+    caller will actually schedule against, not what either the artifact or the
+    plan asserted in isolation.
+
+    Two writers of the same file are "ordered" if one is a transitive dependency
+    of the other; they need not depend on each other directly, only be connected
+    through the merged graph. `plan_groups()`'s shared-file union-find
+    (coordinator.py, PR #25) does not make this redundant: it only decides which
+    PR/group a same-file task lands in, never asserts an edge between them, so two
+    tasks can share a group and still be unordered by this definition.
+
+    Tail-kind tasks are excluded, matching `needs_compile`'s holdout -- they never
+    enter the fan-out `runnable_frontier` schedules against. A task with no
+    declared files cannot collide on one it never named; that gap belongs to
+    `needs_compile`, not this check.
+
+    Returns `(file, task_a, task_b)` triples, sorted by file then task id, so the
+    same input always reports the same violations in the same order.
+    """
+    by_id = {t["id"]: t for t in tasks if t.get("kind") not in TAIL_KINDS}
+    ids = set(by_id)
+
+    ancestors: Dict[str, set] = {}
+
+    def _ancestors_of(tid: str, path: frozenset) -> set:
+        if tid in ancestors:
+            return ancestors[tid]
+        if tid in path:  # a cycle here is apply_to_tasks's failure to report, not ours
+            return set()
+        found: set = set()
+        for d in by_id[tid].get("deps", []):
+            if d in ids:
+                found.add(d)
+                found |= _ancestors_of(d, path | {tid})
+        ancestors[tid] = found
+        return found
+
+    for tid in ids:
+        _ancestors_of(tid, frozenset())
+
+    writers: Dict[str, List[str]] = {}
+    for tid, t in by_id.items():
+        for f in _norm_str_list(t.get("files")):
+            writers.setdefault(f, []).append(tid)
+
+    violations: List[Tuple[str, str, str]] = []
+    for f in sorted(writers):
+        tids = sorted(set(writers[f]))
+        for i, a in enumerate(tids):
+            for b in tids[i + 1 :]:
+                if a in ancestors[b] or b in ancestors[a]:
+                    continue
+                violations.append((f, a, b))
+    return violations

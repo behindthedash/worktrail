@@ -357,6 +357,70 @@ def test_the_cli_json_mode_also_fails_loudly_when_impl_tasks_stay_scope_less(tmp
     json.loads(out)
 
 
+# --------------------------------------------------------------------------- #
+# The CLI must not exit 0 on a plan that leaves same-file tasks unordered
+# (go-20260805-172326: a real compile left 2.1/2.2 both declaring one file with
+# no dep between them; the CLI gave no signal beyond the printed dep table)
+# --------------------------------------------------------------------------- #
+def test_the_cli_fails_loudly_on_an_unordered_file_collision(tmp_path, capsys):
+    import subprocess
+    from unittest.mock import patch
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    d = repo / "openspec" / "changes" / "add-thing"
+    d.mkdir(parents=True)
+    (d / "proposal.md").write_text("## Why\nBecause.\n")
+    (d / "tasks.md").write_text(
+        "## 1. Core\n\n- [ ] 1.1 Add the parser\n\n"
+        "## 2. Verify\n\n- [ ] 2.1 Check a\n- [ ] 2.2 Check b\n"
+    )
+
+    reply = _reply(
+        **{
+            "1.1": {"files": ["src/parser.py"], "deps": []},
+            "2.1": {"files": ["tests/check.py"], "deps": ["1.1"]},
+            "2.2": {"files": ["tests/check.py"], "deps": ["1.1"]},  # siblings, unordered
+        }
+    )
+    with patch("worktrail.conductor.compile._default_spawn", return_value=reply):
+        rc = conductor_compile.main([str(d)])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "tests/check.py" in err and "2.1" in err and "2.2" in err
+
+
+def test_the_cli_json_mode_fails_loudly_on_an_unordered_file_collision(tmp_path, capsys):
+    from unittest.mock import patch
+    import subprocess
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    d = repo / "openspec" / "changes" / "add-thing"
+    d.mkdir(parents=True)
+    (d / "proposal.md").write_text("## Why\nBecause.\n")
+    (d / "tasks.md").write_text(
+        "## 1. Core\n\n- [ ] 1.1 Add the parser\n\n"
+        "## 2. Verify\n\n- [ ] 2.1 Check a\n- [ ] 2.2 Check b\n"
+    )
+
+    reply = _reply(
+        **{
+            "1.1": {"files": ["src/parser.py"], "deps": []},
+            "2.1": {"files": ["tests/check.py"], "deps": ["1.1"]},
+            "2.2": {"files": ["tests/check.py"], "deps": ["1.1"]},
+        }
+    )
+    with patch("worktrail.conductor.compile._default_spawn", return_value=reply):
+        rc = conductor_compile.main([str(d), "--json"])
+    out, err = capsys.readouterr()
+    assert rc == 1
+    assert "tests/check.py" in err and "2.1" in err and "2.2" in err
+    json.loads(out)  # stdout must stay a clean, parseable plan
+
+
 def test_the_cli_json_mode_exits_zero_when_every_task_gets_scope(tmp_path, capsys):
     """The counterpart: full scope in `--json` mode must not trip the gap check."""
     import json as json_module

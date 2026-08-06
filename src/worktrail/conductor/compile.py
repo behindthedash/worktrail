@@ -475,13 +475,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     merged, notes = runplan.apply_to_tasks(tasks, plan)
     gaps = needs_compile(merged)
+    collisions = runplan.unordered_file_collisions(merged)
 
     if a.json:
         print(json.dumps(plan.to_dict(), indent=2, sort_keys=True))
         if gaps:
             _print_scope_gap_error(gaps)
-            return 1
-        return 0
+        if collisions:
+            _print_ordering_gap_error(collisions)
+        return 1 if (gaps or collisions) else 0
 
     print(f"{plan.spec_id}  source={plan.source}  fingerprint={plan.fingerprint[:12]}")
     print(f"  cache: {runplan.cache_path(a.cache_dir or default_cache_dir(repo), spec_id, plan.fingerprint)}")
@@ -492,8 +494,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     if gaps:
         _print_scope_gap_error(gaps)
-        return 1
-    return 0
+    if collisions:
+        _print_ordering_gap_error(collisions)
+    return 1 if (gaps or collisions) else 0
 
 
 def _print_scope_gap_error(gaps: List[str]) -> None:
@@ -509,6 +512,24 @@ def _print_scope_gap_error(gaps: List[str]) -> None:
         "them a tail kind (docs/e2e/cleanup) if they genuinely need none, add explicit "
         "`files:` scope to the artifact, or retry compile (--force) with more context "
         "in proposal.md/design.md so the model can determine it.",
+        file=sys.stderr,
+    )
+
+
+def _print_ordering_gap_error(collisions: List[tuple]) -> None:
+    """Shared by both `main()` output modes, same shape as `_print_scope_gap_error`."""
+    print(
+        f"ERROR: {len(collisions)} file(s) are declared by two or more tasks with no "
+        "dependency order between them:",
+        file=sys.stderr,
+    )
+    for f, a, b in collisions:
+        print(f"  {f}: {a} <-> {b}", file=sys.stderr)
+    print(
+        "  a live run's per-tick file lock happens to serialise these anyway, but "
+        "nothing in the plan itself asserts it. Add an explicit `deps` edge between "
+        "them (either order), or retry compile (--force) with more context so the "
+        "model can place one.",
         file=sys.stderr,
     )
 
