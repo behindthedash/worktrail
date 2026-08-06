@@ -89,10 +89,11 @@
       **Done (2026-08-05):** see `openspec/changes/task-purpose-classification/`
       (proposal.md/design.md/specs/tasks.md) — the `purpose` task field, its
       `compile.py`-driven inference, and the `routing.purpose_tiers` mapping.
-- [ ] 5.2 Once 5.1 exists, resolve D3 (agent-preference-within-tier: options (a)/(b)/(c)
+- [x] 5.2 Once 5.1 exists, resolve D3 (agent-preference-within-tier: options (a)/(b)/(c)
       in design.md) informed by however classification actually surfaces its signal
-      **Design resolved (2026-08-05):** `openspec/changes/task-purpose-classification/
-      design.md` D3 picks option (b) — an agent-aware `<tier>-<agent>` lookup in
+      **Done (2026-08-05):** `openspec/changes/task-purpose-classification/design.md`
+      D3 picked option (b) — an agent-aware `<tier>-<agent>` lookup in
       `dispatch.agent_for()`, formalizing the key shape already live in
-      `~/.go/routing.yaml`. Left unchecked here pending that change's own
-      implementation (tasks.md §4) shipping the code.
+      `~/.go/routing.yaml`. Implemented and merged (PRs #130/#131/#136): see
+      `dispatch.agent_for()`'s `purpose_tier_map` parameter and two-step
+      `tier_map` lookup.
