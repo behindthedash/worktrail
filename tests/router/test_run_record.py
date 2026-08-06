@@ -18,6 +18,8 @@ def _start(tmp, **over):
             "--dir", tmp]
     if "routing_decision" in over and over["routing_decision"] is not None:
         argv += ["--routing-decision", json.dumps(over["routing_decision"])]
+    if "gates" in over and over["gates"] is not None:
+        argv += ["--gates", over["gates"]]
     out = StringIO()
     with patch("sys.stdout", out):
         rc = main(argv)
@@ -122,6 +124,22 @@ class TestLifecycle(unittest.TestCase):
         self.assertEqual(rec["routing_decision"]["agent_cli"], "codex")
         self.assertEqual(rec["routing_decision"]["roles"]["reviewer"]["agent_model"], "sonnet")
         self.assertEqual(rec["routing_decision"]["fallback"][1]["agent_model"], "safe/model")
+
+    def test_start_with_gates_persists_comma_split_list(self):
+        res = _start(self.tmp, gates="never_automerge,require_human_approval")
+        rec = _load(Path(res["path"]))
+        self.assertEqual(rec["gates"], ["never_automerge", "require_human_approval"])
+
+    def test_start_with_empty_gates_flag_persists_explicit_empty_list(self):
+        res = _start(self.tmp, gates="")
+        rec = _load(Path(res["path"]))
+        self.assertIn("gates", rec)
+        self.assertEqual(rec["gates"], [])
+
+    def test_start_without_gates_flag_omits_field(self):
+        res = _start(self.tmp)
+        rec = _load(Path(res["path"]))
+        self.assertNotIn("gates", rec)
 
     def test_start_without_routing_args_keeps_current_shape(self):
         res = _start(self.tmp)

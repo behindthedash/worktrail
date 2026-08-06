@@ -311,8 +311,19 @@ across `go-policy.yaml`-declared repos, reusing the same
 that produced it (`pull_request` field) for its `risk_level`, so any
 call-site gap self-heals on the next scheduled run rather than needing a
 6th manual patch. It is a safety net behind the call sites above, not a
-replacement for them — the correction remains best-effort and never
-touches `go:no-automerge`.
+replacement for them.
+
+Originally the sweep never touched `go:no-automerge`, because the run record
+didn't persist the classifier's `gates` array — `policy.automerge_eligible()`
+needs risk + gates + route together, and only risk/route were on the record.
+`run_record.py start` now accepts `--gates` (go's own Phase 6 passes
+classify.py's `gates` array verbatim), so the sweep can recompute full
+eligibility per PR and self-heal a missing `go:no-automerge` the same
+additive-only way it self-heals `go:risk-*` (`ensure_pr_no_automerge_label()`
+in `pr_labels.py`, mirroring `ensure_pr_risk_label()`'s never-remove
+posture). A run record written before this change carries no `gates` field
+at all; the sweep treats that as "unknown," not "no gates," and only applies
+the `go:risk-*` correction to PRs from those older records.
 
 ---
 

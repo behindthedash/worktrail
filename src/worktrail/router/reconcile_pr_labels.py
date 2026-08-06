@@ -16,14 +16,26 @@ reusing the exact same `ensure_pr_risk_label`/`_current_pr_labels` correction
 every other call site already uses, so it is a safety net behind all of them
 rather than a 6th place that also has to remember.
 
-Risk level provenance: the correction only ever ADDS `go:risk-<level>` to a PR
-carrying no `go:risk-*` label at all (see `pr_labels.py` docstring — never
-removes/replaces, never touches `go:no-automerge`). The level itself comes
-from the GO run record that produced the PR (`--repo`/`--request`/`--risk` at
-Phase 6 `run_record.py start`), matched by the PR's URL — the same source
+Risk level provenance: the `go:risk-<level>` correction only ever ADDS the
+label to a PR carrying no `go:risk-*` label at all (see `pr_labels.py`
+docstring — never removes/replaces). The level comes from the GO run record
+that produced the PR (`--repo`/`--request`/`--risk` at Phase 6
+`run_record.py start`), matched by the PR's URL — the same source
 `pr_labels.py`'s CLI entrypoint already reads for a single run. A PR with no
 matching run record (created outside GO, or whose run record was pruned) is
 left alone and reported as `unreconciled`; this never guesses a risk level.
+
+`go:no-automerge` provenance: this sweep also recomputes full
+`policy.automerge_eligible()` per PR — risk, `gates`, and `route` from the
+matching run record, plus the repo's own `go-policy.yaml` and the PR's live
+base branch — and ADDS `go:no-automerge` when ineligible and the label isn't
+already present. Never removed once present (same additive posture as
+`go:risk-*`). This recompute is only possible for run records that persisted
+a `gates` field: an older record (started before `run_record.py start`
+gained `--gates`) has no `gates` key at all, which is deliberately NOT
+treated as "no gates" (that would let a PR that actually failed a gate read
+as falsely eligible) — such a PR only gets the `go:risk-*` correction, same
+as before this recompute existed.
 
 Usage:
   reconcile_pr_labels.py --repo /path/to/repo [--dir ~/.go/runs] [--dry-run] [--json]
@@ -38,9 +50,9 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .policy import POLICY_RELPATH
+from .policy import POLICY_RELPATH, automerge_eligible, load_policy
 from .policy_selfcheck import discover_repo_names
-from .pr_labels import ensure_pr_risk_label
+from .pr_labels import ensure_pr_no_automerge_label, ensure_pr_risk_label
 from .run_record import _load as load_run_record
 
 
@@ -76,17 +88,22 @@ def _pr_urls_from_field(value: Any) -> List[str]:
     return urls
 
 
-def load_risk_index(runs_dir: Path) -> Dict[str, str]:
-    """Map `pull_request` URL -> `risk_level` across every run record under
-    `runs_dir`, recursively. A PR URL is globally unique, so this is keyed on
-    it directly rather than on the (fragmented, sometimes worktree-basename)
-    per-repo subdirectory layout `run_record.py` writes into.
+def load_run_index(runs_dir: Path) -> Dict[str, Dict[str, Any]]:
+    """Map `pull_request` URL -> `{risk_level, gates, route}` across every run
+    record under `runs_dir`, recursively. A PR URL is globally unique, so
+    this is keyed on it directly rather than on the (fragmented, sometimes
+    worktree-basename) per-repo subdirectory layout `run_record.py` writes
+    into.
 
-    Records with no `risk_level` are skipped (nothing to index). On a
-    duplicate PR URL across records, the later one wins (sorted path order)
-    — not expected in practice, but no ambiguity if it happens.
+    Records with no `risk_level` are skipped (nothing to index — every
+    correction below needs at least a risk level). `gates` is `None` when
+    the record predates `run_record.py start --gates` (see module docstring
+    — this must never be treated as "no gates"). `route` is `selected_route`,
+    always present on any real record. On a duplicate PR URL across records,
+    the later one wins (sorted path order) — not expected in practice, but
+    no ambiguity if it happens.
     """
-    index: Dict[str, str] = {}
+    index: Dict[str, Dict[str, Any]] = {}
     if not runs_dir.is_dir():
         return index
     for path in sorted(runs_dir.glob("**/*.yaml")):
@@ -94,21 +111,27 @@ def load_risk_index(runs_dir: Path) -> Dict[str, str]:
         risk_level = record.get("risk_level")
         if not risk_level:
             continue
+        gates = record.get("gates")
+        if not isinstance(gates, list):
+            gates = None
+        entry = {"risk_level": risk_level, "gates": gates,
+                  "route": record.get("selected_route")}
         for pr_url in _pr_urls_from_field(record.get("pull_request")):
-            index[pr_url] = risk_level
+            index[pr_url] = entry
     return index
 
 
 def _open_prs(repo: Path) -> Optional[List[Dict[str, Any]]]:
-    """Open PRs (url, labels) for repo's GitHub remote, via `gh pr list`.
+    """Open PRs (url, labels, baseRefName) for repo's GitHub remote, via
+    `gh pr list`.
 
     None on any `gh` failure (missing, unauthenticated, offline, no GitHub
     remote) — matches `_current_pr_labels()`'s own never-guess posture.
     """
     try:
         result = subprocess.run(
-            ["gh", "pr", "list", "--state", "open", "--json", "url,labels",
-             "--limit", "200"],
+            ["gh", "pr", "list", "--state", "open",
+             "--json", "url,labels,baseRefName", "--limit", "200"],
             capture_output=True, text=True, timeout=30, cwd=str(repo),
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -121,10 +144,12 @@ def _open_prs(repo: Path) -> Optional[List[Dict[str, Any]]]:
         return None
 
 
-def reconcile_repo(repo: Path, risk_index: Dict[str, str], dry_run: bool) -> Dict[str, Any]:
-    """Self-heal every open PR in `repo` missing a `go:risk-*` label. Empty
-    `applied`/`unreconciled` = clean (either no open PRs, or all already
-    labeled)."""
+def reconcile_repo(repo: Path, run_index: Dict[str, Dict[str, Any]], dry_run: bool) -> Dict[str, Any]:
+    """Self-heal every open PR in `repo` missing a `go:risk-*` label, or
+    missing a `go:no-automerge` label a full `automerge_eligible()` recompute
+    says it should carry (only possible for run records that persisted
+    `gates` — see module docstring). Empty `applied`/`unreconciled` = clean
+    (either no open PRs, or all already reconciled)."""
     result: Dict[str, Any] = {
         "repo": repo.name, "path": str(repo),
         "applied": [], "unreconciled": [], "checked": 0,
@@ -133,26 +158,59 @@ def reconcile_repo(repo: Path, risk_index: Dict[str, str], dry_run: bool) -> Dic
     if prs is None:
         result["error"] = "gh pr list failed or unavailable"
         return result
+    policy: Optional[Dict[str, Any]] = None
     for pr in prs:
         pr_url = pr.get("url")
         if not pr_url:
             continue
         labels = [label.get("name", "") for label in pr.get("labels", [])]
-        if any(label.startswith("go:risk-") for label in labels):
+        missing_risk = not any(label.startswith("go:risk-") for label in labels)
+        has_no_automerge = "go:no-automerge" in labels
+        entry = run_index.get(pr_url)
+
+        wants_no_automerge = False
+        if entry is not None and not has_no_automerge and entry["gates"] is not None:
+            if policy is None:
+                policy = load_policy(repo)
+            eligible, _ = automerge_eligible(
+                policy, entry["risk_level"], entry["gates"],
+                pr.get("baseRefName") or "main", route=entry.get("route"))
+            wants_no_automerge = not eligible
+
+        if not missing_risk and not wants_no_automerge:
             continue
         result["checked"] += 1
-        risk_level = risk_index.get(pr_url)
-        if not risk_level:
+        if entry is None:
             result["unreconciled"].append(pr_url)
             continue
-        if dry_run:
-            result["applied"].append({"pr": pr_url, "label": f"go:risk-{risk_level}",
-                                       "dry_run": True})
-            continue
-        applied = ensure_pr_risk_label(str(repo), pr_url, risk_level)
-        if applied:
-            result["applied"].append({"pr": pr_url, "label": applied})
-        else:
+
+        applied_labels: List[str] = []
+        failed = False
+        if missing_risk:
+            if dry_run:
+                applied_labels.append(f"go:risk-{entry['risk_level']}")
+            else:
+                applied = ensure_pr_risk_label(str(repo), pr_url, entry["risk_level"])
+                if applied:
+                    applied_labels.append(applied)
+                else:
+                    failed = True
+        if wants_no_automerge:
+            if dry_run:
+                applied_labels.append("go:no-automerge")
+            else:
+                applied = ensure_pr_no_automerge_label(str(repo), pr_url, eligible=False)
+                if applied:
+                    applied_labels.append(applied)
+                else:
+                    failed = True
+
+        for label in applied_labels:
+            entry_result = {"pr": pr_url, "label": label}
+            if dry_run:
+                entry_result["dry_run"] = True
+            result["applied"].append(entry_result)
+        if failed:
             result["unreconciled"].append(pr_url)
     return result
 
@@ -171,7 +229,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         p.error("one of --repo or --repos-root is required")
 
     runs_dir = Path(args.dir).expanduser()
-    risk_index = load_risk_index(runs_dir)
+    run_index = load_run_index(runs_dir)
 
     if args.repos_root:
         root = Path(args.repos_root).expanduser()
@@ -182,7 +240,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     else:
         targets = [Path(args.repo).expanduser()]
 
-    results = [reconcile_repo(repo, risk_index, args.dry_run) for repo in targets]
+    results = [reconcile_repo(repo, run_index, args.dry_run) for repo in targets]
     total_applied = sum(len(r["applied"]) for r in results)
     total_unreconciled = sum(len(r["unreconciled"]) for r in results)
 

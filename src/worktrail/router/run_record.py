@@ -14,7 +14,7 @@ unless a `decisions` entry was recorded first.
 Subcommands:
   start  --repo R --request "..." --route F --risk medium [--reason "..."]
          [--agent claude|codex|opencode] [--dir DIR]
-         [--routing-decision JSON]
+         [--routing-decision JSON] [--gates "gate_a,gate_b"]
                                                -> prints {run_id, path}
   set    PATH KEY VALUE                       -> set/replace a top-level field
   append PATH KEY VALUE                       -> append VALUE to a list field
@@ -169,6 +169,7 @@ def cmd_start(args: argparse.Namespace) -> int:
     routing_decision = None
     if args.routing_decision is not None:
         routing_decision = _parse_json_object(args.routing_decision, "--routing-decision")
+    gates = [g for g in (args.gates or "").split(",") if g] if args.gates is not None else None
     # Two starts in the same second must not overwrite the first audit record.
     serial = 1
     while path.exists():
@@ -187,6 +188,7 @@ def cmd_start(args: argparse.Namespace) -> int:
         "selected_route": args.route,
         "route_reason": args.reason,
         "risk_level": args.risk,
+        **({"gates": gates} if gates is not None else {}),
         "agent": agent if agent else None,
         "status": "route_selected",
         **({"routing_decision": routing_decision} if routing_decision is not None else {}),
@@ -466,6 +468,12 @@ def main(argv=None) -> int:
         "--routing-decision",
         default=None,
         help="JSON object from resolve_routing() with the resolved primary agent, roles, and fallback chain",
+    )
+    s.add_argument(
+        "--gates",
+        default=None,
+        help="comma-joined classify.py 'gates' array (e.g. never_automerge,require_human_approval); "
+             "omit to record no gates field at all (predates gates persistence), pass \"\" to record an explicit empty list",
     )
     s.add_argument("--base-branch", default=None)
     s.add_argument("--base-commit", default=None)
