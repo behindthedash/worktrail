@@ -290,6 +290,26 @@ def _validate_routing_roles(raw: Any, meta: Dict[str, Any]) -> Dict[str, Dict[st
     return resolved
 
 
+def _validate_routing_purpose_tiers(raw: Any, meta: Dict[str, Any]) -> Dict[str, str]:
+    """`routing.purpose_tiers`: `{purpose: tier}` — a plain string-to-string map
+    (unlike `routing.roles`/`routing.tiers`, values here are tier names, not
+    agent entries) that `dispatch.agent_for` consults ahead of `complexity` to
+    resolve a task's tier."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        meta["warnings"].append(f"routing.purpose_tiers must be a mapping; got {raw!r} — ignored")
+        return {}
+    resolved: Dict[str, str] = {}
+    for purpose, tier in raw.items():
+        if not isinstance(purpose, str) or not isinstance(tier, str):
+            meta["warnings"].append(
+                f"routing.purpose_tiers.{purpose!r}: value must be a string; got {tier!r} — dropped")
+            continue
+        resolved[purpose] = tier
+    return resolved
+
+
 def _validate_routing_tiers(
     raw: Any, meta: Dict[str, Any]
 ) -> Dict[Tuple[str, Optional[str]], Dict[str, Any]]:
@@ -358,7 +378,8 @@ def _validate_routing_fallback(raw: Any, meta: Dict[str, Any]) -> List[Dict[str,
 
 def _validate_routing(raw: Any, meta: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Validate a raw `routing:` mapping (from either `go-policy.yaml` or the
-    machine-wide routing file) into `{defaults, roles, tiers, fallback}`.
+    machine-wide routing file) into
+    `{defaults, roles, tiers, fallback, purpose_tiers}`.
 
     Returns `None` when `raw` is absent, an empty mapping, or not a mapping at
     all (the last case appends a `_meta.warnings` entry) — callers treat `None`
@@ -377,6 +398,7 @@ def _validate_routing(raw: Any, meta: Dict[str, Any]) -> Optional[Dict[str, Any]
         "roles": _validate_routing_roles(raw.get("roles"), meta),
         "tiers": _validate_routing_tiers(raw.get("tiers"), meta),
         "fallback": _validate_routing_fallback(raw.get("fallback"), meta),
+        "purpose_tiers": _validate_routing_purpose_tiers(raw.get("purpose_tiers"), meta),
     }
 
 
