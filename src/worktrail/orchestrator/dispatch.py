@@ -109,6 +109,7 @@ def agent_for(
     *,
     role_agent_map: Optional[Dict[str, Any]] = None,
     tier_map: Optional[Dict[Tuple[Any, Any], Any]] = None,
+    purpose_tier_map: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """Resolve `{"agent_cli", "agent_model", "effort"}` for one spawn -- the
     canonical per-spawn agent-resolution function (REQ-015/016/017). Pure,
@@ -131,6 +132,12 @@ def agent_for(
         tier_map: `{(complexity, domain): agent-entry}` -- a resolved
             `routing.tiers` match table keyed by the task's own
             `(complexity, domain)` pair.
+        purpose_tier_map: `{purpose: tier}` -- a resolved
+            `routing.purpose_tiers` table mapping the task's own
+            `task.get("purpose")` to a tier name. Not yet consulted by this
+            function (task-purpose-classification 4.2/4.3 wire it into the
+            tier-resolution precedence); accepted here so call sites can
+            start threading it through ahead of that.
 
     Precedence for JUDGMENT_ROLES (review/resolve/ci-fix/assembly-resolve --
     DEC-003, REQ-017, REQ-NR003): only (2) role_agent_map override, else
