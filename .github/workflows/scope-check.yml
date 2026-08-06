@@ -1,0 +1,33 @@
+name: 'CI: Scope Check'
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'openspec/changes/**/tasks.md'
+
+concurrency:
+  group: scope-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  scope-check:
+    name: Scope check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - name: Install package
+        run: pip install -e ".[dev]"
+      - name: Verify compile markers
+        run: |
+          worktrail-check-compile-markers \
+            --repo "$PWD" \
+            --base-ref "origin/${{ github.base_ref }}"

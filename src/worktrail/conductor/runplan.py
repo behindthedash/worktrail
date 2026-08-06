@@ -65,6 +65,15 @@ SOURCE_SEED = "seed"  # the format already declared scope for every task; no LLM
 SOURCE_COMPILED = "compiled"  # one LLM pass inferred the missing scope
 SOURCE_BASELINE = "baseline"  # scope was missing and compiling was not permitted
 
+# `compile.py` writes this marker into the change directory on a passing
+# compile (see its own docstring). It must never itself be hashed into
+# `fingerprint()` below -- a marker recorded at fingerprint X would change the
+# directory's own fingerprint the instant it exists, so every fingerprint
+# computed after that first write would permanently disagree with the value
+# the marker just recorded. Defined here (not in `compile.py`, which imports
+# this module) so `fingerprint()` can exclude it without a circular import.
+COMPILE_MARKER_NAME = ".compile-ok"
+
 
 @dataclass(frozen=True)
 class TaskPlan:
@@ -187,7 +196,7 @@ def fingerprint(spec_dir: "str | Path", tasks: Sequence[Dict[str, Any]]) -> str:
     task_basenames = {Path(str(t.get("path") or "")).name for t in tasks} - {""}
     if spec_dir.is_dir():
         for f in sorted(p for p in spec_dir.rglob("*") if p.is_file()):
-            if f.name in task_basenames:
+            if f.name in task_basenames or f.name == COMPILE_MARKER_NAME:
                 continue
             h.update(str(f.relative_to(spec_dir)).encode() + b"\x1f")
             h.update(hashlib.sha256(f.read_bytes()).hexdigest().encode() + b"\x1e")

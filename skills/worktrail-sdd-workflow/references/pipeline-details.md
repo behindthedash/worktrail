@@ -54,6 +54,24 @@ Route C (feature-planning), and Route D when no spec exists.
    file scope in task frontmatter and take compile's free seed path (no model
    call), so this is effectively a no-op there.
 
+   **Structural backstop (`CI: Scope Check`, `.github/workflows/scope-check.yml`
+   in the worktrail repo itself):** a passing compile writes a content-fingerprint
+   marker (`.compile-ok`) into the change directory — commit it along
+   with the rest of the change (the GUARD paragraph below already requires the
+   whole change directory to be committed). CI cannot re-run the real,
+   LLM-backed scope check (no agent-CLI credentials are wired into this repo's
+   CI, and the cost/flakiness of a live model call on every PR touching
+   `tasks.md` was judged not worth it), so it instead re-derives the same
+   deterministic fingerprint (`runplan.fingerprint`, no model call) and fails
+   the PR if the marker is missing or stale against the current content. This
+   makes "step 3 was skipped" or "`tasks.md` was hand-edited after compile
+   passed" a structural CI failure instead of relying on this doc being
+   followed — closing the datalena PR #2128→#2130 incident class with a
+   deterministic rail on the class of failure a fingerprint can actually catch.
+   It does **not** replace step 3 itself: CI cannot discover a fresh scope gap
+   in content nobody has compiled yet, only detect that this step was skipped
+   or invalidated.
+
 **GUARD: all change artifacts are authored inside `$WT/openspec/changes/$CHANGE_ID/`,
 never in `$REPO`, and the whole change directory is committed on `spec/$CHANGE_ID`
 before the orchestrator forks any task worktree. Never stash or transfer edits from
@@ -152,7 +170,11 @@ launching the orchestrator — never launch with uncommitted output sitting in `
 
 3. **Pre-launch uncommitted-output guard (mandatory)** — mirrors the `new`
    pipeline's base-checkout diff detection (`#new-pipeline` step 5b), but checks
-   the change-spec worktree itself rather than `$REPO`:
+   the change-spec worktree itself rather than `$REPO`. (Verified: unlike `new`,
+   this pipeline has no intermediate docs-only-PR-push-and-merge stage before
+   the orchestrator runs — everything stays on `chg/$CHANGE_ID` through sync —
+   so it is not exposed to the "merged predecessor squashed away before the
+   scope-check ran" incident class step 3 of the `new` pipeline closes above.)
 
 ```bash
 CHG_DIFF=$(git -C "$WT" status --porcelain -- openspec/ 2>&1)
