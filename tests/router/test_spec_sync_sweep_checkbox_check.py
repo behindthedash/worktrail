@@ -134,6 +134,33 @@ class CheckRepoCheckboxDriftTests(unittest.TestCase):
         result = check_repo_checkbox_drift(self.repo)
         self.assertEqual(result, {"repo": str(self.repo), "findings": [], "error": None})
 
+    def test_h1_level_checkboxes_with_no_subheadings_not_flagged(self):
+        # devops TASK-001/TASK-002 shape: fully-checked checklist directly
+        # under the H1 title, no ## Acceptance Criteria / ## Definition of
+        # Done (DoD) subheadings present anywhere in the body.
+        _write_task(
+            self.specs_root / "001-example" / "tasks",
+            "TASK-001.md",
+            "completed",
+            "# TASK-001\n\n- [x] step one\n- [x] step two\n",
+        )
+        result = check_repo_checkbox_drift(self.repo)
+        self.assertEqual(result, {"repo": str(self.repo), "findings": [], "error": None})
+
+    def test_checklist_outside_body_entirely_not_flagged(self):
+        # mailbox-service TASK-002/003/004 shape: the checklist lives in
+        # frontmatter (success-criteria:), so the body has zero checkboxes
+        # under the named sections AND zero checkboxes anywhere -- nothing
+        # to audit, not drift.
+        _write_task(
+            self.specs_root / "001-example" / "tasks",
+            "TASK-001.md",
+            "completed",
+            "# TASK-001\n\nSee frontmatter `success-criteria:` for the checklist.\n",
+        )
+        result = check_repo_checkbox_drift(self.repo)
+        self.assertEqual(result, {"repo": str(self.repo), "findings": [], "error": None})
+
     def test_never_mutates_checked_repo(self):
         _write_task(
             self.specs_root / "001-example" / "tasks",
