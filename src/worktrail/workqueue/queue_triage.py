@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Queue triage: repo-scoped dedup/staleness evaluation of the work queue."""
+"""Queue triage: repo-scoped dedup/staleness evaluation of the work queue.
+
+Recommended cadence: monthly, or pre-drain weekly -- not nightly. A full
+evaluation pass spawns one agent per repo group and costs on the order of
+1M tokens over a non-trivial queue, while queue churn between runs is slow
+enough that a tighter cadence would mostly re-spend tokens re-judging
+briefs just reviewed.
+"""
 
 from __future__ import annotations
 
