@@ -4,6 +4,14 @@
 Bounded-iteration poller that checks if a run record has finished (finish or final_status key set).
 Reads YAML run record file, sleeps between iterations, exits with completion state or ceiling message.
 
+On completion with a PR URL, also applies the same post-hoc `go:risk-*` PR
+label correction drain.py applies after its own spawned one-shots
+(`ensure_pr_risk_label`, extracted to `router/pr_labels.py`): a headless
+worker's own `gh pr create` isn't guaranteed to be covered by the Claude Code
+PreToolUse label-enforcement hook, so this is go's own Phase 7 poll-exit
+equivalent of drain.py's queue-drain correction -- see
+docs/specs/research/go-dispatch-one-shot-pr-label-gap.md.
+
 Usage:
   poll_run.py --run /path/to/run.yaml [--interval 30] [--max-iterations 20]
 
@@ -15,6 +23,8 @@ import argparse
 import sys
 import time
 from pathlib import Path
+
+from .pr_labels import ensure_pr_risk_label
 
 
 def parse_yaml_value(value_str: str) -> str:
@@ -81,6 +91,10 @@ def main(argv=None) -> int:
                 pr_url = record.get("pull_request")
 
                 if pr_url:
+                    applied = ensure_pr_risk_label(
+                        record.get("repository"), pr_url, record.get("risk_level"))
+                    if applied:
+                        print(f"poll_run: added missing {applied} label to {pr_url}")
                     print(f"Run completed: {final_status} — PR: {pr_url}")
                 else:
                     print(f"Run completed: {final_status}")

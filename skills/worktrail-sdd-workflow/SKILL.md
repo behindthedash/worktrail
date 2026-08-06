@@ -205,8 +205,16 @@ For every PR produced:
    checks green, no unresolved threads, no conflicts, approvals satisfied.
 3. Ineligible → deliver the PR and state the exact remaining approval needed.
 4. Record `merge_decision` + `merge_result`, then
-   `run_record.py finish --status <state>` and report the completion state +
-   PR link + deferred handoffs as the final line.
+   `run_record.py finish --status <state> [--pr <url>]` and, whenever a PR
+   was produced, immediately run `worktrail-ensure-pr-label --run "$RUN"` --
+   the same post-hoc `go:risk-*` correction drain.py applies after its own
+   spawned one-shots (`router/pr_labels.py`), reusing the risk level and PR
+   URL the run record already carries (no new plumbing). This is what closes
+   the gap for interactive and Codex in-session dispatch, which never spawn a
+   subprocess for go's Phase 7 `poll_run.py` to observe -- headless
+   Claude/OpenCode workers get the identical correction there instead. Then
+   report the completion state + PR link + deferred handoffs as the final
+   line.
 
 Only routes with non-PR completion states (for example
 `planned_ready_for_implementation` or `investigation_complete`) may stop
