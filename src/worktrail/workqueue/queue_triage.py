@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from ..shared.brief_frontmatter import read_frontmatter, split_frontmatter
-from .work_queue import claim, done, picked_dir, queue_dir, resolve
+from .work_queue import claim, done, picked_dir, queue_dir, release, resolve
 
 logger = logging.getLogger(__name__)
 
@@ -453,7 +453,15 @@ def _resolve_brief_path(identifier: str) -> Optional[Path]:
 
 
 def _apply_close(v: Verdict) -> dict:
-    """`stale-close`/`duplicate-of`: `claim()` then `done(..., note=evidence)`."""
+    """`stale-close`/`duplicate-of`: `claim()` then `done(..., note=evidence)`.
+
+    If `done()` doesn't return "done" (e.g. a Route-C brief that needs an
+    explicit `planning_only`/`implementation_complete` decision `done()`
+    refuses to make on our behalf), the brief must not stay stranded in
+    `picked/` under a `queue-triage` claim nobody will ever release -- so
+    this releases it back to `queue/` before returning the error entry,
+    keeping a failed apply a true no-op.
+    """
     base = {
         "brief_id": v.brief_id,
         "verdict": v.verdict,
@@ -474,11 +482,13 @@ def _apply_close(v: Verdict) -> dict:
     done_res = done(v.brief_id, note=v.evidence)
     if done_res["status"] != "done":
         detail = done_res.get("error")
+        release_res = release(v.brief_id)
         return {
             **base,
             "status": "error",
             "path": done_res.get("path"),
             "error": f"done: {done_res['status']}" + (f" ({detail})" if detail else ""),
+            "rolled_back": release_res["status"] == "released",
         }
     return {**base, "status": "executed", "path": done_res.get("path"), "error": None}
 
