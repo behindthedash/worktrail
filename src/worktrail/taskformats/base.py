@@ -31,6 +31,7 @@ class TaskDict(TypedDict, total=False):
     review: str
     complexity: str
     domain: str
+    purpose: str
     path: str
     frontmatter_warnings: List[str]
 
