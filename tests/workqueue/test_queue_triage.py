@@ -187,5 +187,128 @@ class TestIsRecentlyTriaged(QueueTriageTestBase):
         self.assertFalse(qt.is_recently_triaged(p, within_days=30))
 
 
+class TestParseVerdicts(unittest.TestCase):
+    def test_well_formed_verdict_is_parsed_as_is(self):
+        raw = (
+            '{"brief_id": "a", "verdict": "stale-close", "duplicate_of": null, '
+            '"evidence": "PR #42 already shipped this", "confidence": "high"}'
+        )
+        verdicts = qt.parse_verdicts(raw, ["a"])
+
+        self.assertEqual(len(verdicts), 1)
+        v = verdicts[0]
+        self.assertEqual(v.brief_id, "a")
+        self.assertEqual(v.verdict, "stale-close")
+        self.assertIsNone(v.duplicate_of)
+        self.assertEqual(v.evidence, "PR #42 already shipped this")
+        self.assertEqual(v.confidence, "high")
+
+    def test_well_formed_duplicate_of_verdict_retains_target(self):
+        raw = (
+            '{"brief_id": "a", "verdict": "duplicate-of", "duplicate_of": "b", '
+            '"evidence": "same premise as b.md", "confidence": "medium"}'
+        )
+        verdicts = qt.parse_verdicts(raw, ["a"])
+
+        self.assertEqual(verdicts[0].verdict, "duplicate-of")
+        self.assertEqual(verdicts[0].duplicate_of, "b")
+
+    def test_multiple_wellformed_verdicts_parsed_in_expected_order(self):
+        raw = (
+            'reasoning text here\n'
+            '{"brief_id": "b", "verdict": "keep", "duplicate_of": null, '
+            '"evidence": "still relevant", "confidence": "low"}\n'
+            'more reasoning\n'
+            '{"brief_id": "a", "verdict": "needs-update", "duplicate_of": null, '
+            '"evidence": "target file renamed", "confidence": "high"}\n'
+        )
+        verdicts = qt.parse_verdicts(raw, ["a", "b"])
+
+        self.assertEqual([v.brief_id for v in verdicts], ["a", "b"])
+        self.assertEqual(verdicts[0].verdict, "needs-update")
+        self.assertEqual(verdicts[1].verdict, "keep")
+
+    def test_unparsable_json_falls_back_to_keep_with_full_raw_text_retained(self):
+        raw = "the evaluator rambled and never emitted any JSON at all"
+        verdicts = qt.parse_verdicts(raw, ["a"])
+
+        self.assertEqual(len(verdicts), 1)
+        v = verdicts[0]
+        self.assertEqual(v.brief_id, "a")
+        self.assertEqual(v.verdict, "keep")
+        self.assertIsNone(v.duplicate_of)
+        self.assertEqual(v.evidence, raw)
+        self.assertIsNone(v.confidence)
+
+    def test_invalid_verdict_type_falls_back_to_keep_with_snippet_retained(self):
+        snippet = (
+            '{"brief_id": "a", "verdict": "not-a-real-verdict", "duplicate_of": null, '
+            '"evidence": "some evidence", "confidence": "high"}'
+        )
+        raw = f"here is my answer: {snippet}"
+        verdicts = qt.parse_verdicts(raw, ["a"])
+
+        v = verdicts[0]
+        self.assertEqual(v.verdict, "keep")
+        self.assertEqual(v.evidence, snippet)
+
+    def test_duplicate_of_without_target_falls_back_to_keep(self):
+        snippet = (
+            '{"brief_id": "a", "verdict": "duplicate-of", "duplicate_of": null, '
+            '"evidence": "looks like a dupe but no target cited", "confidence": "low"}'
+        )
+        verdicts = qt.parse_verdicts(snippet, ["a"])
+
+        v = verdicts[0]
+        self.assertEqual(v.verdict, "keep")
+        self.assertEqual(v.evidence, snippet)
+
+    def test_missing_evidence_falls_back_to_keep(self):
+        snippet = (
+            '{"brief_id": "a", "verdict": "stale-close", "duplicate_of": null, '
+            '"evidence": "", "confidence": "high"}'
+        )
+        verdicts = qt.parse_verdicts(snippet, ["a"])
+
+        v = verdicts[0]
+        self.assertEqual(v.verdict, "keep")
+        self.assertEqual(v.evidence, snippet)
+
+    def test_evidence_field_entirely_absent_falls_back_to_keep(self):
+        snippet = '{"brief_id": "a", "verdict": "stale-close", "duplicate_of": null}'
+        verdicts = qt.parse_verdicts(snippet, ["a"])
+
+        v = verdicts[0]
+        self.assertEqual(v.verdict, "keep")
+        self.assertEqual(v.evidence, snippet)
+
+    def test_missing_brief_id_still_appears_with_keep_fallback(self):
+        raw = (
+            '{"brief_id": "a", "verdict": "keep", "duplicate_of": null, '
+            '"evidence": "confirmed still needed", "confidence": "high"}'
+        )
+        verdicts = qt.parse_verdicts(raw, ["a", "b"])
+
+        self.assertEqual([v.brief_id for v in verdicts], ["a", "b"])
+        self.assertEqual(verdicts[1].verdict, "keep")
+        self.assertEqual(verdicts[1].evidence, raw)
+
+    def test_no_expected_brief_ids_yields_no_verdicts(self):
+        self.assertEqual(qt.parse_verdicts("{}", []), [])
+
+    def test_second_candidate_used_when_first_is_malformed(self):
+        good = (
+            '{"brief_id": "a", "verdict": "keep", "duplicate_of": null, '
+            '"evidence": "second attempt is valid", "confidence": "medium"}'
+        )
+        bad = '{"brief_id": "a", "verdict": "keep", "duplicate_of": null, "evidence": ""}'
+        raw = f"{bad}\n{good}"
+        verdicts = qt.parse_verdicts(raw, ["a"])
+
+        v = verdicts[0]
+        self.assertEqual(v.verdict, "keep")
+        self.assertEqual(v.evidence, "second attempt is valid")
+
+
 if __name__ == "__main__":
     unittest.main()
