@@ -468,8 +468,12 @@ def test_a_purpose_within_the_configured_vocabulary_is_kept(change, tmp_path):
             "2.1": {"files": ["tests/e2e.py"], "deps": []},
         }
     )
+    spawn = RecordingSpawn(reply)
     plan = conductor_compile.compile_run_plan(
-        change, tasks, spec_id=spec_id, repo=repo, cache_dir=tmp_path / "plans", spawn=RecordingSpawn(reply)
+        change, tasks, spec_id=spec_id, repo=repo, cache_dir=tmp_path / "plans", spawn=spawn
+    )
+    assert '"purpose"' in spawn.prompts[0] and "scaffolding" in spawn.prompts[0], (
+        "a repo with routing.purpose_tiers configured must get a purpose-requesting prompt"
     )
     assert plan.source == runplan.SOURCE_COMPILED
     by_id = {t.id: t for t in plan.tasks}
@@ -516,13 +520,18 @@ def test_no_purpose_tiers_configured_leaves_every_task_unset(change, tmp_path):
             "2.1": {"files": ["tests/e2e.py"], "deps": []},
         }
     )
+    spawn = RecordingSpawn(reply)
     plan = conductor_compile.compile_run_plan(
         change,
         tasks,
         spec_id=spec_id,
         repo=change.parents[2],
         cache_dir=tmp_path / "plans",
-        spawn=RecordingSpawn(reply),
+        spawn=spawn,
+    )
+    assert '"purpose"' not in spawn.prompts[0], (
+        "a repo with no routing.purpose_tiers configured must not be asked to "
+        "classify against a vocabulary it never declared"
     )
     assert plan.source == runplan.SOURCE_COMPILED
     assert all(t.purpose == "" for t in plan.tasks)
