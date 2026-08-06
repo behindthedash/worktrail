@@ -334,8 +334,9 @@ Dispatch policy is simple:
 - Resolve the routing decision before dispatching the route: `ROUTING_JSON=$(worktrail-policy --repo "$REPO" --resolve-routing "$ROUTE:$RISK_LEVEL" --json)`. Use that helper result as the repository-policy tier for the orchestrator invocation.
 - Map the helper outputs directly to the dispatch flags: `agent_cli` -> `--agent`; `agent_model` -> `--model`; each `roles.<role>.agent_cli` -> `--role-agent-map`; each `roles.<role>.agent_model` -> `--model-map`. Carry the helper's `fallback` list through unchanged as the fallback chain for the dispatch layer.
 - Tiers resolve on a separate axis (per-task `(complexity, domain)`, not `$ROUTE:$RISK_LEVEL`): call `policy.resolve_tier_map(policy)` and map each `(complexity, domain) -> {agent_cli, agent_model}` entry onto `live.py full-real`'s `--tier-map` flag, joined `,`-separated as `complexity:domain=agent_cli[:agent_model]` (omit the `:agent_model` segment when unset). A domain-less tier (`domain is None`) has no CLI-string form — `live.py`'s `_parse_tier_map()` always yields an empty-string domain, never `None` — so a domain-less `routing.tiers` entry only reaches `dispatch.agent_for` through a native in-process `tier_map` dict (e.g. `RoutingFakeSpawn`/test fixtures), not this flag.
+- Purpose maps onto a tier on a third axis: the helper result's `purpose_tiers` (`routing.purpose_tiers`, from the same `resolve_routing()` call) maps each `purpose -> tier` entry onto `--purpose-tier-map`, joined `,`-separated as `purpose=tier`. A task whose `purpose` resolves through this table has that tier looked up in `--tier-map` in place of its `complexity` for implement/fix/cleanup spawns only; `review`/`resolve`/`ci-fix`/`assembly-resolve` never consult it (DEC-003).
 - Explicit invocation flags or caller-supplied `AGENT_CLI` always win over the derived routing values. The routing table slots into the existing precedence at the repository-policy tier: explicit invocation > repository policy (routing table here) > machine-wide env > detected host > `claude`.
-- no routing table → behavior identical to today (flat keys, single fallback). Likewise, no `routing.tiers` → omit `--tier-map` entirely (dispatch behavior unchanged, REQ-NR005).
+- no routing table → behavior identical to today (flat keys, single fallback). Likewise, no `routing.tiers` → omit `--tier-map` entirely, and no `routing.purpose_tiers` → omit `--purpose-tier-map` entirely (dispatch behavior unchanged, REQ-NR005).
 
   Example `routing.tiers` in `~/.go/routing.yaml` — a 3-tier complexity fallback keyed by a
   task's `complexity` frontmatter value (`trivial` / `standard` / `hard`), routing each to a
@@ -361,6 +362,47 @@ Dispatch policy is simple:
   that complexity. Tasks whose format has no `complexity` field, or whose value has no matching
   tier entry, fall through to `routing.defaults`/`routing.roles` unaffected — `routing.tiers` is
   purely additive.
+
+  **Routing by task purpose instead of complexity.** `routing.purpose_tiers` maps a task's own
+  `purpose` frontmatter value (set by `conductor/compile.py`'s inference pass, or by hand) to a
+  `routing.tiers` key, so a task routes on *what it is* — architecture design, terminal-heavy
+  automation, security review, CRUD scaffolding — rather than a human-assigned `complexity`
+  label. `dispatch.agent_for()` consults it ahead of `complexity` for implement/fix/cleanup
+  spawns only; a task whose `purpose` has no matching entry (or carries no `purpose` field at
+  all) falls through to `complexity` unaffected, same as an unmatched `routing.tiers` entry.
+
+  Worked example mapping a starter six-value purpose taxonomy onto the manual T1–T4
+  (Deep/Build/Bulk/Trivia) tier scheme `routing.tiers` examples above already use:
+
+  ```yaml
+  routing:
+    purpose_tiers:
+      architecture-design: t1-deep
+      security-review: t1-deep
+      agentic-automation: t2-build
+      scaffolding: t2-build
+      bulk-mechanical: t3-bulk
+      trivial: t4-trivia
+    tiers:
+      t1-deep:
+        agent_cli: claude
+        agent_model: opus
+      t2-build:
+        agent_cli: codex
+        agent_model: gpt-5.6-terra
+      t3-bulk:
+        agent_cli: codex
+        agent_model: gpt-5.6-sol
+      t4-trivia:
+        agent_cli: codex
+        agent_model: gpt-5.6-luna
+  ```
+
+  These six purpose values are a starter set, not a fixed enum — `compile.py` reads
+  `routing.purpose_tiers`' own keys as the closed vocabulary it classifies a task's `purpose`
+  into, so the operator renames, adds, or removes categories by editing this table alone, no
+  code change required. No `routing.purpose_tiers` table configured → `compile.py` never asks
+  for `purpose` at all, identical to today's output.
 - Record the resolved routing decision at dispatch time with `worktrail-run-record start ... --routing-decision "$ROUTING_JSON"` so the audit trail captures the exact route/risk-derived policy.
 - Codex / in-session host: call `Skill("worktrail-sdd-workflow", ...)` directly.
 - OpenCode parent sessions use the seeded subprocess path with `opencode` when the harness
