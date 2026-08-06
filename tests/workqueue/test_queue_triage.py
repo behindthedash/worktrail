@@ -623,5 +623,111 @@ class TestResolveDuplicateTargets(unittest.TestCase):
         self.assertEqual(resolved, verdicts)
 
 
+class TestReportAndVerdictFileOutput(QueueTriageTestBase):
+    """6.6: the Markdown report's verdict counts must match `verdict.json`'s
+    contents exactly for a synthetic multi-group run (multiple repos, every
+    verdict type, including a `keep` fallback and a skipped-via-dedup brief).
+    """
+
+    @staticmethod
+    def _report_counts(report_text: str) -> dict:
+        """Parse the `## Verdict counts` section's `- <type>: <n>` lines back into a dict."""
+        section = report_text.split("## Verdict counts", 1)[1].split("## Skipped via dedup", 1)[0]
+        counts = {}
+        for line in section.strip().splitlines():
+            line = line.strip()
+            if not line.startswith("- "):
+                continue
+            vtype, n = line[2:].rsplit(": ", 1)
+            counts[vtype] = int(n)
+        return counts
+
+    def _verdicts(self):
+        return [
+            qt.Verdict(
+                brief_id="repo-a-1", verdict="stale-close", duplicate_of=None,
+                evidence="PR #42 already shipped this", confidence="high",
+            ),
+            qt.Verdict(
+                brief_id="repo-a-2", verdict="stale-close", duplicate_of=None,
+                evidence="repo archived", confidence="high",
+            ),
+            qt.Verdict(
+                brief_id="repo-b-1", verdict="needs-update", duplicate_of=None,
+                evidence="target file renamed", confidence="medium",
+            ),
+            qt.Verdict(
+                brief_id="repo-b-2", verdict="duplicate-of", duplicate_of="repo-a-1",
+                evidence="same premise as repo-a-1", confidence="medium",
+            ),
+            qt.Verdict(
+                brief_id="__none__-1", verdict="keep", duplicate_of=None,
+                evidence="still relevant", confidence="low",
+            ),
+            qt.Verdict(
+                brief_id="__none__-2", verdict="keep", duplicate_of=None,
+                evidence="the evaluator rambled and never emitted any JSON at all",
+                confidence=None,
+            ),
+        ]
+
+    def test_report_verdict_counts_match_json_file_exactly(self):
+        verdicts = self._verdicts()
+        skipped = [self.write("skipped-1.md"), self.write("skipped-2.md")]
+        out_dir = self.base / "out"
+
+        verdict_path = qt.write_verdict_file(verdicts, out_dir)
+        report_path = qt.write_report(verdicts, skipped, out_dir)
+
+        json_verdicts = json.loads(verdict_path.read_text(encoding="utf-8"))
+        json_counts: dict = {}
+        for entry in json_verdicts:
+            json_counts[entry["verdict"]] = json_counts.get(entry["verdict"], 0) + 1
+
+        report_text = report_path.read_text(encoding="utf-8")
+        report_counts = self._report_counts(report_text)
+
+        # every verdict type is listed in the report (zero-filled), so compare
+        # against the JSON counts zero-filled the same way rather than assuming
+        # the report only lists types that actually occurred.
+        expected_counts = {vtype: json_counts.get(vtype, 0) for vtype in qt.VALID_VERDICT_TYPES}
+        self.assertEqual(report_counts, expected_counts)
+
+        # and the JSON file itself carries no verdict type absent from the report
+        for vtype in json_counts:
+            self.assertIn(vtype, report_counts)
+
+        self.assertEqual(len(json_verdicts), len(verdicts))
+        self.assertIn(f"Briefs evaluated: {len(verdicts)}", report_text)
+        self.assertIn(f"Briefs skipped (recently triaged): {len(skipped)}", report_text)
+
+    def test_report_and_json_agree_on_empty_verdict_list(self):
+        out_dir = self.base / "out-empty"
+
+        verdict_path = qt.write_verdict_file([], out_dir)
+        report_path = qt.write_report([], [], out_dir)
+
+        json_verdicts = json.loads(verdict_path.read_text(encoding="utf-8"))
+        self.assertEqual(json_verdicts, [])
+
+        report_counts = self._report_counts(report_path.read_text(encoding="utf-8"))
+        self.assertEqual(report_counts, {vtype: 0 for vtype in qt.VALID_VERDICT_TYPES})
+
+    def test_json_file_preserves_every_verdict_field_the_report_summarizes(self):
+        verdicts = self._verdicts()
+        out_dir = self.base / "out-fields"
+
+        verdict_path = qt.write_verdict_file(verdicts, out_dir)
+        report_path = qt.write_report(verdicts, [], out_dir)
+
+        json_verdicts = json.loads(verdict_path.read_text(encoding="utf-8"))
+        report_text = report_path.read_text(encoding="utf-8")
+
+        self.assertEqual([e["brief_id"] for e in json_verdicts], [v.brief_id for v in verdicts])
+        for entry in json_verdicts:
+            self.assertIn(entry["brief_id"], report_text)
+            self.assertIn(entry["verdict"], report_text)
+
+
 if __name__ == "__main__":
     unittest.main()
