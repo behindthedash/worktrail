@@ -7,7 +7,8 @@ from pathlib import Path
 from unittest import mock
 
 from worktrail.router.policy import (
-    DEFAULTS, _json_safe, _validate_routing_tiers, automerge_eligible,
+    DEFAULTS, _json_safe, _validate_routing_purpose_tiers,
+    _validate_routing_tiers, automerge_eligible,
     automerge_labels, detect_external_automerge, load_policy,
     merge_method_for_branch, parse_policy_yaml,
     resolve_routing, resolve_tier_map,
@@ -829,6 +830,58 @@ class Routing(unittest.TestCase):
              "easy": {"agent": "claude"}}, meta)
         self.assertEqual(resolved, {("easy", None): {"agent_cli": "claude", "agent_model": None, "effort": None}})
         self.assertTrue(any("routing.tiers.hard/backend" in w for w in meta["warnings"]))
+
+    def test_purpose_tiers_configured_resolves_and_validates(self):
+        # 3.3: a configured routing.purpose_tiers table resolves and validates.
+        repo = _repo_with(
+            "routing:\n"
+            "  purpose_tiers:\n"
+            "    scaffolding: t3\n"
+            "    security-review: t1-deep\n")
+        with self._no_mw_env():
+            pol = load_policy(repo)
+        self.assertEqual(pol["routing"]["purpose_tiers"],
+                         {"scaffolding": "t3", "security-review": "t1-deep"})
+        self.assertEqual(pol["_meta"]["warnings"], [])
+
+    def test_purpose_tiers_unconfigured_resolves_to_empty(self):
+        # 3.3: an unconfigured/empty table resolves to {}.
+        repo = _repo_with("routing:\n  roles:\n    reviewer:\n      agent_cli: codex\n")
+        with self._no_mw_env():
+            pol = load_policy(repo)
+        self.assertEqual(pol["routing"]["purpose_tiers"], {})
+
+    def test_purpose_tiers_explicit_empty_mapping_resolves_to_empty(self):
+        # 3.3: an unconfigured/empty table resolves to {}.
+        meta = {"warnings": []}
+        self.assertEqual(_validate_routing_purpose_tiers({}, meta), {})
+        self.assertEqual(meta["warnings"], [])
+
+    def test_purpose_tiers_malformed_non_string_value_dropped_with_warning(self):
+        # 3.3: a malformed entry (non-string value) is dropped with a warning.
+        repo = _repo_with(
+            "routing:\n"
+            "  purpose_tiers:\n"
+            "    scaffolding: 3\n"
+            "    security-review: t1-deep\n")
+        with self._no_mw_env():
+            pol = load_policy(repo)
+        self.assertEqual(pol["routing"]["purpose_tiers"], {"security-review": "t1-deep"})
+        self.assertTrue(any("routing.purpose_tiers" in w and "scaffolding" in w
+                            for w in pol["_meta"]["warnings"]))
+
+    def test_validate_routing_purpose_tiers_non_string_value_dropped(self):
+        meta = {"warnings": []}
+        resolved = _validate_routing_purpose_tiers(
+            {"scaffolding": 3, "security-review": "t1-deep"}, meta)
+        self.assertEqual(resolved, {"security-review": "t1-deep"})
+        self.assertTrue(any("purpose_tiers" in w for w in meta["warnings"]))
+
+    def test_validate_routing_purpose_tiers_non_mapping_ignored(self):
+        meta = {"warnings": []}
+        resolved = _validate_routing_purpose_tiers(["scaffolding"], meta)
+        self.assertEqual(resolved, {})
+        self.assertTrue(any("routing.purpose_tiers must be a mapping" in w for w in meta["warnings"]))
 
     def test_resolve_tier_map_populated(self):
         # AC-CHG-001
