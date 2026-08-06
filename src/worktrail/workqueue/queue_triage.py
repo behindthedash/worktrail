@@ -7,7 +7,7 @@ import datetime
 import json
 import re
 import subprocess
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -390,3 +390,74 @@ def parse_verdicts(raw_text: str, expected_brief_ids: List[str]) -> List[Verdict
                 )
             )
     return verdicts
+
+
+def write_verdict_file(verdicts: List[Verdict], out_dir: "str | Path") -> Path:
+    """Serialize `verdicts` to `<out_dir>/verdict.json`, the sole input the `apply` step may act on.
+
+    Per spec's "Apply step never closes a brief without an approved verdict" requirement,
+    every verdict here -- including `parse_verdicts()`'s fail-open `keep` fallbacks -- is
+    written as-is and in order, so this file is a complete, machine-applyable record of the
+    run with nothing silently dropped. Lives outside any target repo (default
+    `~/.go/triage/<run-id>/`, per design.md); `out_dir` itself is the caller's concern (3.2's
+    CLI), not this function's.
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / "verdict.json"
+    path.write_text(json.dumps([asdict(v) for v in verdicts], indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def write_report(verdicts: List[Verdict], skipped: List[Path], out_dir: "str | Path") -> Path:
+    """Render a human-readable Markdown summary of the run to `<out_dir>/report.md`.
+
+    Per spec's "Verdict file and human-readable report" requirement: briefs evaluated,
+    briefs skipped via dedup, verdict counts by type, and the full per-brief verdict list
+    with evidence. Counts are computed directly from `verdicts` so they can never drift
+    from `write_verdict_file()`'s JSON contents for the same run, per the spec scenario that
+    the report's verdict counts must match the JSON file's contents exactly.
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / "report.md"
+
+    counts: Dict[str, int] = {}
+    for v in verdicts:
+        counts[v.verdict] = counts.get(v.verdict, 0) + 1
+
+    lines: List[str] = [
+        "# Queue triage report",
+        "",
+        f"Briefs evaluated: {len(verdicts)}",
+        f"Briefs skipped (recently triaged): {len(skipped)}",
+        "",
+        "## Verdict counts",
+        "",
+    ]
+    for verdict_type in sorted(VALID_VERDICT_TYPES):
+        lines.append(f"- {verdict_type}: {counts.get(verdict_type, 0)}")
+
+    lines += ["", "## Skipped via dedup", ""]
+    if skipped:
+        lines += [f"- {Path(p).stem}" for p in skipped]
+    else:
+        lines.append("(none)")
+
+    lines += [
+        "",
+        "## Per-brief verdicts",
+        "",
+        "| Brief | Verdict | Duplicate of | Confidence | Evidence |",
+        "|---|---|---|---|---|",
+    ]
+    for v in verdicts:
+        evidence = v.evidence.replace("|", "\\|").replace("\n", " ")
+        lines.append(
+            f"| {v.brief_id} | {v.verdict} | {v.duplicate_of or ''} | "
+            f"{v.confidence or ''} | {evidence} |"
+        )
+    lines.append("")
+
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
