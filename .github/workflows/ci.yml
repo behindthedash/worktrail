@@ -19,6 +19,8 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
+      - name: Dev-install worktree guard
+        run: bash scripts/ci/test_dev_install.sh
       - name: Install package
         run: pip install -e ".[dev]"
       - name: Test

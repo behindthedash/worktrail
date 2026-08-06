@@ -104,16 +104,25 @@ unchanged.
 ## Development
 
 ```bash
-pip install -e ".[dev]"
+./scripts/dev-install.sh   # pip install -e ".[dev]", refuses to run from a worktree
 pytest
 python3 -m worktrail.orchestrator.orchestrate check   # golden record/replay regression
 ```
+
+Always install editable from the canonical checkout (`~/projects/worktrail`), never from a
+task worktree — `pip install -e` records this checkout's absolute path, and deleting a
+worktree (the standard teardown-after-merge step) then silently breaks every `worktrail-*`
+console script with `ModuleNotFoundError: No module named 'worktrail'` until someone
+manually diagnoses it (this broke the `/go` front door once, 2026-08-05).
+`scripts/dev-install.sh` refuses to run from a linked worktree so this can't recur silently.
 
 ## Git workflow
 
 Never commit or develop directly on `main`. Branch off `main` into a sibling worktree
 (`git worktree add ../worktrail-worktrees/<branch> -b <branch> main`), open a PR, merge only
-after CI is green. Delete merged branches once their PR lands.
+after CI is green. Delete merged branches once their PR lands. Never `pip install -e` from
+that worktree (see Development above) — the editable install must always point at this
+canonical checkout.
 
 Merges to `main` propagate to this machine's local install surfaces (pip editable checkout,
 Claude Code plugin cache, Codex plugin cache) automatically: a GitHub webhook relays the
