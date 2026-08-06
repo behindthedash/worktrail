@@ -31,6 +31,28 @@ Route C (feature-planning), and Route D when no spec exists.
 2. **validate** — `openspec validate <change-id>` per `../../worktrail-go/references/subagent-prompts.md#openspec-validate`. Catches
    the silent failures OpenSpec's own schema warns about (scenarios needing exactly
    four hashtags; a requirement with no scenario).
+3. **scope-check** — for OpenSpec changes, run `worktrail-compile` against the change
+   directory *before* the docs-only spec PR push (Route C closeout, below). This is
+   the same scope-gap check `../../worktrail-go/references/subagent-prompts.md#orchestrator`
+   already runs before `full-real` — running it here instead of only there is what closes the gap: an
+   under-scoped `tasks.md` (OpenSpecTaskSource always emits `files: []` per task, so
+   any change whose steps are investigation/verification-only is easy to under-scope)
+   used to merge as a docs-only PR and surface only once the orchestrator launched,
+   forcing a second PR against a branch whose predecessor had already squash-merged
+   (reproduced directly in datalena PR #2128 → #2129 conflict → #2130 recovery,
+   2026-08-05/06).
+
+   ```bash
+   worktrail-compile "$WT/openspec/changes/$SPEC_ID" || {
+     echo "ERROR: worktrail-compile found scope gaps in $SPEC_ID -- fix tasks.md in $WT (add explicit files: scope, a tail kind for investigation/verification-only steps, or a deps edge for an unordered file collision) and re-run before pushing the spec PR." >&2
+     exit 1
+   }
+   ```
+
+   Fix `tasks.md` in place inside `$WT` and re-run until it passes — never push
+   the docs-only PR on a failing compile. Devkit-format changes already declare
+   file scope in task frontmatter and take compile's free seed path (no model
+   call), so this is effectively a no-op there.
 
 **GUARD: all change artifacts are authored inside `$WT/openspec/changes/$CHANGE_ID/`,
 never in `$REPO`, and the whole change directory is committed on `spec/$CHANGE_ID`
@@ -46,8 +68,8 @@ command, so there is no stage-to-stage handoff left to sequence or commit betwee
 repo resolution, dashboard, worktree creation, routing, AskUserQuestion gates,
 orchestrator, sync, or monitoring. Each stage's output is committed — hand later stages pointers.
 
-Route C closeout (routes.md §C): spec PR plus the implementation-intent
-transition. Requested intent continues into Route D in the same run;
+Route C closeout (routes.md §C, after step 3's scope-check passes): spec PR
+plus the implementation-intent transition. Requested intent continues into Route D in the same run;
 planning-only intent finishes with `planned_ready_for_implementation`; unknown
 intent asks once and records the decision. A requested Route-C brief must not
 be closed or handed off at the spec/task boundary.

@@ -69,8 +69,12 @@ pipeline). Spec header must cite owning epic (when one exists), business
 objective, non-goals, security/data/UX implications, and testable acceptance
 criteria.
 
-**After spec-to-tasks (always):** push `spec/$SPEC_ID` and open a docs-only PR
-(→ `$BASE`) so the spec artifact is durable across sessions.
+**After spec-to-tasks and its scope-check gate pass (always):** push
+`spec/$SPEC_ID` and open a docs-only PR (→ `$BASE`) so the spec artifact is
+durable across sessions. The scope-check
+(`pipeline-details.md#new-pipeline` step 3, `worktrail-compile`) must pass
+first — never push the spec PR on a failing compile and rely on catching an
+under-scoped `tasks.md` once the orchestrator launches.
 
 **Inline D transition (MARKERS == 0 only):** inspect the brief's
 `implementation-intent:`. `requested` continues as Route D (orchestrator →
