@@ -35,7 +35,16 @@ reaches one of the two fail-loud sites above and blocks the run until a human re
   plan/baseline cycles are already rejected today (fall back to the format's own deps and
   file scope; record why in `notes`).
 - Keep `unordered_file_collisions()` and both existing fail-loud call sites in place as
-  defense-in-depth — they should simply stop firing in the normal path.
+  defense-in-depth — they should simply stop firing in the normal path. **Correction from
+  initial drafting:** "stop firing" means `compile.py main()`'s own collision branch
+  becomes unreachable through its normal `apply_to_tasks()` → `unordered_file_collisions()`
+  call sequence, which makes the two existing CLI-level tests that construct exactly that
+  scenario and assert `rc == 1` (`test_the_cli_fails_loudly_on_an_unordered_file_collision`,
+  `test_the_cli_json_mode_fails_loudly_on_an_unordered_file_collision`) test dead behavior
+  once this change lands — they must be rewritten to assert the new auto-repaired outcome,
+  not left as passive regression coverage. `live.py`'s `validate_task_metadata()` is
+  different: it can observe a merged task list assembled without going through
+  `apply_to_tasks()` at all, so its own existing test coverage stays valid unchanged.
 
 **Non-Goals:**
 - Changing the "Final pass" prompt instruction in `compile.py` — it stays as a
