@@ -519,5 +519,109 @@ class TestApplyVerdicts(QueueTriageTestBase):
             self.assertTrue((self.queue / "a.md").exists())
 
 
+class TestResolveDuplicateTargets(unittest.TestCase):
+    """6.5's dangling-`duplicate-of` resolution: a `duplicate-of` verdict whose
+    target is verdicted non-`keep` in the same batch is downgraded to a no-op
+    `keep`, with a warning logged, rather than acted on against a moving target.
+    """
+
+    def _dup(self, brief_id: str, target: str, evidence: str = "same premise") -> qt.Verdict:
+        return qt.Verdict(
+            brief_id=brief_id,
+            verdict="duplicate-of",
+            duplicate_of=target,
+            evidence=evidence,
+            confidence="medium",
+        )
+
+    def test_target_verdicted_stale_close_downgrades_referencing_verdict(self):
+        verdicts = [
+            self._dup("a", "b"),
+            qt.Verdict(
+                brief_id="b", verdict="stale-close", duplicate_of=None,
+                evidence="already shipped", confidence="high",
+            ),
+        ]
+
+        with self.assertLogs("worktrail.workqueue.queue_triage", level="WARNING") as cm:
+            resolved = qt.resolve_duplicate_targets(verdicts)
+
+        self.assertEqual(resolved[0].brief_id, "a")
+        self.assertEqual(resolved[0].verdict, "keep")
+        self.assertIsNone(resolved[0].duplicate_of)
+        self.assertEqual(resolved[0].evidence, "same premise")
+        self.assertEqual(resolved[0].confidence, "medium")
+        # target verdict is untouched
+        self.assertEqual(resolved[1].verdict, "stale-close")
+        self.assertTrue(any("dangling duplicate-of" in msg for msg in cm.output))
+
+    def test_target_verdicted_needs_update_downgrades_referencing_verdict(self):
+        verdicts = [
+            self._dup("a", "b"),
+            qt.Verdict(
+                brief_id="b", verdict="needs-update", duplicate_of=None,
+                evidence="file renamed", confidence="high",
+            ),
+        ]
+
+        resolved = qt.resolve_duplicate_targets(verdicts)
+
+        self.assertEqual(resolved[0].verdict, "keep")
+        self.assertIsNone(resolved[0].duplicate_of)
+
+    def test_target_also_duplicate_of_downgrades_referencing_verdict(self):
+        verdicts = [
+            self._dup("a", "b"),
+            self._dup("b", "c"),
+        ]
+
+        resolved = qt.resolve_duplicate_targets(verdicts)
+
+        self.assertEqual(resolved[0].verdict, "keep")
+        self.assertIsNone(resolved[0].duplicate_of)
+        # "b"'s own duplicate-of target ("c") is absent from the batch, so it
+        # is left as-is
+        self.assertEqual(resolved[1].verdict, "duplicate-of")
+        self.assertEqual(resolved[1].duplicate_of, "c")
+
+    def test_target_verdicted_keep_is_left_as_duplicate_of(self):
+        verdicts = [
+            self._dup("a", "b"),
+            qt.Verdict(
+                brief_id="b", verdict="keep", duplicate_of=None,
+                evidence="still relevant", confidence="low",
+            ),
+        ]
+
+        resolved = qt.resolve_duplicate_targets(verdicts)
+
+        self.assertEqual(resolved[0].verdict, "duplicate-of")
+        self.assertEqual(resolved[0].duplicate_of, "b")
+
+    def test_target_absent_from_batch_is_left_as_duplicate_of(self):
+        verdicts = [self._dup("a", "not-in-this-batch")]
+
+        resolved = qt.resolve_duplicate_targets(verdicts)
+
+        self.assertEqual(resolved[0].verdict, "duplicate-of")
+        self.assertEqual(resolved[0].duplicate_of, "not-in-this-batch")
+
+    def test_non_duplicate_of_verdicts_pass_through_unchanged(self):
+        verdicts = [
+            qt.Verdict(
+                brief_id="a", verdict="stale-close", duplicate_of=None,
+                evidence="shipped", confidence="high",
+            ),
+            qt.Verdict(
+                brief_id="b", verdict="keep", duplicate_of=None,
+                evidence="still relevant", confidence="low",
+            ),
+        ]
+
+        resolved = qt.resolve_duplicate_targets(verdicts)
+
+        self.assertEqual(resolved, verdicts)
+
+
 if __name__ == "__main__":
     unittest.main()
