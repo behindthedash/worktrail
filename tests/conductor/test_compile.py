@@ -373,11 +373,15 @@ def test_the_cli_json_mode_also_fails_loudly_when_impl_tasks_stay_scope_less(tmp
 
 
 # --------------------------------------------------------------------------- #
-# The CLI must not exit 0 on a plan that leaves same-file tasks unordered
-# (go-20260805-172326: a real compile left 2.1/2.2 both declaring one file with
-# no dep between them; the CLI gave no signal beyond the printed dep table)
+# The CLI auto-repairs a plan that leaves same-file tasks unordered instead of
+# failing on it (go-20260805-172326: a real compile left 2.1/2.2 both
+# declaring one file with no dep between them). `runplan.apply_to_tasks()`
+# closes the gap itself now, so `unordered_file_collisions()` on the merged
+# tasks the CLI actually schedules against is empty and the collision is no
+# longer reachable through this path -- see `apply_to_tasks_closes_an_...`
+# coverage in `test_runplan.py` for the repair logic itself.
 # --------------------------------------------------------------------------- #
-def test_the_cli_fails_loudly_on_an_unordered_file_collision(tmp_path, capsys):
+def test_the_cli_auto_repairs_an_unordered_file_collision(tmp_path, capsys):
     import subprocess
     from unittest.mock import patch
 
@@ -401,12 +405,15 @@ def test_the_cli_fails_loudly_on_an_unordered_file_collision(tmp_path, capsys):
     )
     with patch("worktrail.conductor.compile._default_spawn", return_value=reply):
         rc = conductor_compile.main([str(d)])
-    err = capsys.readouterr().err
-    assert rc == 1
-    assert "tests/check.py" in err and "2.1" in err and "2.2" in err
+    out, err = capsys.readouterr()
+    assert rc == 0
+    assert "tests/check.py" not in err and "ERROR" not in err
+    assert "auto-repaired 1 ordering edge" in out
+    # 2.2 was authored after 2.1, so it is the one that grew the repair edge.
+    assert "2.2        deps=1.1,2.1" in out
 
 
-def test_the_cli_json_mode_fails_loudly_on_an_unordered_file_collision(tmp_path, capsys):
+def test_the_cli_json_mode_auto_repairs_an_unordered_file_collision(tmp_path, capsys):
     from unittest.mock import patch
     import subprocess
 
@@ -431,9 +438,23 @@ def test_the_cli_json_mode_fails_loudly_on_an_unordered_file_collision(tmp_path,
     with patch("worktrail.conductor.compile._default_spawn", return_value=reply):
         rc = conductor_compile.main([str(d), "--json"])
     out, err = capsys.readouterr()
-    assert rc == 1
-    assert "tests/check.py" in err and "2.1" in err and "2.2" in err
-    json.loads(out)  # stdout must stay a clean, parseable plan
+    assert rc == 0
+    assert "tests/check.py" not in err and "ERROR" not in err
+    payload = json.loads(out)  # stdout must stay a clean, parseable plan
+
+    # `--json` prints the compiled RunPlan itself, not the merged/repaired
+    # task list -- the repair only exists once a caller runs the plan through
+    # `apply_to_tasks()`, same as every other consumer (live runs included).
+    # Round-trip the printed plan the way a real caller would and confirm the
+    # repaired edge lands on the merged tasks it would actually schedule.
+    from worktrail.taskformats import resolve
+
+    _, tasks = resolve.load_spec(str(d))
+    merged, notes = runplan.apply_to_tasks(tasks, runplan.RunPlan.from_dict(payload))
+    by_id = {t["id"]: t for t in merged}
+    assert by_id["2.2"]["deps"] == ["1.1", "2.1"]
+    assert runplan.unordered_file_collisions(merged) == []
+    assert any("auto-repaired" in n for n in notes)
 
 
 def test_the_cli_json_mode_exits_zero_when_every_task_gets_scope(tmp_path, capsys):

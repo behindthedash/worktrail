@@ -157,17 +157,100 @@ def test_an_edge_is_dropped_even_when_both_ends_share_the_same_file():
     that the scopes are disjoint -- so two tasks that both declare the exact
     same file can still lose their ordering edge if the plan omits it. This is
     the merge-time half of the go-20260805-172326 incident: compile declared
-    2.1 and 2.2 both writing the same file with no dependency between them, and
-    apply_to_tasks let that stand. `unordered_file_collisions` is the fail-loud
-    check for the case this test shows is otherwise silent."""
+    2.1 and 2.2 both writing the same file with no dependency between them.
+    `apply_to_tasks` now auto-repairs the gap it leaves: the later-authored
+    task (2.2) gets a `deps` edge onto the earlier one (2.1), so the merged
+    plan it returns is never left with an unordered collision."""
     tasks = [_task("2.1"), _task("2.2")]
     plan = _plan(
         TaskPlan(id="2.1", files=("shared.py",)),
         TaskPlan(id="2.2", files=("shared.py",)),  # same file, no dep on 2.1
     )
+    merged, notes = runplan.apply_to_tasks(tasks, plan)
+    assert merged[0]["deps"] == [] and merged[1]["deps"] == ["2.1"]
+    assert runplan.unordered_file_collisions(merged) == []
+    assert any("auto-repaired" in n for n in notes)
+
+
+# --------------------------------------------------------------------------- #
+# Same-file collision auto-repair
+# --------------------------------------------------------------------------- #
+def test_apply_to_tasks_closes_an_unordered_same_file_collision():
+    """The general case: a compiled plan leaves two writers of one file with no
+    ordering edge between them. `apply_to_tasks` adds one -- from the
+    later-authored task onto the earlier one -- so the merged plan it hands
+    back is never left with a gap `unordered_file_collisions` would catch."""
+    tasks = [_task("1.1"), _task("2.1"), _task("2.2")]
+    plan = _plan(
+        TaskPlan(id="1.1", files=("other.py",)),
+        TaskPlan(id="2.1", files=("shared.py",)),
+        TaskPlan(id="2.2", files=("shared.py",)),  # unordered vs 2.1
+    )
     merged, _ = runplan.apply_to_tasks(tasks, plan)
-    assert merged[0]["deps"] == [] and merged[1]["deps"] == []
-    assert runplan.unordered_file_collisions(merged) == [("shared.py", "2.1", "2.2")]
+    assert merged[2]["deps"] == ["2.1"]
+    assert runplan.unordered_file_collisions(merged) == []
+
+
+def test_repair_adds_nothing_when_the_plan_already_orders_the_shared_file_directly():
+    tasks = [_task("2.1"), _task("2.2")]
+    plan = _plan(
+        TaskPlan(id="2.1", files=("shared.py",)),
+        TaskPlan(id="2.2", files=("shared.py",), deps=("2.1",)),
+    )
+    merged, notes = runplan.apply_to_tasks(tasks, plan)
+    assert merged[1]["deps"] == ["2.1"]
+    assert runplan.unordered_file_collisions(merged) == []
+    assert not any("auto-repaired" in n for n in notes)
+
+
+def test_repair_adds_nothing_when_the_plan_already_orders_the_shared_file_transitively():
+    tasks = [_task("2.1"), _task("2.2"), _task("2.3")]
+    plan = _plan(
+        TaskPlan(id="2.1", files=("shared.py",)),
+        TaskPlan(id="2.2", files=(), deps=("2.1",)),
+        TaskPlan(id="2.3", files=("shared.py",), deps=("2.2",)),
+    )
+    merged, notes = runplan.apply_to_tasks(tasks, plan)
+    assert merged[2]["deps"] == ["2.2"]
+    assert runplan.unordered_file_collisions(merged) == []
+    assert not any("auto-repaired" in n for n in notes)
+
+
+def test_repair_closes_two_or_more_independent_collisions():
+    """Every gap the merge left is closed on its own -- one pair's repair does
+    not depend on or interfere with another's."""
+    tasks = [_task("1.1"), _task("1.2"), _task("2.1"), _task("2.2")]
+    plan = _plan(
+        TaskPlan(id="1.1", files=("a.py",)),
+        TaskPlan(id="1.2", files=("a.py",)),
+        TaskPlan(id="2.1", files=("b.py",)),
+        TaskPlan(id="2.2", files=("b.py",)),
+    )
+    merged, notes = runplan.apply_to_tasks(tasks, plan)
+    assert merged[1]["deps"] == ["1.1"]
+    assert merged[3]["deps"] == ["2.1"]
+    assert runplan.unordered_file_collisions(merged) == []
+    assert any("auto-repaired 2 ordering edge(s)" in n for n in notes)
+
+
+def test_repair_that_would_create_a_cycle_rejects_the_whole_plan():
+    """A repair edge is always consistent with authored order on its own, but
+    two repairs plus a plan edge that runs *against* authored order can still
+    close a loop: A is planned to depend on C (a backwards edge); B and C
+    collide on one file (repair: B before C); A and B collide on another
+    (repair: A before B). Combined that is C before A before B before C -- a
+    cycle `compute_levels` catches the same way it catches a plan/baseline
+    cycle, so the whole plan is rejected and the original tasks are kept."""
+    tasks = [_task("A"), _task("B"), _task("C")]
+    plan = _plan(
+        TaskPlan(id="A", files=("fileX.py",), deps=("C",)),
+        TaskPlan(id="B", files=("fileX.py", "fileY.py")),
+        TaskPlan(id="C", files=("fileY.py",)),
+    )
+    merged, notes = runplan.apply_to_tasks(tasks, plan)
+    assert merged == tasks
+    assert any("cycle" in n for n in notes)
+    assert not any("auto-repaired" in n for n in notes)
 
 
 # --------------------------------------------------------------------------- #
