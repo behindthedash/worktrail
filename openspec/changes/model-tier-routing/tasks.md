@@ -82,9 +82,17 @@
 
 ## 5. Explicitly deferred (do not attempt in this change)
 
-- [ ] 5.1 Write a follow-up proposal for task-purpose classification (architecture
+- [x] 5.1 Write a follow-up proposal for task-purpose classification (architecture
       design vs. terminal-heavy automation vs. security review vs. CRUD scaffold,
       etc.) — this change's tiers are reachable manually/via existing `complexity`
       frontmatter only, not automatically from task purpose
+      **Done (2026-08-05):** see `openspec/changes/task-purpose-classification/`
+      (proposal.md/design.md/specs/tasks.md) — the `purpose` task field, its
+      `compile.py`-driven inference, and the `routing.purpose_tiers` mapping.
 - [ ] 5.2 Once 5.1 exists, resolve D3 (agent-preference-within-tier: options (a)/(b)/(c)
       in design.md) informed by however classification actually surfaces its signal
+      **Design resolved (2026-08-05):** `openspec/changes/task-purpose-classification/
+      design.md` D3 picks option (b) — an agent-aware `<tier>-<agent>` lookup in
+      `dispatch.agent_for()`, formalizing the key shape already live in
+      `~/.go/routing.yaml`. Left unchecked here pending that change's own
+      implementation (tasks.md §4) shipping the code.
