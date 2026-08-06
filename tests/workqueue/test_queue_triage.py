@@ -625,8 +625,15 @@ class TestResolveDuplicateTargets(unittest.TestCase):
 
 class TestReportAndVerdictFileOutput(QueueTriageTestBase):
     """6.6: the Markdown report's verdict counts must match `verdict.json`'s
-    contents exactly for a synthetic multi-group run (multiple repos, every
-    verdict type, including a `keep` fallback and a skipped-via-dedup brief).
+    contents exactly. `test_report_verdict_counts_match_json_file_exactly` and
+    friends exercise `write_verdict_file()`/`write_report()` directly on a flat,
+    hand-built `List[Verdict]` covering every verdict type (including a `keep`
+    fallback); `test_multi_group_evaluate_run_report_matches_json` drives the
+    actual multi-group aggregation path -- briefs across two distinct `repo:`
+    values plus the `__none__` bucket, a skipped-via-dedup brief, through
+    `qt.main(["evaluate", ...])` with `evaluate_group()` patched -- the same
+    path `cmd_evaluate()` uses to accumulate verdicts across groups before
+    handing them to the writers.
     """
 
     @staticmethod
@@ -689,8 +696,13 @@ class TestReportAndVerdictFileOutput(QueueTriageTestBase):
 
         # every verdict type is listed in the report (zero-filled), so compare
         # against the JSON counts zero-filled the same way rather than assuming
-        # the report only lists types that actually occurred.
-        expected_counts = {vtype: json_counts.get(vtype, 0) for vtype in qt.VALID_VERDICT_TYPES}
+        # the report only lists types that actually occurred. The zero-fill set
+        # is a literal here (not `qt.VALID_VERDICT_TYPES`) so a wrong member in
+        # that constant can't cancel out on both sides of the comparison.
+        expected_counts = {
+            vtype: json_counts.get(vtype, 0)
+            for vtype in ("keep", "stale-close", "needs-update", "duplicate-of")
+        }
         self.assertEqual(report_counts, expected_counts)
 
         # and the JSON file itself carries no verdict type absent from the report
@@ -700,6 +712,96 @@ class TestReportAndVerdictFileOutput(QueueTriageTestBase):
         self.assertEqual(len(json_verdicts), len(verdicts))
         self.assertIn(f"Briefs evaluated: {len(verdicts)}", report_text)
         self.assertIn(f"Briefs skipped (recently triaged): {len(skipped)}", report_text)
+        self.assertIn("## Skipped via dedup", report_text)
+        for path in skipped:
+            self.assertIn(f"- {path.stem}", report_text)
+
+    def test_multi_group_evaluate_run_report_matches_json(self):
+        """Drives `cmd_evaluate()`'s real accumulate-across-groups step
+        (`queue_triage.py:701-712`), not the writers in isolation: two distinct
+        `repo:` groups plus the `__none__` bucket, `evaluate_group()` patched per
+        group, one brief skipped via a recent `## Triage` section.
+        """
+        self.write("a1.md", repo="behindthedash/repo-a")
+        self.write("a2.md", repo="behindthedash/repo-a")
+        self.write("b1.md", repo="behindthedash/repo-b")
+        self.write("b2.md", repo="behindthedash/repo-b")
+        self.write("n1.md")
+        self.write("n2.md")
+        today = datetime.date.today().isoformat()
+        self.write(
+            "skipped.md",
+            repo="behindthedash/repo-a",
+            body=f"## Triage {today}\n\nstill fresh, do not re-evaluate\n",
+        )
+
+        def fake_evaluate_group(repo, briefs, *, agent="claude", model=None, cwd=None):
+            ids = [p.stem for p in briefs]
+            if repo == "behindthedash/repo-a":
+                raw = "\n".join([
+                    json.dumps({
+                        "brief_id": ids[0], "verdict": "stale-close", "duplicate_of": None,
+                        "evidence": "PR #42 already shipped this", "confidence": "high",
+                    }),
+                    json.dumps({
+                        "brief_id": ids[1], "verdict": "stale-close", "duplicate_of": None,
+                        "evidence": "repo archived", "confidence": "high",
+                    }),
+                ])
+            elif repo == "behindthedash/repo-b":
+                raw = "\n".join([
+                    json.dumps({
+                        "brief_id": ids[0], "verdict": "needs-update", "duplicate_of": None,
+                        "evidence": "target file renamed", "confidence": "medium",
+                    }),
+                    json.dumps({
+                        "brief_id": ids[1], "verdict": "duplicate-of", "duplicate_of": ids[0],
+                        "evidence": "same premise", "confidence": "medium",
+                    }),
+                ])
+            else:
+                raw = "\n".join([
+                    json.dumps({
+                        "brief_id": ids[0], "verdict": "keep", "duplicate_of": None,
+                        "evidence": "still relevant", "confidence": "low",
+                    }),
+                    "the evaluator rambled and never emitted valid JSON for the second brief",
+                ])
+            return [{"repo": repo, "brief_ids": ids, "raw_text": raw}]
+
+        out_dir = self.base / "out-run"
+        with mock.patch(
+            "worktrail.workqueue.queue_triage.evaluate_group", side_effect=fake_evaluate_group,
+        ) as mock_eval:
+            exit_code = qt.main(["evaluate", "--out-dir", str(out_dir)])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(
+            {call.args[0] for call in mock_eval.call_args_list},
+            {"behindthedash/repo-a", "behindthedash/repo-b", qt.NO_REPO_KEY},
+        )
+
+        verdict_path = out_dir / "verdict.json"
+        report_path = out_dir / "report.md"
+        json_verdicts = json.loads(verdict_path.read_text(encoding="utf-8"))
+        json_counts: dict = {}
+        for entry in json_verdicts:
+            json_counts[entry["verdict"]] = json_counts.get(entry["verdict"], 0) + 1
+
+        report_text = report_path.read_text(encoding="utf-8")
+        report_counts = self._report_counts(report_text)
+
+        expected_counts = {"keep": 0, "stale-close": 0, "needs-update": 0, "duplicate-of": 0}
+        expected_counts.update(json_counts)
+        self.assertEqual(report_counts, expected_counts)
+        self.assertEqual(
+            report_counts, {"keep": 2, "stale-close": 2, "needs-update": 1, "duplicate-of": 1},
+        )
+
+        self.assertEqual(len(json_verdicts), 6)
+        self.assertIn("Briefs evaluated: 6", report_text)
+        self.assertIn("Briefs skipped (recently triaged): 1", report_text)
+        self.assertIn("- skipped", report_text)
 
     def test_report_and_json_agree_on_empty_verdict_list(self):
         out_dir = self.base / "out-empty"
@@ -725,8 +827,15 @@ class TestReportAndVerdictFileOutput(QueueTriageTestBase):
 
         self.assertEqual([e["brief_id"] for e in json_verdicts], [v.brief_id for v in verdicts])
         for entry in json_verdicts:
-            self.assertIn(entry["brief_id"], report_text)
-            self.assertIn(entry["verdict"], report_text)
+            # tie brief_id and verdict together, not just each present somewhere in
+            # the report: `write_report()` zero-fills every verdict type in the
+            # counts section regardless of the per-brief table, so checking
+            # `entry["verdict"]` alone can never fail.
+            self.assertIn(f"| {entry['brief_id']} | {entry['verdict']} |", report_text)
+            if entry["duplicate_of"] is not None:
+                self.assertIn(entry["duplicate_of"], report_text)
+            if entry["confidence"] is not None:
+                self.assertIn(entry["confidence"], report_text)
 
 
 if __name__ == "__main__":
