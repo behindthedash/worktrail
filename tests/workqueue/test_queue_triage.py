@@ -6,10 +6,13 @@ Run: python3 -m pytest tests/workqueue/test_queue_triage.py -q
 
 from __future__ import annotations
 
+import json
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from worktrail.workqueue import queue_triage as qt
 
@@ -308,6 +311,95 @@ class TestParseVerdicts(unittest.TestCase):
         v = verdicts[0]
         self.assertEqual(v.verdict, "keep")
         self.assertEqual(v.evidence, "second attempt is valid")
+
+
+class TestEvaluateGroupArchivedShortCircuit(QueueTriageTestBase):
+    """2.4's archived-repo short-circuit: `_check_repo_archived()` gates whether
+    `evaluate_group()` synthesizes verdicts itself or spawns an evaluator agent.
+    Faked via `subprocess.run`/`spawn_agent` patches -- never hits the network.
+    """
+
+    def _completed(self, returncode: int, stdout: str = "") -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(
+            args=["gh"], returncode=returncode, stdout=stdout, stderr=""
+        )
+
+    def test_confirmed_archival_synthesizes_group_wide_stale_close_without_spawning(self):
+        repo = "behindthedash/retired-repo"
+        briefs = [self.write("a.md", repo=repo), self.write("b.md", repo=repo)]
+
+        gh_stdout = json.dumps({"isArchived": True, "name": repo})
+        with mock.patch(
+            "worktrail.workqueue.queue_triage.subprocess.run",
+            return_value=self._completed(0, gh_stdout),
+        ) as mock_run, mock.patch(
+            "worktrail.orchestrator.spawnlib.spawn_agent"
+        ) as mock_spawn:
+            result = qt.evaluate_group(repo, briefs, cwd=self.base)
+
+        mock_run.assert_called_once()
+        mock_spawn.assert_not_called()
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["repo"], repo)
+        self.assertEqual(result[0]["brief_ids"], ["a", "b"])
+
+        verdicts = qt.parse_verdicts(result[0]["raw_text"], ["a", "b"])
+        self.assertEqual([v.brief_id for v in verdicts], ["a", "b"])
+        for v in verdicts:
+            self.assertEqual(v.verdict, "stale-close")
+            self.assertIsNone(v.duplicate_of)
+            self.assertIn(repo, v.evidence)
+            self.assertEqual(v.confidence, "high")
+
+    def test_gh_check_failure_falls_through_to_normal_evaluation(self):
+        repo = "behindthedash/worktrail"
+        briefs = [self.write("a.md", repo=repo)]
+
+        from worktrail.orchestrator.spawnlib import SpawnResult
+
+        evaluator_text = (
+            '{"brief_id": "a", "verdict": "keep", "duplicate_of": null, '
+            '"evidence": "still relevant", "confidence": "medium"}'
+        )
+        with mock.patch(
+            "worktrail.workqueue.queue_triage.subprocess.run",
+            return_value=self._completed(1, ""),
+        ) as mock_run, mock.patch(
+            "worktrail.orchestrator.spawnlib.spawn_agent",
+            return_value=SpawnResult(text=evaluator_text, usage={}),
+        ) as mock_spawn:
+            result = qt.evaluate_group(repo, briefs, cwd=self.base)
+
+        mock_run.assert_called_once()
+        mock_spawn.assert_called_once()
+
+        self.assertEqual(result[0]["raw_text"], evaluator_text)
+        verdicts = qt.parse_verdicts(result[0]["raw_text"], ["a"])
+        self.assertEqual(verdicts[0].verdict, "keep")
+
+    def test_gh_check_exception_falls_through_to_normal_evaluation(self):
+        repo = "behindthedash/worktrail"
+        briefs = [self.write("a.md", repo=repo)]
+
+        from worktrail.orchestrator.spawnlib import SpawnResult
+
+        evaluator_text = (
+            '{"brief_id": "a", "verdict": "keep", "duplicate_of": null, '
+            '"evidence": "gh unavailable, kept as fail-open", "confidence": "low"}'
+        )
+        with mock.patch(
+            "worktrail.workqueue.queue_triage.subprocess.run",
+            side_effect=OSError("gh not found"),
+        ) as mock_run, mock.patch(
+            "worktrail.orchestrator.spawnlib.spawn_agent",
+            return_value=SpawnResult(text=evaluator_text, usage={}),
+        ) as mock_spawn:
+            result = qt.evaluate_group(repo, briefs, cwd=self.base)
+
+        mock_run.assert_called_once()
+        mock_spawn.assert_called_once()
+        self.assertEqual(result[0]["raw_text"], evaluator_text)
 
 
 if __name__ == "__main__":
