@@ -154,6 +154,15 @@ modifies it and is missing it from its own `files`. Add it there too. Two \
 tasks correctly declaring the same file is normal and expected; a shared file \
 declared by only one of them is the exact miss this pass exists to catch.
 
+Then re-check `deps` the same way: for every file two or more tasks now \
+declare in `files`, confirm those tasks are ordered -- one must be a `deps` \
+ancestor of the other, directly or transitively. Two tasks can each correctly \
+declare the same file and still have nothing ordering them; that is a \
+compile-time failure, not a style nit. Where no order exists yet, add a \
+`deps` edge between them -- the later task in authored order depending on \
+the earlier one, unless the tasks' own descriptions demand the opposite \
+order.
+
 Rules:
 - Every task id above must appear exactly once. Invent no ids.
 - `deps` may only contain ids from the list above.

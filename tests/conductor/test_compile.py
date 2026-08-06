@@ -291,6 +291,21 @@ def test_the_prompt_instructs_a_final_cross_task_overlap_rescan():
     assert "in isolation" in prompt
 
 
+# --------------------------------------------------------------------------- #
+# Cross-task dependency re-scan (runplan.unordered_file_collisions() catches an
+# unordered pair of same-file writers after the fact -- the prompt must also
+# tell the model to close that gap itself, not just declare `files` correctly)
+# --------------------------------------------------------------------------- #
+def test_the_prompt_instructs_a_final_cross_task_deps_rescan():
+    """Declaring a shared file on both co-writers is not enough on its own --
+    `unordered_file_collisions()` fails loud unless one is a `deps` ancestor of
+    the other. The prompt must tell the model to check for that missing edge,
+    not just for the missing file declaration."""
+    prompt = conductor_compile.PROMPT
+    assert "re-check `deps`" in prompt
+    assert "nothing ordering them" in prompt
+
+
 def test_the_rescan_instruction_reaches_the_formatted_prompt(change, tmp_path):
     """The final-pass instruction is static text in `PROMPT`, but this proves
     `.format()` doesn't accidentally consume or truncate it via a stray `{`/`}`
