@@ -477,11 +477,17 @@ def validate_task_metadata(tasks: list) -> None:
 
     Also refuses fan-out when a still-pending task declares the same file as another
     task with no dependency order between them (go-20260805-172326). `runnable_frontier`'s
-    per-tick file lock happens to serialise same-file writers anyway, but nothing upstream
-    of it asserted that as a graph invariant -- this is the live-run enforcement point for
-    `runplan.unordered_file_collisions`, the same check `worktrail-compile` runs standalone
-    against a freshly compiled plan. A pair where both tasks are already done is not
-    reported: they already ran, so there is nothing left here to protect."""
+    per-tick file lock happens to serialise same-file writers anyway, but this is a
+    defense-in-depth backstop, not the primary enforcement: `runplan.apply_to_tasks` now
+    auto-repairs this same gap by adding an ordering edge whenever both endpoints go
+    through it, but the live `tasks` list checked here can be assembled without ever
+    calling `apply_to_tasks` (e.g. resumed from a journal straight off the task source),
+    so nothing upstream guarantees the invariant for it. This is the live-run enforcement
+    point for `runplan.unordered_file_collisions`, the same check `worktrail-compile` runs
+    standalone against a freshly compiled plan -- also now mostly a backstop there, since
+    `apply_to_tasks` closes the gap before that check ever sees it. A pair where both
+    tasks are already done is not reported: they already ran, so there is nothing left
+    here to protect."""
     missing = [
         t["id"]
         for t in tasks
