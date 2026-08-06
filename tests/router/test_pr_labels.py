@@ -15,7 +15,7 @@ from unittest.mock import patch
 import pytest
 
 from worktrail.router import pr_labels
-from worktrail.router.pr_labels import ensure_pr_risk_label, main
+from worktrail.router.pr_labels import ensure_pr_no_automerge_label, ensure_pr_risk_label, main
 
 
 class _FakeCompleted:
@@ -108,6 +108,91 @@ def test_ensure_pr_risk_label_returns_none_when_gh_edit_fails(monkeypatch):
 
     monkeypatch.setattr(pr_labels.subprocess, "run", fake_run)
     result = ensure_pr_risk_label("/repo", "https://github.com/o/r/pull/1", "medium")
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# ensure_pr_no_automerge_label
+
+def test_ensure_pr_no_automerge_label_adds_when_ineligible_and_none_present(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, capture_output, text, cwd, timeout):
+        calls.append(cmd)
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return _FakeCompleted(0, json.dumps({"labels": [{"name": "go:risk-high"}]}))
+        if cmd[:3] == ["gh", "pr", "edit"]:
+            return _FakeCompleted(0, "")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(pr_labels.subprocess, "run", fake_run)
+    result = ensure_pr_no_automerge_label("/repo", "https://github.com/o/r/pull/1", eligible=False)
+    assert result == "go:no-automerge"
+    assert ["gh", "pr", "edit", "https://github.com/o/r/pull/1",
+            "--add-label", "go:no-automerge"] in calls
+
+
+def test_ensure_pr_no_automerge_label_noop_when_eligible(monkeypatch):
+    def fake_run(*a, **k):
+        raise AssertionError("gh must not be called when the PR is eligible")
+
+    monkeypatch.setattr(pr_labels.subprocess, "run", fake_run)
+    result = ensure_pr_no_automerge_label("/repo", "https://github.com/o/r/pull/1", eligible=True)
+    assert result is None
+
+
+def test_ensure_pr_no_automerge_label_noop_when_already_present(monkeypatch):
+    def fake_run(cmd, capture_output, text, cwd, timeout):
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return _FakeCompleted(0, json.dumps({"labels": [{"name": "go:no-automerge"}]}))
+        raise AssertionError(f"gh pr edit must not run: {cmd}")
+
+    monkeypatch.setattr(pr_labels.subprocess, "run", fake_run)
+    result = ensure_pr_no_automerge_label("/repo", "https://github.com/o/r/pull/1", eligible=False)
+    assert result is None
+
+
+def test_ensure_pr_no_automerge_label_never_removes_existing_label(monkeypatch):
+    """This corrector is additive only -- an existing go:no-automerge a human
+    or agent added deliberately must never be removed, even if it later
+    becomes eligible (eligible=True is a noop, never a removal)."""
+    def fake_run(*a, **k):
+        raise AssertionError("gh must not be called; eligible=True is always a noop")
+
+    monkeypatch.setattr(pr_labels.subprocess, "run", fake_run)
+    result = ensure_pr_no_automerge_label("/repo", "https://github.com/o/r/pull/1", eligible=True)
+    assert result is None
+
+
+@pytest.mark.parametrize("repo,pr_url,eligible", [
+    (None, "https://github.com/o/r/pull/1", False),
+    ("/repo", None, False),
+])
+def test_ensure_pr_no_automerge_label_noop_on_missing_inputs(monkeypatch, repo, pr_url, eligible):
+    def fake_run(*a, **k):
+        raise AssertionError("gh must not be called with incomplete inputs")
+
+    monkeypatch.setattr(pr_labels.subprocess, "run", fake_run)
+    assert ensure_pr_no_automerge_label(repo, pr_url, eligible) is None
+
+
+def test_ensure_pr_no_automerge_label_noop_when_gh_view_fails(monkeypatch):
+    def fake_run(cmd, capture_output, text, cwd, timeout):
+        return _FakeCompleted(1, "")
+
+    monkeypatch.setattr(pr_labels.subprocess, "run", fake_run)
+    result = ensure_pr_no_automerge_label("/repo", "https://github.com/o/r/pull/1", eligible=False)
+    assert result is None
+
+
+def test_ensure_pr_no_automerge_label_returns_none_when_gh_edit_fails(monkeypatch):
+    def fake_run(cmd, capture_output, text, cwd, timeout):
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return _FakeCompleted(0, json.dumps({"labels": []}))
+        return _FakeCompleted(1, "")  # gh pr edit fails
+
+    monkeypatch.setattr(pr_labels.subprocess, "run", fake_run)
+    result = ensure_pr_no_automerge_label("/repo", "https://github.com/o/r/pull/1", eligible=False)
     assert result is None
 
 

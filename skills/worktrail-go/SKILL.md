@@ -350,13 +350,19 @@ RUN_JSON=$(worktrail-run-record start \
   --request "$REQUEST_SUMMARY" \
   --route "$ROUTE" \
   --risk "$RISK_LEVEL" \
+  --gates "$GATES" \
   --agent "$INVOCATION_CONTEXT_AGENT")
 RUN=$(echo "$RUN_JSON" | python3 -c "import sys, json; print(json.load(sys.stdin)['path'])")
 ```
 
 Hold `$RISK_LEVEL` and `$GATES` for Phase 8's mandatory pre-PR gate
 (`sdd-workflow/SKILL.md`'s `pre_pr_gate.py --run --risk --gates` call) — they are
-classify.py's `risk`/`gates` fields verbatim, not re-derived later.
+classify.py's `risk`/`gates` fields verbatim, not re-derived later. `--gates "$GATES"`
+persists the same value on the run record itself (comma-joined, possibly empty) so
+`worktrail-reconcile-pr-labels`'s periodic sweep can recompute full
+`automerge_eligible()` per PR and self-heal drifted `go:no-automerge` labels the same
+way it already self-heals `go:risk-*` labels — not just hold it for this run's own
+Phase 8.
 
 Risk level: **low** (queue items, docs), **medium** (bug fixes, refactors), **high** (major features, spec rewrites). Hold `$RUN` for Phase 8. If the policy sets `run_record_dir`, pass it as `--dir` on every `run_record.py` call.
 

@@ -71,6 +71,31 @@ def ensure_pr_risk_label(repo: Optional[str], pr_url: Optional[str],
     return new_label if result.returncode == 0 else None
 
 
+def ensure_pr_no_automerge_label(repo: Optional[str], pr_url: Optional[str],
+                                 eligible: bool) -> Optional[str]:
+    """Add a `go:no-automerge` label to a PR that carries none but is
+    ineligible per a full `automerge_eligible()` recompute the caller already
+    performed (needs `gates`, which only run records persisting the
+    classifier's gates array can supply -- see `reconcile_pr_labels.py`).
+
+    Same one-directional, additive posture as `ensure_pr_risk_label()`: it
+    only ADDS the label when missing and ineligible. It never removes an
+    existing `go:no-automerge` -- a human or agent may have added it
+    deliberately for a reason policy doesn't model, and silently removing it
+    would be a much worse failure mode than leaving a false positive in place.
+    """
+    if not repo or not pr_url or eligible:
+        return None
+    labels = _current_pr_labels(repo, pr_url)
+    if labels is None or "go:no-automerge" in labels:
+        return None
+    result = subprocess.run(
+        ["gh", "pr", "edit", pr_url, "--add-label", "go:no-automerge"],
+        capture_output=True, text=True, cwd=repo, timeout=30,
+    )
+    return "go:no-automerge" if result.returncode == 0 else None
+
+
 def main(argv=None) -> int:
     """CLI entrypoint: apply the correction using a run record's own
     `repository` / `pull_request` / `risk_level` fields -- the same fields
