@@ -869,7 +869,9 @@ class Routing(unittest.TestCase):
             "  roles:\n"
             "    reviewer: codex\n"
             "  fallback:\n"
-            "    - opencode\n")
+            "    - opencode\n"
+            "  purpose_tiers:\n"
+            "    scaffolding: t3\n")
         with self._no_mw_env():
             pol = load_policy(repo)
         first = resolve_routing(pol, "B", "medium")
@@ -879,6 +881,14 @@ class Routing(unittest.TestCase):
         self.assertEqual(first["agent_model"], "opus")
         self.assertEqual(first["roles"], {"reviewer": {"agent_cli": "codex", "agent_model": None, "effort": None}})
         self.assertEqual(first["fallback"], [{"agent_cli": "opencode", "agent_model": None, "effort": None}])
+        self.assertEqual(first["purpose_tiers"], {"scaffolding": "t3"})
+
+    def test_resolve_routing_purpose_tiers_empty_when_unconfigured(self):
+        repo = _repo_with(
+            "routing:\n  defaults:\n    B:\n      medium:\n        agent_cli: claude\n")
+        with self._no_mw_env():
+            pol = load_policy(repo)
+        self.assertEqual(resolve_routing(pol, "B", "medium")["purpose_tiers"], {})
 
     def test_resolve_routing_unmatched_falls_back_to_flat_agent_cli(self):
         # REQ-002
@@ -899,6 +909,7 @@ class Routing(unittest.TestCase):
         self.assertEqual(result["agent_model"], "sonnet")
         self.assertEqual(result["roles"], {})
         self.assertEqual(result["fallback"], [{"agent_cli": "codex", "agent_model": None}])
+        self.assertEqual(result["purpose_tiers"], {})
 
     def test_malformed_scalar_routing_value_warns_and_ignored(self):
         # REQ-001, REQ-NR004
