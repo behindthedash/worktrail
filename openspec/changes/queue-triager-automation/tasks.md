@@ -80,8 +80,8 @@
 
 ## 7. Verification
 
-- [ ] 7.1 `PYTHONPATH=src pytest -q` green.
-- [ ] 7.2 `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` green.
-- [ ] 7.3 `pytest tests/test_plugin_surface.py` green (no skill/plugin surface touched by this
-      change, but the new console script must resolve cleanly for any doc that might
-      reference it later).
+- [ ] 7.1 [cleanup] `PYTHONPATH=src pytest -q` green.
+- [ ] 7.2 [cleanup] `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` green.
+- [ ] 7.3 [cleanup] `pytest tests/test_plugin_surface.py` green (no skill/plugin surface
+      touched by this change, but the new console script must resolve cleanly for any doc that
+      might reference it later).
