@@ -119,6 +119,56 @@ class IncompleteTerminalState(unittest.TestCase):
             ]
         )
 
+    def test_validate_task_metadata_rejects_pending_same_file_siblings_with_no_order(self):
+        """go-20260805-172326: a compiled plan left two sibling tasks both declaring
+        the same file with no dependency between them. `runnable_frontier`'s per-tick
+        file lock happens to serialise them anyway at runtime, but this is the graph-
+        level assertion that used to depend on a human eyeballing the printed dep
+        table before launch."""
+        with self.assertRaisesRegex(RuntimeError, r"shared\.py.*TASK-001.*TASK-002"):
+            live.validate_task_metadata(
+                [
+                    {"id": "TASK-000", "status": "done", "kind": "impl", "files": ["a.py"]},
+                    {
+                        "id": "TASK-001",
+                        "status": "pending",
+                        "kind": "impl",
+                        "files": ["shared.py"],
+                        "deps": ["TASK-000"],
+                    },
+                    {
+                        "id": "TASK-002",
+                        "status": "pending",
+                        "kind": "impl",
+                        "files": ["shared.py"],
+                        "deps": ["TASK-000"],
+                    },
+                ]
+            )
+
+    def test_validate_task_metadata_allows_same_file_tasks_ordered_by_a_dep(self):
+        live.validate_task_metadata(
+            [
+                {"id": "TASK-001", "status": "pending", "kind": "impl", "files": ["shared.py"]},
+                {
+                    "id": "TASK-002",
+                    "status": "pending",
+                    "kind": "impl",
+                    "files": ["shared.py"],
+                    "deps": ["TASK-001"],
+                },
+            ]
+        )
+
+    def test_validate_task_metadata_ignores_a_collision_where_both_tasks_are_already_done(self):
+        """Nothing left to protect: both writers already ran."""
+        live.validate_task_metadata(
+            [
+                {"id": "TASK-001", "status": "done", "kind": "impl", "files": ["shared.py"]},
+                {"id": "TASK-002", "status": "done", "kind": "impl", "files": ["shared.py"]},
+            ]
+        )
+
 
 class FanoutCompleteTailKinds(unittest.TestCase):
     """`full-real` dispatches the fan-out with with_tail=False, so tail-kind tasks

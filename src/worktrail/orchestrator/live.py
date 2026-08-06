@@ -473,7 +473,15 @@ def validate_task_metadata(tasks: list) -> None:
     flagged here. A task with neither files nor a dependency boundary has no such
     guarantee -- it would enter the frontier immediately and `runnable_frontier` reads
     its empty file set as "collides with nothing", so it is the genuinely unbounded case
-    this check exists to catch."""
+    this check exists to catch.
+
+    Also refuses fan-out when a still-pending task declares the same file as another
+    task with no dependency order between them (go-20260805-172326). `runnable_frontier`'s
+    per-tick file lock happens to serialise same-file writers anyway, but nothing upstream
+    of it asserted that as a graph invariant -- this is the live-run enforcement point for
+    `runplan.unordered_file_collisions`, the same check `worktrail-compile` runs standalone
+    against a freshly compiled plan. A pair where both tasks are already done is not
+    reported: they already ran, so there is nothing left here to protect."""
     missing = [
         t["id"]
         for t in tasks
@@ -486,6 +494,20 @@ def validate_task_metadata(tasks: list) -> None:
         raise RuntimeError(
             "implementation task(s) missing required frontmatter files and have no "
             "dependency to serialize behind: " + ", ".join(missing)
+        )
+
+    from ..conductor import runplan as _runplan
+
+    status_by_id = {t["id"]: t.get("status") for t in tasks}
+    collisions = [
+        (f, a, b)
+        for f, a, b in _runplan.unordered_file_collisions(tasks)
+        if status_by_id.get(a) == "pending" or status_by_id.get(b) == "pending"
+    ]
+    if collisions:
+        detail = "; ".join(f"{f}: {a} <-> {b}" for f, a, b in collisions)
+        raise RuntimeError(
+            "task(s) declare the same file with no dependency order between them: " + detail
         )
 
 
