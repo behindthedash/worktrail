@@ -17,23 +17,24 @@
 
 ## 2. Tests
 
-- [ ] 2.1 In `tests/conductor/test_runplan.py`, add coverage for
-      `apply_to_tasks()` closing an unordered same-file collision left by a compiled
-      plan: assert the returned merged tasks have the expected `deps` edge (later
+- [ ] 2.1 In `tests/conductor/test_runplan.py`, add coverage for the repair path in one
+      editing pass (all cases live in this one file, so they are one task, not five, to
+      avoid multiple parallel tasks writing the same test file):
+      (a) `apply_to_tasks()` closes an unordered same-file collision left by a compiled
+      plan — assert the returned merged tasks have the expected `deps` edge (later
       authored task depends on earlier) and that
-      `runplan.unordered_file_collisions(merged)` on the result is empty.
-- [ ] 2.2 Add a case where the plan already ordered the shared file correctly (directly
-      or transitively) and assert `apply_to_tasks()` makes no additional `deps` change
-      for that pair.
-- [ ] 2.3 Add a case with two or more independent same-file collisions in one plan and
-      assert every gap is closed independently.
-- [ ] 2.4 Add a case where combining the plan's own edges with the repair edges would
-      form a cycle, and assert `apply_to_tasks()` falls back to the original,
-      unmodified tasks with an explanatory `notes` entry (mirroring the existing
-      plan/baseline-cycle rejection test already in this file).
-- [ ] 2.5 Add a case asserting the new "auto-repaired" notes entry is present when a
-      repair occurred and absent when it did not.
-- [ ] 2.6 Update the docstrings/comments in `tests/conductor/test_compile.py` and
+      `runplan.unordered_file_collisions(merged)` on the result is empty;
+      (b) the plan already ordered the shared file correctly (directly or transitively)
+      — assert no additional `deps` change for that pair;
+      (c) two or more independent same-file collisions in one plan — assert every gap is
+      closed independently;
+      (d) combining the plan's own edges with the repair edges would form a cycle —
+      assert `apply_to_tasks()` falls back to the original, unmodified tasks with an
+      explanatory `notes` entry (mirroring the existing plan/baseline-cycle rejection
+      test already in this file);
+      (e) the new "auto-repaired" `notes` entry is present when a repair occurred and
+      absent when it did not.
+- [ ] 2.2 Update the docstrings/comments in `tests/conductor/test_compile.py` and
       `src/worktrail/orchestrator/live.py::validate_task_metadata` only if their existing
       language ("fail-loud", "the exact miss this pass exists to catch") becomes
       inaccurate after this change — do not restructure their existing test coverage
@@ -41,7 +42,10 @@
 
 ## 3. Verification
 
-- [ ] 3.1 Run `PYTHONPATH=src pytest -q` and confirm the full suite is green, including
-      the new and existing `test_runplan.py`/`test_compile.py` cases.
-- [ ] 3.2 Run `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` (the
-      golden record/replay regression) and confirm it is unaffected.
+- [ ] 3.1 [cleanup] Run `PYTHONPATH=src pytest -q` and confirm the full suite is green,
+      including the new and existing `test_runplan.py`/`test_compile.py` cases. Tagged
+      `[cleanup]` (tail kind): this needs the implementation and test tasks above merged
+      first, not fanned out alongside them.
+- [ ] 3.2 [cleanup] Run `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate
+      check` (the golden record/replay regression) and confirm it is unaffected. Tagged
+      `[cleanup]` for the same reason as 3.1.
