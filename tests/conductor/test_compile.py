@@ -528,6 +528,95 @@ def test_extract_returns_none_when_there_is_nothing_to_parse():
 
 
 # --------------------------------------------------------------------------- #
+# TaskPlan.purpose: constrained to the repo's configured vocabulary
+# --------------------------------------------------------------------------- #
+def _with_purpose_tiers(repo: Path, tiers: str) -> None:
+    policy_dir = repo / "docs" / "specs"
+    policy_dir.mkdir(parents=True, exist_ok=True)
+    (policy_dir / "go-policy.yaml").write_text(f"routing:\n  purpose_tiers:\n{tiers}")
+
+
+def test_a_purpose_within_the_configured_vocabulary_is_kept(change, tmp_path):
+    repo = change.parents[2]
+    _with_purpose_tiers(repo, "    scaffolding: t3\n")
+    spec_id, tasks = _load(change)
+    reply = _reply(
+        **{
+            "1.1": {"files": ["src/parser.py"], "deps": [], "purpose": "scaffolding"},
+            "1.2": {"files": ["src/api.py"], "deps": []},
+            "2.1": {"files": ["tests/e2e.py"], "deps": []},
+        }
+    )
+    spawn = RecordingSpawn(reply)
+    plan = conductor_compile.compile_run_plan(
+        change, tasks, spec_id=spec_id, repo=repo, cache_dir=tmp_path / "plans", spawn=spawn
+    )
+    assert '"purpose"' in spawn.prompts[0] and "scaffolding" in spawn.prompts[0], (
+        "a repo with routing.purpose_tiers configured must get a purpose-requesting prompt"
+    )
+    assert plan.source == runplan.SOURCE_COMPILED
+    by_id = {t.id: t for t in plan.tasks}
+    assert by_id["1.1"].purpose == "scaffolding"
+    assert by_id["1.2"].purpose == ""
+
+
+def test_a_purpose_outside_the_vocabulary_is_dropped_not_rejected(change, tmp_path):
+    """Mirrors `_validate_agent_entry()`'s handling of a malformed
+    `agent_model`: the one field is dropped and warned about, the rest of the
+    row -- and the whole payload -- is still trusted."""
+    repo = change.parents[2]
+    _with_purpose_tiers(repo, "    scaffolding: t3\n")
+    spec_id, tasks = _load(change)
+    reply = _reply(
+        **{
+            "1.1": {"files": ["src/parser.py"], "deps": [], "purpose": "not-a-real-tier"},
+            "1.2": {"files": ["src/api.py"], "deps": []},
+            "2.1": {"files": ["tests/e2e.py"], "deps": []},
+        }
+    )
+    logs: list[str] = []
+    plan = conductor_compile.compile_run_plan(
+        change,
+        tasks,
+        spec_id=spec_id,
+        repo=repo,
+        cache_dir=tmp_path / "plans",
+        spawn=RecordingSpawn(reply),
+        log=logs.append,
+    )
+    assert plan.source == runplan.SOURCE_COMPILED
+    by_id = {t.id: t for t in plan.tasks}
+    assert by_id["1.1"].purpose == ""
+    assert any("not-a-real-tier" in line for line in logs)
+
+
+def test_no_purpose_tiers_configured_leaves_every_task_unset(change, tmp_path):
+    spec_id, tasks = _load(change)
+    reply = _reply(
+        **{
+            "1.1": {"files": ["src/parser.py"], "deps": [], "purpose": "scaffolding"},
+            "1.2": {"files": ["src/api.py"], "deps": []},
+            "2.1": {"files": ["tests/e2e.py"], "deps": []},
+        }
+    )
+    spawn = RecordingSpawn(reply)
+    plan = conductor_compile.compile_run_plan(
+        change,
+        tasks,
+        spec_id=spec_id,
+        repo=change.parents[2],
+        cache_dir=tmp_path / "plans",
+        spawn=spawn,
+    )
+    assert '"purpose"' not in spawn.prompts[0], (
+        "a repo with no routing.purpose_tiers configured must not be asked to "
+        "classify against a vocabulary it never declared"
+    )
+    assert plan.source == runplan.SOURCE_COMPILED
+    assert all(t.purpose == "" for t in plan.tasks)
+
+
+# --------------------------------------------------------------------------- #
 # End to end: the parallelism a compile actually unlocks
 # --------------------------------------------------------------------------- #
 def test_a_compiled_plan_unlocks_parallelism_the_format_could_not_express(change, tmp_path):

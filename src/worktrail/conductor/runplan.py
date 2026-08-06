@@ -77,6 +77,7 @@ class TaskPlan:
     kind: str = ""
     complexity: str = ""
     review: str = ""
+    purpose: str = ""
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "TaskPlan":
@@ -87,6 +88,7 @@ class TaskPlan:
             kind=str(d.get("kind") or ""),
             complexity=str(d.get("complexity") or ""),
             review=str(d.get("review") or ""),
+            purpose=str(d.get("purpose") or ""),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -97,6 +99,7 @@ class TaskPlan:
             "kind": self.kind,
             "complexity": self.complexity,
             "review": self.review,
+            "purpose": self.purpose,
         }
 
 
@@ -295,7 +298,7 @@ def apply_to_tasks(
         m["files"] = sorted(files[t["id"]])
         if kind:
             m["kind"] = kind
-        for field in ("complexity", "review"):
+        for field in ("complexity", "review", "purpose"):
             if not m.get(field) and getattr(tp, field):
                 m[field] = getattr(tp, field)
         merged.append(m)
