@@ -54,12 +54,34 @@ window. Folding the second into the first would produce a module with two unrela
 and one misleading name. `check_brief_staleness.py` sits beside it, mirrors its docstring
 conventions, and imports nothing from it.
 
-**Probe extraction prefers backticks but does not require them.** Briefs are written by agents
-following the handoff skill, which reliably backticks code references — but not universally. The
-extractor therefore treats backtick-quoted tokens as the high-confidence source and falls back to
-unquoted path-shaped tokens. Symbol probes require backticks: an unquoted snake_case word in
-prose is far more likely to be a phrase than an identifier, and a bad symbol probe is expensive
-(`git log -S` over a wide window) as well as noisy.
+**Probe extraction prefers backticks but does not require them — for symbols either.** This
+decision was reversed during implementation, on evidence. The original reasoning was that symbol
+probes should require backticks, since "an unquoted snake_case word in prose is far more likely
+to be a phrase than an identifier." That is wrong for snake_case specifically, and the cost of
+being wrong was total: checked against a real captured brief (2026-08-05), the brief contained
+**zero backticks** and four distinct real identifiers (`compile_run_plan`, `apply_to_tasks`,
+`plan_groups`, `runnable_frontier`, ten occurrences). Briefs captured through
+`worktrail-handoff --focus` — the primary capture path — are plain prose. Requiring backticks
+made symbol search, the highest-value probe kind, dead on arrival for the common case.
+
+The fallback is admitted narrowly: an unquoted token qualifies only if it is snake_case with
+letters on both sides of an underscore, and at least six characters. The underscore is what makes
+this safe to assert without quoting — `compile_run_plan` is not a phrase, whereas a bare word or
+a hyphenated word is. Backticked tokens still qualify under the looser `_SYMBOL_RE`, so dotted
+attribute references like `self.foo_bar` remain quotable-only.
+
+**Negative extraction rules matter as much as positive ones.** Three token shapes were observed
+crowding real probes out of the caps, or producing expensive useless searches, and are now
+excluded from path probes explicitly: task ids and versions (`1.1`, `2.10`, `2.1/2.2/2.3/2.4` —
+the most common token shape in a brief, and all path-shaped to a naive `/`-or-extension test),
+absolute paths (a brief's own `repo:` line, which points outside the repo being searched and was
+observed timing out), and parenthesised call-site lists (`needs_compile()/_print_scope_gap_error()`).
+A cap that silently fills with junk is worse than a smaller cap.
+
+**Bare-filename probes need `:(glob)` pathspec magic.** Under git's default pathspec matching,
+`**` must consume at least one path component, so `**/widget.py` matches `src/widget.py` but
+never a repo-root `widget.py` — silently missing exactly the bare-filename case the probe kind
+exists for. `:(glob)**/widget.py` matches both.
 
 **A bare filename with an extension is a valid path probe.** `check_spec_collision.py`'s
 traceability-matrix extractor requires a `/` because it reads a table of repo-relative paths.

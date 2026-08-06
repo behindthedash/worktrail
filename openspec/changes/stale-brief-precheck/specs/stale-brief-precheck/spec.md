@@ -10,17 +10,52 @@ references). Extraction SHALL be purely textual and SHALL NOT consult the reposi
 Backtick-quoted tokens SHALL be preferred as probe sources. A token SHALL qualify as a path
 probe when it contains a `/` separator **or** ends in a file extension of one to ten
 characters; a bare filename with an extension therefore qualifies without needing a directory
-component.
+component. An unquoted token SHALL additionally qualify as a **symbol** probe when it is
+distinctively identifier-shaped — snake_case, with letters on both sides of an underscore —
+because briefs captured through the primary capture path contain no backticks at all.
+
+A token SHALL NOT qualify as a path probe when it is an absolute or home-relative path (it
+names something outside the repository being searched), when it contains parentheses or angle
+brackets (a prose call-site list or task chain, not a pathspec), or when its apparent path
+structure carries no letters (a task id such as `1.1` or `2.1/2.2/2.3`, which is the single
+most common token shape in a brief).
+
+Bare-filename path probes SHALL be searched with a pathspec that matches the file at the
+repository root as well as nested beneath it.
 
 #### Scenario: Bare filename with an extension is a path probe
 - **WHEN** a brief's focus text contains the backtick-quoted token `prevent-destructive-commands.py`
 - **THEN** `prevent-destructive-commands.py` is extracted as a path probe, even though it
   contains no `/` separator
 
+#### Scenario: A bare-filename probe matches at the repository root
+- **WHEN** a bare-filename path probe names a file that lives at the repository root
+- **THEN** commits touching that root file are reported, not only commits touching a
+  same-named file nested in a subdirectory
+
 #### Scenario: Dotted and underscored identifiers are symbol probes
 - **WHEN** a brief's focus text contains the backtick-quoted tokens `_task_files_are_shipped`
   and `resolve_routing`
 - **THEN** both are extracted as symbol probes
+
+#### Scenario: A call-suffixed identifier is extracted as the bare symbol
+- **WHEN** a brief's focus text contains `compile_run_plan()`
+- **THEN** `compile_run_plan` is extracted as a symbol probe, with the call parentheses removed
+
+#### Scenario: Unquoted snake_case identifiers are symbol probes
+- **WHEN** a brief's focus text is unbackticked prose containing `compile_run_plan` and
+  `apply_to_tasks`
+- **THEN** both are extracted as symbol probes
+
+#### Scenario: Ordinary unquoted prose is not a symbol probe
+- **WHEN** a brief's focus text contains ordinary words and hyphenated words such as
+  "resolve the base ref" and "file-scope"
+- **THEN** none of them are extracted as symbol probes
+
+#### Scenario: Task ids and absolute paths are not path probes
+- **WHEN** a brief's focus text contains `1.1`, `2.1/2.2/2.3/2.4`, and a `repo:` line naming an
+  absolute path
+- **THEN** none of them are extracted as path probes
 
 #### Scenario: Pull-request references are extracted with their number
 - **WHEN** a brief's focus text contains `devops PR #89` and `behindthedash/devops#89`
