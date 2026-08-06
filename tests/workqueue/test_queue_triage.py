@@ -108,9 +108,12 @@ class TestGroupQueueByRepo(QueueTriageTestBase):
 
 class TestIsRecentlyTriaged(QueueTriageTestBase):
     def test_recent_triage_section_is_within_window(self):
+        import datetime
+
+        recent = datetime.date.today() - datetime.timedelta(days=1)
         p = self.write(
             "a.md",
-            body="## Triage 2026-08-01\n\nkeep\n",
+            body=f"## Triage {recent.isoformat()}\n\nkeep\n",
         )
         self.assertTrue(qt.is_recently_triaged(p, within_days=30))
 
@@ -126,11 +129,14 @@ class TestIsRecentlyTriaged(QueueTriageTestBase):
         self.assertFalse(qt.is_recently_triaged(p, within_days=30))
 
     def test_most_recent_of_multiple_triage_sections_wins(self):
+        import datetime
+
+        recent = datetime.date.today() - datetime.timedelta(days=1)
         p = self.write(
             "a.md",
             body=(
                 "## Triage 2020-01-01\n\nstale\n\n"
-                "## Triage 2026-08-01\n\nrecent\n"
+                f"## Triage {recent.isoformat()}\n\nrecent\n"
             ),
         )
         self.assertTrue(qt.is_recently_triaged(p, within_days=30))
@@ -140,11 +146,14 @@ class TestIsRecentlyTriaged(QueueTriageTestBase):
         self.assertFalse(qt.is_recently_triaged(p, within_days=30))
 
     def test_unparsable_date_does_not_shadow_a_valid_one(self):
+        import datetime
+
+        recent = datetime.date.today() - datetime.timedelta(days=1)
         p = self.write(
             "a.md",
             body=(
                 "## Triage not-a-date\n\nkeep\n\n"
-                "## Triage 2026-08-01\n\nkeep\n"
+                f"## Triage {recent.isoformat()}\n\nkeep\n"
             ),
         )
         self.assertTrue(qt.is_recently_triaged(p, within_days=30))
