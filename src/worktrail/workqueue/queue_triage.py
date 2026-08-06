@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import logging
 import os
 import re
 import subprocess
@@ -17,6 +18,8 @@ from typing import Dict, List, Optional, Tuple
 
 from ..shared.brief_frontmatter import read_frontmatter, split_frontmatter
 from .work_queue import queue_dir
+
+logger = logging.getLogger(__name__)
 
 _FOCUS_BODY_RE = re.compile(r"^##\s+Focus\s*$\r?\n(.+)$", re.MULTILINE)
 
@@ -394,6 +397,43 @@ def parse_verdicts(raw_text: str, expected_brief_ids: List[str]) -> List[Verdict
                 )
             )
     return verdicts
+
+
+def resolve_duplicate_targets(verdicts: List[Verdict]) -> List[Verdict]:
+    """Downgrade dangling `duplicate-of` verdicts to a no-op `keep`.
+
+    Implements the spec's "Duplicate-of verdicts resolve safely" requirement: a
+    `duplicate-of` verdict is only safe to act on when its target brief is either
+    absent from this batch (not re-evaluated here, so its queue state is
+    unaffected by this run) or itself verdicted `keep`. Any other target verdict
+    (`stale-close`, `needs-update`, or another `duplicate-of`) means the target is
+    about to be closed or rewritten by this same run, so the pointer would apply
+    against a moving target -- the referencing verdict is downgraded to `keep`
+    (an always-no-op per 4.2's `apply_verdicts()`) with a logged warning, evidence
+    and confidence otherwise untouched, rather than acted on.
+    """
+    by_id = {v.brief_id: v for v in verdicts}
+    resolved: List[Verdict] = []
+    for v in verdicts:
+        target = by_id.get(v.duplicate_of) if v.verdict == "duplicate-of" else None
+        if target is not None and target.verdict != "keep":
+            logger.warning(
+                "dangling duplicate-of: '%s' points to '%s', verdicted '%s' "
+                "(not keep/absent) in this batch -- downgrading to a no-op keep",
+                v.brief_id, v.duplicate_of, target.verdict,
+            )
+            resolved.append(
+                Verdict(
+                    brief_id=v.brief_id,
+                    verdict="keep",
+                    duplicate_of=None,
+                    evidence=v.evidence,
+                    confidence=v.confidence,
+                )
+            )
+        else:
+            resolved.append(v)
+    return resolved
 
 
 def write_verdict_file(verdicts: List[Verdict], out_dir: "str | Path") -> Path:
