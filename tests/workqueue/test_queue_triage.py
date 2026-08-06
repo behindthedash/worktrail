@@ -6,6 +6,7 @@ Run: python3 -m pytest tests/workqueue/test_queue_triage.py -q
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import subprocess
@@ -400,6 +401,122 @@ class TestEvaluateGroupArchivedShortCircuit(QueueTriageTestBase):
         mock_run.assert_called_once()
         mock_spawn.assert_called_once()
         self.assertEqual(result[0]["raw_text"], evaluator_text)
+
+
+class TestApplyVerdicts(QueueTriageTestBase):
+    """4.2's `apply_verdicts()`: `--confirm` false must be a pure dry run (no
+    filesystem mutation at all), `--confirm` true must actually execute
+    `stale-close` (claim+done with note) and `needs-update` (in-place append)
+    against a temp `$WORK_QUEUE_DIR` fixture.
+    """
+
+    def _verdicts(self):
+        return [
+            qt.Verdict(
+                brief_id="a",
+                verdict="stale-close",
+                duplicate_of=None,
+                evidence="PR #42 already shipped this",
+                confidence="high",
+            ),
+            qt.Verdict(
+                brief_id="b",
+                verdict="needs-update",
+                duplicate_of=None,
+                evidence="target file renamed, brief needs a refresh",
+                confidence="medium",
+            ),
+        ]
+
+    def test_confirm_false_is_a_pure_dry_run(self):
+        a_path = self.write("a.md", body="## Focus\n\nsome brief\n")
+        b_path = self.write("b.md", body="## Focus\n\nanother brief\n")
+        a_before = a_path.read_text(encoding="utf-8")
+        b_before = b_path.read_text(encoding="utf-8")
+
+        log = qt.apply_verdicts(self._verdicts(), confirm=False)
+
+        self.assertEqual(len(log), 2)
+        for entry in log:
+            self.assertEqual(entry["status"], "planned")
+            self.assertFalse(entry["confirm"])
+            self.assertIsNone(entry["path"])
+            self.assertIsNone(entry["error"])
+        self.assertEqual(log[0]["action"], "claim+done")
+        self.assertEqual(log[0]["note"], "PR #42 already shipped this")
+        self.assertEqual(log[1]["action"], "append-triage-note")
+        self.assertEqual(log[1]["note"], "target file renamed, brief needs a refresh")
+
+        # no file was moved, created, or rewritten anywhere under WORK_QUEUE_DIR
+        self.assertEqual(a_path.read_text(encoding="utf-8"), a_before)
+        self.assertEqual(b_path.read_text(encoding="utf-8"), b_before)
+        self.assertTrue(a_path.exists())
+        self.assertTrue(b_path.exists())
+        picked = self.base / "picked"
+        self.assertFalse(picked.exists() and any(picked.iterdir()))
+
+    def test_confirm_true_executes_stale_close_via_claim_and_done(self):
+        self.write("a.md", body="## Focus\n\nsome brief\n")
+        self.write("b.md", body="## Focus\n\nanother brief\n")
+
+        log = qt.apply_verdicts(self._verdicts(), confirm=True)
+
+        close_entry = log[0]
+        self.assertEqual(close_entry["brief_id"], "a")
+        self.assertEqual(close_entry["status"], "executed")
+        self.assertEqual(close_entry["action"], "claim+done")
+        self.assertTrue(close_entry["confirm"])
+        self.assertIsNone(close_entry["error"])
+
+        picked_path = Path(close_entry["path"])
+        self.assertEqual(picked_path.parent, self.base / "picked")
+        self.assertFalse((self.queue / "a.md").exists())
+
+        content = picked_path.read_text(encoding="utf-8")
+        fm = qt.read_frontmatter(picked_path)
+        self.assertEqual(fm["status"], "done")
+        self.assertIn("## Closure Note", content)
+        self.assertIn("PR #42 already shipped this", content)
+
+    def test_confirm_true_executes_needs_update_via_inplace_append(self):
+        self.write("a.md", body="## Focus\n\nsome brief\n")
+        b_path = self.write("b.md", body="## Focus\n\nanother brief\n")
+
+        log = qt.apply_verdicts(self._verdicts(), confirm=True)
+
+        update_entry = log[1]
+        self.assertEqual(update_entry["brief_id"], "b")
+        self.assertEqual(update_entry["status"], "executed")
+        self.assertEqual(update_entry["action"], "append-triage-note")
+        self.assertTrue(update_entry["confirm"])
+        self.assertIsNone(update_entry["error"])
+        self.assertEqual(update_entry["path"], str(b_path))
+
+        # brief is left in place -- unlike stale-close, needs-update never claims it
+        self.assertTrue(b_path.exists())
+        content = b_path.read_text(encoding="utf-8")
+        run_date = datetime.date.today().isoformat()
+        self.assertIn(f"## Triage {run_date}", content)
+        self.assertIn("target file renamed, brief needs a refresh", content)
+        self.assertTrue(qt.is_recently_triaged(b_path, within_days=1))
+
+    def test_keep_verdict_is_always_a_noop_regardless_of_confirm(self):
+        self.write("a.md", body="## Focus\n\nsome brief\n")
+        verdicts = [
+            qt.Verdict(
+                brief_id="a",
+                verdict="keep",
+                duplicate_of=None,
+                evidence="still relevant",
+                confidence="low",
+            )
+        ]
+
+        for confirm in (False, True):
+            log = qt.apply_verdicts(verdicts, confirm=confirm)
+            self.assertEqual(log[0]["status"], "noop")
+            self.assertEqual(log[0]["action"], "noop")
+            self.assertTrue((self.queue / "a.md").exists())
 
 
 if __name__ == "__main__":
