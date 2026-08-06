@@ -21,6 +21,7 @@ from worktrail.drain.drain import (
     classify_outcome,
     count_ready_briefs,
     decide,
+    ensure_pr_risk_label,
     newest_run_record,
     parse_run_record,
     release_lock,
@@ -880,6 +881,150 @@ def test_drain_dry_run_launches_nothing(tmp_path, monkeypatch):
     summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
     assert summary["stopped"] == "dry_run"
     assert summary["iterations"] == []
+
+
+# ---------------------------------------------------------------------------
+# ensure_pr_risk_label — post-hoc correction for headless one-shot PRs a
+# Claude Code PreToolUse hook never sees (Codex/OpenCode have no hook at all).
+
+
+class _FakeCompleted:
+    def __init__(self, returncode=0, stdout=""):
+        self.returncode = returncode
+        self.stdout = stdout
+
+
+def test_ensure_pr_risk_label_adds_when_none_present(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, capture_output, text, cwd, timeout):
+        calls.append(cmd)
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return _FakeCompleted(0, json.dumps({"labels": []}))
+        if cmd[:3] == ["gh", "pr", "edit"]:
+            return _FakeCompleted(0, "")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(drain.subprocess, "run", fake_run)
+    result = ensure_pr_risk_label("/repo", "https://github.com/o/r/pull/1", "low")
+    assert result == "go:risk-low"
+    assert ["gh", "pr", "view", "https://github.com/o/r/pull/1", "--json", "labels"] in calls
+    assert ["gh", "pr", "edit", "https://github.com/o/r/pull/1",
+            "--add-label", "go:risk-low"] in calls
+
+
+def test_ensure_pr_risk_label_noop_when_risk_label_already_present(monkeypatch):
+    def fake_run(cmd, capture_output, text, cwd, timeout):
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return _FakeCompleted(0, json.dumps({"labels": [{"name": "go:risk-high"},
+                                                             {"name": "go:no-automerge"}]}))
+        raise AssertionError(f"gh pr edit must not run: {cmd}")
+
+    monkeypatch.setattr(drain.subprocess, "run", fake_run)
+    result = ensure_pr_risk_label("/repo", "https://github.com/o/r/pull/1", "low")
+    assert result is None
+
+
+def test_ensure_pr_risk_label_never_touches_no_automerge(monkeypatch):
+    """A go:no-automerge label an agent legitimately added must survive
+    untouched -- this corrector only ADDS a missing risk label, it never
+    inspects or removes go:no-automerge."""
+    edit_calls = []
+
+    def fake_run(cmd, capture_output, text, cwd, timeout):
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return _FakeCompleted(0, json.dumps({"labels": [{"name": "go:no-automerge"}]}))
+        if cmd[:3] == ["gh", "pr", "edit"]:
+            edit_calls.append(cmd)
+            return _FakeCompleted(0, "")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(drain.subprocess, "run", fake_run)
+    result = ensure_pr_risk_label("/repo", "https://github.com/o/r/pull/1", "high")
+    assert result == "go:risk-high"
+    assert edit_calls == [["gh", "pr", "edit", "https://github.com/o/r/pull/1",
+                           "--add-label", "go:risk-high"]]
+    for call in edit_calls:
+        assert "go:no-automerge" not in call
+
+
+@pytest.mark.parametrize("repo,pr_url,risk", [
+    (None, "https://github.com/o/r/pull/1", "low"),
+    ("/repo", None, "low"),
+    ("/repo", "https://github.com/o/r/pull/1", None),
+])
+def test_ensure_pr_risk_label_noop_on_missing_inputs(monkeypatch, repo, pr_url, risk):
+    def fake_run(*a, **k):
+        raise AssertionError("gh must not be called with incomplete inputs")
+
+    monkeypatch.setattr(drain.subprocess, "run", fake_run)
+    assert ensure_pr_risk_label(repo, pr_url, risk) is None
+
+
+def test_ensure_pr_risk_label_noop_when_gh_view_fails(monkeypatch):
+    def fake_run(cmd, capture_output, text, cwd, timeout):
+        return _FakeCompleted(1, "")
+
+    monkeypatch.setattr(drain.subprocess, "run", fake_run)
+    result = ensure_pr_risk_label("/repo", "https://github.com/o/r/pull/1", "low")
+    assert result is None
+
+
+def test_ensure_pr_risk_label_returns_none_when_gh_edit_fails(monkeypatch):
+    def fake_run(cmd, capture_output, text, cwd, timeout):
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return _FakeCompleted(0, json.dumps({"labels": []}))
+        return _FakeCompleted(1, "")  # gh pr edit fails
+
+    monkeypatch.setattr(drain.subprocess, "run", fake_run)
+    result = ensure_pr_risk_label("/repo", "https://github.com/o/r/pull/1", "medium")
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# drive() wiring — the loop calls ensure_pr_risk_label per iteration with a PR
+
+
+def test_drive_calls_ensure_pr_risk_label_and_logs_when_applied(tmp_path, monkeypatch):
+    fake = FakeQueue([1, 0])
+    install_fake_queue(monkeypatch, fake)
+    config = make_config(tmp_path)
+    seen = []
+    monkeypatch.setattr(drain, "ensure_pr_risk_label",
+                        lambda repo, pr, risk: seen.append((repo, pr, risk)) or "go:risk-low")
+
+    def spawner(cmd, timeout):
+        (config.runs_dir / "repo").mkdir(parents=True, exist_ok=True)
+        (config.runs_dir / "repo" / "go-1.yaml").write_text(
+            "run_id: go-1\n"
+            "final_status: completed_pr_open\n"
+            'pull_request: "https://github.com/o/r/pull/9"\n'
+            "repository: /home/briank/projects/r\n"
+            "risk_level: low\n"
+        )
+        return SpawnOutcome(0)
+
+    logs = []
+    drain.drain(config, spawner=spawner, log=logs.append)
+    assert seen == [("/home/briank/projects/r", "https://github.com/o/r/pull/9", "low")]
+    assert any("go:risk-low" in line for line in logs)
+
+
+def test_drive_skips_ensure_pr_risk_label_when_no_pr(tmp_path, monkeypatch):
+    fake = FakeQueue([1, 0])
+    install_fake_queue(monkeypatch, fake)
+    config = make_config(tmp_path)
+
+    def unexpected(*_a, **_k):
+        raise AssertionError("must not be called when the iteration has no PR")
+
+    monkeypatch.setattr(drain, "ensure_pr_risk_label", unexpected)
+
+    def spawner(cmd, timeout):
+        write_run_record(config.runs_dir, "go-1", "planned_ready_for_implementation")
+        return SpawnOutcome(0)
+
+    drain.drain(config, spawner=spawner, log=lambda _l: None)
 
 
 def test_build_command_go_repo_scopes_the_prompt():
