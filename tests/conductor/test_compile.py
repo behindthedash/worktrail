@@ -291,6 +291,21 @@ def test_the_prompt_instructs_a_final_cross_task_overlap_rescan():
     assert "in isolation" in prompt
 
 
+# --------------------------------------------------------------------------- #
+# Cross-task dependency re-scan (runplan.unordered_file_collisions() catches an
+# unordered pair of same-file writers after the fact -- the prompt must also
+# tell the model to close that gap itself, not just declare `files` correctly)
+# --------------------------------------------------------------------------- #
+def test_the_prompt_instructs_a_final_cross_task_deps_rescan():
+    """Declaring a shared file on both co-writers is not enough on its own --
+    `unordered_file_collisions()` fails loud unless one is a `deps` ancestor of
+    the other. The prompt must tell the model to check for that missing edge,
+    not just for the missing file declaration."""
+    prompt = conductor_compile.PROMPT
+    assert "re-check `deps`" in prompt
+    assert "nothing ordering them" in prompt
+
+
 def test_the_rescan_instruction_reaches_the_formatted_prompt(change, tmp_path):
     """The final-pass instruction is static text in `PROMPT`, but this proves
     `.format()` doesn't accidentally consume or truncate it via a stray `{`/`}`
@@ -355,6 +370,70 @@ def test_the_cli_json_mode_also_fails_loudly_when_impl_tasks_stay_scope_less(tmp
     # stdout must still be the plain compiled plan -- a caller piping it into
     # `json.loads` must not see the error text mixed into the payload.
     json.loads(out)
+
+
+# --------------------------------------------------------------------------- #
+# The CLI must not exit 0 on a plan that leaves same-file tasks unordered
+# (go-20260805-172326: a real compile left 2.1/2.2 both declaring one file with
+# no dep between them; the CLI gave no signal beyond the printed dep table)
+# --------------------------------------------------------------------------- #
+def test_the_cli_fails_loudly_on_an_unordered_file_collision(tmp_path, capsys):
+    import subprocess
+    from unittest.mock import patch
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    d = repo / "openspec" / "changes" / "add-thing"
+    d.mkdir(parents=True)
+    (d / "proposal.md").write_text("## Why\nBecause.\n")
+    (d / "tasks.md").write_text(
+        "## 1. Core\n\n- [ ] 1.1 Add the parser\n\n"
+        "## 2. Verify\n\n- [ ] 2.1 Check a\n- [ ] 2.2 Check b\n"
+    )
+
+    reply = _reply(
+        **{
+            "1.1": {"files": ["src/parser.py"], "deps": []},
+            "2.1": {"files": ["tests/check.py"], "deps": ["1.1"]},
+            "2.2": {"files": ["tests/check.py"], "deps": ["1.1"]},  # siblings, unordered
+        }
+    )
+    with patch("worktrail.conductor.compile._default_spawn", return_value=reply):
+        rc = conductor_compile.main([str(d)])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "tests/check.py" in err and "2.1" in err and "2.2" in err
+
+
+def test_the_cli_json_mode_fails_loudly_on_an_unordered_file_collision(tmp_path, capsys):
+    from unittest.mock import patch
+    import subprocess
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    d = repo / "openspec" / "changes" / "add-thing"
+    d.mkdir(parents=True)
+    (d / "proposal.md").write_text("## Why\nBecause.\n")
+    (d / "tasks.md").write_text(
+        "## 1. Core\n\n- [ ] 1.1 Add the parser\n\n"
+        "## 2. Verify\n\n- [ ] 2.1 Check a\n- [ ] 2.2 Check b\n"
+    )
+
+    reply = _reply(
+        **{
+            "1.1": {"files": ["src/parser.py"], "deps": []},
+            "2.1": {"files": ["tests/check.py"], "deps": ["1.1"]},
+            "2.2": {"files": ["tests/check.py"], "deps": ["1.1"]},
+        }
+    )
+    with patch("worktrail.conductor.compile._default_spawn", return_value=reply):
+        rc = conductor_compile.main([str(d), "--json"])
+    out, err = capsys.readouterr()
+    assert rc == 1
+    assert "tests/check.py" in err and "2.1" in err and "2.2" in err
+    json.loads(out)  # stdout must stay a clean, parseable plan
 
 
 def test_the_cli_json_mode_exits_zero_when_every_task_gets_scope(tmp_path, capsys):
@@ -446,6 +525,95 @@ def test_extract_falls_back_to_an_unfenced_object():
 
 def test_extract_returns_none_when_there_is_nothing_to_parse():
     assert conductor_compile._extract_json("no object here") is None
+
+
+# --------------------------------------------------------------------------- #
+# TaskPlan.purpose: constrained to the repo's configured vocabulary
+# --------------------------------------------------------------------------- #
+def _with_purpose_tiers(repo: Path, tiers: str) -> None:
+    policy_dir = repo / "docs" / "specs"
+    policy_dir.mkdir(parents=True, exist_ok=True)
+    (policy_dir / "go-policy.yaml").write_text(f"routing:\n  purpose_tiers:\n{tiers}")
+
+
+def test_a_purpose_within_the_configured_vocabulary_is_kept(change, tmp_path):
+    repo = change.parents[2]
+    _with_purpose_tiers(repo, "    scaffolding: t3\n")
+    spec_id, tasks = _load(change)
+    reply = _reply(
+        **{
+            "1.1": {"files": ["src/parser.py"], "deps": [], "purpose": "scaffolding"},
+            "1.2": {"files": ["src/api.py"], "deps": []},
+            "2.1": {"files": ["tests/e2e.py"], "deps": []},
+        }
+    )
+    spawn = RecordingSpawn(reply)
+    plan = conductor_compile.compile_run_plan(
+        change, tasks, spec_id=spec_id, repo=repo, cache_dir=tmp_path / "plans", spawn=spawn
+    )
+    assert '"purpose"' in spawn.prompts[0] and "scaffolding" in spawn.prompts[0], (
+        "a repo with routing.purpose_tiers configured must get a purpose-requesting prompt"
+    )
+    assert plan.source == runplan.SOURCE_COMPILED
+    by_id = {t.id: t for t in plan.tasks}
+    assert by_id["1.1"].purpose == "scaffolding"
+    assert by_id["1.2"].purpose == ""
+
+
+def test_a_purpose_outside_the_vocabulary_is_dropped_not_rejected(change, tmp_path):
+    """Mirrors `_validate_agent_entry()`'s handling of a malformed
+    `agent_model`: the one field is dropped and warned about, the rest of the
+    row -- and the whole payload -- is still trusted."""
+    repo = change.parents[2]
+    _with_purpose_tiers(repo, "    scaffolding: t3\n")
+    spec_id, tasks = _load(change)
+    reply = _reply(
+        **{
+            "1.1": {"files": ["src/parser.py"], "deps": [], "purpose": "not-a-real-tier"},
+            "1.2": {"files": ["src/api.py"], "deps": []},
+            "2.1": {"files": ["tests/e2e.py"], "deps": []},
+        }
+    )
+    logs: list[str] = []
+    plan = conductor_compile.compile_run_plan(
+        change,
+        tasks,
+        spec_id=spec_id,
+        repo=repo,
+        cache_dir=tmp_path / "plans",
+        spawn=RecordingSpawn(reply),
+        log=logs.append,
+    )
+    assert plan.source == runplan.SOURCE_COMPILED
+    by_id = {t.id: t for t in plan.tasks}
+    assert by_id["1.1"].purpose == ""
+    assert any("not-a-real-tier" in line for line in logs)
+
+
+def test_no_purpose_tiers_configured_leaves_every_task_unset(change, tmp_path):
+    spec_id, tasks = _load(change)
+    reply = _reply(
+        **{
+            "1.1": {"files": ["src/parser.py"], "deps": [], "purpose": "scaffolding"},
+            "1.2": {"files": ["src/api.py"], "deps": []},
+            "2.1": {"files": ["tests/e2e.py"], "deps": []},
+        }
+    )
+    spawn = RecordingSpawn(reply)
+    plan = conductor_compile.compile_run_plan(
+        change,
+        tasks,
+        spec_id=spec_id,
+        repo=change.parents[2],
+        cache_dir=tmp_path / "plans",
+        spawn=spawn,
+    )
+    assert '"purpose"' not in spawn.prompts[0], (
+        "a repo with no routing.purpose_tiers configured must not be asked to "
+        "classify against a vocabulary it never declared"
+    )
+    assert plan.source == runplan.SOURCE_COMPILED
+    assert all(t.purpose == "" for t in plan.tasks)
 
 
 # --------------------------------------------------------------------------- #

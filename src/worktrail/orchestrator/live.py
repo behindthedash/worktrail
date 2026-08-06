@@ -473,7 +473,15 @@ def validate_task_metadata(tasks: list) -> None:
     flagged here. A task with neither files nor a dependency boundary has no such
     guarantee -- it would enter the frontier immediately and `runnable_frontier` reads
     its empty file set as "collides with nothing", so it is the genuinely unbounded case
-    this check exists to catch."""
+    this check exists to catch.
+
+    Also refuses fan-out when a still-pending task declares the same file as another
+    task with no dependency order between them (go-20260805-172326). `runnable_frontier`'s
+    per-tick file lock happens to serialise same-file writers anyway, but nothing upstream
+    of it asserted that as a graph invariant -- this is the live-run enforcement point for
+    `runplan.unordered_file_collisions`, the same check `worktrail-compile` runs standalone
+    against a freshly compiled plan. A pair where both tasks are already done is not
+    reported: they already ran, so there is nothing left here to protect."""
     missing = [
         t["id"]
         for t in tasks
@@ -486,6 +494,20 @@ def validate_task_metadata(tasks: list) -> None:
         raise RuntimeError(
             "implementation task(s) missing required frontmatter files and have no "
             "dependency to serialize behind: " + ", ".join(missing)
+        )
+
+    from ..conductor import runplan as _runplan
+
+    status_by_id = {t["id"]: t.get("status") for t in tasks}
+    collisions = [
+        (f, a, b)
+        for f, a, b in _runplan.unordered_file_collisions(tasks)
+        if status_by_id.get(a) == "pending" or status_by_id.get(b) == "pending"
+    ]
+    if collisions:
+        detail = "; ".join(f"{f}: {a} <-> {b}" for f, a, b in collisions)
+        raise RuntimeError(
+            "task(s) declare the same file with no dependency order between them: " + detail
         )
 
 
@@ -1386,6 +1408,7 @@ class LiveSpawn:
         role_agents: dict | None = None,
         fallback_agent: str | None = None,
         tier_map: dict | None = None,
+        purpose_tier_map: dict | None = None,
         fallback_chain: "list[str] | None" = None,
         effort: str | None = None,
     ) -> None:
@@ -1415,6 +1438,10 @@ class LiveSpawn:
         # (REQ-018). Both default to "off" so a caller that never sets them gets
         # byte-identical pre-spec dispatch (REQ-016).
         self.tier_map = tier_map or {}
+        # {purpose: tier} -- routing.purpose_tiers, consulted by dispatch.agent_for
+        # ahead of task.get("complexity") when resolving self.tier_map's key
+        # (task-purpose-classification 4.2/5.1). Defaults to "off" like tier_map.
+        self.purpose_tier_map = purpose_tier_map or {}
         self.fallback_chain = list(fallback_chain) if fallback_chain else None
         self.research_session_id: str = ""  # set by --fork-research before fan-out
         # task-id -> task dict for the whole spec; set by the caller (drive loop
@@ -1492,6 +1519,7 @@ class LiveSpawn:
             default_agent=self.agent,
             role_agent_map=self.role_agents,
             tier_map=self.tier_map,
+            purpose_tier_map=self.purpose_tier_map,
         )
         agent = resolved["agent_cli"] or self.agent
         # A role/tier pinned to a different agent than the run's default has no
@@ -2108,6 +2136,7 @@ def live_run_real(
     role_agents: dict | None = None,
     fallback_agent: str | None = None,
     tier_map: dict | None = None,
+    purpose_tier_map: dict | None = None,
     fallback_chain: "list[str] | None" = None,
     effort: str | None = None,
     run_budget: float | None = None,
@@ -2134,6 +2163,9 @@ def live_run_real(
                implement/fix stay on a cheaper `agent`); falls back to `agent` per role.
     tier_map — optional {(complexity, domain): agent-entry} routing table match
                (TASK-001/006), threaded straight into LiveSpawn's construction.
+    purpose_tier_map — optional {purpose: tier} table (routing.purpose_tiers),
+               threaded straight into LiveSpawn's construction alongside tier_map
+               (task-purpose-classification 5.1).
     fallback_chain — optional ordered fallback agent list; wins over the legacy
                single `fallback_agent` when configured (REQ-018).
     effort — optional run-level default effort, threaded straight into LiveSpawn's
@@ -2194,6 +2226,7 @@ def live_run_real(
         role_agents=role_agents,
         fallback_agent=fallback_agent,
         tier_map=tier_map,
+        purpose_tier_map=purpose_tier_map,
         fallback_chain=fallback_chain,
         effort=effort,
     )
@@ -2714,6 +2747,7 @@ def full_real(
     role_agents: dict | None = None,
     fallback_agent: str | None = None,
     tier_map: dict | None = None,
+    purpose_tier_map: dict | None = None,
     fallback_chain: "list[str] | None" = None,
     effort: str | None = None,
     run_budget: int | None = None,
@@ -2765,6 +2799,7 @@ def full_real(
             role_agents=role_agents,
             fallback_agent=fallback_agent,
             tier_map=tier_map,
+            purpose_tier_map=purpose_tier_map,
             fallback_chain=fallback_chain,
             effort=effort,
             pipeline=pipeline,
@@ -2809,6 +2844,7 @@ def _pipeline_scheduler(
     role_agents: dict | None = None,
     fallback_agent: str | None = None,
     tier_map: dict | None = None,
+    purpose_tier_map: dict | None = None,
     fallback_chain: "list[str] | None" = None,
     effort: str | None = None,
     re_integrate: bool = False,
@@ -2882,6 +2918,7 @@ def _pipeline_scheduler(
         role_agents=role_agents,
         fallback_agent=fallback_agent,
         tier_map=tier_map,
+        purpose_tier_map=purpose_tier_map,
         fallback_chain=fallback_chain,
         effort=effort,
     )
@@ -3548,6 +3585,7 @@ def _full_real_inner(
     role_agents: dict | None = None,
     fallback_agent: str | None = None,
     tier_map: dict | None = None,
+    purpose_tier_map: dict | None = None,
     fallback_chain: "list[str] | None" = None,
     effort: str | None = None,
     pipeline: bool = False,
@@ -3584,6 +3622,9 @@ def _full_real_inner(
     run_budget  — optional whole-run wall-clock cap (s) for the fan-out (0 = off).
     effort      — optional run-level default effort, threaded to every LiveSpawn
                   this run constructs (pipeline and non-pipeline paths alike).
+    purpose_tier_map — optional {purpose: tier} table (routing.purpose_tiers),
+                  threaded to every LiveSpawn this run constructs alongside
+                  tier_map (task-purpose-classification 5.1).
 
     Run this DETACHED (background), never as a blocking foreground call: it fans
     out N tasks then blocks on each PR's CI, routinely exceeding a 10-minute
@@ -3716,6 +3757,7 @@ def _full_real_inner(
             role_agents=role_agents,
             fallback_agent=fallback_agent,
             tier_map=tier_map,
+            purpose_tier_map=purpose_tier_map,
             fallback_chain=fallback_chain,
             effort=effort,
             run_budget=run_budget,
@@ -3752,6 +3794,7 @@ def _full_real_inner(
                 role_agents=role_agents,
                 fallback_agent=fallback_agent,
                 tier_map=tier_map,
+                purpose_tier_map=purpose_tier_map,
                 fallback_chain=fallback_chain,
                 effort=effort,
             )
@@ -3773,6 +3816,7 @@ def _full_real_inner(
         role_agents=role_agents,
         fallback_agent=fallback_agent,
         tier_map=tier_map,
+        purpose_tier_map=purpose_tier_map,
         fallback_chain=fallback_chain,
         effort=effort,
         run_budget=run_budget,
@@ -4335,6 +4379,18 @@ def main(argv=None) -> int:
         "Omit for pre-spec behavior (REQ-016).",
     )
     fr.add_argument(
+        "--purpose-tier-map",
+        dest="purpose_tier_map",
+        default=None,
+        help="Resolved purpose-to-tier table, e.g. 'security-review=t1,bulk-mechanical=t4'. "
+        "Each entry is 'purpose=tier'; a matched task's tier (looked up in --tier-map) is "
+        "the mapped tier instead of its complexity, for implement/fix/cleanup spawns only "
+        "(task.get('purpose') wins over task.get('complexity') when it resolves here). "
+        "Never consulted for review/resolve/ci-fix/assembly-resolve (DEC-003). Sourced from "
+        "go-policy.yaml's routing.purpose_tiers via policy.py's resolve_routing() "
+        "(task-purpose-classification 3.2/5.1). Omit for pre-spec behavior (REQ-016).",
+    )
+    fr.add_argument(
         "--fallback-chain",
         default=None,
         dest="fallback_chain",
@@ -4488,6 +4544,10 @@ def main(argv=None) -> int:
     )
     role_agents = _parse_model_map(getattr(args, "role_agent_map", None))
     tier_map = _parse_tier_map(getattr(args, "tier_map", None))
+    # {purpose: tier} is a plain string-to-string map, the same "key=value,..." shape
+    # _parse_model_map already parses (task-purpose-classification 5.1) -- no
+    # dedicated parser needed, unlike --tier-map's agent-entry-shaped value.
+    purpose_tier_map = _parse_model_map(getattr(args, "purpose_tier_map", None))
     fallback_chain = _parse_fallback_chain(getattr(args, "fallback_chain", None))
     if args.cmd == "smoke":
         return 0 if smoke(args.agent, args.model) else 1
@@ -4600,6 +4660,7 @@ def main(argv=None) -> int:
             role_agents=role_agents,
             fallback_agent=args.fallback_agent,
             tier_map=tier_map,
+            purpose_tier_map=purpose_tier_map,
             fallback_chain=fallback_chain,
             effort=args.effort,
             run_budget=args.run_budget * 60 if args.run_budget else args.run_budget,

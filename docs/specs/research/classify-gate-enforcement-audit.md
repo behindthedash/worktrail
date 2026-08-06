@@ -136,7 +136,7 @@ change (`never_automerge`) or a critical-risk change (`require_human_approval`)
 taking a one-off PR route can auto-merge unreviewed today, for exactly the
 same reason PR #74 did.
 
-## Recommended Next Route
+## Recommended Next Route (superseded — see Update below)
 
 **Route J (fix), as a separate follow-up** — not folded into this audit.
 The fix requires a design decision between at least two shapes (mirroring
@@ -160,3 +160,44 @@ needs a third, unrelated mechanism (a `run_record.py` field blocking a
 A and no recorded decision exists) — different code path, different fix.
 
 Completion: `investigation_complete`.
+
+## Update (2026-08-05)
+
+Both `require_human_approval`/`never_automerge` (this audit's core finding)
+and `pause_before_merge` (the sibling `20260731-104502` finding) were
+addressed, but by a different shape than either option sketched above:
+
+- **PR #80** (`fix(router): code-enforce go:risk-*/go:no-automerge PR
+  labels`, merged 2026-07-31) added the `worktrail-preflight` PreToolUse
+  hook + pass-marker system: `pre_pr_gate.py --run` now records a pass
+  marker carrying the exact required labels, and a machine-level `gh pr
+  create` PreToolUse hook denies the tool call itself if its `--label` flags
+  don't match — enforcement moved from "the agent must remember to pass the
+  right flags" to "the tool call is denied if it doesn't," without needing
+  option 1's PR-number handoff or option 2's fail-closed CI behavior change.
+  This covers the **Claude Code interactive** case.
+- **PR #128** (`fix(drain): correct missing risk labels on headless
+  one-shot PRs`, merged 2026-08-06) closed the gap PR #80 didn't reach:
+  headless one-shots (`claude -p`/`codex exec`/`opencode run`, spawned by
+  `drain.py`'s unattended queue-drain loop) issue their own `gh pr create`
+  as a raw subprocess call from the agent CLI, not reachable by the
+  PreToolUse hook — Codex/OpenCode have no equivalent hook mechanism at
+  all, and even a headless `claude -p` session isn't guaranteed to load the
+  interactive hook config. `drain.py`'s `ensure_pr_risk_label()` adds a
+  minimal post-hoc correction: after a one-shot's run record shows a PR with
+  no `go:risk-*` label, add one from the risk already recorded at Phase 6.
+
+**This is not yet fully closed.** A follow-up investigation
+(`docs/specs/research/go-dispatch-one-shot-pr-label-gap.md`, brief
+`20260805-173801`) found that PR #128's correction is wired into
+`drain.py`'s own spawn loop only. `go`'s own Phase 7 headless-dispatch spawn
+for routes D/F/G/H (`claude -p "$SEED"` for Claude-hosted parents, the
+seeded `opencode run` path for OpenCode-hosted parents, or Codex's
+in-session execution) — used by any direct/interactive `/go` invocation, not
+just the queue-drain loop — has no equivalent correction: `poll_run.py`
+(the only code that runs after that spawn completes) does no label check,
+and `ensure_pr_risk_label()` is never called outside `drain.py`. See that
+note for the confirmed root cause and a proposed Route J fix (extract the
+correction into a shared location and call it from `go`'s poll-exit path
+too). `no_implementation_without_approval` remains open per the original
+recommendation above — no PR has addressed it.

@@ -460,6 +460,9 @@ def resolve_routing(policy: Dict[str, Any], route: str, risk: str) -> Dict[str, 
           "fallback": [{"agent_cli": str, "agent_model": Optional[str],
                         "api": bool (optional, True for an opted-in
                         API/OpenRouter entry)}, ...],  # ordered chain
+          "purpose_tiers": {purpose: tier},  # routing.purpose_tiers, consulted
+                                          # by dispatch.agent_for ahead of
+                                          # complexity to resolve a task's tier
         }
 
     Resolution order for `agent_cli`/`agent_model`:
@@ -481,6 +484,7 @@ def resolve_routing(policy: Dict[str, Any], route: str, risk: str) -> Dict[str, 
             "agent_model": policy.get("agent_model"),
             "roles": {},
             "fallback": flat_fallback,
+            "purpose_tiers": {},
         }
     route_map = (routing.get("defaults") or {}).get(route)
     entry = route_map.get(risk) if isinstance(route_map, dict) else None
@@ -489,6 +493,7 @@ def resolve_routing(policy: Dict[str, Any], route: str, risk: str) -> Dict[str, 
         "agent_model": entry.get("agent_model") if entry else policy.get("agent_model"),
         "roles": routing.get("roles") or {},
         "fallback": routing.get("fallback") or flat_fallback,
+        "purpose_tiers": routing.get("purpose_tiers") or {},
     }
 
 

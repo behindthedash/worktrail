@@ -834,5 +834,153 @@ class TestAgentForPrecedence(unittest.TestCase):
                 self.assertEqual(agent_for(role, task, **kwargs), first)
 
 
+class TestAgentForPurposeTierPrecedence(unittest.TestCase):
+    """worktrail.orchestrator.dispatch.agent_for(): purpose-derived tier
+    precedence + agent-aware tier_map lookup (task-purpose-classification 4.2/4.3)."""
+
+    PURPOSE_TIER_MAP = {"architecture-design": "t1-deep"}
+
+    TIER_MAP = {
+        ("t1-deep", "backend"): {"agent_cli": "codex", "agent_model": None, "effort": None},
+        ("complex", "backend"): {"agent_cli": "opencode", "agent_model": None, "effort": None},
+    }
+
+    AGENT_AWARE_TIER_MAP = {
+        ("t1-deep-codex", "backend"): {
+            "agent_cli": "codex",
+            "agent_model": "codex-model",
+            "effort": "high",
+        },
+        ("t1-deep", "backend"): {
+            "agent_cli": "claude",
+            "agent_model": "claude-model",
+            "effort": "low",
+        },
+    }
+
+    def _task(self, **overrides):
+        task = {
+            "id": "TASK-001",
+            "files": ["src/foo.py"],
+            "complexity": "complex",
+            "domain": "backend",
+            "purpose": "architecture-design",
+        }
+        task.update(overrides)
+        return task
+
+    def test_purpose_tier_takes_precedence_over_complexity(self):
+        """4.4: when purpose resolves via purpose_tier_map, its tier is used
+        instead of task['complexity'] for the tier_map lookup."""
+        task = self._task()
+        result = agent_for(
+            ROLE_IMPLEMENT,
+            task,
+            tier_map=self.TIER_MAP,
+            purpose_tier_map=self.PURPOSE_TIER_MAP,
+        )
+        self.assertEqual(result, {"agent_cli": "codex", "agent_model": None, "effort": None})
+
+    def test_falls_back_to_complexity_when_purpose_does_not_resolve(self):
+        """4.4: an unmapped purpose (or none) falls back to task['complexity']."""
+        task = self._task(purpose="unmapped-purpose")
+        result = agent_for(
+            ROLE_IMPLEMENT,
+            task,
+            tier_map=self.TIER_MAP,
+            purpose_tier_map=self.PURPOSE_TIER_MAP,
+        )
+        self.assertEqual(result, {"agent_cli": "opencode", "agent_model": None, "effort": None})
+
+        task_no_purpose = self._task(purpose=None)
+        result_no_purpose = agent_for(
+            ROLE_IMPLEMENT,
+            task_no_purpose,
+            tier_map=self.TIER_MAP,
+            purpose_tier_map=self.PURPOSE_TIER_MAP,
+        )
+        self.assertEqual(
+            result_no_purpose, {"agent_cli": "opencode", "agent_model": None, "effort": None}
+        )
+
+    def test_judgment_roles_never_consult_purpose_or_purpose_tier_map(self):
+        """4.4: JUDGMENT_ROLES ignore purpose/purpose_tier_map entirely, even
+        when both are populated and would otherwise resolve a tier match."""
+        for role in (ROLE_REVIEW, ROLE_RESOLVE, ROLE_CI_FIX, ROLE_ASSEMBLY_RESOLVE):
+            task = self._task()
+            result = agent_for(
+                role,
+                task,
+                default_agent="claude-run-default",
+                reviewer_agent="code-reviewer",
+                tier_map=self.TIER_MAP,
+                purpose_tier_map=self.PURPOSE_TIER_MAP,
+                role_agent_map={},
+            )
+            expected_cli = "code-reviewer" if role == ROLE_REVIEW else "claude-run-default"
+            self.assertEqual(
+                result,
+                {"agent_cli": expected_cli, "agent_model": None, "effort": None},
+                f"purpose_tier_map must be ignored for judgment role={role!r}",
+            )
+
+    def test_agent_aware_key_preferred_over_plain_key(self):
+        """4.4: (f'{tier}-{agent}', domain) is tried before (tier, domain)
+        when both are present in tier_map."""
+        task = self._task(agent=None)
+        result = agent_for(
+            ROLE_IMPLEMENT,
+            task,
+            default_agent="codex",
+            tier_map=self.AGENT_AWARE_TIER_MAP,
+            purpose_tier_map=self.PURPOSE_TIER_MAP,
+        )
+        self.assertEqual(
+            result,
+            {"agent_cli": "codex", "agent_model": "codex-model", "effort": "high"},
+        )
+
+    def test_falls_back_to_plain_key_when_no_agent_specific_entry(self):
+        """4.4: when only the plain (tier, domain) key exists, that match is
+        used."""
+        task = self._task(agent=None)
+        result = agent_for(
+            ROLE_IMPLEMENT,
+            task,
+            default_agent="claude",
+            tier_map=self.TIER_MAP,
+            purpose_tier_map=self.PURPOSE_TIER_MAP,
+        )
+        self.assertEqual(result, {"agent_cli": "codex", "agent_model": None, "effort": None})
+
+    def test_byte_identical_to_pre_change_agent_for_without_purpose(self):
+        """4.4: with no purpose/purpose_tier_map/agent-aware keys involved,
+        output is identical to pre-change agent_for() behavior."""
+        task = {
+            "id": "TASK-001",
+            "files": ["src/foo.py"],
+            "complexity": "complex",
+            "domain": "backend",
+        }
+        legacy_tier_map = {
+            ("complex", "backend"): {
+                "agent_cli": "codex",
+                "agent_model": "gpt-tier",
+                "effort": "high",
+            }
+        }
+        result_without_purpose_kw = agent_for(ROLE_IMPLEMENT, task, tier_map=legacy_tier_map)
+        result_with_none_purpose_map = agent_for(
+            ROLE_IMPLEMENT, task, tier_map=legacy_tier_map, purpose_tier_map=None
+        )
+        result_with_empty_purpose_map = agent_for(
+            ROLE_IMPLEMENT, task, tier_map=legacy_tier_map, purpose_tier_map={}
+        )
+        expected = {"agent_cli": "codex", "agent_model": "gpt-tier", "effort": "high"}
+        self.assertEqual(result_without_purpose_kw, expected)
+        self.assertEqual(result_with_none_purpose_map, expected)
+        self.assertEqual(result_with_empty_purpose_map, expected)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -152,6 +152,81 @@ def test_a_plan_with_no_file_scope_at_all_is_exactly_the_baseline():
     assert [t["deps"] for t in merged] == [[], ["1.1"], ["1.2"]]
 
 
+def test_an_edge_is_dropped_even_when_both_ends_share_the_same_file():
+    """`apply_to_tasks` only checks that both endpoints carry *some* scope, not
+    that the scopes are disjoint -- so two tasks that both declare the exact
+    same file can still lose their ordering edge if the plan omits it. This is
+    the merge-time half of the go-20260805-172326 incident: compile declared
+    2.1 and 2.2 both writing the same file with no dependency between them, and
+    apply_to_tasks let that stand. `unordered_file_collisions` is the fail-loud
+    check for the case this test shows is otherwise silent."""
+    tasks = [_task("2.1"), _task("2.2")]
+    plan = _plan(
+        TaskPlan(id="2.1", files=("shared.py",)),
+        TaskPlan(id="2.2", files=("shared.py",)),  # same file, no dep on 2.1
+    )
+    merged, _ = runplan.apply_to_tasks(tasks, plan)
+    assert merged[0]["deps"] == [] and merged[1]["deps"] == []
+    assert runplan.unordered_file_collisions(merged) == [("shared.py", "2.1", "2.2")]
+
+
+# --------------------------------------------------------------------------- #
+# Post-compile ordering invariant (go-20260805-172326)
+# --------------------------------------------------------------------------- #
+def test_unordered_file_collisions_is_clean_when_a_direct_edge_orders_them():
+    tasks = [_task("2.1", files=["shared.py"]), _task("2.2", files=["shared.py"], deps=["2.1"])]
+    assert runplan.unordered_file_collisions(tasks) == []
+
+
+def test_unordered_file_collisions_is_clean_under_transitive_ordering():
+    """The two writers need not depend on each other directly -- a chain through
+    a third task closes the total order just as well."""
+    tasks = [
+        _task("2.1", files=["shared.py"]),
+        _task("2.2", deps=["2.1"]),
+        _task("2.3", files=["shared.py"], deps=["2.2"]),
+    ]
+    assert runplan.unordered_file_collisions(tasks) == []
+
+
+def test_unordered_file_collisions_flags_a_real_gap():
+    tasks = [
+        _task("2.1", files=["shared.py"], deps=["1.1"]),
+        _task("2.2", files=["shared.py"], deps=["1.1"]),  # sibling, not ordered vs 2.1
+    ]
+    assert runplan.unordered_file_collisions(tasks) == [("shared.py", "2.1", "2.2")]
+
+
+def test_unordered_file_collisions_ignores_tail_kind_tasks():
+    """A tail never enters the fan-out (`needs_compile` excludes it the same
+    way), so it cannot participate in a collision this check cares about."""
+    tasks = [
+        _task("1.1", files=["shared.py"]),
+        _task("9.1", kind="e2e", files=["shared.py"]),
+    ]
+    assert runplan.unordered_file_collisions(tasks) == []
+
+
+def test_unordered_file_collisions_ignores_empty_scope_tasks():
+    """An empty-scoped task cannot declare a collision on a file it never
+    named -- that gap is `needs_compile`'s to catch, not this check's."""
+    tasks = [_task("1.1", files=["shared.py"]), _task("1.2", files=[])]
+    assert runplan.unordered_file_collisions(tasks) == []
+
+
+def test_unordered_file_collisions_reports_every_offending_file_sorted():
+    tasks = [
+        _task("1.1", files=["b.py"]),
+        _task("1.2", files=["b.py"]),
+        _task("2.1", files=["a.py"]),
+        _task("2.2", files=["a.py"]),
+    ]
+    assert runplan.unordered_file_collisions(tasks) == [
+        ("a.py", "2.1", "2.2"),
+        ("b.py", "1.1", "1.2"),
+    ]
+
+
 def test_the_plan_may_add_an_edge_the_artifact_did_not_have():
     """Tightening is always allowed -- it can only serialise, never race."""
     tasks = [_task("1.1", files=["a.py"]), _task("1.2", files=["b.py"])]
@@ -221,6 +296,18 @@ def test_complexity_and_review_fill_but_never_override():
     assert merged[0]["review"] == "deep"  # authored value wins
     assert merged[0]["complexity"] == "low"  # absent -> filled
     assert merged[1]["review"] == "light"
+
+
+def test_purpose_fills_but_never_overrides():
+    tasks = [_task("1.1", files=["a.py"]), _task("1.2", files=["b.py"])]
+    tasks[0]["purpose"] = "authored"
+    plan = _plan(
+        TaskPlan(id="1.1", files=("a.py",), purpose="inferred"),
+        TaskPlan(id="1.2", files=("b.py",), purpose="inferred"),
+    )
+    merged, _ = runplan.apply_to_tasks(tasks, plan)
+    assert merged[0]["purpose"] == "authored"  # authored value wins
+    assert merged[1]["purpose"] == "inferred"  # absent -> filled
 
 
 def test_apply_never_mutates_the_caller_list():

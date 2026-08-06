@@ -145,7 +145,7 @@ one extra plausible file over omitting a likely one.
 one can start, because this task consumes their output. Shared ownership of a \
 file is NOT a dependency -- that is what `files` already expresses. Only list a \
 real ordering constraint.
-
+{purpose_instructions}
 Final pass, before you output anything: you decided each task's `files` in \
 isolation, which is exactly how a shared file gets recorded on only one task. \
 Re-read every task's `files` side by side. For each file that appears on at \
@@ -153,6 +153,15 @@ least one task, check whether any OTHER task in the list also creates or \
 modifies it and is missing it from its own `files`. Add it there too. Two \
 tasks correctly declaring the same file is normal and expected; a shared file \
 declared by only one of them is the exact miss this pass exists to catch.
+
+Then re-check `deps` the same way: for every file two or more tasks now \
+declare in `files`, confirm those tasks are ordered -- one must be a `deps` \
+ancestor of the other, directly or transitively. Two tasks can each correctly \
+declare the same file and still have nothing ordering them; that is a \
+compile-time failure, not a style nit. Where no order exists yet, add a \
+`deps` edge between them -- the later task in authored order depending on \
+the earlier one, unless the tasks' own descriptions demand the opposite \
+order.
 
 Rules:
 - Every task id above must appear exactly once. Invent no ids.
@@ -165,8 +174,44 @@ is the safe answer; a guessed path is not.
 Output nothing but this JSON object, in a ```json fenced block:
 
 {{"tasks": [{{"id": "<id>", "files": ["<path>"], "deps": ["<id>"], \
-"complexity": "low|medium|high", "review": "light|standard|deep"}}]}}
+"complexity": "low|medium|high", "review": "light|standard|deep"{purpose_field}}}]}}
 """
+
+
+def _purpose_prompt_additions(purpose_tiers: Dict[str, str]) -> tuple[str, str]:
+    """Prompt fragments requesting a per-task `purpose` classification.
+
+    Both empty when the repo has no `routing.purpose_tiers` configured: a repo
+    that never declared a purpose vocabulary must not be asked to classify
+    against one, per task 2.2. When non-empty, the requested value is
+    constrained to exactly the resolved table's keys (or omitted).
+    """
+    if not purpose_tiers:
+        return "", ""
+    keys = ", ".join(sorted(purpose_tiers))
+    instructions = (
+        f"- `purpose`: this task's purpose -- exactly one of: {keys}. Omit this "
+        "key entirely if none of them fits; never invent a value outside this "
+        "list.\n"
+    )
+    field = f', "purpose": "<one of: {keys}> (omit if none fits)"'
+    return instructions, field
+
+
+def _resolve_purpose_tiers(repo: Path) -> Dict[str, str]:
+    """Resolve the target repo's `routing.purpose_tiers` (policy.py, task 3) --
+    the `{purpose: tier}` vocabulary a repo declares for task-purpose
+    classification. `load_policy()` already validates this table (a plain
+    string-to-string map dropping malformed entries), so this is a read, not a
+    second validation pass. Empty when the repo has none configured; that is
+    what tells the PROMPT builder (task 2.2) whether to request `purpose` at
+    all.
+    """
+    from worktrail.router import policy as router_policy
+
+    policy = router_policy.load_policy(repo)
+    routing = policy.get("routing") or {}
+    return routing.get("purpose_tiers") or {}
 
 
 def _extract_json(text: str) -> Optional[Dict[str, Any]]:
@@ -205,17 +250,30 @@ def _extract_json(text: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _validate(payload: Dict[str, Any], ids: set) -> tuple[Optional[List[TaskPlan]], List[str]]:
+def _validate(
+    payload: Dict[str, Any], ids: set, purpose_tiers: Optional[Dict[str, str]] = None
+) -> tuple[Optional[List[TaskPlan]], List[str], List[str]]:
     """Turn a raw model payload into TaskPlans, or explain why it cannot be trusted.
 
-    Rejection is all-or-nothing on purpose (see `runplan.apply_to_tasks`): the
-    file scopes were inferred alongside the edges, so a payload that got the task
-    set wrong has not earned trust in the parts that happen to parse.
+    Rejection is all-or-nothing on task-set correctness (see
+    `runplan.apply_to_tasks`): the file scopes were inferred alongside the
+    edges, so a payload that got the task set wrong has not earned trust in the
+    parts that happen to parse. `purpose` is the one field that does not follow
+    that rule -- a value outside the injected vocabulary is dropped and
+    reported as a `warnings` entry (not a `problems` one), the same handling
+    `_validate_agent_entry()` gives a malformed `agent_model`: the rest of the
+    row is still trusted.
+
+    Returns `(planned, problems, warnings)`. `problems` non-empty means the
+    whole payload is rejected; `warnings` is purely informational and never
+    affects the return value of `planned`.
     """
+    valid_purposes = set(purpose_tiers or {})
     problems: List[str] = []
+    warnings: List[str] = []
     rows = payload.get("tasks")
     if not isinstance(rows, list):
-        return None, ["payload has no `tasks` list"]
+        return None, ["payload has no `tasks` list"], warnings
 
     seen: Dict[str, TaskPlan] = {}
     for row in rows:
@@ -243,19 +301,25 @@ def _validate(payload: Dict[str, Any], ids: set) -> tuple[Optional[List[TaskPlan
                 continue
             files.append(p)
 
+        purpose = str(row.get("purpose") or "").strip()
+        if purpose and purpose not in valid_purposes:
+            warnings.append(f"{tid}: purpose {purpose!r} outside the configured vocabulary; dropped")
+            purpose = ""
+
         seen[tid] = TaskPlan(
             id=tid,
             files=tuple(sorted(set(files))),
             deps=tuple(d for d in runplan._norm_str_list(row.get("deps")) if d in ids and d != tid),
             complexity=str(row.get("complexity") or ""),
             review=str(row.get("review") or ""),
+            purpose=purpose,
         )
 
     if problems:
-        return None, problems
+        return None, problems, warnings
     if set(seen) != ids:
-        return None, [f"missing task ids: {sorted(ids - set(seen))}"]
-    return [seen[i] for i in sorted(seen)], []
+        return None, [f"missing task ids: {sorted(ids - set(seen))}"], warnings
+    return [seen[i] for i in sorted(seen)], [], warnings
 
 
 def _default_spawn(prompt: str, cwd: Path, timeout: int, log) -> str:
@@ -309,12 +373,20 @@ def compile_run_plan(
         log(f"run plan: {len(gaps)} task(s) lack file scope and compiling is disabled")
         return baseline
 
+    purpose_tiers = _resolve_purpose_tiers(repo)
+
     try:
         spec_rel = spec_dir.resolve().relative_to(repo)
     except ValueError:
         spec_rel = spec_dir
     task_list = "\n".join(f"- {t['id']}: {t.get('title') or ''}".rstrip() for t in tasks)
-    prompt = PROMPT.format(spec_rel=spec_rel, task_list=task_list)
+    purpose_instructions, purpose_field = _purpose_prompt_additions(purpose_tiers)
+    prompt = PROMPT.format(
+        spec_rel=spec_rel,
+        task_list=task_list,
+        purpose_instructions=purpose_instructions,
+        purpose_field=purpose_field,
+    )
 
     def give_up(note: str) -> RunPlan:
         """Degrade to the baseline, carrying the reason into the run journal.
@@ -331,7 +403,10 @@ def compile_run_plan(
             notes=(note,),
         )
 
-    log(f"run plan: compiling {len(tasks)} task(s), {len(gaps)} without file scope")
+    log(
+        f"run plan: compiling {len(tasks)} task(s), {len(gaps)} without file scope"
+        + (f", {len(purpose_tiers)} purpose tier(s) configured" if purpose_tiers else "")
+    )
     runner = spawn or _default_spawn
     try:
         text = runner(prompt, repo, timeout, log)
@@ -342,7 +417,9 @@ def compile_run_plan(
     if payload is None:
         return give_up("compile returned no JSON object; using the artifact's own deps")
 
-    planned, problems = _validate(payload, {t["id"] for t in tasks})
+    planned, problems, purpose_warnings = _validate(payload, {t["id"] for t in tasks}, purpose_tiers)
+    for w in purpose_warnings:
+        log(f"run plan: {w}")
     if planned is None:
         return give_up("compile output rejected: " + "; ".join(problems[:4]))
 
@@ -407,13 +484,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     merged, notes = runplan.apply_to_tasks(tasks, plan)
     gaps = needs_compile(merged)
+    collisions = runplan.unordered_file_collisions(merged)
 
     if a.json:
         print(json.dumps(plan.to_dict(), indent=2, sort_keys=True))
         if gaps:
             _print_scope_gap_error(gaps)
-            return 1
-        return 0
+        if collisions:
+            _print_ordering_gap_error(collisions)
+        return 1 if (gaps or collisions) else 0
 
     print(f"{plan.spec_id}  source={plan.source}  fingerprint={plan.fingerprint[:12]}")
     print(f"  cache: {runplan.cache_path(a.cache_dir or default_cache_dir(repo), spec_id, plan.fingerprint)}")
@@ -424,8 +503,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     if gaps:
         _print_scope_gap_error(gaps)
-        return 1
-    return 0
+    if collisions:
+        _print_ordering_gap_error(collisions)
+    return 1 if (gaps or collisions) else 0
 
 
 def _print_scope_gap_error(gaps: List[str]) -> None:
@@ -441,6 +521,24 @@ def _print_scope_gap_error(gaps: List[str]) -> None:
         "them a tail kind (docs/e2e/cleanup) if they genuinely need none, add explicit "
         "`files:` scope to the artifact, or retry compile (--force) with more context "
         "in proposal.md/design.md so the model can determine it.",
+        file=sys.stderr,
+    )
+
+
+def _print_ordering_gap_error(collisions: List[tuple]) -> None:
+    """Shared by both `main()` output modes, same shape as `_print_scope_gap_error`."""
+    print(
+        f"ERROR: {len(collisions)} file(s) are declared by two or more tasks with no "
+        "dependency order between them:",
+        file=sys.stderr,
+    )
+    for f, a, b in collisions:
+        print(f"  {f}: {a} <-> {b}", file=sys.stderr)
+    print(
+        "  a live run's per-tick file lock happens to serialise these anyway, but "
+        "nothing in the plan itself asserts it. Add an explicit `deps` edge between "
+        "them (either order), or retry compile (--force) with more context so the "
+        "model can place one.",
         file=sys.stderr,
     )
 

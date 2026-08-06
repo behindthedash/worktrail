@@ -63,6 +63,7 @@ FIELD_SCHEMA = {
     "kind": {"type": str, "required": False, "values": ["impl", "e2e", "cleanup", "docs"]},
     "complexity": {"type": str, "required": False},
     "domain": {"type": str, "required": False},
+    "purpose": {"type": str, "required": False},
     "dod-checks": {"type": list, "required": False},
 }
 

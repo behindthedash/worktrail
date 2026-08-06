@@ -1,0 +1,152 @@
+## ADDED Requirements
+
+### Requirement: Evidence Probe Extraction From Brief Text
+
+The system SHALL extract three kinds of Evidence Probe from a brief's focus text: **path
+probes** (tokens shaped like a file path or a bare filename with an extension), **symbol
+probes** (code-identifier-shaped tokens), and **pull-request probes** (explicit pull-request
+references). Extraction SHALL be purely textual and SHALL NOT consult the repository.
+
+Backtick-quoted tokens SHALL be preferred as probe sources. A token SHALL qualify as a path
+probe when it contains a `/` separator **or** ends in a file extension of one to ten
+characters; a bare filename with an extension therefore qualifies without needing a directory
+component.
+
+#### Scenario: Bare filename with an extension is a path probe
+- **WHEN** a brief's focus text contains the backtick-quoted token `prevent-destructive-commands.py`
+- **THEN** `prevent-destructive-commands.py` is extracted as a path probe, even though it
+  contains no `/` separator
+
+#### Scenario: Dotted and underscored identifiers are symbol probes
+- **WHEN** a brief's focus text contains the backtick-quoted tokens `_task_files_are_shipped`
+  and `resolve_routing`
+- **THEN** both are extracted as symbol probes
+
+#### Scenario: Pull-request references are extracted with their number
+- **WHEN** a brief's focus text contains `devops PR #89` and `behindthedash/devops#89`
+- **THEN** pull-request probe `89` is extracted, deduplicated to a single entry
+
+#### Scenario: Prose without code-shaped tokens yields no probes
+- **WHEN** a brief's focus text is ordinary prose containing no backtick-quoted tokens, no
+  path-shaped tokens, and no pull-request references
+- **THEN** all three probe lists are empty and the check reports no evidence
+
+### Requirement: Probe Count Is Bounded
+
+The system SHALL cap the total number of probes it searches, per probe kind, at a documented
+maximum, and SHALL apply a per-invocation timeout to every subprocess it runs. When extraction
+yields more candidates than the cap, the system SHALL retain the most specific candidates
+(longer, more distinctive tokens before shorter, more generic ones) and SHALL report the
+number of candidates dropped.
+
+#### Scenario: Excess probes are truncated and the drop is reported
+- **WHEN** extraction yields more path probes than the configured cap
+- **THEN** only the cap-many most specific probes are searched, and the result reports the
+  count of dropped candidates rather than silently discarding them
+
+#### Scenario: A hanging subprocess does not hang the dispatch
+- **WHEN** a `git` invocation exceeds the per-invocation timeout
+- **THEN** that probe contributes no matches, the result carries a warning naming the timeout,
+  and the check still returns
+
+### Requirement: History Search Is Bounded By The Brief's Capture Time
+
+The system SHALL search the repository's base-branch history for changes matching each probe,
+restricted to commits authored at or after the brief's `created:` timestamp. Path probes SHALL
+be searched by path; symbol probes SHALL be searched by change-in-occurrence-count (`git log
+-S`). The base branch SHALL be resolved preferring the remote-tracking ref when one exists, so
+the search sees work that landed upstream but has not been merged into the local checkout.
+
+#### Scenario: A commit landing after capture is reported as evidence
+- **WHEN** a brief was captured on 2026-07-31 and a commit touching one of its path probes
+  landed on the base branch on 2026-08-02
+- **THEN** that commit is reported as a match, carrying its short SHA, commit date, and subject
+
+#### Scenario: A commit predating capture is not evidence
+- **WHEN** the only commit touching a probe landed before the brief's `created:` timestamp
+- **THEN** it is not reported as a match, because work predating capture cannot be what the
+  brief was filed against
+
+#### Scenario: Remote-tracking ref is preferred over the local branch
+- **WHEN** the local base branch is behind its remote-tracking ref and the delivering commit
+  exists only on the remote-tracking ref
+- **THEN** the search still finds that commit
+
+### Requirement: Merged Pull-Request Lookup Is Best-Effort
+
+The system SHALL attempt to resolve pull-request probes and probe-matching merged pull requests
+via the GitHub CLI, and SHALL treat the absence, failure, non-authentication, or timeout of
+that CLI as "no signal" rather than as an error or as absence of evidence.
+
+#### Scenario: GitHub CLI unavailable degrades without failing
+- **WHEN** `gh` is not installed, not authenticated, or times out
+- **THEN** the pull-request section of the result is empty, a warning names the cause, and any
+  evidence already found by the git history search is still reported
+
+### Requirement: The Check Fails Open
+
+The system SHALL never raise to its caller and SHALL never block a dispatch. Any condition
+under which the question cannot be answered — a path that is not a git repository, an
+unreadable or unparseable brief, a missing or malformed `created:` timestamp, a git failure, a
+timeout, or an empty probe set — SHALL yield a result whose `checked` field is `false`, with a
+non-null warning. Callers SHALL treat `checked: false` as "no signal" and MUST NOT treat it as
+"no evidence of prior delivery".
+
+#### Scenario: Non-git path yields checked false, not an exception
+- **WHEN** the check is invoked against a directory that is not a git repository
+- **THEN** it returns `checked: false` with a warning, and raises nothing
+
+#### Scenario: A malformed created timestamp does not abort the check
+- **WHEN** a brief's `created:` frontmatter is missing or cannot be parsed as a timestamp
+- **THEN** the check returns `checked: false` with a warning naming the unparseable value
+
+#### Scenario: No matching evidence is a definite negative, not an error
+- **WHEN** probes were extracted and searched successfully and none matched any commit
+- **THEN** the result reports `checked: true` with no matches, distinguishing a searched-and-clean
+  brief from an unanswerable one
+
+### Requirement: Route Gate Covers Brief-Sourced Code-Fix Dispatches
+
+The system SHALL run the staleness check during `/go` Phase 5.5 only when the dispatch is
+brief-sourced **and** the resolved route is `E` or `F`. A free-text dispatch with no claimed
+brief, or a brief-sourced dispatch resolved to any other route, SHALL skip the staleness check
+entirely and SHALL be neither delayed nor otherwise modified by it. The existing route `C`/`D`
+spec-collision branch SHALL continue to run unchanged, and the two branches SHALL be
+independent: neither suppresses, gates, nor alters the other.
+
+#### Scenario: Brief-sourced Route F dispatch runs the check
+- **WHEN** a claimed brief is dispatched and Phase 5 resolves route `F`
+- **THEN** the staleness check runs before Phase 6 opens the run record
+
+#### Scenario: Free-text Route F dispatch skips the check
+- **WHEN** a free-text request with no claimed brief resolves to route `F`
+- **THEN** the staleness check does not run, because there is no `created:` timestamp to bound
+  the search and no captured brief that could have gone stale
+
+#### Scenario: Route C dispatch is unaffected
+- **WHEN** a brief-sourced dispatch resolves to route `C`
+- **THEN** the spec-collision check runs exactly as it does today and the staleness check does
+  not run
+
+### Requirement: Evidence Is Surfaced To The Operator, Never Auto-Applied
+
+When the check reports evidence, the system SHALL present the matching commits and pull
+requests to the operator and SHALL require an explicit operator decision before either closing
+the brief or continuing the dispatch. The system SHALL NOT close, stamp, move, or otherwise
+mutate the brief on the basis of this check alone. Brief lifecycle mutations SHALL continue to
+be performed only through the work-queue owner, and only as the result of an explicit operator
+choice.
+
+#### Scenario: Evidence prompts the operator rather than closing the brief
+- **WHEN** the check reports one or more matching commits for a claimed Route-F brief
+- **THEN** the operator is shown the evidence and asked whether the brief is already delivered,
+  and no queue mutation occurs until that answer is given
+
+#### Scenario: Operator may proceed despite evidence
+- **WHEN** the operator judges the surfaced evidence to be unrelated or only a partial delivery
+- **THEN** the dispatch proceeds unchanged, and the run record records both the surfaced
+  evidence and the operator's decision to continue
+
+#### Scenario: No evidence produces no prompt
+- **WHEN** the check reports `checked: true` with no matches, or reports `checked: false`
+- **THEN** no operator prompt is shown and the dispatch proceeds without interruption

@@ -521,6 +521,60 @@ class TestComplexityDomainFieldSchema:
             _cleanup(path)
 
 
+class TestPurposeFieldSchema:
+    """task-purpose-classification 1.1: purpose is an optional string field with
+    no values enum, matching complexity/domain's existing coverage pattern."""
+
+    def test_purpose_in_field_schema(self):
+        assert "purpose" in FIELD_SCHEMA
+        assert FIELD_SCHEMA["purpose"]["type"] is str
+        assert FIELD_SCHEMA["purpose"]["required"] is False
+        assert "values" not in FIELD_SCHEMA["purpose"]
+
+    def test_purpose_set_passes_validation(self):
+        fm = {**_REQUIRED_FM, "purpose": "scaffolding"}
+        path = _make_task(fm, _BODY)
+        try:
+            assert validate_task(path) is True
+        finally:
+            _cleanup(path)
+
+    def test_purpose_round_trips_through_read_task_file(self):
+        fm = {**_REQUIRED_FM, "purpose": "scaffolding"}
+        path = _make_task(fm, _BODY)
+        try:
+            read_fm, error, _ = read_task_file(__import__("pathlib").Path(path))
+            assert error is None
+            assert read_fm["purpose"] == "scaffolding"
+        finally:
+            _cleanup(path)
+
+    def test_absent_purpose_passes_validation(self):
+        fm = {**_REQUIRED_FM}
+        path = _make_task(fm, _BODY)
+        try:
+            assert validate_task(path) is True
+        finally:
+            _cleanup(path)
+
+    def test_absent_purpose_not_in_read_frontmatter(self):
+        fm = {**_REQUIRED_FM}
+        path = _make_task(fm, _BODY)
+        try:
+            read_fm, _, _ = read_task_file(__import__("pathlib").Path(path))
+            assert "purpose" not in read_fm
+        finally:
+            _cleanup(path)
+
+    def test_non_string_purpose_fails_like_other_optional_string_fields(self):
+        fm = {**_REQUIRED_FM, "purpose": 3}
+        path = _make_task(fm, _BODY)
+        try:
+            assert validate_task(path) is False
+        finally:
+            _cleanup(path)
+
+
 class TestTimeoutFieldSchema:
     """FR-8: timeout is an optional int in FIELD_SCHEMA; valid int passes, non-int string fails."""
 
