@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from ..shared.brief_frontmatter import read_frontmatter, split_frontmatter
-from .work_queue import queue_dir
+from .work_queue import claim, done, picked_dir, queue_dir, release, resolve
 
 logger = logging.getLogger(__name__)
 
@@ -434,6 +434,154 @@ def resolve_duplicate_targets(verdicts: List[Verdict]) -> List[Verdict]:
         else:
             resolved.append(v)
     return resolved
+
+
+def _resolve_brief_path(identifier: str) -> Optional[Path]:
+    """Locate `identifier`'s brief file, trying `queue_dir()` before `picked_dir()`.
+
+    Only `_apply_needs_update()` needs this: `needs-update` never claims the
+    brief, so by the time `apply` runs it may still be sitting in queue/, or
+    (if some other session claimed it in the meantime) in picked/ instead.
+    `stale-close`/`duplicate-of` don't need this -- `claim()` already resolves
+    against queue/ itself.
+    """
+    for folder in (queue_dir(), picked_dir()):
+        res = resolve(identifier, folder)
+        if res["status"] == "match":
+            return Path(res["candidates"][0])
+    return None
+
+
+def _apply_close(v: Verdict) -> dict:
+    """`stale-close`/`duplicate-of`: `claim()` then `done(..., note=evidence)`.
+
+    If `done()` doesn't return "done" (e.g. a Route-C brief that needs an
+    explicit `planning_only`/`implementation_complete` decision `done()`
+    refuses to make on our behalf), the brief must not stay stranded in
+    `picked/` under a `queue-triage` claim nobody will ever release -- so
+    this releases it back to `queue/` before returning the error entry,
+    keeping a failed apply a true no-op.
+    """
+    base = {
+        "brief_id": v.brief_id,
+        "verdict": v.verdict,
+        "duplicate_of": v.duplicate_of,
+        "action": "claim+done",
+        "confirm": True,
+        "note": v.evidence,
+    }
+    claim_res = claim(v.brief_id, by="queue-triage")
+    if claim_res["status"] != "claimed":
+        detail = claim_res.get("error")
+        return {
+            **base,
+            "status": "error",
+            "path": claim_res.get("path"),
+            "error": f"claim: {claim_res['status']}" + (f" ({detail})" if detail else ""),
+        }
+    done_res = done(v.brief_id, note=v.evidence)
+    if done_res["status"] != "done":
+        detail = done_res.get("error")
+        release_res = release(v.brief_id)
+        return {
+            **base,
+            "status": "error",
+            "path": done_res.get("path"),
+            "error": f"done: {done_res['status']}" + (f" ({detail})" if detail else ""),
+            "rolled_back": release_res["status"] == "released",
+        }
+    return {**base, "status": "executed", "path": done_res.get("path"), "error": None}
+
+
+def _apply_needs_update(v: Verdict, run_date: str) -> dict:
+    """`needs-update`: append an in-place `## Triage <run_date>` body section.
+
+    Uses the same section shape `is_recently_triaged()` scans for, so a
+    subsequent triage run's dedup check sees this run's note without any
+    extra bookkeeping. The brief itself is left in place -- unlike
+    `_apply_close()`, `needs-update` never claims or closes it.
+    """
+    base = {
+        "brief_id": v.brief_id,
+        "verdict": v.verdict,
+        "duplicate_of": v.duplicate_of,
+        "action": "append-triage-note",
+        "confirm": True,
+        "note": v.evidence,
+    }
+    path = _resolve_brief_path(v.brief_id)
+    if path is None:
+        return {**base, "status": "error", "path": None, "error": "brief not found in queue/ or picked/"}
+    try:
+        content = path.read_text(encoding="utf-8")
+        path.write_text(
+            content.rstrip("\n") + f"\n\n## Triage {run_date}\n\n{v.evidence}\n",
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        return {**base, "status": "error", "path": str(path), "error": str(exc)}
+    return {**base, "status": "executed", "path": str(path), "error": None}
+
+
+def apply_verdicts(verdicts: List[Verdict], *, confirm: bool) -> List[dict]:
+    """Execute (or, when `confirm` is false, only log) each non-`keep` verdict.
+
+    Callers are expected to have already run this batch through
+    `resolve_duplicate_targets()` -- this function acts on whatever `verdict`
+    each `Verdict` carries, it does not re-check dangling `duplicate-of`
+    targets itself. Per spec: `stale-close` and `duplicate-of` close the
+    brief via `claim()` + `done(..., note=evidence)`; `needs-update` appends
+    an in-place `## Triage <run-date>` body section instead of closing it.
+    `keep` is always a no-op. When `confirm` is false, nothing is executed --
+    every non-`keep` verdict is logged as `"planned"` with no filesystem
+    mutation, so a caller can preview a run before committing to it.
+
+    Returns one action-log dict per verdict, in the same order as `verdicts`,
+    never dropping any -- `apply`'s `--json`/human output (4.3) renders this
+    list directly.
+    """
+    run_date = datetime.date.today().isoformat()
+    log: List[dict] = []
+    for v in verdicts:
+        if v.verdict == "keep":
+            log.append(
+                {
+                    "brief_id": v.brief_id,
+                    "verdict": v.verdict,
+                    "duplicate_of": v.duplicate_of,
+                    "action": "noop",
+                    "confirm": confirm,
+                    "status": "noop",
+                    "path": None,
+                    "note": None,
+                    "error": None,
+                }
+            )
+            continue
+
+        action = "claim+done" if v.verdict in ("stale-close", "duplicate-of") else "append-triage-note"
+
+        if not confirm:
+            log.append(
+                {
+                    "brief_id": v.brief_id,
+                    "verdict": v.verdict,
+                    "duplicate_of": v.duplicate_of,
+                    "action": action,
+                    "confirm": confirm,
+                    "status": "planned",
+                    "path": None,
+                    "note": v.evidence,
+                    "error": None,
+                }
+            )
+            continue
+
+        if action == "claim+done":
+            log.append(_apply_close(v))
+        else:
+            log.append(_apply_needs_update(v, run_date))
+    return log
 
 
 def write_verdict_file(verdicts: List[Verdict], out_dir: "str | Path") -> Path:
