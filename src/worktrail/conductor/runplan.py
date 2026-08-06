@@ -303,8 +303,27 @@ def apply_to_tasks(
                 m[field] = getattr(tp, field)
         merged.append(m)
 
+    # Close any same-file collision the merge left unordered: for each pair the
+    # plan and baseline both failed to order, the task authored later depends
+    # on the one authored earlier. This can only add edges to `merged`, so it
+    # is safe to run before the cycle check below, which then covers the
+    # repair-augmented graph too instead of needing a second check of its own.
+    merged_by_id = {m["id"]: m for m in merged}
+    merged_order = {m["id"]: i for i, m in enumerate(merged)}
+    repairs: List[str] = []
+    for file, a, b in unordered_file_collisions(merged):
+        later, earlier = (a, b) if merged_order[a] > merged_order[b] else (b, a)
+        later_task = merged_by_id[later]
+        if earlier in later_task["deps"]:
+            continue
+        later_task["deps"] = sorted(set(later_task["deps"]) | {earlier})
+        repairs.append(f"{file}: {later} now depends on {earlier}")
+
     # `keep` and `restored` are each acyclic on their own, but their union need
-    # not be: the plan may assert a->b where the baseline asserted b->a.
+    # not be: the plan may assert a->b where the baseline asserted b->a. The
+    # repair edges just added can introduce a cycle of their own (e.g. the plan
+    # already asserts b->a for the same pair the repair orders a->b), which this
+    # same check catches.
     try:
         compute_levels(merged)
     except (ValueError, RecursionError) as exc:
@@ -313,6 +332,12 @@ def apply_to_tasks(
             f"cycle ({exc}); using the format's deps and file scope"
         )
         return [dict(t) for t in tasks], notes
+
+    if repairs:
+        notes.append(
+            f"auto-repaired {len(repairs)} ordering edge(s) to close same-file "
+            f"collision(s): {', '.join(repairs)}"
+        )
 
     loosened = sum(
         1
