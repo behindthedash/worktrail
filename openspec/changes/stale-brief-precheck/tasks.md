@@ -80,7 +80,7 @@
 
 ## 4. Validation
 
-- [ ] 4.1 Run `PYTHONPATH=src pytest -q` and
+- [ ] 4.1 [e2e] Run `PYTHONPATH=src pytest -q` and
   `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` from the worktree root;
   both must pass. `tests/test_plugin_surface.py` in particular must stay green — it enforces that
   every `worktrail-*` command named in a skill doc is a real entry point and that every
