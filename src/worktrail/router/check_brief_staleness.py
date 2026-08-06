@@ -36,8 +36,11 @@ brief -- see `openspec/changes/stale-brief-precheck/design.md`.
 from __future__ import annotations
 
 import datetime
+import json
 import re
+import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -53,6 +56,29 @@ PR_PROBE_CAP = 8
 # stay cheap enough that nobody has to weigh whether to run it -- a hanging
 # `git log -S` must not hang the dispatch it's guarding.
 SUBPROCESS_TIMEOUT_SECONDS = 5
+
+# `gh` calls hit the network, unlike the local `git` calls above -- a wider
+# budget avoids treating an ordinary slow API round-trip as a timeout.
+GH_SUBPROCESS_TIMEOUT_SECONDS = 8
+
+# Bound on the number of `pull_requests` entries returned, applied both as a
+# per-`gh pr list` `--limit` and as a final cap on the combined, deduplicated
+# result. `gh pr list --search` matches title/body text against a path probe
+# and returns up to 30 hits per call uncapped -- at `PATH_PROBE_CAP` probes
+# that is unbounded evidence handed to a human close/proceed decision. The
+# most-recently-merged entries are kept; the rest are counted, not silently
+# dropped (see `probes["dropped"]` for the analogous probe-side cap).
+PR_RESULT_CAP = 20
+
+# Aggregate wall-clock budget for the whole `gh` phase (PR-number resolution
+# plus path-based search), separate from `GH_SUBPROCESS_TIMEOUT_SECONDS`
+# above which only bounds a single call. Without this, worst case is 1
+# `auth status` + `PR_PROBE_CAP` `gh pr view` + `PATH_PROBE_CAP` `gh pr list`
+# round-trips, each up to `GH_SUBPROCESS_TIMEOUT_SECONDS` -- unbounded in
+# aggregate even though every individual call is bounded. Once the budget is
+# exhausted, remaining probes are skipped (never run) and counted in a
+# warning; probes already resolved are kept, never discarded.
+GH_PHASE_BUDGET_SECONDS = 20
 
 _LOG_FORMAT = "%h\x1f%ad\x1f%s"
 
@@ -80,7 +106,16 @@ _PR_RE = re.compile(
 )
 
 _LEADING_PUNCT = "([{\"'"
-_TRAILING_PUNCT = ")]}.,;:!?\"'"
+# `(` is stripped from the tail too so a brief's habitual `compile_run_plan()`
+# reduces to the bare identifier. Without it the trailing `(` survives
+# `)`-stripping, fails `_SYMBOL_RE`, and the most valuable probes in a brief --
+# the function names it actually cites -- are silently discarded.
+_TRAILING_PUNCT = ")]}.,;:!?\"'("
+
+# Distinguishes a real path/extension from a task id or version number. `1.1`,
+# `2.10`, and `2.1/2.2/2.3/2.4` are pervasive in briefs (task and spec ids) and
+# all look path-shaped to a naive `/`-or-extension test.
+_HAS_LETTER_RE = re.compile(r"[A-Za-z]")
 
 
 def _strip_punct(token: str) -> str:
@@ -95,13 +130,46 @@ def _is_path_token(token: str) -> bool:
     # of a `owner/repo#N` pull-request reference, never a real path/symbol.
     if not token or "#" in token:
         return False
-    return "/" in token or bool(_EXT_RE.search(token))
+    # Prose blobs and code fragments are not paths. Briefs routinely backtick
+    # a call-site list (`needs_compile()/_print_scope_gap_error()`) or a task
+    # chain (`2.1->2.2->2.3->2.4`); neither is searchable as a pathspec, and
+    # both crowd out real probes under PATH_PROBE_CAP.
+    if any(c in token for c in "()<>"):
+        return False
+    # An absolute or home-relative path names something outside the repo being
+    # searched -- a brief's `Repo: /home/...` line is the usual source. Passing
+    # one to `git log -- <abs>` is useless at best and, observed 2026-08-05, an
+    # expensive timeout at worst.
+    if token.startswith("/") or token.startswith("~"):
+        return False
+    if "/" in token:
+        # A real path has a letter somewhere; `2.1/2.2/2.3/2.4` does not.
+        return bool(_HAS_LETTER_RE.search(token))
+    ext = _EXT_RE.search(token)
+    # A purely numeric "extension" is a task id or version (`1.1`, `2.10`),
+    # not a file suffix.
+    return bool(ext and _HAS_LETTER_RE.search(ext.group(0)))
 
 
 def _is_symbol_token(token: str) -> bool:
     if not token or "#" in token or "/" in token or _EXT_RE.search(token):
         return False
     return bool(_SYMBOL_RE.match(token))
+
+
+# An unquoted token only becomes a symbol probe if it is *distinctively* an
+# identifier: snake_case with letters either side of an underscore. Briefs
+# captured through `worktrail-handoff --focus` are plain prose with no
+# backticks at all (verified 2026-08-05: the brief that motivated this
+# fallback contained zero backticks and four real identifiers), so requiring
+# backticks made symbol search dead on arrival for the primary capture path.
+# `compile_run_plan` is not a phrase; the underscore is what makes that safe
+# to assert without the quoting the original design leaned on.
+_SNAKE_CASE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+$")
+
+
+def _is_unquoted_symbol_token(token: str) -> bool:
+    return bool(token) and len(token) >= 6 and bool(_SNAKE_CASE_RE.match(token))
 
 
 def _cap(items: List[str], cap: int) -> Tuple[List[str], int]:
@@ -124,9 +192,16 @@ def extract_probes(text: str) -> Dict[str, Any]:
     discarded across all three kinds.
 
     Backtick-quoted tokens are the high-confidence source for all three
-    kinds. Path probes additionally fall back to unquoted path-shaped tokens
-    (a `/` separator or a recognized extension); symbol probes do not, since
-    an unquoted identifier-shaped word in prose is usually just a word.
+    kinds, but none of the three requires them. Path probes fall back to
+    unquoted path-shaped tokens (a `/` separator or a recognized extension);
+    symbol probes fall back to unquoted *snake_case* tokens only, which is
+    narrow enough to keep ordinary prose out while still working on the
+    unbackticked briefs `worktrail-handoff --focus` actually produces.
+
+    The negative rules carry as much weight as the positive ones: task ids
+    and versions (`1.1`, `2.1/2.2/2.3`), absolute paths, and parenthesised
+    call-site lists are all path-shaped to a naive test and all crowd real
+    probes out of the caps. See `_is_path_token`.
     """
     text = text or ""
 
@@ -151,9 +226,15 @@ def extract_probes(text: str) -> Dict[str, Any]:
     text_wo_backticks = _BACKTICK_RE.sub(" ", text)
     for raw in _WORD_RE.findall(text_wo_backticks):
         token = _strip_punct(raw)
-        if token and _is_path_token(token) and token not in seen_paths:
-            seen_paths.add(token)
-            paths.append(token)
+        if not token:
+            continue
+        if _is_path_token(token):
+            if token not in seen_paths:
+                seen_paths.add(token)
+                paths.append(token)
+        elif _is_unquoted_symbol_token(token) and token not in seen_symbols:
+            seen_symbols.add(token)
+            symbols.append(token)
 
     pull_requests: List[str] = []
     seen_prs: set = set()
@@ -199,7 +280,22 @@ def resolve_base_ref(repo: Path, base: Optional[str] = None) -> str:
     handled by the caller).
     """
     repo = Path(repo)
-    candidates = [f"origin/{base}", base] if base else []
+    candidates: List[str] = []
+    if base:
+        candidates.extend([f"origin/{base}", base])
+    else:
+        # No explicit base: prefer the remote's own default branch over the
+        # local HEAD. On a feature branch -- which is exactly where /go runs
+        # this check -- HEAD is missing the upstream commits the check exists
+        # to find, so falling straight through to HEAD would report a clean
+        # brief for work that had already landed on the base branch.
+        out = _run_git(
+            repo, ["symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD"],
+            SUBPROCESS_TIMEOUT_SECONDS,
+        )
+        if out is not None and out.returncode == 0 and out.stdout.strip():
+            candidates.append(out.stdout.strip())
+        candidates.extend(["origin/main", "origin/master"])
     candidates.append("HEAD")
     for ref in candidates:
         out = _run_git(repo, ["rev-parse", "--verify", "--quiet", ref], SUBPROCESS_TIMEOUT_SECONDS)
@@ -233,6 +329,26 @@ def _normalize_since(since: Any) -> Optional[str]:
     return None
 
 
+def _to_utc_datetime(value: Any) -> Optional[datetime.datetime]:
+    """Parse an ISO-ish timestamp (as produced by `_normalize_since` or a
+    `gh --json mergedAt` field) into an aware UTC `datetime`, or `None` if it
+    can't be parsed."""
+    if not value or not isinstance(value, str):
+        return None
+    candidate = value[:-1] + "+00:00" if value.endswith("Z") else value
+    dt: Optional[datetime.datetime] = None
+    try:
+        dt = datetime.datetime.fromisoformat(candidate)
+    except ValueError:
+        try:
+            dt = datetime.datetime.strptime(value, "%Y-%m-%d")
+        except ValueError:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    return dt
+
+
 def _parse_log(output: str, probe: str, kind: str) -> List[Dict[str, str]]:
     matches: List[Dict[str, str]] = []
     for line in output.splitlines():
@@ -257,6 +373,206 @@ def _search_probe(repo: Path, base_ref: str, since: str, extra: List[str]) -> Op
     return out.stdout
 
 
+# --- gh lookup: independently-degradable final step ------------------------------
+#
+# Resolves extracted `PR #N` probes and searches merged PRs matching path
+# probes, via `gh`. This step is deliberately isolated from the git search
+# above: `gh` missing, unauthenticated, erroring, or timing out at any point
+# degrades to an empty `pull_requests` list plus a warning, and never
+# discards -- or even touches -- the `matches` the git search already
+# collected. Results are restricted to PRs merged at or after `since` and
+# capped at `PR_RESULT_CAP`, mirroring the git search's `--since` filter and
+# the probe-side caps above.
+
+def _gh_available() -> bool:
+    return shutil.which("gh") is not None
+
+
+def _run_gh(repo: Path, args: List[str], timeout: int) -> Optional["subprocess.CompletedProcess[str]"]:
+    try:
+        return subprocess.run(
+            ["gh", *args], capture_output=True, text=True, timeout=timeout, cwd=str(repo),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def _gh_authenticated(repo: Path, timeout: int) -> bool:
+    out = _run_gh(repo, ["auth", "status"], timeout)
+    return out is not None and out.returncode == 0
+
+
+def _pr_from_json(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    number = data.get("number")
+    if number is None:
+        return None
+    return {
+        "number": number,
+        "title": data.get("title", ""),
+        "url": data.get("url", ""),
+        "merged_at": data.get("mergedAt", ""),
+    }
+
+
+def _resolve_pr_number_probes(
+    repo: Path, numbers: List[str], timeout: int, deadline: float
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """Resolve extracted `PR #N` / `owner/repo#N` probes via `gh pr view`,
+    keeping only PRs that are actually merged. Bare numbers resolve against
+    `repo` itself -- `extract_probes()` discards any `owner/repo` qualifier
+    -- so a probe naming a different repository silently resolves that
+    repo's PR instead; callers are warned when this path yields anything."""
+    found: List[Dict[str, Any]] = []
+    warnings: List[str] = []
+    for i, num in enumerate(numbers):
+        if time.monotonic() >= deadline:
+            warnings.append(
+                f"gh phase budget exceeded; skipped {len(numbers) - i} PR-number probe(s)"
+            )
+            break
+        out = _run_gh(repo, ["pr", "view", num, "--json", "number,title,state,url,mergedAt"], timeout)
+        if out is None:
+            warnings.append(f"gh pr view timed out or is unavailable for PR #{num}")
+            continue
+        if out.returncode != 0:
+            warnings.append(f"gh pr view failed for PR #{num}: {out.stderr.strip()[:200]}")
+            continue
+        try:
+            data = json.loads(out.stdout)
+        except json.JSONDecodeError:
+            warnings.append(f"gh pr view returned unparseable JSON for PR #{num}")
+            continue
+        if not isinstance(data, dict):
+            warnings.append(f"gh pr view returned unexpected JSON shape for PR #{num}")
+            continue
+        if data.get("state") == "MERGED":
+            pr = _pr_from_json(data)
+            if pr:
+                found.append(pr)
+    if found:
+        warnings.append(
+            f"{len(found)} pull request(s) resolved from bare PR-number references against "
+            "the current repository only; if the brief named a different owner/repo, this may "
+            "be the wrong repository's PR"
+        )
+    return found, warnings
+
+
+def _search_merged_prs_by_path(
+    repo: Path, paths: List[str], timeout: int, deadline: float
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """Search merged PRs whose title/body mention each path probe, via
+    `gh pr list --search`."""
+    found: List[Dict[str, Any]] = []
+    warnings: List[str] = []
+    for i, path in enumerate(paths):
+        if time.monotonic() >= deadline:
+            warnings.append(
+                f"gh phase budget exceeded; skipped {len(paths) - i} path probe(s)"
+            )
+            break
+        out = _run_gh(
+            repo,
+            ["pr", "list", "--state", "merged", "--search", path,
+             "--json", "number,title,url,mergedAt", "--limit", str(PR_RESULT_CAP)],
+            timeout,
+        )
+        if out is None:
+            warnings.append(f"gh pr list timed out or is unavailable for path probe {path!r}")
+            continue
+        if out.returncode != 0:
+            warnings.append(f"gh pr list failed for path probe {path!r}: {out.stderr.strip()[:200]}")
+            continue
+        try:
+            items = json.loads(out.stdout)
+        except json.JSONDecodeError:
+            warnings.append(f"gh pr list returned unparseable JSON for path probe {path!r}")
+            continue
+        if not isinstance(items, list):
+            warnings.append(f"gh pr list returned unexpected JSON shape for path probe {path!r}")
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            pr = _pr_from_json(item)
+            if pr:
+                found.append(pr)
+    return found, warnings
+
+
+def _lookup_pull_requests(
+    repo: Path, probes: Dict[str, Any], since: str, timeout: int
+) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """The `gh` lookup itself: resolve PR-number probes and search merged PRs
+    matching path probes. Never raises; any failure yields `([], warning)`.
+
+    Results merged before `since` are excluded -- the same restriction the
+    git search applies via `--since` -- so a PR that merged long before the
+    brief was even written can't be surfaced as evidence the brief's work
+    already landed; a count of excluded entries is warned, never silently
+    dropped. A resolved PR whose merge date can't be parsed is kept rather
+    than excluded, since a human should see it rather than have it vanish
+    indistinguishably from "nothing found". The combined, deduplicated
+    result is then capped at `PR_RESULT_CAP`, keeping the most-recently-
+    merged entries (undated entries sort last). The whole phase is bounded
+    by `GH_PHASE_BUDGET_SECONDS`; probes not yet run when the budget is
+    exhausted are skipped and counted in a warning, not silently omitted.
+    """
+    numbers = probes.get("pull_requests") or []
+    paths = probes.get("paths") or []
+    if not numbers and not paths:
+        return [], None
+
+    if not _gh_available():
+        return [], "gh not found on PATH; skipping pull-request lookup"
+    if not _gh_authenticated(repo, timeout):
+        return [], "gh is not authenticated; skipping pull-request lookup"
+
+    deadline = time.monotonic() + GH_PHASE_BUDGET_SECONDS
+    found, warnings = _resolve_pr_number_probes(repo, numbers, timeout, deadline)
+    path_found, path_warnings = _search_merged_prs_by_path(repo, paths, timeout, deadline)
+    warnings.extend(path_warnings)
+
+    seen_numbers = {pr["number"] for pr in found}
+    for pr in path_found:
+        if pr["number"] not in seen_numbers:
+            seen_numbers.add(pr["number"])
+            found.append(pr)
+
+    since_dt = _to_utc_datetime(since)
+    if since_dt is not None:
+        kept: List[Dict[str, Any]] = []
+        undated: List[Dict[str, Any]] = []
+        excluded_before_since = 0
+        for pr in found:
+            merged_dt = _to_utc_datetime(pr.get("merged_at"))
+            if merged_dt is None:
+                undated.append(pr)
+            elif merged_dt >= since_dt:
+                kept.append(pr)
+            else:
+                excluded_before_since += 1
+        found = kept + undated
+        if excluded_before_since:
+            warnings.append(
+                f"{excluded_before_since} resolved pull request(s) merged before {since} "
+                "were excluded"
+            )
+        if undated:
+            warnings.append(
+                f"{len(undated)} resolved pull request(s) had no parseable merge date and "
+                "could not be checked against since -- included anyway"
+            )
+
+    found.sort(key=lambda pr: _to_utc_datetime(pr.get("merged_at")) or datetime.datetime.min.replace(tzinfo=datetime.timezone.utc), reverse=True)
+    if len(found) > PR_RESULT_CAP:
+        dropped = len(found) - PR_RESULT_CAP
+        found = found[:PR_RESULT_CAP]
+        warnings.append(f"{dropped} additional merged pull request(s) exceeded PR_RESULT_CAP={PR_RESULT_CAP} and were dropped")
+
+    return found, ("; ".join(warnings) if warnings else None)
+
+
 # --- check(): extraction + bounded history search --------------------------------
 
 def check(repo: Path, text: str, since: Any, base: Optional[str] = None) -> Dict[str, object]:
@@ -268,8 +584,15 @@ def check(repo: Path, text: str, since: Any, base: Optional[str] = None) -> Dict
     `extract_probes()`'s output. `matches` is a list of
     `{"sha", "date", "subject", "probe", "kind"}` per matching commit,
     restricted to commits at or after `since` on the resolved base branch.
-    `pull_requests` is reserved for the `gh`-backed merged-PR lookup (a
-    later, independently-degradable step); it is always `[]` here.
+    `pull_requests` is the `gh`-backed lookup: extracted PR-number probes
+    resolved via `gh pr view` (kept only if merged) plus merged PRs found by
+    searching for path probes via `gh pr list --search`, deduplicated by PR
+    number, restricted to PRs merged at or after `since` (the same "since it
+    was captured" restriction the git search applies), and capped at
+    `PR_RESULT_CAP` (most-recently-merged kept). That lookup is independently
+    degradable -- `gh` missing, unauthenticated, erroring, or timing out
+    yields `pull_requests: []` plus a warning appended alongside any git-side
+    warning, without discarding `matches`.
 
     Never raises. `checked` is `false` when the question could not be
     answered at all: `repo` is not a git repository, `since` is missing or
@@ -310,7 +633,13 @@ def check(repo: Path, text: str, since: Any, base: Optional[str] = None) -> Dict
     warnings: List[str] = []
 
     for probe in probes["paths"]:
-        pathspec = probe if "/" in probe else f"**/{probe}"
+        # `:(glob)` magic is required, not decoration: with git's *default*
+        # pathspec matching, `**` must consume at least one path component, so
+        # a plain `**/widget.py` matches `src/widget.py` but never a
+        # repo-root `widget.py` -- silently missing exactly the bare-filename
+        # case this probe kind exists for. Under `:(glob)`, `**/` matches zero
+        # or more components and both locations are found.
+        pathspec = probe if "/" in probe else f":(glob)**/{probe}"
         out = _search_probe(repo, base_ref, since_str, ["--", pathspec])
         if out is None:
             warnings.append(f"git log timed out or failed for path probe {probe!r}")
@@ -324,8 +653,148 @@ def check(repo: Path, text: str, since: Any, base: Optional[str] = None) -> Dict
             continue
         matches.extend(_parse_log(out, probe, "symbol"))
 
+    # Commit-message search, complementing `-S` above. `-S` only sees commits
+    # that changed a symbol's occurrence count, so a commit that moved, wrapped,
+    # or merely *described* the work can be invisible to it while naming the
+    # symbol plainly in its subject -- e.g. "fix(conductor): deterministic
+    # same-file ordering repair in apply_to_tasks()". Deduplicated against the
+    # `-S` hits so a commit found both ways is reported once.
+    seen_message_hits = {(m["sha"], m["probe"]) for m in matches}
+    for probe in probes["symbols"]:
+        out = _search_probe(repo, base_ref, since_str, [f"--grep={probe}", "--"])
+        if out is None:
+            warnings.append(f"git log --grep timed out or failed for symbol probe {probe!r}")
+            continue
+        for hit in _parse_log(out, probe, "message"):
+            if (hit["sha"], hit["probe"]) not in seen_message_hits:
+                seen_message_hits.add((hit["sha"], hit["probe"]))
+                matches.append(hit)
+
     result["checked"] = True
     result["matches"] = matches
     if warnings:
         result["warning"] = "; ".join(warnings)
+
+    pull_requests, gh_warning = _lookup_pull_requests(repo, probes, since_str, GH_SUBPROCESS_TIMEOUT_SECONDS)
+    result["pull_requests"] = pull_requests
+    if gh_warning:
+        result["warning"] = f"{result['warning']}; {gh_warning}" if result["warning"] else gh_warning
+
     return result
+
+
+# --- CLI ------------------------------------------------------------------------
+
+def _read_brief(path: Path) -> Tuple[Optional[str], Any, Optional[str]]:
+    """Pull `(focus_text, created, error)` off a brief file.
+
+    Reuses `handoff_seed.build_seed` for the focus text so the CLI reads a
+    brief exactly the way the rest of the dispatch path does (focus
+    frontmatter + `## Focus` + `## Suggested approach`), rather than
+    hand-rolling a second, subtly different parse. `created:` is not part of
+    the seed contract, so it comes from `read_frontmatter` directly.
+    """
+    try:
+        from .handoff_seed import build_seed
+        from ..shared.brief_frontmatter import read_frontmatter
+    except Exception as exc:  # noqa: BLE001 - best-effort, never raise to caller
+        return None, None, f"could not import brief readers: {exc!r}"
+
+    try:
+        seed = build_seed(path)
+    except Exception as exc:  # noqa: BLE001 - best-effort, never raise to caller
+        return None, None, f"could not parse brief {path}: {exc!r}"
+    if seed.get("error"):
+        return None, None, f"could not read brief {path}: {seed['error']}"
+
+    try:
+        fm = read_frontmatter(path)
+    except Exception as exc:  # noqa: BLE001 - best-effort, never raise to caller
+        return seed.get("feature_idea") or seed.get("focus") or "", None, \
+            f"could not read frontmatter of {path}: {exc!r}"
+
+    text = seed.get("feature_idea") or seed.get("focus") or ""
+    return text, fm.get("created"), None
+
+
+def _format_human(res: Dict[str, object]) -> str:
+    if not res["checked"]:
+        return f"unknown: {res.get('warning') or 'staleness could not be determined'}"
+
+    raw_matches = res["matches"]
+    raw_prs = res["pull_requests"]
+    matches: List[Dict[str, Any]] = list(raw_matches) if isinstance(raw_matches, list) else []
+    prs: List[Dict[str, Any]] = list(raw_prs) if isinstance(raw_prs, list) else []
+    if not matches and not prs:
+        line = "no evidence: probes searched, nothing landed since the brief was captured"
+        if res.get("warning"):
+            line += f"\n  warning: {res['warning']}"
+        return line
+
+    lines = [f"EVIDENCE: {len(matches)} commit(s), {len(prs)} merged pull request(s)"]
+    for m in matches:
+        lines.append(f"  {m['sha']}  {m['date']}  {m['subject']}   [{m['kind']} probe: {m['probe']}]")
+    for pr in prs:
+        lines.append(f"  PR #{pr['number']}  {pr.get('merged_at') or '?'}  {pr.get('title') or ''}")
+    lines.append("  -> surface these to the operator; never close the brief on this signal alone")
+    if res.get("warning"):
+        lines.append(f"  warning: {res['warning']}")
+    return "\n".join(lines)
+
+
+def main(argv=None) -> int:
+    import argparse
+
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--repo", required=True)
+    src = p.add_mutually_exclusive_group(required=True)
+    src.add_argument("--text", default=None, help="brief focus prose to extract probes from")
+    src.add_argument(
+        "--brief", default=None,
+        help="path to a brief .md file; focus text and `created:` are read from it",
+    )
+    p.add_argument(
+        "--since", default=None,
+        help="override the search-window start (defaults to the brief's `created:`)",
+    )
+    p.add_argument("--base", default=None, help="base branch to search (default: auto-resolved)")
+    p.add_argument("--json", action="store_true")
+    args = p.parse_args(argv)
+
+    text = args.text
+    since: Any = args.since
+    read_error: Optional[str] = None
+
+    if args.brief:
+        text, created, read_error = _read_brief(Path(args.brief))
+        if since is None:
+            since = created
+
+    if read_error and text is None:
+        res: Dict[str, object] = {
+            "checked": False,
+            "probes": {"paths": [], "symbols": [], "pull_requests": [], "dropped": 0},
+            "matches": [],
+            "pull_requests": [],
+            "warning": read_error,
+        }
+    else:
+        res = check(Path(args.repo), text or "", since, base=args.base)
+        if read_error:
+            res["warning"] = f"{res['warning']}; {read_error}" if res.get("warning") else read_error
+
+    if args.json:
+        print(json.dumps(res))
+    else:
+        print(_format_human(res))
+
+    # Always 0: this is a signal source for a human decision, not a gate. A
+    # non-zero exit here would turn "could not determine" into a dispatch
+    # failure, which is precisely the fail-open contract this module exists
+    # to honor.
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(main())

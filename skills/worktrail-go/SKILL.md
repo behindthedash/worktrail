@@ -284,10 +284,18 @@ instead — this is not a caller decision to make; just log it (Phase 6) for vis
 - **`low`** — ask one clarifying question to pin intent, then re-run classify.py. (The Phase 1b category picker covers bare `/go`; this path applies to ambiguous free-text only.) Auto mode has no one to ask — if a claimed brief carries no `recommended-route` and classify.py still returns `low`/ambiguous even with the hint applied, that's outside this override's coverage; stop and report rather than guessing (same STOP discipline as a null `auto_pick`).
 - **`ambiguous_between` non-empty** — ask exactly the one clarifying `question` classify.py provides, then re-run with the answer pinned. Never ask more than one.
 
-### Phase 5.5 — Spec-Collision Guard
+### Phase 5.5 — Collision & Staleness Guard
+
+One question — "has this already been done?" — asked two ways, by two mutually exclusive,
+route-gated branches that share no state. A Route C/D dispatch checks for **spec collision**
+(does a shipped spec already cover this request?); a brief-sourced Route E/F dispatch checks for
+**brief staleness** (did the work this brief describes already land while it sat in the queue?).
+Every other route skips both branches entirely.
+
+**Route C/D branch: spec collision.**
 
 Gated on Phase 5's resolved route (`$ROUTE`) being `C` or `D` only — every other route skips
-this phase entirely. Before starting Phase 6's run record, check whether an existing,
+this branch. Before starting Phase 6's run record, check whether an existing,
 already-`Implemented` spec under `docs/specs/` already covers the request: run
 `check_spec_collision.py --repo "$REPO" --json` for the candidate list, judge each candidate
 against the dispatch's comparison text (a claimed brief's `focus` field, or the free-text
@@ -300,6 +308,33 @@ dispatch (no claimed brief) instead asks the user via `AskUserQuestion` before p
 non-confirmed outcome — `checked: false`, no candidate judged a match, or `confirmed: false` —
 leaves Phase 6/7 unmodified and un-delayed. Full procedure, including both dispatch-source
 branches and exact command syntax: `references/spec-collision-check.md`.
+
+**Route E/F branch: brief staleness.**
+
+Gated on the dispatch being brief-sourced (a claimed brief is in play) **and** Phase 5's resolved
+route being `E` or `F`. A free-text dispatch with no claimed brief skips this branch even on
+route E/F — the check is built on a brief's `created:` timestamp and captured prose, which free
+text has no equivalent of. Before starting Phase 6's run record, run:
+
+```bash
+worktrail-check-brief-staleness --repo "$REPO" --brief "<claimed-brief-path>" --json
+```
+
+It extracts bounded path/symbol/PR probes from the brief's prose and searches the base branch's
+commit history — plus, best-effort, merged PRs — for anything matching them since the brief was
+captured. Read the result the same way as the sibling branch: `checked: false` means the question
+was unanswerable (not a git checkout, missing/malformed `created:`, no probes, a timeout) and
+Phase 6/7 proceed unmodified; `checked: true` with empty `matches` is a definite searched-and-clean
+negative and also proceeds silently. `gh` being missing, unauthenticated, erroring, or slow is
+**not** a `checked: false` cause — it degrades to an empty `pull_requests` list plus a warning
+while any git-history `matches` are kept.
+
+On `checked: true` with non-empty `matches` (or `pull_requests`), **never auto-close the brief** —
+unlike the spec-collision branch, evidence that a commit touched the named symbols is not proof
+the brief is satisfied, so the operator is always asked via `AskUserQuestion` (close as
+already-delivered, or proceed anyway) before Phase 6/7 continues. Full procedure — command,
+how to read the result, the prompt shape, and the run-record entries:
+`references/brief-staleness-check.md`.
 
 ### Phase 6 — Run Record (Start)
 

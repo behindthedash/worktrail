@@ -16,12 +16,18 @@ brainstorming (`references/subagent-prompts.md`), just run once more, later, aga
 free-text that skip brainstorming's overlap gate entirely (claimed queue briefs,
 `route:C`/`route:D` overrides, handoff-recommended routes).
 
-**Gate: Route C or D only.** Phase 5.5 runs only when Phase 5's resolved route (`$ROUTE` from
+**Gate: Route C or D only.** This check runs only when Phase 5's resolved route (`$ROUTE` from
 classify.py's `route`, an explicit `route:C`/`route:D` override, or a handoff's
 `recommended-route`) is `C` or `D`. Any other route (`A`, `B`, `E`–`J`, or a low-confidence
-classification still awaiting clarification) skips Phase 5.5 entirely — a Route F bugfix
-dispatch, for example, never runs this check, because a bugfix is a change to an existing
-codebase, not a new spec that could collide with one already shipped.
+classification still awaiting clarification) skips it — a Route F bugfix dispatch, for example,
+never runs *this* check, because a bugfix is a change to an existing codebase, not a new spec
+that could collide with one already shipped.
+
+A brief-sourced Route E/F dispatch is not simply unguarded, though: Phase 5.5's sibling branch
+runs the **brief-staleness** check for it instead, asking a different question — did the work
+this brief describes already land while it sat in the queue? See
+`brief-staleness-check.md`. The two branches are mutually exclusive by route and share no
+state; neither suppresses, gates, or alters the other.
 
 ```bash
 if [ "$ROUTE" = "C" ] || [ "$ROUTE" = "D" ]; then
