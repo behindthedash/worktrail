@@ -734,6 +734,41 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_apply(args: argparse.Namespace) -> int:
+    """`apply` subcommand: loads a verdict file, runs 4.1 -> 4.2, prints the action log.
+
+    The verdict file is `evaluate`'s `write_verdict_file()` output (a JSON list of
+    `Verdict`-shaped objects) -- this is the only input `apply` may act on, per spec's
+    "Apply step never closes a brief without an approved verdict" requirement. Every
+    verdict is run through `resolve_duplicate_targets()` before `apply_verdicts()` so a
+    dangling `duplicate-of` in the file can never be acted on, regardless of `--confirm`.
+    """
+    raw = Path(args.verdict_file).read_text(encoding="utf-8")
+    verdicts = [Verdict(**entry) for entry in json.loads(raw)]
+
+    resolved = resolve_duplicate_targets(verdicts)
+    action_log = apply_verdicts(resolved, confirm=args.confirm)
+
+    if args.as_json:
+        print(json.dumps(action_log, indent=2))
+    else:
+        for entry in action_log:
+            dup = f" -> {entry['duplicate_of']}" if entry.get("duplicate_of") else ""
+            error = f" ({entry['error']})" if entry.get("error") else ""
+            print(
+                f"{entry['brief_id']}{dup}: {entry['verdict']} [{entry['action']}] "
+                f"{entry['status']}{error}"
+            )
+        executed = sum(1 for e in action_log if e["status"] == "executed")
+        planned = sum(1 for e in action_log if e["status"] == "planned")
+        errors = sum(1 for e in action_log if e["status"] == "error")
+        noop = sum(1 for e in action_log if e["status"] == "noop")
+        print(
+            f"executed: {executed}, planned: {planned}, errors: {errors}, noop: {noop}"
+        )
+    return 1 if any(e["status"] == "error" for e in action_log) else 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description="Repo-scoped dedup/staleness triage of the work queue. "
@@ -770,9 +805,28 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="print the run summary as JSON on exit",
     )
 
+    apply_parser = subparsers.add_parser(
+        "apply",
+        help="apply a verdict file's verdicts (or preview them without --confirm)",
+    )
+    apply_parser.add_argument(
+        "--verdict-file", required=True, dest="verdict_file",
+        help="path to an evaluate-produced verdict.json",
+    )
+    apply_parser.add_argument(
+        "--confirm", action="store_true",
+        help="execute the actions; without this, only log what would happen",
+    )
+    apply_parser.add_argument(
+        "--json", action="store_true", dest="as_json",
+        help="print the action log as JSON on exit",
+    )
+
     args = parser.parse_args(argv)
     if args.command == "evaluate":
         return cmd_evaluate(args)
+    if args.command == "apply":
+        return cmd_apply(args)
     return 2
 
 
