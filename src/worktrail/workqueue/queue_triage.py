@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import datetime
+import json
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -14,6 +16,8 @@ from .work_queue import queue_dir
 _FOCUS_BODY_RE = re.compile(r"^##\s+Focus\s*$\r?\n(.+)$", re.MULTILINE)
 
 NO_REPO_KEY = "__none__"
+
+VALID_VERDICT_TYPES = {"keep", "stale-close", "needs-update", "duplicate-of"}
 
 _TRIAGE_HEADING_RE = re.compile(r"^##\s+Triage\s+(\d{4}-\d{2}-\d{2})\s*$", re.MULTILINE)
 
@@ -214,3 +218,126 @@ def evaluate_group(
             "raw_text": result.text,
         }
     ]
+
+
+@dataclass
+class Verdict:
+    """One brief's triage outcome, per spec's "Evidence-required verdict per brief"."""
+
+    brief_id: str
+    verdict: str
+    duplicate_of: Optional[str]
+    evidence: str
+    confidence: Optional[str] = None
+
+
+def _extract_json_objects(text: str) -> List[str]:
+    """Return every balanced `{...}` substring of `text`, in order of appearance.
+
+    Evaluator output is free-form text (reasoning, markdown fences, etc.) with one
+    JSON object embedded per brief, per `EVALUATOR_PROMPT_TEMPLATE`'s instructed
+    output shape -- not a single top-level JSON document. A brace-depth scan (with
+    quote-awareness so a literal `{`/`}` inside a string doesn't unbalance the
+    count) finds each candidate without assuming anything about what surrounds it.
+    """
+    objects: List[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        if text[i] != "{":
+            i += 1
+            continue
+        start = i
+        depth = 0
+        in_string = False
+        escape = False
+        j = i
+        while j < n:
+            c = text[j]
+            if in_string:
+                if escape:
+                    escape = False
+                elif c == "\\":
+                    escape = True
+                elif c == '"':
+                    in_string = False
+            elif c == '"':
+                in_string = True
+            elif c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    j += 1
+                    break
+            j += 1
+        if depth == 0:
+            objects.append(text[start:j])
+            i = j
+        else:
+            i += 1
+    return objects
+
+
+def parse_verdicts(raw_text: str, expected_brief_ids: List[str]) -> List[Verdict]:
+    """Parse `evaluate_group()`'s raw evaluator text into one `Verdict` per expected brief.
+
+    Implements the spec's "Evidence-required verdict per brief" requirement: a verdict
+    must have `verdict` in `VALID_VERDICT_TYPES` and non-empty `evidence` (and, for
+    `duplicate-of`, a non-empty `duplicate_of`) to be accepted as-is. Anything missing,
+    unparsable, or failing that check falls back to `keep` with the evaluator's raw
+    output (the specific malformed JSON snippet if one was found for that brief, else
+    the full `raw_text`) retained as evidence -- every id in `expected_brief_ids`
+    always appears exactly once in the result, in that order, never silently dropped.
+    """
+    candidates_by_id: Dict[str, List[Tuple[str, dict]]] = {bid: [] for bid in expected_brief_ids}
+    for snippet in _extract_json_objects(raw_text):
+        try:
+            obj = json.loads(snippet)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(obj, dict):
+            continue
+        bid = obj.get("brief_id")
+        if isinstance(bid, str) and bid in candidates_by_id:
+            candidates_by_id[bid].append((snippet, obj))
+
+    verdicts: List[Verdict] = []
+    for bid in expected_brief_ids:
+        chosen: Optional[Verdict] = None
+        fallback_evidence: Optional[str] = None
+        for snippet, obj in candidates_by_id[bid]:
+            verdict_type = obj.get("verdict")
+            evidence = obj.get("evidence")
+            dup_raw = obj.get("duplicate_of")
+            duplicate_of = dup_raw if isinstance(dup_raw, str) and dup_raw.strip() else None
+            confidence = obj.get("confidence")
+
+            has_evidence = isinstance(evidence, str) and evidence.strip() != ""
+            has_verdict = verdict_type in VALID_VERDICT_TYPES
+            has_duplicate_target = verdict_type != "duplicate-of" or duplicate_of is not None
+
+            if has_verdict and has_evidence and has_duplicate_target:
+                chosen = Verdict(
+                    brief_id=bid,
+                    verdict=verdict_type,
+                    duplicate_of=duplicate_of,
+                    evidence=evidence,
+                    confidence=confidence if isinstance(confidence, str) else None,
+                )
+                break
+            if fallback_evidence is None:
+                fallback_evidence = snippet
+
+        if chosen is not None:
+            verdicts.append(chosen)
+        else:
+            verdicts.append(
+                Verdict(
+                    brief_id=bid,
+                    verdict="keep",
+                    duplicate_of=None,
+                    evidence=fallback_evidence if fallback_evidence is not None else raw_text,
+                    confidence=None,
+                )
+            )
+    return verdicts
