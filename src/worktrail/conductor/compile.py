@@ -169,6 +169,22 @@ Output nothing but this JSON object, in a ```json fenced block:
 """
 
 
+def _resolve_purpose_tiers(repo: Path) -> Dict[str, str]:
+    """Resolve the target repo's `routing.purpose_tiers` (policy.py, task 3) --
+    the `{purpose: tier}` vocabulary a repo declares for task-purpose
+    classification. `load_policy()` already validates this table (a plain
+    string-to-string map dropping malformed entries), so this is a read, not a
+    second validation pass. Empty when the repo has none configured; that is
+    what tells the PROMPT builder (task 2.2) whether to request `purpose` at
+    all.
+    """
+    from worktrail.router import policy as router_policy
+
+    policy = router_policy.load_policy(repo)
+    routing = policy.get("routing") or {}
+    return routing.get("purpose_tiers") or {}
+
+
 def _extract_json(text: str) -> Optional[Dict[str, Any]]:
     """Pull the result object out of an agent's final message.
 
@@ -309,6 +325,8 @@ def compile_run_plan(
         log(f"run plan: {len(gaps)} task(s) lack file scope and compiling is disabled")
         return baseline
 
+    purpose_tiers = _resolve_purpose_tiers(repo)
+
     try:
         spec_rel = spec_dir.resolve().relative_to(repo)
     except ValueError:
@@ -331,7 +349,10 @@ def compile_run_plan(
             notes=(note,),
         )
 
-    log(f"run plan: compiling {len(tasks)} task(s), {len(gaps)} without file scope")
+    log(
+        f"run plan: compiling {len(tasks)} task(s), {len(gaps)} without file scope"
+        + (f", {len(purpose_tiers)} purpose tier(s) configured" if purpose_tiers else "")
+    )
     runner = spawn or _default_spawn
     try:
         text = runner(prompt, repo, timeout, log)
