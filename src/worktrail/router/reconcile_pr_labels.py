@@ -53,24 +53,48 @@ def discover_managed_repos(repos_root: Path) -> List[str]:
     ]
 
 
+def _pr_urls_from_field(value: Any) -> List[str]:
+    """Normalize a run record's `pull_request` field into 0+ PR URLs.
+
+    Usually a scalar string, but a run that produces more than one PR (the
+    parallel orchestrator's multi-repo group-PR path, or any run whose
+    `pull_request` was appended to more than once) records it as a list —
+    observed in production run records as bare URLs, `"<repo>: <url>"`
+    entries, and empty-string placeholders. Extracting the URL substring
+    from each handles all three without assuming a bare URL.
+    """
+    if not value:
+        return []
+    items = value if isinstance(value, list) else [value]
+    urls = []
+    for item in items:
+        if not isinstance(item, str):
+            continue
+        idx = item.find("https://")
+        if idx != -1:
+            urls.append(item[idx:])
+    return urls
+
+
 def load_risk_index(runs_dir: Path) -> Dict[str, str]:
     """Map `pull_request` URL -> `risk_level` across every run record under
     `runs_dir`, recursively. A PR URL is globally unique, so this is keyed on
     it directly rather than on the (fragmented, sometimes worktree-basename)
     per-repo subdirectory layout `run_record.py` writes into.
 
-    Records with no `pull_request` or no `risk_level` are skipped (nothing to
-    index). On a duplicate PR URL across records, the later one wins (sorted
-    path order) — not expected in practice, but no ambiguity if it happens.
+    Records with no `risk_level` are skipped (nothing to index). On a
+    duplicate PR URL across records, the later one wins (sorted path order)
+    — not expected in practice, but no ambiguity if it happens.
     """
     index: Dict[str, str] = {}
     if not runs_dir.is_dir():
         return index
     for path in sorted(runs_dir.glob("**/*.yaml")):
         record = load_run_record(path)
-        pr_url = record.get("pull_request")
         risk_level = record.get("risk_level")
-        if pr_url and risk_level:
+        if not risk_level:
+            continue
+        for pr_url in _pr_urls_from_field(record.get("pull_request")):
             index[pr_url] = risk_level
     return index
 
