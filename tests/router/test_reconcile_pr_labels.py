@@ -77,6 +77,43 @@ def test_load_risk_index_empty_when_dir_missing(tmp_path):
     assert rpl.load_risk_index(tmp_path / "does-not-exist") == {}
 
 
+def test_load_risk_index_handles_list_form_pull_request(tmp_path):
+    """A run that produces more than one PR (parallel-orchestrator group-PR
+    path, or any run appended to more than once) records `pull_request` as a
+    list, not a scalar -- observed in production run records with an
+    empty-string placeholder entry alongside a real URL."""
+    repo_dir = tmp_path / "datalena"
+    repo_dir.mkdir()
+    (repo_dir / "run1.yaml").write_text(
+        "risk_level: high\n"
+        "pull_request:\n"
+        '  - ""\n'
+        '  - "https://github.com/o/r/pull/1"\n',
+        encoding="utf-8",
+    )
+
+    assert rpl.load_risk_index(tmp_path) == {"https://github.com/o/r/pull/1": "high"}
+
+
+def test_load_risk_index_handles_repo_labeled_list_entries(tmp_path):
+    """A multi-repo group-PR run's list entries are `"<repo>: <url>"`, not a
+    bare URL -- extract the URL substring rather than matching verbatim."""
+    repo_dir = tmp_path / "datalena"
+    repo_dir.mkdir()
+    (repo_dir / "run1.yaml").write_text(
+        "risk_level: low\n"
+        "pull_request:\n"
+        "  - datalena: https://github.com/o/datalena/pull/1\n"
+        "  - ggb: https://github.com/o/ggb/pull/2\n",
+        encoding="utf-8",
+    )
+
+    assert rpl.load_risk_index(tmp_path) == {
+        "https://github.com/o/datalena/pull/1": "low",
+        "https://github.com/o/ggb/pull/2": "low",
+    }
+
+
 # ---------------------------------------------------------------------------
 # reconcile_repo
 
