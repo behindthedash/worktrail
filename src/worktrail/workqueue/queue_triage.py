@@ -6,10 +6,12 @@ from __future__ import annotations
 import datetime
 import re
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from ..shared.brief_frontmatter import read_frontmatter, split_frontmatter
 from .work_queue import queue_dir
+
+_FOCUS_BODY_RE = re.compile(r"^##\s+Focus\s*$\r?\n(.+)$", re.MULTILINE)
 
 NO_REPO_KEY = "__none__"
 
@@ -129,3 +131,86 @@ def inventory(within_days: int) -> Tuple[Dict[str, List[Path]], List[Path]]:
         if kept:
             groups[key] = kept
     return groups, skipped
+
+
+def _brief_focus(path: Path) -> str:
+    """Frontmatter `focus:`, falling back to the first line of a `## Focus` body section.
+
+    Mirrors `work_queue._focus_of()` (not imported directly -- that helper is
+    private to `work_queue.py`) so a brief authored before `focus:` frontmatter
+    existed still surfaces something for the evaluator prompt.
+    """
+    fm = read_frontmatter(path)
+    if fm.get("focus"):
+        return str(fm["focus"])
+    try:
+        content = path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    m = _FOCUS_BODY_RE.search(content)
+    return m.group(1).strip() if m else ""
+
+
+def _brief_created(path: Path) -> str:
+    created = read_frontmatter(path).get("created")
+    return str(created) if created else "unknown"
+
+
+def _memory_index_path(cwd: "str | Path") -> Path:
+    """Path to Claude Code's per-project memory index for `cwd`.
+
+    Matches the on-disk `~/.claude/projects/<slug>/memory/MEMORY.md` convention,
+    where `<slug>` is `cwd` with every `/` replaced by `-`. The evaluator prompt
+    (see `EVALUATOR_PROMPT_TEMPLATE`'s memory-check step) greps this path before
+    raising anything as a live concern, so the operator's already-known state
+    isn't re-reported as new evidence of staleness.
+    """
+    slug = str(cwd).replace("/", "-")
+    return Path.home() / ".claude" / "projects" / slug / "memory" / "MEMORY.md"
+
+
+def evaluate_group(
+    repo: str,
+    briefs: List[Path],
+    *,
+    agent: str = "claude",
+    model: Optional[str] = None,
+    cwd: "str | Path",
+) -> List[dict]:
+    """Spawn one evaluator agent over `repo`'s brief group, per the pilot's grouping.
+
+    Builds `EVALUATOR_PROMPT_TEMPLATE` for this group (one `{id, focus, created}`
+    line per brief, `path.stem` as `id` -- matching `work_queue.resolve()`'s
+    primary identifier) and spawns one cold headless worker via
+    `spawnlib.spawn_agent()` in `cwd`. `cwd` is the group's target repo checkout
+    when `repo` is not `NO_REPO_KEY` (so the evaluator's `git`/`gh` calls run
+    against real repo state), else the worktrail repo itself.
+
+    Returns a single-element list -- `[{"repo", "brief_ids", "raw_text"}]` --
+    rather than the raw string directly, so a caller fanning out across multiple
+    groups can `.extend()` every call's result into one flat list alongside 2.4's
+    synthesized archived-repo short-circuit entries, without a shape special-case.
+    `raw_text` is untouched worker output; parsing/validation is `parse_verdicts`'s
+    job, not this function's.
+    """
+    from ..orchestrator import spawnlib
+
+    brief_lines = "\n".join(
+        f"- {path.stem}: {_brief_focus(path) or '(no focus recorded)'} "
+        f"(created {_brief_created(path)})"
+        for path in briefs
+    )
+    prompt = EVALUATOR_PROMPT_TEMPLATE.format(
+        repo=repo,
+        briefs=brief_lines,
+        no_repo_key=NO_REPO_KEY,
+        memory_index=_memory_index_path(cwd),
+    )
+    result = spawnlib.spawn_agent(prompt, cwd, agent=agent, model=model)
+    return [
+        {
+            "repo": repo,
+            "brief_ids": [path.stem for path in briefs],
+            "raw_text": result.text,
+        }
+    ]
