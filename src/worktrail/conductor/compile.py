@@ -241,17 +241,30 @@ def _extract_json(text: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _validate(payload: Dict[str, Any], ids: set) -> tuple[Optional[List[TaskPlan]], List[str]]:
+def _validate(
+    payload: Dict[str, Any], ids: set, purpose_tiers: Optional[Dict[str, str]] = None
+) -> tuple[Optional[List[TaskPlan]], List[str], List[str]]:
     """Turn a raw model payload into TaskPlans, or explain why it cannot be trusted.
 
-    Rejection is all-or-nothing on purpose (see `runplan.apply_to_tasks`): the
-    file scopes were inferred alongside the edges, so a payload that got the task
-    set wrong has not earned trust in the parts that happen to parse.
+    Rejection is all-or-nothing on task-set correctness (see
+    `runplan.apply_to_tasks`): the file scopes were inferred alongside the
+    edges, so a payload that got the task set wrong has not earned trust in the
+    parts that happen to parse. `purpose` is the one field that does not follow
+    that rule -- a value outside the injected vocabulary is dropped and
+    reported as a `warnings` entry (not a `problems` one), the same handling
+    `_validate_agent_entry()` gives a malformed `agent_model`: the rest of the
+    row is still trusted.
+
+    Returns `(planned, problems, warnings)`. `problems` non-empty means the
+    whole payload is rejected; `warnings` is purely informational and never
+    affects the return value of `planned`.
     """
+    valid_purposes = set(purpose_tiers or {})
     problems: List[str] = []
+    warnings: List[str] = []
     rows = payload.get("tasks")
     if not isinstance(rows, list):
-        return None, ["payload has no `tasks` list"]
+        return None, ["payload has no `tasks` list"], warnings
 
     seen: Dict[str, TaskPlan] = {}
     for row in rows:
@@ -279,19 +292,25 @@ def _validate(payload: Dict[str, Any], ids: set) -> tuple[Optional[List[TaskPlan
                 continue
             files.append(p)
 
+        purpose = str(row.get("purpose") or "").strip()
+        if purpose and purpose not in valid_purposes:
+            warnings.append(f"{tid}: purpose {purpose!r} outside the configured vocabulary; dropped")
+            purpose = ""
+
         seen[tid] = TaskPlan(
             id=tid,
             files=tuple(sorted(set(files))),
             deps=tuple(d for d in runplan._norm_str_list(row.get("deps")) if d in ids and d != tid),
             complexity=str(row.get("complexity") or ""),
             review=str(row.get("review") or ""),
+            purpose=purpose,
         )
 
     if problems:
-        return None, problems
+        return None, problems, warnings
     if set(seen) != ids:
-        return None, [f"missing task ids: {sorted(ids - set(seen))}"]
-    return [seen[i] for i in sorted(seen)], []
+        return None, [f"missing task ids: {sorted(ids - set(seen))}"], warnings
+    return [seen[i] for i in sorted(seen)], [], warnings
 
 
 def _default_spawn(prompt: str, cwd: Path, timeout: int, log) -> str:
@@ -389,7 +408,9 @@ def compile_run_plan(
     if payload is None:
         return give_up("compile returned no JSON object; using the artifact's own deps")
 
-    planned, problems = _validate(payload, {t["id"] for t in tasks})
+    planned, problems, purpose_warnings = _validate(payload, {t["id"] for t in tasks}, purpose_tiers)
+    for w in purpose_warnings:
+        log(f"run plan: {w}")
     if planned is None:
         return give_up("compile output rejected: " + "; ".join(problems[:4]))
 
