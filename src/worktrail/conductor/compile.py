@@ -145,7 +145,7 @@ one extra plausible file over omitting a likely one.
 one can start, because this task consumes their output. Shared ownership of a \
 file is NOT a dependency -- that is what `files` already expresses. Only list a \
 real ordering constraint.
-
+{purpose_instructions}
 Final pass, before you output anything: you decided each task's `files` in \
 isolation, which is exactly how a shared file gets recorded on only one task. \
 Re-read every task's `files` side by side. For each file that appears on at \
@@ -165,8 +165,28 @@ is the safe answer; a guessed path is not.
 Output nothing but this JSON object, in a ```json fenced block:
 
 {{"tasks": [{{"id": "<id>", "files": ["<path>"], "deps": ["<id>"], \
-"complexity": "low|medium|high", "review": "light|standard|deep"}}]}}
+"complexity": "low|medium|high", "review": "light|standard|deep"{purpose_field}}}]}}
 """
+
+
+def _purpose_prompt_additions(purpose_tiers: Dict[str, str]) -> tuple[str, str]:
+    """Prompt fragments requesting a per-task `purpose` classification.
+
+    Both empty when the repo has no `routing.purpose_tiers` configured: a repo
+    that never declared a purpose vocabulary must not be asked to classify
+    against one, per task 2.2. When non-empty, the requested value is
+    constrained to exactly the resolved table's keys (or omitted).
+    """
+    if not purpose_tiers:
+        return "", ""
+    keys = ", ".join(sorted(purpose_tiers))
+    instructions = (
+        f"- `purpose`: this task's purpose -- exactly one of: {keys}. Omit this "
+        "key entirely if none of them fits; never invent a value outside this "
+        "list.\n"
+    )
+    field = f', "purpose": "<one of: {keys}> (omit if none fits)"'
+    return instructions, field
 
 
 def _resolve_purpose_tiers(repo: Path) -> Dict[str, str]:
@@ -332,7 +352,13 @@ def compile_run_plan(
     except ValueError:
         spec_rel = spec_dir
     task_list = "\n".join(f"- {t['id']}: {t.get('title') or ''}".rstrip() for t in tasks)
-    prompt = PROMPT.format(spec_rel=spec_rel, task_list=task_list)
+    purpose_instructions, purpose_field = _purpose_prompt_additions(purpose_tiers)
+    prompt = PROMPT.format(
+        spec_rel=spec_rel,
+        task_list=task_list,
+        purpose_instructions=purpose_instructions,
+        purpose_field=purpose_field,
+    )
 
     def give_up(note: str) -> RunPlan:
         """Degrade to the baseline, carrying the reason into the run journal.
