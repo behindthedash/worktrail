@@ -203,8 +203,14 @@ def classify_failure(returncode: int, stdout: str, stderr: str) -> str:
     # your usage limit ... try again at Aug 8th, 2026 2:17 AM." previously fell
     # through to "transport", giving it a 30s cooldown instead of the real
     # multi-day reset — see parse_explicit_reset for extracting that timestamp.
+    # "weekly limit" covers Claude's own weekly-cap wording (confirmed live
+    # 2026-08-05: "You've hit your weekly limit · resets 2pm (America/Los_Angeles)"
+    # previously fell through to "transport" too, causing two consecutive
+    # weekly-cap hits to trip worktrail-drain's circuit breaker as plain
+    # failures instead of a capacity gate).
     if any(token in text for token in
-           ("billing", "payment", "quota exceeded", "usage limit", "session limit")):
+           ("billing", "payment", "quota exceeded", "usage limit", "session limit",
+            "weekly limit")):
         return "billing"
     if any(token in text for token in ("sandbox", "permission denied", "not permitted")):
         return "sandbox"

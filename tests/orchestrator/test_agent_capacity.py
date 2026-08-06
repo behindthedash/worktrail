@@ -78,6 +78,15 @@ def test_session_limit_wording_also_classifies_as_billing():
         1, "", "You've hit your session limit. Your limit resets at 3:00pm.") == "billing"
 
 
+def test_weekly_limit_wording_also_classifies_as_billing():
+    # Live reproduction 2026-08-05 (drain-nightly 2026-08-05T09-17-01Z): Claude's
+    # own weekly-cap wording used to fall through to "transport", so two
+    # consecutive weekly-limit hits tripped the circuit breaker as plain
+    # failures instead of gating the provider as a capacity issue.
+    assert agent_capacity.classify_failure(
+        1, "You've hit your weekly limit · resets 2pm (America/Los_Angeles)", "") == "billing"
+
+
 def test_parse_explicit_reset_extracts_codex_notice():
     stdout = ("ERROR: You've hit your usage limit. Upgrade to Pro "
               "(https://chatgpt.com/explore/pro), visit "
