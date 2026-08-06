@@ -93,6 +93,7 @@ from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional
 
 from ..orchestrator import agent_capacity
+from ..router.pr_labels import ensure_pr_risk_label
 
 PROMPT = "worktrail-go auto"
 
@@ -210,56 +211,6 @@ def parse_run_record(text: str) -> Dict[str, Optional[str]]:
         value = _yaml_scalar(raw)
         fields[key.strip()] = None if value in ("", "null", "~") else value
     return fields
-
-
-def _current_pr_labels(repo: str, pr_url: str) -> Optional[List[str]]:
-    """Live label names on a PR, or None if the `gh` call fails or is
-    unparseable (never guess from stale/absent data)."""
-    result = subprocess.run(
-        ["gh", "pr", "view", pr_url, "--json", "labels"],
-        capture_output=True, text=True, cwd=repo, timeout=30,
-    )
-    if result.returncode != 0:
-        return None
-    try:
-        data = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        return None
-    return [label.get("name", "") for label in data.get("labels", [])]
-
-
-def ensure_pr_risk_label(repo: Optional[str], pr_url: Optional[str],
-                         risk_level: Optional[str]) -> Optional[str]:
-    """Add a go:risk-<level> label to a drain-produced PR that carries none.
-
-    drain spawns a full headless agent process (claude -p / codex exec /
-    opencode run) that issues its own `gh pr create` -- a raw subprocess call
-    from claude/codex/opencode, never reachable by the Claude Code PreToolUse
-    label-enforcement hook (behindthedash/devops#71): Codex/OpenCode have no
-    equivalent hook mechanism at all, and even a headless `claude -p` session
-    is not guaranteed to load the interactive hook config. If the one-shot
-    skipped Phase 8's labeling step, `automerge_eligibility.sh`'s fail-closed
-    check (worktrail PR #107) stalls a PR that should have been eligible --
-    see docs/specs/research/classify-gate-enforcement-audit.md.
-
-    This is a minimal, safe correction, not a re-run of `automerge_eligible()`:
-    the run record does not persist `gates`, so full eligibility can't be
-    reconstructed here. It only ADDS `go:risk-<risk_level>` when the PR
-    carries NO go:risk-* label at all, using the risk already recorded at
-    Phase 6 start; it never touches go:no-automerge, which an agent may have
-    legitimately added itself and must never be silently removed.
-    """
-    if not repo or not pr_url or not risk_level:
-        return None
-    labels = _current_pr_labels(repo, pr_url)
-    if labels is None or any(label.startswith("go:risk-") for label in labels):
-        return None
-    new_label = f"go:risk-{risk_level}"
-    result = subprocess.run(
-        ["gh", "pr", "edit", pr_url, "--add-label", new_label],
-        capture_output=True, text=True, cwd=repo, timeout=30,
-    )
-    return new_label if result.returncode == 0 else None
 
 
 def newest_run_record(runs_dir: Path, known: Iterable[Path] = ()) -> Optional[Path]:

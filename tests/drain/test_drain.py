@@ -884,105 +884,12 @@ def test_drain_dry_run_launches_nothing(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# ensure_pr_risk_label — post-hoc correction for headless one-shot PRs a
-# Claude Code PreToolUse hook never sees (Codex/OpenCode have no hook at all).
-
-
-class _FakeCompleted:
-    def __init__(self, returncode=0, stdout=""):
-        self.returncode = returncode
-        self.stdout = stdout
-
-
-def test_ensure_pr_risk_label_adds_when_none_present(monkeypatch):
-    calls = []
-
-    def fake_run(cmd, capture_output, text, cwd, timeout):
-        calls.append(cmd)
-        if cmd[:3] == ["gh", "pr", "view"]:
-            return _FakeCompleted(0, json.dumps({"labels": []}))
-        if cmd[:3] == ["gh", "pr", "edit"]:
-            return _FakeCompleted(0, "")
-        raise AssertionError(f"unexpected command: {cmd}")
-
-    monkeypatch.setattr(drain.subprocess, "run", fake_run)
-    result = ensure_pr_risk_label("/repo", "https://github.com/o/r/pull/1", "low")
-    assert result == "go:risk-low"
-    assert ["gh", "pr", "view", "https://github.com/o/r/pull/1", "--json", "labels"] in calls
-    assert ["gh", "pr", "edit", "https://github.com/o/r/pull/1",
-            "--add-label", "go:risk-low"] in calls
-
-
-def test_ensure_pr_risk_label_noop_when_risk_label_already_present(monkeypatch):
-    def fake_run(cmd, capture_output, text, cwd, timeout):
-        if cmd[:3] == ["gh", "pr", "view"]:
-            return _FakeCompleted(0, json.dumps({"labels": [{"name": "go:risk-high"},
-                                                             {"name": "go:no-automerge"}]}))
-        raise AssertionError(f"gh pr edit must not run: {cmd}")
-
-    monkeypatch.setattr(drain.subprocess, "run", fake_run)
-    result = ensure_pr_risk_label("/repo", "https://github.com/o/r/pull/1", "low")
-    assert result is None
-
-
-def test_ensure_pr_risk_label_never_touches_no_automerge(monkeypatch):
-    """A go:no-automerge label an agent legitimately added must survive
-    untouched -- this corrector only ADDS a missing risk label, it never
-    inspects or removes go:no-automerge."""
-    edit_calls = []
-
-    def fake_run(cmd, capture_output, text, cwd, timeout):
-        if cmd[:3] == ["gh", "pr", "view"]:
-            return _FakeCompleted(0, json.dumps({"labels": [{"name": "go:no-automerge"}]}))
-        if cmd[:3] == ["gh", "pr", "edit"]:
-            edit_calls.append(cmd)
-            return _FakeCompleted(0, "")
-        raise AssertionError(f"unexpected command: {cmd}")
-
-    monkeypatch.setattr(drain.subprocess, "run", fake_run)
-    result = ensure_pr_risk_label("/repo", "https://github.com/o/r/pull/1", "high")
-    assert result == "go:risk-high"
-    assert edit_calls == [["gh", "pr", "edit", "https://github.com/o/r/pull/1",
-                           "--add-label", "go:risk-high"]]
-    for call in edit_calls:
-        assert "go:no-automerge" not in call
-
-
-@pytest.mark.parametrize("repo,pr_url,risk", [
-    (None, "https://github.com/o/r/pull/1", "low"),
-    ("/repo", None, "low"),
-    ("/repo", "https://github.com/o/r/pull/1", None),
-])
-def test_ensure_pr_risk_label_noop_on_missing_inputs(monkeypatch, repo, pr_url, risk):
-    def fake_run(*a, **k):
-        raise AssertionError("gh must not be called with incomplete inputs")
-
-    monkeypatch.setattr(drain.subprocess, "run", fake_run)
-    assert ensure_pr_risk_label(repo, pr_url, risk) is None
-
-
-def test_ensure_pr_risk_label_noop_when_gh_view_fails(monkeypatch):
-    def fake_run(cmd, capture_output, text, cwd, timeout):
-        return _FakeCompleted(1, "")
-
-    monkeypatch.setattr(drain.subprocess, "run", fake_run)
-    result = ensure_pr_risk_label("/repo", "https://github.com/o/r/pull/1", "low")
-    assert result is None
-
-
-def test_ensure_pr_risk_label_returns_none_when_gh_edit_fails(monkeypatch):
-    def fake_run(cmd, capture_output, text, cwd, timeout):
-        if cmd[:3] == ["gh", "pr", "view"]:
-            return _FakeCompleted(0, json.dumps({"labels": []}))
-        return _FakeCompleted(1, "")  # gh pr edit fails
-
-    monkeypatch.setattr(drain.subprocess, "run", fake_run)
-    result = ensure_pr_risk_label("/repo", "https://github.com/o/r/pull/1", "medium")
-    assert result is None
-
-
-# ---------------------------------------------------------------------------
-# drive() wiring — the loop calls ensure_pr_risk_label per iteration with a PR
+# drive() wiring — the loop calls ensure_pr_risk_label per iteration with a PR.
+# ensure_pr_risk_label/_current_pr_labels themselves now live in
+# router/pr_labels.py (tests/router/test_pr_labels.py) so poll_run.py and the
+# worktrail-ensure-pr-label CLI can share the identical correction; drain.py
+# still re-exports the name (`from ..router.pr_labels import
+# ensure_pr_risk_label`) so `monkeypatch.setattr(drain, ...)` below still works.
 
 
 def test_drive_calls_ensure_pr_risk_label_and_logs_when_applied(tmp_path, monkeypatch):

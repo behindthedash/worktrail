@@ -8,6 +8,7 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
+import worktrail.router.poll_run as poll_run
 from worktrail.router.poll_run import is_finished, read_run_record, main
 
 
@@ -86,7 +87,8 @@ class TestPollRun(unittest.TestCase):
         path = self._write_record("finished.yaml", final_status="completed_pr_open",
                                   pull_request="https://github.com/test/pr/42")
         out = StringIO()
-        with patch("sys.stdout", out):
+        with patch.object(poll_run, "ensure_pr_risk_label", return_value=None), \
+             patch("sys.stdout", out):
             rc = main([
                 "--run", path,
                 "--interval", "0",
@@ -96,6 +98,37 @@ class TestPollRun(unittest.TestCase):
         output = out.getvalue()
         self.assertIn("completed_pr_open", output)
         self.assertIn("https://github.com/test/pr/42", output)
+
+    def test_exit_0_on_finish_with_pr_applies_label_correction(self):
+        """Test the completion path calls ensure_pr_risk_label with the
+        record's own repository/pull_request/risk_level fields, and logs
+        when a label was applied -- go's own Phase 7 poll-exit equivalent
+        of drain.py's post-hoc correction."""
+        path = self._write_record("finished.yaml", final_status="completed_pr_open",
+                                  pull_request="https://github.com/test/pr/42")
+        seen = []
+        out = StringIO()
+        with patch.object(poll_run, "ensure_pr_risk_label",
+                          lambda repo, pr, risk: seen.append((repo, pr, risk)) or "go:risk-medium"), \
+             patch("sys.stdout", out):
+            rc = main(["--run", path, "--interval", "0", "--max-iterations", "1"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(seen, [("/tmp/test-repo", "https://github.com/test/pr/42", "medium")])
+        output = out.getvalue()
+        self.assertIn("added missing go:risk-medium label", output)
+
+    def test_exit_0_on_finish_without_pr_skips_label_correction(self):
+        """No PR URL -- ensure_pr_risk_label must not be called at all."""
+        path = self._write_record("finished.yaml", final_status="investigation_complete")
+
+        def unexpected(*_a, **_k):
+            raise AssertionError("must not be called when the run has no PR")
+
+        out = StringIO()
+        with patch.object(poll_run, "ensure_pr_risk_label", unexpected), \
+             patch("sys.stdout", out):
+            rc = main(["--run", path, "--interval", "0", "--max-iterations", "1"])
+        self.assertEqual(rc, 0)
 
     def test_exit_0_on_finish_without_pr(self):
         """Test script exits 0 and prints state only when no PR URL."""
