@@ -15,6 +15,51 @@ NO_REPO_KEY = "__none__"
 
 _TRIAGE_HEADING_RE = re.compile(r"^##\s+Triage\s+(\d{4}-\d{2}-\d{2})\s*$", re.MULTILINE)
 
+# Codifies the 2026-07-31 pilot's lessons (see design.md's "Evaluator prompt
+# template" decision): repo-fetch-first, a bounded per-brief tool-call budget,
+# a memory check before raising a false alarm, and fail-open-to-`keep` on any
+# undecidable case. One spawn per repo group, so `{repo}`/`{briefs}` describe
+# a whole group, not a single brief. Kept as a module-level constant (not a
+# file) so `tests/workqueue/test_queue_triage.py` can assert on it directly,
+# matching how `drain.py` keeps `PROMPT` as an importable constant.
+EVALUATOR_PROMPT_TEMPLATE = """\
+You are triaging work-queue briefs for the repo group `{repo}` for staleness \
+and duplication. Evaluate ONLY the briefs listed below; do not scan the queue \
+for others.
+
+Briefs in this group:
+{briefs}
+
+Step 1 — repo check (do this first, before judging any brief):
+Run `gh repo view --json isArchived,name -- {repo}` (skip this step if `{repo}` \
+is `{no_repo_key}` — these briefs are cross-cutting and have no target repo). \
+If the repo is confirmed archived or renamed away, every brief in this group is \
+`stale-close` on that fact alone — no further per-brief evidence is required. \
+If the check fails or is inconclusive (network error, ambiguous name, etc.), \
+proceed to step 2 for every brief as normal.
+
+Step 2 — per-brief evaluation:
+For each brief above, spend at most 3-4 tool calls (e.g. `git log`, `gh pr list \
+--search`, `grep`) confirming or refuting the brief's premise. Cite the specific \
+PR, commit, or file you found as evidence — a verdict without cited evidence is \
+invalid.
+
+Step 3 — memory check before raising an alarm:
+Before flagging anything you observe as a live operational concern, check \
+{memory_index} for whether it already documents the same state as expected or \
+known. If it does, that is not new evidence of staleness or a problem — treat \
+it as confirming the brief's premise rather than refuting it.
+
+Step 4 — fail open:
+If evidence is inconclusive after steps 1-3, do not guess: verdict `keep` and \
+record what you checked and why it was inconclusive as the evidence.
+
+For each brief, output one JSON object with exactly these fields:
+{{"brief_id": "...", "verdict": "keep|stale-close|needs-update|duplicate-of", \
+"duplicate_of": "<brief-id or null>", "evidence": "<cited PR/commit/file, or \
+why inconclusive for a fail-open keep>", "confidence": "high|medium|low"}}
+"""
+
 
 def group_queue_by_repo() -> Dict[str, List[Path]]:
     """Group every brief in `queue_dir()` by its frontmatter `repo:` value.
