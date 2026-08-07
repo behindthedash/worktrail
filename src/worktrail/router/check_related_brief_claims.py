@@ -31,7 +31,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from ..shared.brief_frontmatter import read_frontmatter, split_frontmatter
+from ..shared.brief_frontmatter import read_frontmatter
 from ..workqueue.work_queue import resolve as _wq_resolve
 
 # A related brief's focus is surfaced for a human to skim, not to read in
@@ -116,13 +116,19 @@ def check(
     result: Dict[str, Any] = {"checked": False, "active": [], "warning": None}
 
     claimed_brief_path = Path(claimed_brief_path)
+    # `read_frontmatter` itself swallows OSError and returns `{}`, which
+    # would make "file unreadable" and "file readable with genuinely empty
+    # frontmatter" indistinguishable here -- so readability is checked
+    # separately (stat only, no content read) purely to preserve the
+    # `checked: false` fail-open signal; the actual frontmatter parse still
+    # goes through `read_frontmatter`, not a hand-rolled read+split.
     try:
-        content = claimed_brief_path.read_text(encoding="utf-8")
+        claimed_brief_path.stat()
     except OSError as exc:
         result["warning"] = f"could not read claimed brief {claimed_brief_path}: {exc!r}"
         return result
 
-    frontmatter, _body = split_frontmatter(content)
+    frontmatter = read_frontmatter(claimed_brief_path)
     result["checked"] = True
 
     related = frontmatter.get("related")
