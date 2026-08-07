@@ -98,6 +98,58 @@ class JournalForeignTaskIdsMixedMatchTest(unittest.TestCase):
         self.assertEqual(foreign, {"9.9"})
 
 
+class JournalForeignTaskIdsEventOnlyMarkersTest(unittest.TestCase):
+    """2.4: observability-only `{"event": ...}` markers (e.g.
+    `dependency_file_drift`) are never considered when computing foreign ids,
+    even when such a marker carries a `task` id of its own (as
+    `dependency_file_drift` does) that has no match in the current task set."""
+
+    def test_event_only_marker_without_task_id_is_not_foreign(self):
+        tasks = [{"id": "1.1", "status": "done"}]
+        entries = [{"event": "dependency_file_drift", "at": 12345.0}]
+
+        foreign = live.journal_foreign_task_ids(entries, tasks)
+
+        self.assertEqual(foreign, set())
+
+    def test_event_marker_with_foreign_task_id_is_still_not_foreign(self):
+        tasks = [{"id": "1.1", "status": "done"}]
+        entries = [
+            {
+                "event": "dependency_file_drift",
+                "task": "9.9",
+                "dep_id": "9.8",
+                "declared_path": "src/example.py",
+                "dep_head_sha": "deadbee",
+                "at": 12345.0,
+            }
+        ]
+
+        foreign = live.journal_foreign_task_ids(entries, tasks)
+
+        self.assertEqual(foreign, set())
+
+    def test_event_marker_alongside_genuine_foreign_entry_reports_only_the_latter(
+        self,
+    ):
+        tasks = [{"id": "1.1", "status": "done"}]
+        entries = [
+            {
+                "event": "dependency_file_drift",
+                "task": "9.9",
+                "dep_id": "9.8",
+                "declared_path": "src/example.py",
+                "dep_head_sha": "deadbee",
+                "at": 12345.0,
+            },
+            {"task": "9.10", "report": {"head_sha": "feedbee"}},
+        ]
+
+        foreign = live.journal_foreign_task_ids(entries, tasks)
+
+        self.assertEqual(foreign, {"9.10"})
+
+
 class FullRealInnerForeignJournalRaisesTest(unittest.TestCase):
     """2.2: a journal with one or more entries whose task ids are absent from
     the current task set raises the foreign-journal error at the
