@@ -1499,7 +1499,7 @@ def scan_repos(parent: Path) -> List[Dict[str, Any]]:
 
     Each row: {repo, path, has_specs, total, active, active_ids, active_specs,
     backlog, backlog_ids, worktrees, policy_findings, automerge_findings,
-    drift_findings}.
+    drift_findings, quarantine_findings}.
     Returns [] if the sibling resolver is unavailable or `parent` holds no
     git repos.
 
@@ -1517,6 +1517,10 @@ def scan_repos(parent: Path) -> List[Dict[str, Any]]:
     this repo's `go-policy.yaml` no longer describing repo reality — test files
     no runner reaches, or absence-claims contradicted by the filesystem (empty
     = clean or no policy file present).
+
+    `quarantine_findings` is `quarantine_selfcheck.check_repo()`'s signals for
+    this repo's orchestrator run journals recording a `QUARANTINED` group
+    (empty = clean or no run journals present).
 
     detect_stage calls are parallelised with a flat ThreadPoolExecutor across
     all spec dirs in all repos -- no nested pools, one thread per spec dir.
@@ -1546,6 +1550,9 @@ def scan_repos(parent: Path) -> List[Dict[str, Any]]:
         drift_findings: List[Dict[str, Any]] = []
         if _policy_drift_check_repo is not None:
             drift_findings = _policy_drift_check_repo(repo)["findings"]
+        quarantine_findings: List[Dict[str, Any]] = []
+        if _quarantine_check_repo is not None:
+            quarantine_findings = _quarantine_check_repo(repo)["findings"]
         repo_info[repo_key] = {
             "name": repo.name,
             "path": str(repo),
@@ -1554,6 +1561,7 @@ def scan_repos(parent: Path) -> List[Dict[str, Any]]:
             "policy_findings": policy_findings,
             "automerge_findings": automerge_findings,
             "drift_findings": drift_findings,
+            "quarantine_findings": quarantine_findings,
         }
         if specs_root.is_dir():
             for d in sorted(specs_root.iterdir()):
@@ -1596,6 +1604,7 @@ def scan_repos(parent: Path) -> List[Dict[str, Any]]:
                 "policy_findings": info["policy_findings"],
                 "automerge_findings": info["automerge_findings"],
                 "drift_findings": info["drift_findings"],
+                "quarantine_findings": info["quarantine_findings"],
                 "backlog": len(backlog_ids),
                 "backlog_ids": backlog_ids,
                 "worktrees": info["worktrees"],
