@@ -70,10 +70,10 @@
 
 ## 5. Verification
 
-- [ ] 5.1 Run `PYTHONPATH=src pytest -q` and
+- [ ] 5.1 [e2e] Run `PYTHONPATH=src pytest -q` and
   `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`
   (golden record/replay regression) -- both green.
-- [ ] 5.2 Run `pytest tests/test_plugin_surface.py` -- confirms the new
+- [ ] 5.2 [e2e] Run `pytest tests/test_plugin_surface.py` -- confirms the new
   console script is real, `.claude-plugin/plugin.json` needs no change
   (no new skill directory added), and cross-skill anchor citations from
   4.1/4.2 resolve.
