@@ -7,9 +7,8 @@ venv/
 build/
 dist/
 node_modules/
-.venv/
-.venv/
-.venv/
-.venv/
-.venv/
-.venv/
+
+# SDD point-in-time scratch (never committed -- see
+# skills/worktrail-go/references/artifact-policy.md)
+**/reviews/*-review.md
+**/_ralph_loop/
