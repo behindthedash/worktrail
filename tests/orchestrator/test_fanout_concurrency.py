@@ -162,8 +162,15 @@ class ConcurrentFanout(unittest.TestCase):
                 self.assertNotIn("status: completed", tf.read_text())
 
     def test_run_budget_stops_dispatching_new_tasks(self):
-        # TASK-002 depends on TASK-001 -> two ticks. A near-zero budget trips after
+        # TASK-002 depends on TASK-001 -> two ticks. A tight budget trips after
         # the first tick, so the second task is never dispatched (#5).
+        #
+        # 0.001s (1ms) left no margin for ordinary OS scheduling jitter on the
+        # *first* budget check (before tick 1 even starts), making this flaky
+        # under host contention (`done` observed as 0 instead of 1). FakeSpawn's
+        # dispatch sleeps 0.05s, so tick 1 always finishes well past 0.01s --
+        # widening to 0.01s absorbs jitter while staying far below that, so the
+        # second check (before tick 2) still reliably trips.
         with tempfile.TemporaryDirectory() as tmp:
             repo = _init_repo(
                 Path(tmp),
@@ -181,7 +188,7 @@ class ConcurrentFanout(unittest.TestCase):
                 out_cassette=journal,
                 run_id="test-3",
                 spawn=fake,
-                run_budget=0.001,
+                run_budget=0.01,
             )
             self.assertEqual(res["done"], 1)  # only TASK-001 ran
             by_id = {t["id"]: t for t in res["tasks"]}
