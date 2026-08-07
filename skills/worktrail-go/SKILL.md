@@ -286,11 +286,13 @@ instead — this is not a caller decision to make; just log it (Phase 6) for vis
 
 ### Phase 5.5 — Collision & Staleness Guard
 
-One question — "has this already been done?" — asked two ways, by two mutually exclusive,
+One question — "has this already been done?" — asked three ways, by three mutually exclusive,
 route-gated branches that share no state. A Route C/D dispatch checks for **spec collision**
 (does a shipped spec already cover this request?); a brief-sourced Route E/F dispatch checks for
-**brief staleness** (did the work this brief describes already land while it sat in the queue?).
-Every other route skips both branches entirely.
+**brief staleness** (did the work this brief describes already land while it sat in the queue?);
+a brief-sourced dispatch on any other route checks for a **related-brief collision** (is a brief
+this one names as `related:` actively claimed and in flight right now?). A free-text dispatch
+with no claimed brief skips both brief-sourced branches.
 
 **Route C/D branch: spec collision.**
 
@@ -335,6 +337,22 @@ the brief is satisfied, so the operator is always asked via `AskUserQuestion` (c
 already-delivered, or proceed anyway) before Phase 6/7 continues. Full procedure — command,
 how to read the result, the prompt shape, and the run-record entries:
 `references/brief-staleness-check.md`.
+
+**Related-brief collision branch.**
+
+Gated on the dispatch being brief-sourced (a claimed brief is in play), that brief's `related:`
+frontmatter being non-empty, **and** Phase 5's resolved route being anything other than C, D, E,
+or F — those four routes are already covered by the two branches above, and a free-text dispatch
+has no claimed brief to read `related:` off. Before starting Phase 6's run record, run
+`worktrail-check-related-brief-claims --brief "<claimed-brief-path>" --json` to ask whether any
+brief this one names as `related:` is itself actively claimed and in flight right now. Read the
+result the same way as the sibling branches: `checked: false` means the question was unanswerable
+and Phase 6/7 proceed unmodified; `checked: true` with empty `active` is a definite negative and
+also proceeds silently. On `checked: true` with non-empty `active`, **never auto-close the
+brief** — the related work being in flight says nothing about whether this brief's own work is
+done — so the operator is always asked via `AskUserQuestion`, batched across every active match,
+before Phase 6/7 continues. Full procedure — command, how to read the result, the prompt shape,
+and the run-record entry: `references/related-brief-collision-check.md`.
 
 ### Phase 6 — Run Record (Start)
 
