@@ -67,7 +67,7 @@ def _group_files(repo: Path, spec_id: str, group_name: str) -> Optional[List[str
     return None
 
 
-def _files_on_base(repo: Path, base: str, files: List[str]) -> bool:
+def _files_on_base(repo: Path, files: List[str], base: str = "") -> bool:
     """Whether every path in `files` still exists on `base` (or the current branch).
 
     A group that reconciled to `QUARANTINED` in the run journal may simply
