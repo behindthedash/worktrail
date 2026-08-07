@@ -322,11 +322,14 @@ class Verifier:
         return self.run(cmd)
 
     def _preflight_runner(self, cmd: List[str], **_: Any):
-        """Adapt the injected verifier runner to automerge_preflight's API."""
+        """Adapt the injected verifier runner to automerge_preflight's API.
+
+        `gh api` has no `--repo`/`-R` flag; automerge_preflight's endpoints
+        already embed `owner/repo` literally (e.g. `repos/{owner_repo}/...`),
+        so no rewrite is needed for `gh api` calls.
+        """
         if cmd[:3] == ["git", "remote", "get-url"]:
             cmd = ["git", "-C", str(self.repo), *cmd[1:]]
-        elif cmd[:2] == ["gh", "api"] and self.gh_repo:
-            cmd = [*cmd, "--repo", self.gh_repo]
         return self.run(cmd)
 
     def _derive_gh_repo(self) -> Optional[str]:

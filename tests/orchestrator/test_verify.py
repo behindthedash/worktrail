@@ -1753,6 +1753,35 @@ class TestDeriveGhRepo(unittest.TestCase):
         self.assertIsNone(v.gh_repo)
 
 
+class TestPreflightRunner(unittest.TestCase):
+    """`_preflight_runner` adapts the injected runner for
+    `automerge_preflight`. `gh api` has no `--repo`/`-R` flag -- its
+    endpoints already embed `owner/repo` literally -- so `gh api` commands
+    must pass through unmodified even when `gh_repo` is set. A `FakeRun`-style
+    fake that pattern-matches on `cmd[:2]` would silently accept a bogus
+    trailing `--repo` token, which is exactly how this went undetected."""
+
+    def _verifier(self, remote_url="https://github.com/owner/repo.git"):
+        run = FakeRun({}, remote_url=remote_url)
+        return verify.Verifier(Path("/repo"), "origin", "dev", "001-x",
+                                run=run, spawn=FakeSpawn(), log=lambda *_: None,
+                                sleep=lambda *_: None, worktree_base=Path("/tmp/x"),
+                                max_polls=5)
+
+    def test_gh_api_command_passes_through_unmodified(self):
+        v = self._verifier()
+        self.assertEqual(v.gh_repo, "owner/repo")
+        cmd = ["gh", "api", "repos/owner/repo/rules/branches/main"]
+        v._preflight_runner(cmd)
+        self.assertEqual(v.run.calls[-1], cmd)
+
+    def test_git_remote_get_url_still_rewritten(self):
+        v = self._verifier()
+        v._preflight_runner(["git", "remote", "get-url", "origin"])
+        self.assertEqual(
+            v.run.calls[-1], ["git", "-C", "/repo", "remote", "get-url", "origin"])
+
+
 # `GoScriptsResolution` (topology-detection tests for the old, removed
 # `_find_go_scripts_dir()`) is intentionally not ported. That function existed
 # to hunt for `devkit-pm-go/scripts` across install topologies via manual
