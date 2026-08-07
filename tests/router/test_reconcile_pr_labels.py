@@ -10,9 +10,10 @@ from worktrail.router import reconcile_pr_labels as rpl
 
 
 class _FakeCompleted:
-    def __init__(self, returncode=0, stdout=""):
+    def __init__(self, returncode=0, stdout="", stderr=""):
         self.returncode = returncode
         self.stdout = stdout
+        self.stderr = stderr
 
 
 def _write_run_record(path: Path, **fields) -> None:
@@ -168,7 +169,7 @@ def test_reconcile_repo_applies_risk_label_from_matching_run_record(monkeypatch,
             ]))
         if cmd[:3] == ["gh", "pr", "view"]:
             return _FakeCompleted(0, json.dumps({"labels": []}))
-        if cmd[:3] == ["gh", "pr", "edit"]:
+        if cmd[:2] == ["gh", "api"]:
             return _FakeCompleted(0, "")
         raise AssertionError(f"unexpected command: {cmd}")
 
@@ -265,7 +266,7 @@ def test_reconcile_repo_adds_no_automerge_when_ineligible(monkeypatch, tmp_path)
             ]))
         if cmd[:3] == ["gh", "pr", "view"]:
             return _FakeCompleted(0, json.dumps({"labels": [{"name": "go:risk-high"}]}))
-        if cmd[:3] == ["gh", "pr", "edit"]:
+        if cmd[:2] == ["gh", "api"]:
             return _FakeCompleted(0, "")
         raise AssertionError(f"unexpected command: {cmd}")
 
@@ -293,7 +294,7 @@ def test_reconcile_repo_applies_both_labels_when_both_missing(monkeypatch, tmp_p
             ]))
         if cmd[:3] == ["gh", "pr", "view"]:
             return _FakeCompleted(0, json.dumps({"labels": []}))
-        if cmd[:3] == ["gh", "pr", "edit"]:
+        if cmd[:2] == ["gh", "api"]:
             return _FakeCompleted(0, "")
         raise AssertionError(f"unexpected command: {cmd}")
 
@@ -424,7 +425,7 @@ def test_reconcile_repo_reports_unreconciled_when_no_automerge_edit_fails(monkey
             ]))
         if cmd[:3] == ["gh", "pr", "view"]:
             return _FakeCompleted(0, json.dumps({"labels": [{"name": "go:risk-high"}]}))
-        if cmd[:3] == ["gh", "pr", "edit"]:
+        if cmd[:2] == ["gh", "api"]:
             return _FakeCompleted(1, "")
         raise AssertionError(f"unexpected command: {cmd}")
 
