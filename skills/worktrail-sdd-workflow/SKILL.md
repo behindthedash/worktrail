@@ -202,9 +202,20 @@ For every PR produced:
 2. Deterministic eligibility = `policy.automerge` × classifier `gates` × risk
    (see `policy.py automerge_eligible`), now also encoded as the PR's
    `go:risk-*`/`go:no-automerge` labels above; live conditions = required
-   checks green, no unresolved threads, no conflicts, approvals satisfied.
+   checks green, no unresolved threads (code-enforced by the CI watch loop's
+   review-thread gate below, not agent-narrated), no conflicts, approvals
+   satisfied.
 3. Ineligible → deliver the PR and state the exact remaining approval needed.
-4. Record `merge_decision` + `merge_result`, then
+4. **Do not call `run_record.py finish` on a `completed_pr_open` /
+   `completed_and_merged` / `completed_awaiting_human_approval` status until
+   `../worktrail-go/references/ci-watch-loop.md`'s case-1 review-thread gate
+   (`worktrail-check-review-threads`) reports `blocking: false` (or
+   `checked: false`, i.e. no signal).** A check going green only proves
+   check pass/fail, never that reviewer findings were resolved -- datalena
+   PR #2133 accumulated 9 unresolved `security-review-llm` threads across 4
+   rounds of already-addressed findings before a human noticed and
+   replied+resolved each one by hand. Record `merge_decision` +
+   `merge_result`, then
    `run_record.py finish --status <state> [--pr <url>]` and, whenever a PR
    was produced, immediately run `worktrail-ensure-pr-label --run "$RUN"` --
    the same post-hoc `go:risk-*` correction drain.py applies after its own

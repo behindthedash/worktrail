@@ -325,6 +325,42 @@ posture). A run record written before this change carries no `gates` field
 at all; the sweep treats that as "unknown," not "no gates," and only applies
 the `go:risk-*` correction to PRs from those older records.
 
+### 2.15 Review-thread resolution gate
+
+§2.14's eligibility formula has named "no unresolved review threads" as a
+live condition since it was written, but nothing checked it: `gh pr checks
+--watch` (`ci-watch-loop.md`) only observes required-check pass/fail, never
+GraphQL `reviewThreads.isResolved`. datalena PR #2133
+(router-capability-guard-coverage) accumulated 9 unresolved
+`security-review-llm` review threads across 4 rounds of findings — every one
+either fixed in code or explicitly investigated and decided not-to-fix — with
+nothing in the automated loop noticing until a human manually replied and
+resolved each one via `gh api graphql` / `resolveReviewThread`.
+
+`check_review_threads.py` (`worktrail-check-review-threads`) closes this,
+wired into `ci-watch-loop.md` case 1 (all-checks-pass) before either
+merge-state branch: it queries a PR's review threads over GraphQL, then for
+each unresolved thread correlates it against (a) a commit pushed later in
+this run that touched the thread's file (`git log --since=<thread's first
+comment>`), or (b) an explicit entry in the run record's `decisions` log
+naming the thread id or path — the "investigated and deliberately not fixed"
+case the brief that motivated this module called out by name. A correlated
+thread gets an automatic reply + `resolveReviewThread` mutation; an
+uncorrelated one is reported as `blocking: true` and the loop treats it
+exactly like a red required check (case 3) — fix and let it resolve
+naturally on the next pass, or record the decision and re-run the gate.
+`finish` on a PR-owning completion state must not run while `blocking: true`.
+
+Like `check_brief_staleness.py`/`check_spec_collision.py`, this degrades to
+`checked: false` (not `blocking`) when the question itself can't be
+answered — `gh` missing/unauthenticated, an unresolvable `owner/repo`, or a
+malformed GraphQL response — so a GitHub API hiccup can't wedge every
+PR-owning route open forever; the caller treats `checked: false` as no
+signal and proceeds. Correlation is a heuristic the brief itself frames as
+approximate ("via commit SHA/line correlation or the run record's own
+decision log"), not proof — a human can always reopen a thread the gate
+resolved incorrectly.
+
 ---
 
 ## 3. Migration plan (v1 → v2)

@@ -45,6 +45,7 @@ worktrail-check-dod-verification = "worktrail.router.check_dod_verification:main
 worktrail-check-brief-staleness = "worktrail.router.check_brief_staleness:main"
 worktrail-check-compile-markers = "worktrail.router.check_compile_markers:main"
 worktrail-check-repo-freshness = "worktrail.router.check_repo_freshness:main"
+worktrail-check-review-threads = "worktrail.router.check_review_threads:main"
 worktrail-check-spec-collision = "worktrail.router.check_spec_collision:main"
 worktrail-check-spec-sync = "worktrail.router.check_spec_sync:main"
 worktrail-classify = "worktrail.router.classify:main"
