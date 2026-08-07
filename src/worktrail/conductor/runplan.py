@@ -74,6 +74,16 @@ SOURCE_BASELINE = "baseline"  # scope was missing and compiling was not permitte
 # this module) so `fingerprint()` can exclude it without a circular import.
 COMPILE_MARKER_NAME = ".compile-ok"
 
+# `dispatch.py` writes point-in-time review scratch to `{spec_folder}reviews/*.md`
+# (see artifact-policy.md's authority table: "NOT maintained by anything -> never
+# trust as current; not committed"). It is untracked by design, so a task worktree
+# that has been through the orchestrator's review role has it on disk while a clean
+# CI checkout of the same git-tracked content never does. Hashing it into
+# `fingerprint()` below made the marker match only that worktree's local disk state
+# -- reproduced on PR #189, where CI's Scope check recomputed a different
+# fingerprint for byte-identical tracked content and failed the staleness check.
+SCRATCH_DIR_NAME = "reviews"
+
 
 @dataclass(frozen=True)
 class TaskPlan:
@@ -196,9 +206,12 @@ def fingerprint(spec_dir: "str | Path", tasks: Sequence[Dict[str, Any]]) -> str:
     task_basenames = {Path(str(t.get("path") or "")).name for t in tasks} - {""}
     if spec_dir.is_dir():
         for f in sorted(p for p in spec_dir.rglob("*") if p.is_file()):
+            rel = f.relative_to(spec_dir)
+            if rel.parts[0] == SCRATCH_DIR_NAME:
+                continue
             if f.name in task_basenames or f.name == COMPILE_MARKER_NAME:
                 continue
-            h.update(str(f.relative_to(spec_dir)).encode() + b"\x1f")
+            h.update(str(rel).encode() + b"\x1f")
             h.update(hashlib.sha256(f.read_bytes()).hexdigest().encode() + b"\x1e")
     return h.hexdigest()
 
