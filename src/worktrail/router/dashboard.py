@@ -1935,7 +1935,8 @@ def render_dashboard(
     a one-line review nudge; unguarded auto-merge workflow signals
     (automerge_selfcheck.py) get their own one-line review nudge; go-policy.yaml
     rationale-vs-reality drift signals (policy_drift_selfcheck.py) get theirs;
-    when a cluster
+    QUARANTINED-group signals (quarantine_selfcheck.py) get their own one-line
+    review nudge; when a cluster
     section is shown and
     `cluster_precision` (cluster_telemetry.summarize()'s result) has at least
     CLUSTER_PRECISION_MIN_DECIDED decided outcomes, an extra precision line is
@@ -1955,6 +1956,7 @@ def render_dashboard(
     policy_flags: List[str] = []
     automerge_flags: List[str] = []
     drift_flags: List[str] = []
+    quarantine_flags: List[str] = []
     runs: List[Dict[str, Any]] = []
     if repo_rows is not None:
         for r in repo_rows:
@@ -1965,6 +1967,10 @@ def render_dashboard(
             policy_flags.extend(f"{r['repo']} ({f['signal']})" for f in r.get("policy_findings", []))
             automerge_flags.extend(f"{r['repo']} ({f['signal']})" for f in r.get("automerge_findings", []))
             drift_flags.extend(f"{r['repo']} ({f['signal']})" for f in r.get("drift_findings", []))
+            quarantine_flags.extend(
+                f"{r['repo']} ({f['spec_id']}/{f['group']}, {f['age_days']:.0f}d)"
+                for f in r.get("quarantine_findings", [])
+            )
             for run in r.get("recent_runs", []) or []:
                 runs.append({"who": r["repo"], **run})
         runs.sort(key=lambda x: x.get("completed_at") or x.get("started_at") or "", reverse=True)
@@ -2073,6 +2079,11 @@ def render_dashboard(
             f"🚩 Policy drift ({len(drift_flags)}): {head}{more} "
             "→ go-policy.yaml no longer matches repo reality"
         )
+
+    if quarantine_flags:
+        head = ", ".join(quarantine_flags[:4])
+        more = f" … +{len(quarantine_flags) - 4}" if len(quarantine_flags) > 4 else ""
+        lines.append(f"🚩 Quarantined groups ({len(quarantine_flags)}): {head}{more} → review")
 
     if capacity and capacity.get("gated"):
         entries = ", ".join(
