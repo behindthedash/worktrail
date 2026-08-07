@@ -248,6 +248,17 @@ so there is no subagent prompt to template:
 /opsx:propose "<the request, verbatim from the brief or the user>"
 ```
 
+**Claude Code hosts — entering the worktree for this call:** a slash command runs in
+the session's actual working directory, not a `-C`-scoped path, so there is no way to
+target `$WT` for this one call except moving the session there. Use
+`EnterWorktree({path: "$WT"})` immediately before it, then `ExitWorktree({action:
+"keep"})` immediately after — do not run unrelated commands while still inside the
+worktree session. `EnterWorktree`'s own isolation guard blocks a later `git -C
+<other-path>` call (e.g. against `$REPO` or a different worktree) made while the
+session is still pinned inside `$WT`, so lingering there breaks later steps like
+`#sync-before-teardown`. Other hosts invoke the slash command directly with no
+equivalent step.
+
 It creates `openspec/changes/<change-id>/` containing `proposal.md`, `specs/**/*.md`
 (delta specs using ADDED/MODIFIED/REMOVED headers), `design.md`, and `tasks.md`.
 Commit the whole change directory before the orchestrator forks any task worktree —
@@ -294,7 +305,9 @@ do not read it as run progress. Task state lives in the run journal during a run
 
 Merges the change's delta specs into `openspec/specs/`.
 `/opsx:archive` also performs this merge as part of archiving, so an explicit sync is
-only needed when specs must land before the change is finished.
+only needed when specs must land before the change is finished. **Claude Code
+hosts:** same enter-run-exit discipline as `#openspec-propose` above — this is also a
+slash command, not a `-C`-scoped call.
 
 ## Stage result handling {#stage-result-handling}
 
