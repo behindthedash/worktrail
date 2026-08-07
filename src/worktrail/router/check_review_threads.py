@@ -26,6 +26,19 @@ network hiccup blocking every PR-owning route forever would be worse than
 occasionally missing a stale thread; the caller (`ci-watch-loop.md`) treats
 `checked: false` as "no signal, proceed" and surfaces the warning.
 
+`blocking: true` also stamps `go:no-automerge` on the PR (via
+`pr_labels.ensure_pr_no_automerge_label`, additive-only, never removed).
+`gh pr checks --watch` observing green only proves required checks passed --
+a repo's own native auto-merge automation (`gh pr merge --auto`, armed by a
+`.github/workflows/auto-merge.yml` or GitHub's native toggle) has no concept
+of `reviewThreads` at all and merges the instant checks go green, racing
+ahead of this gate's own `finish()`-time block (ci-watch-loop.md's stale-head
+guard documents the identical race for required checks: GGB #556). Stamping
+the label closes that race the same way it already closes the analogous
+"automerge.enabled true but zero required status checks" gap in
+`automerge_preflight.py` -- both native and repo-workflow auto-merge already
+read `go:no-automerge` before arming.
+
 Correlation is a heuristic, not proof, matching the brief's own framing
 ("via commit SHA/line correlation or the run record's own decision log") --
 a human reviewing the auto-generated reply can always reopen a
@@ -40,6 +53,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .automerge_preflight import owner_repo_from_git
+from .pr_labels import ensure_pr_no_automerge_label
 
 Runner = Callable[..., "subprocess.CompletedProcess[str]"]
 
@@ -244,7 +258,9 @@ def check(
     -- callers must treat that as "no signal", never as "nothing unresolved".
     `blocking: true` (only possible when `checked: true`) means at least one
     unresolved thread has no corresponding commit or run-record decision and
-    should stop `finish()` the same way a red required check would.
+    should stop `finish()` the same way a red required check would -- it also
+    stamps `go:no-automerge` on the PR (skipped when `dry_run`) so native
+    auto-merge can't race ahead of this gate; see module docstring.
     """
     result: Dict[str, Any] = {
         "checked": False,
@@ -252,6 +268,7 @@ def check(
         "unresolved_count": 0,
         "resolved_now": [],
         "unaddressed": [],
+        "no_automerge_label_applied": None,
         "warning": None,
     }
 
@@ -298,6 +315,10 @@ def check(
 
     result["blocking"] = bool(result["unaddressed"])
 
+    if result["blocking"] and not dry_run:
+        result["no_automerge_label_applied"] = ensure_pr_no_automerge_label(
+            str(repo), str(pr_number), eligible=False, runner=runner)
+
     warnings = [w for w in (fetch_warning, decisions_warning) if w]
     if warnings:
         result["warning"] = "; ".join(warnings)
@@ -318,6 +339,8 @@ def _format_human(res: Dict[str, Any]) -> str:
         lines.append(f"  BLOCKING: {entry.get('path')}:{entry.get('line')} ({entry.get('author')}): {entry.get('body')}")
     if res["blocking"]:
         lines.append("  -> unresolved+unaddressed threads present; do not finish() this route yet")
+        if res.get("no_automerge_label_applied"):
+            lines.append(f"  applied label: {res['no_automerge_label_applied']}")
     if res.get("warning"):
         lines.append(f"  warning: {res['warning']}")
     return "\n".join(lines)
