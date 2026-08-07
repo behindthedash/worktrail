@@ -670,36 +670,8 @@ machine was already implementing the same spec). Authoring or implementing
 blind against that risks silently contradicting already-reasoned,
 partially-implemented decisions, or two sessions duplicating the same spec id.
 
-Before the advisory glob check below, run an **active-conflict scan** — this
-part is a hard stop, not advisory. It catches what the local `git worktree
-list`/`for-each-ref` glob check below cannot: a non-terminal run record for
-this same `$SPEC_ID` (a prior claimed brief never orchestrated, or a
-same-`$SPEC_ID` race between two concurrent `/go` sessions) whose worktree or
-branch doesn't yet exist or doesn't match the glob:
-
-```bash
-# --dir is required by this subcommand (unlike `start`, it has no built-in
-# default) — pass the policy's `run_record_dir` if set, else the same
-# "~/.go/runs" default `start` uses.
-CONFLICTS=$(worktrail-run-record active-conflicts \
-  --dir "${RUN_RECORD_DIR:-~/.go/runs}" \
-  --repo "$REPO" --specification "$SPEC_ID" --exclude "$RUN")
-
-if [ "$(echo "$CONFLICTS" | python3 -c 'import sys, json; print(len(json.load(sys.stdin)))')" != "0" ]; then
-  echo "BLOCKED: active run(s) already target $SPEC_ID:" >&2
-  echo "$CONFLICTS" | python3 -c "
-import sys, json
-for r in json.load(sys.stdin):
-    print(f'  run_id={r[\"run_id\"]} started_at={r[\"started_at\"]} request_summary={r[\"request_summary\"]}')
-" >&2
-  worktrail-run-record finish "$RUN" \
-    --status blocked_external_dependency \
-    --merge-result "active-conflicts scan found a non-terminal run already targeting $SPEC_ID"
-  # Stop here — do not create $WT, do not touch any repo file.
-fi
-```
-
-If `$CONFLICTS` is empty, proceed to the advisory glob check below unchanged.
+Before the advisory glob check below, run `#active-conflicts-scan`. If
+`$CONFLICTS` is empty, proceed to the advisory glob check below unchanged.
 
 Set `$SIBLING_WT_GLOB` (a `git worktree list` grep pattern) and
 `$SIBLING_REF_GLOB` (a `for-each-ref` pattern) per call site, then run:
