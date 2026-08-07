@@ -26,7 +26,44 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from worktrail.orchestrator.coordinator import plan_groups
+
 from .policy_selfcheck import discover_repo_names
+
+
+def _group_files(repo: Path, spec_id: str, group_name: str) -> Optional[List[str]]:
+    """Recompute a group's file set from the cached RunPlan, not the journal.
+
+    The journal only records the group name a QUARANTINED task landed in at
+    integrate time. Recomputing the partition from the cached RunPlan via
+    `plan_groups()` cross-checks that grouping is still current -- if the
+    RunPlan has moved on and no group named `group_name` exists anymore,
+    that's RunPlan/journal drift and this returns `None` rather than a stale
+    file list.
+    """
+    runplans_dir = repo.parent / f"{repo.name}-worktrees" / "runplans"
+    matches = list(runplans_dir.glob(f"{spec_id}-*.json"))
+    if not matches:
+        return None
+    newest = max(matches, key=lambda p: p.stat().st_mtime)
+    try:
+        payload = json.loads(newest.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    tasks = payload.get("tasks")
+    if not isinstance(tasks, list):
+        return None
+    by_id = {t["id"]: t for t in tasks if isinstance(t, dict) and "id" in t}
+    for group in plan_groups(tasks):
+        if group.get("name") != group_name:
+            continue
+        files: set = set()
+        for task_id in group.get("tasks", []):
+            task = by_id.get(task_id)
+            if task:
+                files.update(task.get("files") or [])
+        return sorted(files)
+    return None
 
 
 def _iter_journal_files(worktrees_dir: Path):
