@@ -627,35 +627,43 @@ worktree about to be removed) before running any `git worktree remove` below.
 
 ### Active-conflicts scan {#active-conflicts-scan}
 
-This is a **hard stop, not advisory**. It catches what a local `git worktree
-list`/`for-each-ref` glob check cannot: a non-terminal run record for the
-same `$SPEC_ID` (a prior claimed brief never orchestrated, or a
-same-`$SPEC_ID` race between two concurrent `/go` sessions) whose worktree or
-branch doesn't yet exist or doesn't match the glob:
+This is a **hard stop, not advisory**. It atomically claims `$SPEC_ID` for
+`$RUN` before any worktree, branch, or file is touched. A plain read-only scan
+(list non-terminal runs, then separately tag `$RUN` with `$SPEC_ID`) has a
+TOCTOU gap: two concurrent `/go` sessions can each scan and see nothing before
+either has tagged its own record, then both proceed believing they're first —
+not hypothetical, this is what the 2026-08-07 duplicate-orchestrator incident
+exploited. `claim` closes that gap by making the exclusivity check and the
+`specification` write one OS-atomic step, so a second concurrent claim on the
+same `$SPEC_ID` fails fast instead of racing to a scan. It also catches what a
+local `git worktree list`/`for-each-ref` glob check cannot: a prior claimed
+brief never orchestrated, whose worktree or branch doesn't yet exist or
+doesn't match the glob.
 
 ```bash
-# --dir is required by this subcommand (unlike `start`, it has no built-in
-# default) — pass the policy's `run_record_dir` if set, else the same
-# "~/.go/runs" default `start` uses.
-CONFLICTS=$(worktrail-run-record active-conflicts \
-  --dir "${RUN_RECORD_DIR:-~/.go/runs}" \
-  --repo "$REPO" --specification "$SPEC_ID" --exclude "$RUN")
+CLAIM=$(worktrail-run-record claim "$RUN" --specification "$SPEC_ID")
+CLAIM_STATUS=$(echo "$CLAIM" | python3 -c 'import sys, json; print(json.load(sys.stdin)["status"])')
 
-if [ "$(echo "$CONFLICTS" | python3 -c 'import sys, json; print(len(json.load(sys.stdin)))')" != "0" ]; then
-  echo "BLOCKED: active run(s) already target $SPEC_ID:" >&2
-  echo "$CONFLICTS" | python3 -c "
+if [ "$CLAIM_STATUS" != "claimed" ]; then
+  echo "BLOCKED: active run(s) already target $SPEC_ID ($CLAIM_STATUS):" >&2
+  echo "$CLAIM" | python3 -c "
 import sys, json
-for r in json.load(sys.stdin):
-    print(f'  run_id={r[\"run_id\"]} started_at={r[\"started_at\"]} request_summary={r[\"request_summary\"]}')
+c = json.load(sys.stdin)
+for r in (c.get('conflicts') or [c]):
+    print(f'  run_id={r.get(\"run_id\",\"?\")} started_at={r.get(\"started_at\",\"?\")} request_summary={r.get(\"request_summary\",\"?\")} path={r.get(\"path\",\"?\")}')
 " >&2
   worktrail-run-record finish "$RUN" \
     --status blocked_external_dependency \
-    --merge-result "active-conflicts scan found a non-terminal run already targeting $SPEC_ID"
+    --merge-result "claim on $SPEC_ID failed ($CLAIM_STATUS) — another run already targets it"
   # Stop here — do not create $WT, do not touch any repo file.
 fi
 ```
 
-If `$CONFLICTS` is empty, proceed with the caller's next step.
+If `$CLAIM_STATUS` is `claimed`, proceed with the caller's next step. The
+claim releases automatically when `$RUN` reaches any `finish` completion
+state; a crashed session that never called `finish` leaves the claim held
+until an operator inspects and manually finishes/abandons the stale run
+record — the same accepted recovery path this scan already had.
 
 ### Sibling worktree/branch check {#sibling-worktree-check}
 

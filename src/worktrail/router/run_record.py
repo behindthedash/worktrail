@@ -29,6 +29,16 @@ finish PATH --status completed_pr_open [--pr URL] [--merge-result ...]
   active-conflicts --dir DIR --repo REPO --specification SPEC [--exclude PATH]
          -> read-only scan for other non-terminal runs on the same
             repo+specification; prints a JSON array (see contracts/active-conflicts-cli.md)
+  claim  RUN_PATH --specification SPEC
+         -> atomically claim repo+specification for the run at RUN_PATH before
+            committing to implement it. Closes the TOCTOU gap in the read-only
+            active-conflicts scan (two sessions can each pass the scan before
+            either's record is visible to the other) by making the
+            exclusivity check and the `specification` write one OS-atomic
+            step (O_CREAT|O_EXCL on a lock file). A second concurrent claim
+            for the same repo+specification fails fast with
+            {"status": "already-claimed", ...} instead of racing to the scan.
+            `finish` releases the claim automatically.
   prune  [--dir DIR] [--repo REPO] [--keep-count N] [--keep-days N] [--dry-run]
          -> delete old run records under <dir>/<repo-name>/*.yaml. Hybrid
             retention: a record is kept if it is among the --keep-count most
@@ -40,6 +50,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import time
@@ -359,15 +370,22 @@ def cmd_finish(args: argparse.Namespace) -> int:
     if args.merge_result:
         record["merge_result"] = args.merge_result
     _save(path, record)
+    specification = record.get("specification")
+    if specification:
+        # Release this run's claim (if any) so a later legitimate claim on
+        # the same repo+specification isn't blocked once this run is done.
+        # Guarded by run_id so finishing this run never deletes a different
+        # run's active claim (e.g. after a stale-lock reclaim elsewhere).
+        lock_path = _lock_path(path, specification)
+        owner = _load_lock(lock_path)
+        if owner.get("run_id") == record.get("run_id"):
+            lock_path.unlink(missing_ok=True)
     print(json.dumps({"final_status": args.status, "path": str(path)}))
     return 0
 
 
-def cmd_active_conflicts(args: argparse.Namespace) -> int:
-    """Read-only scan for other non-terminal runs on the same repo+specification."""
-    repo = Path(args.repo).resolve()
-    repo_dir = Path(args.dir).expanduser() / repo.name
-    exclude = Path(args.exclude).resolve() if args.exclude else None
+def _active_conflicts(repo_dir: Path, specification: str, exclude: Path | None) -> List[Dict[str, Any]]:
+    """Other non-terminal run records under `repo_dir` targeting `specification`."""
     results: List[Dict[str, Any]] = []
     if repo_dir.is_dir():
         for path in sorted(repo_dir.glob("*.yaml")):
@@ -376,7 +394,7 @@ def cmd_active_conflicts(args: argparse.Namespace) -> int:
             record = _load(path)
             if record.get("final_status") is not None:
                 continue
-            if record.get("specification") != args.specification:
+            if record.get("specification") != specification:
                 continue
             results.append({
                 "run_id": record.get("run_id"),
@@ -385,7 +403,101 @@ def cmd_active_conflicts(args: argparse.Namespace) -> int:
                 "request_summary": record.get("request_summary"),
                 "agent": record.get("agent"),
             })
-    print(json.dumps(results))
+    return results
+
+
+def cmd_active_conflicts(args: argparse.Namespace) -> int:
+    """Read-only scan for other non-terminal runs on the same repo+specification."""
+    repo = Path(args.repo).resolve()
+    repo_dir = Path(args.dir).expanduser() / repo.name
+    exclude = Path(args.exclude).resolve() if args.exclude else None
+    print(json.dumps(_active_conflicts(repo_dir, args.specification, exclude)))
+    return 0
+
+
+def _claim_slug(specification: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9_.-]", "_", specification or "")
+    return slug[:200] or "unknown"
+
+
+def _lock_path(run_path: Path, specification: str) -> Path:
+    return run_path.parent / ".claims" / f"{_claim_slug(specification)}.lock"
+
+
+def _load_lock(lock_path: Path) -> Dict[str, Any]:
+    try:
+        return json.loads(lock_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _lock_is_stale(owner: Dict[str, Any]) -> bool:
+    """A lock is stale if its owning run record is gone or already terminal."""
+    owner_path = owner.get("path")
+    if not owner_path:
+        return True
+    record_path = Path(owner_path)
+    if not record_path.exists():
+        return True
+    return _load(record_path).get("final_status") is not None
+
+
+def cmd_claim(args: argparse.Namespace) -> int:
+    """Atomically claim repo+specification for the run at RUN before implementing it.
+
+    Combines the active-conflicts exclusivity check and the run record's
+    `specification` write into one OS-atomic step (O_CREAT|O_EXCL on a lock
+    file under `<run's repo dir>/.claims/`), closing the TOCTOU gap where two
+    sessions each pass the read-only scan before either's record is visible
+    to the other.
+    """
+    run_path = Path(args.run)
+    if not run_path.exists():
+        raise SystemExit(f"run record not found: {run_path}")
+    repo_dir = run_path.parent
+    lock_path = _lock_path(run_path, args.specification)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _try_acquire() -> int | None:
+        try:
+            return os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            return None
+
+    fd = _try_acquire()
+    if fd is None:
+        # Contended -- reclaim only if the existing lock's owning run is
+        # provably done (finished) or gone (record deleted/pruned). A live
+        # non-terminal owner is a real conflict, not staleness.
+        if _lock_is_stale(_load_lock(lock_path)):
+            lock_path.unlink(missing_ok=True)
+            fd = _try_acquire()
+        if fd is None:
+            print(json.dumps({"status": "already-claimed", **_load_lock(lock_path)}))
+            return 1
+
+    # Lock held: no new racer can reach this point for the same
+    # repo+specification until we release or finish. Still honor any
+    # pre-existing non-terminal record tagged via plain `set` (predates this
+    # primitive, or an out-of-band write) -- the lock alone only guards
+    # against other `claim` callers, not stale `specification` writes.
+    conflicts = _active_conflicts(repo_dir, args.specification, run_path.resolve())
+    if conflicts:
+        os.close(fd)
+        lock_path.unlink(missing_ok=True)
+        print(json.dumps({"status": "conflict", "conflicts": conflicts}))
+        return 1
+
+    record = _load(run_path)
+    with os.fdopen(fd, "w") as f:
+        f.write(json.dumps({
+            "run_id": record.get("run_id"),
+            "path": str(run_path),
+            "claimed_at": _now(),
+        }))
+    record["specification"] = args.specification
+    _save(run_path, record)
+    print(json.dumps({"status": "claimed", "specification": args.specification}))
     return 0
 
 
@@ -531,6 +643,11 @@ def main(argv=None) -> int:
     s.add_argument("--specification", required=True)
     s.add_argument("--exclude", default=None)
     s.set_defaults(func=cmd_active_conflicts)
+
+    s = sub.add_parser("claim")
+    s.add_argument("run")
+    s.add_argument("--specification", required=True)
+    s.set_defaults(func=cmd_claim)
 
     s = sub.add_parser("prune")
     s.add_argument("--dir", default="~/.go/runs")
