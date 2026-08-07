@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -64,6 +65,36 @@ def _group_files(repo: Path, spec_id: str, group_name: str) -> Optional[List[str
                 files.update(task.get("files") or [])
         return sorted(files)
     return None
+
+
+def _files_on_base(repo: Path, files: List[str], base: Optional[str] = None) -> bool:
+    """Whether every path in `files` still exists on `base` (or the current branch).
+
+    A group that reconciled to `QUARANTINED` in the run journal may simply
+    already be present on the base branch by the time this check runs (e.g. a
+    later group's merge subsumed it). `git ls-tree` against `base` is the
+    cheapest way to confirm that without a network call.
+    """
+    if base is None:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            return False
+        base = result.stdout.strip()
+    for path in files:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "ls-tree", base, "--", path],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return False
+    return True
 
 
 def _iter_journal_files(worktrees_dir: Path):
