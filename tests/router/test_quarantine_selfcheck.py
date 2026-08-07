@@ -9,7 +9,7 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
-from worktrail.router.quarantine_selfcheck import check_repo, main, sweep
+from worktrail.router.quarantine_selfcheck import _group_files, check_repo, main, sweep
 
 
 def _journal(worktrees_dir: Path, spec_id: str, groups: dict) -> Path:
@@ -24,6 +24,20 @@ def _repo_with_worktrees(root: Path, name: str) -> Path:
     repo.mkdir(parents=True)
     (repo / ".git").mkdir()
     return repo
+
+
+def _write_runplan(repo: Path, spec_id: str, tasks: list) -> Path:
+    runplans_dir = repo.parent / f"{repo.name}-worktrees" / "runplans"
+    runplans_dir.mkdir(parents=True, exist_ok=True)
+    path = runplans_dir / f"{spec_id}-abc123.json"
+    path.write_text(json.dumps({"tasks": tasks}), encoding="utf-8")
+    return path
+
+
+_RUNPLAN_TASKS = [
+    {"id": "1.1", "files": ["a.py"], "deps": []},
+    {"id": "1.2", "files": ["b.py"], "deps": ["1.1"]},
+]
 
 
 _CLEAN_GROUPS = {"1.1": {"state": "MERGED", "pr_url": "https://example.com/pr/1"}}
@@ -62,6 +76,26 @@ class TestCheckRepo(unittest.TestCase):
         self.assertEqual(finding["group"], "1.2")
         self.assertEqual(finding["pr_url"], "https://example.com/pr/2")
         self.assertAlmostEqual(finding["age_days"], 3.0, places=1)
+
+
+class TestGroupFiles(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def test_no_runplan_cache_yields_none(self):
+        repo = _repo_with_worktrees(self.tmp, "myrepo")
+        self.assertIsNone(_group_files(repo, "some-spec", "feature-1"))
+
+    def test_group_name_matches_yields_file_union(self):
+        repo = _repo_with_worktrees(self.tmp, "myrepo")
+        _write_runplan(repo, "some-spec", _RUNPLAN_TASKS)
+        result = _group_files(repo, "some-spec", "feature-1")
+        self.assertEqual(result, ["a.py", "b.py"])
+
+    def test_group_name_not_found_yields_none(self):
+        repo = _repo_with_worktrees(self.tmp, "myrepo")
+        _write_runplan(repo, "some-spec", _RUNPLAN_TASKS)
+        self.assertIsNone(_group_files(repo, "some-spec", "feature-99"))
 
 
 class TestSweep(unittest.TestCase):
