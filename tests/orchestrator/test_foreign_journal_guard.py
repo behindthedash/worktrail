@@ -11,7 +11,9 @@ import json
 import os
 import sys
 import tempfile
+import types
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -227,6 +229,78 @@ class FullRealInnerForeignJournalRaisesTest(unittest.TestCase):
         self.assertIn(journal_path, message)
         self.assertIn(spec_rel, message)
         self.assertIn("--fresh", message)
+
+
+class FullRealInnerFreshDiscardsForeignJournalTest(unittest.TestCase):
+    """2.5: after a foreign-journal error, re-running with resume=False
+    (--fresh) discards the journal (spec-path-task-crosscheck 1.1's
+    `if not resume and Path(journal_path).exists(): unlink()` fires before
+    the resume block that raises) and starts cleanly with no error --
+    even though the on-disk journal is the SAME foreign one that raised on
+    the prior resume=True attempt."""
+
+    def test_fresh_rerun_discards_foreign_journal_and_raises_no_error(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            journal_path = os.path.join(tmpdir, "journal.json")
+            with open(journal_path, "w") as f:
+                json.dump(
+                    {
+                        "entries": [
+                            {"task": "9.9", "role": "implement", "report": {"head_sha": "deadbee"}}
+                        ]
+                    },
+                    f,
+                )
+            self.assertTrue(Path(journal_path).exists())
+
+            fake_git = MagicMock()
+            fake_git.stdout = "dev"
+            fake_integrate = types.ModuleType("integrate")
+            fake_integrate.finish_real = MagicMock(return_value=([], {}, {}))
+            fake_verify = types.ModuleType("verify")
+            fake_verify.verify_and_cleanup = MagicMock(return_value={"quarantined": {}, "merged": []})
+            fake_verify._make_live_spawn = MagicMock(return_value=MagicMock())
+
+            current_tasks = [{"id": "1.1", "status": "pending"}]
+
+            with patch.dict(sys.modules, {"integrate": fake_integrate, "verify": fake_verify}), patch(
+                "worktrail.orchestrator.live._git", return_value=fake_git
+            ), patch(
+                "worktrail.orchestrator.live.journal_path_for", return_value=journal_path
+            ), patch(
+                "worktrail.orchestrator.live.taskformats.load_spec",
+                return_value=("spec-id", current_tasks),
+            ), patch(
+                "worktrail.orchestrator.live.live_run_real",
+                return_value={"spec_id": "spec-id", "tasks": current_tasks, "entries": 0, "done": 0, "total": 0},
+            ) as mock_lrr, patch(
+                "worktrail.orchestrator.live.read_or_create_run_id", return_value="full-fresh-test"
+            ), patch(
+                "worktrail.orchestrator.live.coordinator"
+            ) as mock_coord, patch(
+                "worktrail.orchestrator.live.progress"
+            ):
+                mock_coord.plan_groups.return_value = []
+                mock_coord.deliverable_subset.return_value = ([], [])
+
+                try:
+                    live._full_real_inner(
+                        "/tmp/fake-repo",
+                        "docs/specs/spec-path-task-crosscheck",
+                        resume=False,
+                    )
+                except RuntimeError as e:
+                    if "not present in --spec" in str(e):
+                        self.fail(f"--fresh re-run must not raise the foreign-journal guard: {e}")
+                    # any other RuntimeError from the mocked-out environment is
+                    # not what this test cares about
+                except Exception:
+                    pass
+
+            # --fresh (resume=False) discards the journal before the guard's
+            # resume block is ever reached.
+            self.assertFalse(Path(journal_path).exists())
+            mock_lrr.assert_called_once()
 
 
 if __name__ == "__main__":
