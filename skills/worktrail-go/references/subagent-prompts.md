@@ -625,6 +625,38 @@ derail cleanup before branch/remote teardown is confirmed. If an earlier step in
 did `cd "$WT"` anyway (e.g. to commit/push), `cd` back to `$REPO` (or anywhere outside every
 worktree about to be removed) before running any `git worktree remove` below.
 
+### Active-conflicts scan {#active-conflicts-scan}
+
+This is a **hard stop, not advisory**. It catches what a local `git worktree
+list`/`for-each-ref` glob check cannot: a non-terminal run record for the
+same `$SPEC_ID` (a prior claimed brief never orchestrated, or a
+same-`$SPEC_ID` race between two concurrent `/go` sessions) whose worktree or
+branch doesn't yet exist or doesn't match the glob:
+
+```bash
+# --dir is required by this subcommand (unlike `start`, it has no built-in
+# default) — pass the policy's `run_record_dir` if set, else the same
+# "~/.go/runs" default `start` uses.
+CONFLICTS=$(worktrail-run-record active-conflicts \
+  --dir "${RUN_RECORD_DIR:-~/.go/runs}" \
+  --repo "$REPO" --specification "$SPEC_ID" --exclude "$RUN")
+
+if [ "$(echo "$CONFLICTS" | python3 -c 'import sys, json; print(len(json.load(sys.stdin)))')" != "0" ]; then
+  echo "BLOCKED: active run(s) already target $SPEC_ID:" >&2
+  echo "$CONFLICTS" | python3 -c "
+import sys, json
+for r in json.load(sys.stdin):
+    print(f'  run_id={r[\"run_id\"]} started_at={r[\"started_at\"]} request_summary={r[\"request_summary\"]}')
+" >&2
+  worktrail-run-record finish "$RUN" \
+    --status blocked_external_dependency \
+    --merge-result "active-conflicts scan found a non-terminal run already targeting $SPEC_ID"
+  # Stop here — do not create $WT, do not touch any repo file.
+fi
+```
+
+If `$CONFLICTS` is empty, proceed with the caller's next step.
+
 ### Sibling worktree/branch check {#sibling-worktree-check}
 
 Shared by `#spec-worktree-setup` and `#change-spec-worktree-setup` — run before
