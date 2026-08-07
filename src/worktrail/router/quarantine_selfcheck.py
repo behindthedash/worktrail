@@ -12,13 +12,21 @@ human/agent to judge, matching `policy_selfcheck.py`'s and
 
 No network calls (local file inspection only, matching
 `check_repo_freshness.py`'s default posture).
+
+Usage:
+  quarantine_selfcheck.py --repo /path/to/repo [--json]
+  quarantine_selfcheck.py --repos-root ~/projects [--json]   # sweep every repo
 """
 from __future__ import annotations
 
+import argparse
 import json
+import sys
 import time
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
+
+from .policy_selfcheck import discover_repo_names
 
 
 def _iter_journal_files(worktrees_dir: Path):
@@ -71,3 +79,53 @@ def check_repo(repo: Path) -> Dict[str, Any]:
                 }
             )
     return result
+
+
+def sweep(repos_root: Path) -> List[Dict[str, Any]]:
+    """check_repo() for every repo under `repos_root` that has findings."""
+    names = discover_repo_names(repos_root)
+    results = []
+    for name in names:
+        r = check_repo(repos_root / name)
+        if r["findings"]:
+            results.append(r)
+    return results
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--repo", help="single repo to check")
+    p.add_argument("--repos-root", help="sweep every repo under this directory")
+    p.add_argument("--json", action="store_true")
+    args = p.parse_args(argv)
+
+    if not args.repo and not args.repos_root:
+        p.error("one of --repo or --repos-root is required")
+
+    if args.repos_root:
+        root = Path(args.repos_root).expanduser()
+        if args.repo:
+            results = [check_repo(Path(args.repo).expanduser())]
+        else:
+            results = sweep(root)
+    else:
+        results = [check_repo(Path(args.repo).expanduser())]
+
+    flagged = [r for r in results if r["findings"]]
+    if args.json:
+        print(json.dumps({"results": results, "flagged": len(flagged)}, indent=2))
+    else:
+        if not flagged:
+            print(f"quarantine_selfcheck: {len(results)} repo(s) checked, no QUARANTINED groups")
+        for r in flagged:
+            print(f"{r['repo']}:")
+            for f in r["findings"]:
+                print(
+                    f"  spec={f['spec_id']} group={f['group']} pr_url={f['pr_url']} "
+                    f"age_days={f['age_days']:.1f}"
+                )
+    return 1 if flagged else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
