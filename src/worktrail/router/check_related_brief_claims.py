@@ -27,11 +27,13 @@ module never blocks dispatch or mutates any brief.
 """
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..shared.brief_frontmatter import read_frontmatter
+from ..workqueue import work_queue as _wq
 from ..workqueue.work_queue import _agent_label as _wq_agent_label
 from ..workqueue.work_queue import resolve as _wq_resolve
 
@@ -66,6 +68,18 @@ def _focus_summary(path: Path, frontmatter: Dict[str, Any]) -> str:
     return focus
 
 
+def _stringify(value: Any) -> Optional[str]:
+    """`None`-preserving `str()` -- a `date`/`datetime` gets `.isoformat()`
+    for a stable, JSON-safe representation instead of the type-dependent
+    `str()` spelling."""
+    if value is None:
+        return None
+    isoformat = getattr(value, "isoformat", None)
+    if callable(isoformat):
+        return isoformat()
+    return str(value)
+
+
 def _resolve_active_match(related_id: str, picked_dir: Path, queue_dir: Path) -> Optional[Dict[str, Any]]:
     """Resolve `related_id` against `picked_dir` then `queue_dir`, using
     `work_queue.resolve()`'s own resolution rules. Returns an active-match
@@ -91,7 +105,10 @@ def _resolve_active_match(related_id: str, picked_dir: Path, queue_dir: Path) ->
         "id": related_id,
         "path": str(candidate),
         "claimed-by": candidate_fm.get("claimed-by"),
-        "claimed-at": candidate_fm.get("claimed-at"),
+        # PyYAML auto-parses an unquoted ISO-8601 `claimed-at:` value into a
+        # `datetime`, which `json.dumps` can't serialize -- stringified here
+        # so this dict stays directly JSON-safe for the `--json` CLI path.
+        "claimed-at": _stringify(candidate_fm.get("claimed-at")),
         "repo": candidate_fm.get("repo"),
         "focus": _focus_summary(candidate, candidate_fm),
     }
@@ -217,3 +234,69 @@ def check(
     if warnings:
         result["warning"] = "; ".join(warnings)
     return result
+
+
+def _format_human(res: Dict[str, Any]) -> str:
+    if not res["checked"]:
+        return f"unknown: {res.get('warning') or 'related-brief claims could not be checked'}"
+
+    active: List[Dict[str, Any]] = list(res["active"]) if isinstance(res["active"], list) else []
+    if not active:
+        line = "no collision: none of this brief's related ids are actively claimed"
+        if res.get("warning"):
+            line += f"\n  warning: {res['warning']}"
+        return line
+
+    lines = [f"COLLISION: {len(active)} related brief(s) actively claimed"]
+    for m in active:
+        lines.append(
+            f"  {m['id']}  claimed-by={m.get('claimed-by')}  claimed-at={m.get('claimed-at')}"
+            f"  repo={m.get('repo')}"
+        )
+        if m.get("focus"):
+            lines.append(f"    focus: {m['focus']}")
+        if m.get("run_record"):
+            lines.append(f"    run_record: {m['run_record']}")
+    lines.append("  -> surface these to the operator; never block dispatch on this signal alone")
+    if res.get("warning"):
+        lines.append(f"  warning: {res['warning']}")
+    return "\n".join(lines)
+
+
+def main(argv=None) -> int:
+    import argparse
+
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--brief", required=True, help="path to the claimed brief .md file")
+    p.add_argument(
+        "--picked-dir", default=None,
+        help="work-queue picked directory (default: work_queue.base_dir()/picked)",
+    )
+    p.add_argument(
+        "--queue-dir", default=None,
+        help="work-queue directory (default: work_queue.base_dir()/queue)",
+    )
+    p.add_argument("--json", action="store_true")
+    args = p.parse_args(argv)
+
+    picked_dir = Path(args.picked_dir) if args.picked_dir else _wq.picked_dir()
+    queue_dir = Path(args.queue_dir) if args.queue_dir else _wq.queue_dir()
+
+    res = check(Path(args.brief), picked_dir, queue_dir)
+
+    if args.json:
+        print(json.dumps(res))
+    else:
+        print(_format_human(res))
+
+    # Always 0: this is a signal source for a human decision, not a gate. A
+    # non-zero exit here would turn "could not determine" into a dispatch
+    # failure, which is precisely the fail-open contract this module exists
+    # to honor.
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+
+    sys.exit(main(sys.argv[1:]))
