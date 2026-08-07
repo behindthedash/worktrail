@@ -100,6 +100,9 @@ from .automerge_selfcheck import check_repo as _automerge_check_repo
 # policy_drift_selfcheck is a sibling module (route:A go-policy-drift-guard).
 from .policy_drift_selfcheck import check_repo as _policy_drift_check_repo
 
+# quarantine_selfcheck is a sibling module (spec quarantined-group-visibility).
+from .quarantine_selfcheck import check_repo as _quarantine_check_repo
+
 from ..orchestrator.agent_capacity import gate_snapshot as _capacity_gate_snapshot
 
 # Policy routing is used only to annotate picker items.
