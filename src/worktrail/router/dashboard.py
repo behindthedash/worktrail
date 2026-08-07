@@ -100,6 +100,9 @@ from .automerge_selfcheck import check_repo as _automerge_check_repo
 # policy_drift_selfcheck is a sibling module (route:A go-policy-drift-guard).
 from .policy_drift_selfcheck import check_repo as _policy_drift_check_repo
 
+# quarantine_selfcheck is a sibling module (spec quarantined-group-visibility).
+from .quarantine_selfcheck import check_repo as _quarantine_check_repo
+
 from ..orchestrator.agent_capacity import gate_snapshot as _capacity_gate_snapshot
 
 # Policy routing is used only to annotate picker items.
@@ -1496,7 +1499,7 @@ def scan_repos(parent: Path) -> List[Dict[str, Any]]:
 
     Each row: {repo, path, has_specs, total, active, active_ids, active_specs,
     backlog, backlog_ids, worktrees, policy_findings, automerge_findings,
-    drift_findings}.
+    drift_findings, quarantine_findings}.
     Returns [] if the sibling resolver is unavailable or `parent` holds no
     git repos.
 
@@ -1514,6 +1517,10 @@ def scan_repos(parent: Path) -> List[Dict[str, Any]]:
     this repo's `go-policy.yaml` no longer describing repo reality — test files
     no runner reaches, or absence-claims contradicted by the filesystem (empty
     = clean or no policy file present).
+
+    `quarantine_findings` is `quarantine_selfcheck.check_repo()`'s signals for
+    this repo's orchestrator run journals recording a `QUARANTINED` group
+    (empty = clean or no run journals present).
 
     detect_stage calls are parallelised with a flat ThreadPoolExecutor across
     all spec dirs in all repos -- no nested pools, one thread per spec dir.
@@ -1543,6 +1550,9 @@ def scan_repos(parent: Path) -> List[Dict[str, Any]]:
         drift_findings: List[Dict[str, Any]] = []
         if _policy_drift_check_repo is not None:
             drift_findings = _policy_drift_check_repo(repo)["findings"]
+        quarantine_findings: List[Dict[str, Any]] = []
+        if _quarantine_check_repo is not None:
+            quarantine_findings = _quarantine_check_repo(repo)["findings"]
         repo_info[repo_key] = {
             "name": repo.name,
             "path": str(repo),
@@ -1551,6 +1561,7 @@ def scan_repos(parent: Path) -> List[Dict[str, Any]]:
             "policy_findings": policy_findings,
             "automerge_findings": automerge_findings,
             "drift_findings": drift_findings,
+            "quarantine_findings": quarantine_findings,
         }
         if specs_root.is_dir():
             for d in sorted(specs_root.iterdir()):
@@ -1593,6 +1604,7 @@ def scan_repos(parent: Path) -> List[Dict[str, Any]]:
                 "policy_findings": info["policy_findings"],
                 "automerge_findings": info["automerge_findings"],
                 "drift_findings": info["drift_findings"],
+                "quarantine_findings": info["quarantine_findings"],
                 "backlog": len(backlog_ids),
                 "backlog_ids": backlog_ids,
                 "worktrees": info["worktrees"],
@@ -1923,7 +1935,8 @@ def render_dashboard(
     a one-line review nudge; unguarded auto-merge workflow signals
     (automerge_selfcheck.py) get their own one-line review nudge; go-policy.yaml
     rationale-vs-reality drift signals (policy_drift_selfcheck.py) get theirs;
-    when a cluster
+    QUARANTINED-group signals (quarantine_selfcheck.py) get their own one-line
+    review nudge; when a cluster
     section is shown and
     `cluster_precision` (cluster_telemetry.summarize()'s result) has at least
     CLUSTER_PRECISION_MIN_DECIDED decided outcomes, an extra precision line is
@@ -1943,6 +1956,7 @@ def render_dashboard(
     policy_flags: List[str] = []
     automerge_flags: List[str] = []
     drift_flags: List[str] = []
+    quarantine_flags: List[str] = []
     runs: List[Dict[str, Any]] = []
     if repo_rows is not None:
         for r in repo_rows:
@@ -1953,6 +1967,10 @@ def render_dashboard(
             policy_flags.extend(f"{r['repo']} ({f['signal']})" for f in r.get("policy_findings", []))
             automerge_flags.extend(f"{r['repo']} ({f['signal']})" for f in r.get("automerge_findings", []))
             drift_flags.extend(f"{r['repo']} ({f['signal']})" for f in r.get("drift_findings", []))
+            quarantine_flags.extend(
+                f"{r['repo']} ({f['spec_id']}/{f['group']}, {f['age_days']:.0f}d)"
+                for f in r.get("quarantine_findings", [])
+            )
             for run in r.get("recent_runs", []) or []:
                 runs.append({"who": r["repo"], **run})
         runs.sort(key=lambda x: x.get("completed_at") or x.get("started_at") or "", reverse=True)
@@ -2061,6 +2079,11 @@ def render_dashboard(
             f"🚩 Policy drift ({len(drift_flags)}): {head}{more} "
             "→ go-policy.yaml no longer matches repo reality"
         )
+
+    if quarantine_flags:
+        head = ", ".join(quarantine_flags[:4])
+        more = f" … +{len(quarantine_flags) - 4}" if len(quarantine_flags) > 4 else ""
+        lines.append(f"🚩 Quarantined groups ({len(quarantine_flags)}): {head}{more} → review")
 
     if capacity and capacity.get("gated"):
         entries = ", ".join(
