@@ -568,6 +568,81 @@ class TestBatchMode(ScoreCandidatesTestBase):
             self.assertEqual(set(entry), {"path", "id", "focus", "reason"})
 
 
+class TestBlockScalarFocusParsing(unittest.TestCase):
+    """Regression coverage for _parse_fm's YAML block-scalar handling.
+
+    Brief 20260807-114939-worktrail-score-candidates-batch-mode: a `focus: |-`
+    field (the common multi-line capture format — ~18% of a real queue) was
+    parsed as the literal indicator string "|-" instead of its text, silently
+    zeroing focus-token overlap in both capture and batch scoring.
+    """
+
+    def test_parse_fm_dash_style_block_scalar(self):
+        content = "---\nfocus: |-\n  the actual focus text here\nrepo: null\n---\n"
+        fm = sc._parse_fm(content)
+        self.assertEqual(fm["focus"], "the actual focus text here")
+
+    def test_parse_fm_multiline_dash_style_joins_with_newline(self):
+        content = "---\nfocus: |-\n  line one\n  line two\nrepo: null\n---\n"
+        fm = sc._parse_fm(content)
+        self.assertEqual(fm["focus"], "line one\nline two")
+
+    def test_parse_fm_folded_style_joins_with_space(self):
+        content = "---\nfocus: >-\n  line one\n  line two\nrepo: null\n---\n"
+        fm = sc._parse_fm(content)
+        self.assertEqual(fm["focus"], "line one line two")
+
+    def test_parse_fm_block_scalar_stops_at_next_key(self):
+        content = "---\nfocus: |-\n  the focus text\nrepo: /a/b\nstatus: queued\n---\n"
+        fm = sc._parse_fm(content)
+        self.assertEqual(fm["focus"], "the focus text")
+        self.assertEqual(fm["repo"], "/a/b")
+        self.assertEqual(fm["status"], "queued")
+
+
+class TestBatchModeBlockScalarFocusRegression(ScoreCandidatesTestBase):
+    """End-to-end regression for the reported batch-mode miss (brief
+    20260807-114939): two same-repo briefs with substantially overlapping
+    `focus: |-` text were not surfaced as batch candidates because the block
+    scalar was parsed as the literal "|-" instead of the real text.
+    """
+
+    REPO = "/home/user/projects/datalena"
+
+    def _write_block_scalar_brief(self, name: str, focus_text: str, repo: str) -> Path:
+        content = (
+            "---\n"
+            "focus: |-\n"
+            f"  {focus_text}\n"
+            f"repo: {repo}\n"
+            "status: queued\n"
+            "---\n"
+            f"\n## Focus\n\n{focus_text}\n"
+        )
+        p = self.queue / name
+        p.write_text(content, encoding="utf-8")
+        return p
+
+    def test_near_identical_block_scalar_focus_briefs_now_batch(self):
+        primary_focus = (
+            "Enable datalena's migration-fold safety net: add migration_path_patterns "
+            "to docs/specs/go-policy.yaml for the orchestrator group-isolation fix so a "
+            "quarantined migration group does not block unrelated consumer groups."
+        )
+        companion_focus = (
+            "Configure datalena's docs/specs/go-policy.yaml with migration_path_patterns "
+            "so the orchestrator group-isolation fix actually takes effect for datalena's "
+            "own parallel-orchestrator runs, preventing a quarantined migration group."
+        )
+        primary = self._write_block_scalar_brief(
+            "20260701-000001-primary.md", primary_focus, self.REPO
+        )
+        self._write_block_scalar_brief("20260701-000002-cand.md", companion_focus, self.REPO)
+
+        result = sc.batch_candidates(primary, self.base)
+        self.assertEqual([c["id"] for c in result["batch"]], ["20260701-000002-cand"])
+
+
 class TestCLIOutput(unittest.TestCase):
     """Verify the CLI emits valid JSON."""
 
