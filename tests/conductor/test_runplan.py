@@ -60,6 +60,23 @@ def test_fingerprint_tracks_supporting_artifacts(tmp_path):
     assert runplan.fingerprint(d, tasks) != before
 
 
+def test_fingerprint_ignores_untracked_review_scratch(tmp_path):
+    """dispatch.py writes point-in-time review notes to `reviews/*.md` inside the
+    change directory; they are gitignored by design (artifact-policy.md: "NOT
+    maintained by anything -> never trust as current; not committed"). A task
+    worktree that went through the orchestrator's review role has this file on
+    disk while a clean CI checkout of the same git-tracked content never does --
+    reproduced on PR #189, where that divergence made a locally-recorded compile
+    marker fail CI's Scope check for byte-identical tracked content."""
+    tracked = _change_dir(tmp_path / "tracked")
+    dirty = _change_dir(tmp_path / "dirty")
+    (dirty / "reviews").mkdir()
+    (dirty / "reviews" / "1.1-review.md").write_text("findings: none\n")
+
+    tasks = [_task("1.1"), _task("1.2")]
+    assert runplan.fingerprint(tracked, tasks) == runplan.fingerprint(dirty, tasks)
+
+
 def test_fingerprint_tracks_planning_fields_not_just_titles(tmp_path):
     d = _change_dir(tmp_path)
     base = runplan.fingerprint(d, [_task("1.1"), _task("1.2")])
