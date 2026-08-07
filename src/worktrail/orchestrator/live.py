@@ -875,6 +875,25 @@ def _branch_exists(repo: Path, name: str) -> bool:
     return _git(repo, "rev-parse", "--verify", "--quiet", name, check=False).returncode == 0
 
 
+def _worktree_checkouts_on_branch(repo: Path, base: str) -> list[Path]:
+    """Every linked worktree (this repo's own checkout included) that has
+    `refs/heads/<base>` checked out right now. Worktrees share one ref store,
+    so a ref move in any one of them is visible in all the others."""
+    listing = _git(repo, "worktree", "list", "--porcelain", check=False)
+    if listing.returncode != 0:
+        return []
+    paths: list[Path] = []
+    current_path: Path | None = None
+    for line in listing.stdout.splitlines():
+        if line.startswith("worktree "):
+            current_path = Path(line[len("worktree ") :].strip())
+        elif line.startswith("branch ") and current_path is not None:
+            if line[len("branch ") :].strip() == f"refs/heads/{base}":
+                paths.append(current_path)
+            current_path = None
+    return paths
+
+
 def _refresh_base_branch(repo: Path, remote: str, base: str) -> None:
     """Fetch `<remote>/<base>` and fast-forward the LOCAL `base` ref before
     integration starts (brief 20260723-171500-orchestrator-long-run-base-
@@ -890,8 +909,19 @@ def _refresh_base_branch(repo: Path, remote: str, base: str) -> None:
     (a diverged local `base` -- local-only commits -- is left untouched with
     a printed warning, not force-updated), and a fetch failure (offline,
     auth) degrades to using the local ref as-is rather than aborting the run.
-    Uses `update-ref` (not `git pull`/`merge`) so it's safe even when `base`
-    is the branch currently checked out in this exact working tree.
+    Uses `update-ref` on the shared `refs/heads/<base>` ref rather than
+    `git pull`/`merge` run from a specific checkout, because `repo` (the
+    --repo argument) may itself be a linked worktree distinct from whichever
+    checkout has `base` checked out (brief 20260806-215026). `update-ref`
+    alone never touches any checkout's index/workdir though -- including
+    `repo`'s own, when `repo` IS that checkout -- so this refuses the ref
+    move entirely whenever any worktree with `base` checked out is dirty
+    (mirroring git's own "cannot force update branch checked out in
+    worktree" protection, which `update-ref` bypasses), and otherwise syncs
+    every such checkout via `reset --hard` right after moving the ref. This
+    avoids the exact bug this function exists to prevent: a checkout whose
+    HEAD silently outruns its own index/workdir, surfacing as fabricated (or
+    inflated) staged changes in `git status`.
     """
     fetch = _git(repo, "fetch", "--quiet", remote, base, check=False)
     if fetch.returncode != 0:
@@ -912,11 +942,40 @@ def _refresh_base_branch(repo: Path, remote: str, base: str) -> None:
             "local ref untouched (it may carry local-only commits; resolve manually)."
         )
         return
+
+    # Every checkout sharing this ref must be clean BEFORE moving it -- the
+    # ref move is what would desync a checkout's HEAD from its index/workdir,
+    # so a dirty checkout makes the whole move unsafe, not just that
+    # checkout's own sync.
+    checkouts = _worktree_checkouts_on_branch(repo, base)
+    dirty_checkouts = [
+        path
+        for path in checkouts
+        if _git(path, "status", "--porcelain", check=False).stdout.strip()
+    ]
+    if dirty_checkouts:
+        dirty_list = ", ".join(str(p) for p in dirty_checkouts)
+        print(
+            f"{_ts()} BASE REFRESH: '{base}' is checked out with uncommitted local changes "
+            f"at {dirty_list} -- leaving the ref untouched (resolve manually, then re-run)."
+        )
+        return
+
     upd = _git(repo, "update-ref", f"refs/heads/{base}", remote_sha, check=False)
-    if upd.returncode == 0:
-        print(f"{_ts()} BASE REFRESH: {base} {old_sha[:8]} -> {remote_sha[:8]} ({remote}/{base})")
-    else:
+    if upd.returncode != 0:
         print(f"{_ts()} BASE REFRESH: update-ref failed for '{base}'; leaving local ref untouched")
+        return
+    print(f"{_ts()} BASE REFRESH: {base} {old_sha[:8]} -> {remote_sha[:8]} ({remote}/{base})")
+
+    for path in checkouts:
+        sync = _git(path, "reset", "--hard", check=False)
+        if sync.returncode == 0:
+            print(f"{_ts()} BASE REFRESH: synced checkout at {path} to {remote_sha[:8]}")
+        else:
+            print(
+                f"{_ts()} BASE REFRESH: failed to sync checkout at {path}: "
+                f"{sync.stderr.strip()}"
+            )
 
 
 def _resume_drift_report(repo: Path, base: str, spec_id: str, tasks: list) -> None:
