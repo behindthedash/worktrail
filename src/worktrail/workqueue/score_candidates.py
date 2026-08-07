@@ -58,10 +58,14 @@ _FM_RE = re.compile(r"^---\r?\n(.*?)\n---\r?\n", re.DOTALL)
 # ---------------------------------------------------------------------------
 
 
+_BLOCK_SCALAR_RE = re.compile(r"^[|>][+-]?$")
+
+
 def _parse_fm(content: str) -> Dict[str, Any]:
     """Parse the YAML frontmatter of a handoff brief without yaml library.
 
-    Handles scalar values, null, and block-sequence lists (- item).
+    Handles scalar values, null, block-sequence lists (- item), and block
+    scalars (|, |-, >, >-) for multi-line fields like `focus:`.
     Returns {} on parse failure or missing frontmatter.
     """
     m = _FM_RE.match(content)
@@ -83,6 +87,15 @@ def _parse_fm(content: str) -> Dict[str, Any]:
             continue
         key = kv.group(1)
         val = kv.group(2).strip()
+        if _BLOCK_SCALAR_RE.match(val):
+            fold = val[0] == ">"
+            content_lines: List[str] = []
+            i += 1
+            while i < len(lines) and (not lines[i].strip() or lines[i].startswith((" ", "\t"))):
+                content_lines.append(lines[i].strip())
+                i += 1
+            result[key] = (" " if fold else "\n").join(content_lines)
+            continue
         if not val:
             # Possible block-sequence list
             items: List[str] = []
