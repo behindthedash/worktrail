@@ -148,6 +148,101 @@ class RefreshBaseBranchDivergedAbortsCleanly(unittest.TestCase):
             self.assertIn("failed", out.getvalue())
 
 
+class RefreshBaseBranchWorktreeSync(unittest.TestCase):
+    """brief 20260806-215026: _refresh_base_branch moves the SHARED
+    refs/heads/<base> ref via `update-ref`, which -- unlike `git branch -f`
+    or `git checkout` -- never syncs the index/workdir of any checkout that
+    already has that branch checked out. When `repo` (the --repo argument)
+    is a linked worktree distinct from the checkout that owns `base` (e.g. a
+    spec worktree refreshing while the canonical checkout sits on `base`),
+    the canonical checkout's HEAD ref silently advances while its index and
+    workdir stay pinned to the old commit -- `git status` there then reports
+    fabricated staged changes that are actually just the diff between old and
+    new tips, even though nothing was ever really touched.
+    """
+
+    def _clone_with_extra_worktree(self, tmp: Path):
+        """A 'local' checkout that stays ON `base`, plus a second linked
+        worktree ('spec_wt') on a different branch -- mirrors --repo pointing
+        at a spec worktree while a separate canonical checkout owns `base`."""
+        origin, local = _init_bare_and_clone(tmp)
+        spec_wt = tmp / "spec-worktree"
+        _run(local, "worktree", "add", "-q", "-b", "spec/feature", str(spec_wt))
+        return origin, local, spec_wt
+
+    def test_other_worktree_checked_out_on_base_is_synced_not_left_dirty(self):
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            origin, local, spec_wt = self._clone_with_extra_worktree(tmp)
+            _push_extra_commit_from_a_second_clone(origin, tmp, n=1)
+
+            self.assertEqual(_run(local, "status", "--porcelain").stdout, "")
+
+            out = io.StringIO()
+            with redirect_stdout(out):
+                # Refresh runs against the SPEC worktree, not `local` -- but
+                # `local` is the checkout that has 'main' checked out.
+                live._refresh_base_branch(spec_wt, "origin", "main")
+
+            remote_tip = _run(local, "rev-parse", "origin/main").stdout.strip()
+            self.assertEqual(_run(local, "rev-parse", "main").stdout.strip(), remote_tip)
+            self.assertEqual(
+                _run(local, "status", "--porcelain").stdout,
+                "",
+                "the checkout with 'main' checked out must stay clean after a "
+                "refresh run from a different worktree -- it must not appear "
+                "dirty just because the shared ref moved out from under it",
+            )
+
+    def test_dirty_other_worktree_blocks_the_ref_move_entirely(self):
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            origin, local, spec_wt = self._clone_with_extra_worktree(tmp)
+            _push_extra_commit_from_a_second_clone(origin, tmp, n=1)
+
+            # `local` has real uncommitted local work -- must never be clobbered,
+            # and the shared ref must not silently advance out from under it
+            # (that would desync HEAD from local's still-old index/workdir).
+            (local / "README.md").write_text("local edit, not committed\n")
+            local_dirty_before = _run(local, "status", "--porcelain").stdout
+            before_sha = _run(local, "rev-parse", "main").stdout.strip()
+
+            out = io.StringIO()
+            with redirect_stdout(out):
+                live._refresh_base_branch(spec_wt, "origin", "main")
+
+            # Ref move is refused entirely -- both worktrees still see the old tip.
+            self.assertEqual(_run(local, "rev-parse", "main").stdout.strip(), before_sha)
+            self.assertEqual(_run(spec_wt, "rev-parse", "main").stdout.strip(), before_sha)
+            # The dirty checkout's index/workdir are byte-for-byte untouched.
+            self.assertEqual(_run(local, "status", "--porcelain").stdout, local_dirty_before)
+            self.assertIn(str(local), out.getvalue())
+            self.assertIn("uncommitted local changes", out.getvalue())
+
+    def test_self_checkout_on_base_stays_clean_after_own_refresh(self):
+        """The PRIMARY intended usage: --repo IS the checkout with `base`
+        checked out. Confirms `_refresh_base_branch` no longer desyncs its
+        own working tree either -- the same update-ref root cause applied to
+        `repo` itself, not only to other worktrees."""
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            origin, local = _init_bare_and_clone(tmp)
+            _push_extra_commit_from_a_second_clone(origin, tmp, n=1)
+
+            out = io.StringIO()
+            with redirect_stdout(out):
+                live._refresh_base_branch(local, "origin", "main")
+
+            remote_tip = _run(local, "rev-parse", "origin/main").stdout.strip()
+            self.assertEqual(_run(local, "rev-parse", "main").stdout.strip(), remote_tip)
+            self.assertEqual(
+                _run(local, "status", "--porcelain").stdout,
+                "",
+                "a checkout refreshing its own base branch must not desync "
+                "its own index/workdir from the moved ref",
+            )
+
+
 class ResumeDriftReport(unittest.TestCase):
     def _repo_with_task_branch_and_drift(self, tmp: Path, drift_commits: int):
         repo = tmp / "repo"
