@@ -67,7 +67,7 @@ def _group_files(repo: Path, spec_id: str, group_name: str) -> Optional[List[str
     return None
 
 
-def _files_on_base(repo: Path, files: List[str], base: Optional[str] = None) -> bool:
+def _files_on_base(repo: Path, base: str, files: List[str]) -> bool:
     """Whether every path in `files` still exists on `base` (or the current branch).
 
     A group that reconciled to `QUARANTINED` in the run journal may simply
@@ -75,7 +75,7 @@ def _files_on_base(repo: Path, files: List[str], base: Optional[str] = None) -> 
     later group's merge subsumed it). `git ls-tree` against `base` is the
     cheapest way to confirm that without a network call.
     """
-    if base is None:
+    if not base:
         result = subprocess.run(
             ["git", "-C", str(repo), "rev-parse", "--abbrev-ref", "HEAD"],
             capture_output=True,
