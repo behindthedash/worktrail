@@ -257,7 +257,7 @@ class TestCheck(unittest.TestCase):
                 return _FakeResult(0, "")  # nothing touched a.py
             if cmd[:3] == ["gh", "pr", "view"]:
                 return _FakeResult(0, json.dumps({"labels": []}))  # no label yet
-            if cmd[:3] == ["gh", "pr", "edit"]:
+            if cmd[:2] == ["gh", "api"] and "/labels" in cmd[2]:
                 return _FakeResult(0, "")
             raise AssertionError(f"unscripted call: {cmd}")
 
@@ -272,7 +272,8 @@ class TestCheck(unittest.TestCase):
                               "resolveReviewThread" in " ".join(c) for c in calls))
         # native auto-merge is blocked via the additive go:no-automerge label
         self.assertEqual(res["no_automerge_label_applied"], "go:no-automerge")
-        self.assertIn(["gh", "pr", "edit", "42", "--add-label", "go:no-automerge"], calls)
+        self.assertIn(["gh", "api", "repos/acme/widgets/issues/42/labels",
+                       "-X", "POST", "-f", "labels[]=go:no-automerge"], calls)
 
     def test_unaddressed_thread_skips_label_when_already_present(self) -> None:
         def runner(cmd: List[str], **kwargs: Any) -> _FakeResult:
@@ -284,7 +285,7 @@ class TestCheck(unittest.TestCase):
                 return _FakeResult(0, "")
             if cmd[:3] == ["gh", "pr", "view"]:
                 return _FakeResult(0, json.dumps({"labels": [{"name": "go:no-automerge"}]}))
-            if cmd[:3] == ["gh", "pr", "edit"]:
+            if cmd[:2] == ["gh", "api"] and "/labels" in cmd[2]:
                 raise AssertionError("must not re-add an already-present label")
             raise AssertionError(f"unscripted call: {cmd}")
 

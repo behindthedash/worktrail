@@ -18,19 +18,89 @@ headless-dispatch poll-exit path (router/poll_run.py) and the CLI entrypoint
 below (invoked from sdd-workflow's own Phase 8, covering interactive Claude
 and Codex in-session dispatch, which never go through poll_run.py at all)
 can apply the identical correction.
+
+`gh pr edit <pr_url> --add-label <label>` routes through a GraphQL mutation
+that also touches the PR's classic-Projects fields. On a repo/org with a
+legacy Projects (classic) board still attached, that mutation fails outright
+("Projects (classic) is being deprecated") -- confirmed live 2026-08-07 on
+behindthedash/devops during PR #124's auto-merge label application, where
+`gh api repos/OWNER/REPO/issues/N/labels -X POST` (the REST endpoint, no
+Projects-classic fields in its payload) worked as a manual fallback. The two
+label-add call sites below use that REST endpoint instead of `gh pr edit` for
+this reason -- `_current_pr_labels`'s read-only `gh pr view` is unaffected and
+unchanged.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Tuple
 
+from .automerge_preflight import owner_repo_from_git
 from .run_record import _load as load_run_record
 
 Runner = Callable[..., "subprocess.CompletedProcess[str]"]
+
+_PR_URL_RE = re.compile(r"^https://github\.com/([^/]+)/([^/]+)/pull/(\d+)/?$")
+
+
+def _parse_pr_url(pr_url: str) -> Optional[Tuple[str, str, str]]:
+    """(owner, repo, issue_number) from a `https://github.com/OWNER/REPO/pull/N`
+    URL, or None if it doesn't match that shape."""
+    match = _PR_URL_RE.match(pr_url)
+    if not match:
+        return None
+    owner, repo_name, number = match.groups()
+    return owner, repo_name, number
+
+
+def _owner_repo_number(repo: str, pr_url: str,
+                       runner: Optional[Runner] = None) -> Optional[Tuple[str, str, str]]:
+    """(owner, repo, issue_number) from either shape callers pass as `pr_url`:
+    a full `https://github.com/OWNER/REPO/pull/N` URL (`poll_run.py`,
+    `drain.py`, `reconcile_pr_labels.py`, this module's own `main()`), or a
+    bare PR number (`check_review_threads.py` -- `gh pr edit <number>` needs
+    no owner/repo since it resolves the repo from `cwd`, but the REST
+    endpoint below always needs both explicitly). For the bare-number case,
+    owner/repo is resolved from `repo`'s own `origin` remote."""
+    parsed = _parse_pr_url(pr_url)
+    if parsed is not None:
+        return parsed
+    if not pr_url.strip().isdigit():
+        return None
+    owner_repo = owner_repo_from_git(Path(repo), runner or subprocess.run)
+    if owner_repo is None or "/" not in owner_repo:
+        return None
+    owner, repo_name = owner_repo.split("/", 1)
+    return owner, repo_name, pr_url.strip()
+
+
+def _add_label(repo: str, pr_url: str, label: str,
+               runner: Optional[Runner] = None) -> Optional[str]:
+    """Add `label` to the PR via the REST issues-labels endpoint (see module
+    docstring for why not `gh pr edit --add-label`). Returns `label` on
+    success, None on any failure -- logging a warning to stderr first so a
+    swallowed failure is never silent."""
+    parsed = _owner_repo_number(repo, pr_url, runner)
+    if parsed is None:
+        print(f"warning: pr_labels: could not resolve owner/repo/number for "
+              f"PR {pr_url!r}; skipping label add", file=sys.stderr)
+        return None
+    owner, repo_name, number = parsed
+    result = (runner or subprocess.run)(
+        ["gh", "api", f"repos/{owner}/{repo_name}/issues/{number}/labels",
+         "-X", "POST", "-f", f"labels[]={label}"],
+        capture_output=True, text=True, cwd=repo, timeout=30,
+    )
+    if result.returncode != 0:
+        print(f"warning: pr_labels: failed to add label {label!r} to "
+              f"{pr_url}: {result.stderr.strip()}", file=sys.stderr)
+        return None
+    return label
 
 
 def _current_pr_labels(repo: str, pr_url: str, runner: Optional[Runner] = None) -> Optional[List[str]]:
@@ -70,12 +140,7 @@ def ensure_pr_risk_label(repo: Optional[str], pr_url: Optional[str],
     labels = _current_pr_labels(repo, pr_url)
     if labels is None or any(label.startswith("go:risk-") for label in labels):
         return None
-    new_label = f"go:risk-{risk_level}"
-    result = subprocess.run(
-        ["gh", "pr", "edit", pr_url, "--add-label", new_label],
-        capture_output=True, text=True, cwd=repo, timeout=30,
-    )
-    return new_label if result.returncode == 0 else None
+    return _add_label(repo, pr_url, f"go:risk-{risk_level}")
 
 
 def ensure_pr_no_automerge_label(repo: Optional[str], pr_url: Optional[str],
@@ -100,11 +165,7 @@ def ensure_pr_no_automerge_label(repo: Optional[str], pr_url: Optional[str],
     labels = _current_pr_labels(repo, pr_url, runner=runner)
     if labels is None or "go:no-automerge" in labels:
         return None
-    result = (runner or subprocess.run)(
-        ["gh", "pr", "edit", pr_url, "--add-label", "go:no-automerge"],
-        capture_output=True, text=True, cwd=repo, timeout=30,
-    )
-    return "go:no-automerge" if result.returncode == 0 else None
+    return _add_label(repo, pr_url, "go:no-automerge", runner=runner)
 
 
 def main(argv=None) -> int:

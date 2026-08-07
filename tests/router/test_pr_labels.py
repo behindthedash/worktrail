@@ -19,9 +19,10 @@ from worktrail.router.pr_labels import ensure_pr_no_automerge_label, ensure_pr_r
 
 
 class _FakeCompleted:
-    def __init__(self, returncode=0, stdout=""):
+    def __init__(self, returncode=0, stdout="", stderr=""):
         self.returncode = returncode
         self.stdout = stdout
+        self.stderr = stderr
 
 
 def test_ensure_pr_risk_label_adds_when_none_present(monkeypatch):
@@ -31,7 +32,7 @@ def test_ensure_pr_risk_label_adds_when_none_present(monkeypatch):
         calls.append(cmd)
         if cmd[:3] == ["gh", "pr", "view"]:
             return _FakeCompleted(0, json.dumps({"labels": []}))
-        if cmd[:3] == ["gh", "pr", "edit"]:
+        if cmd[:2] == ["gh", "api"]:
             return _FakeCompleted(0, "")
         raise AssertionError(f"unexpected command: {cmd}")
 
@@ -39,8 +40,8 @@ def test_ensure_pr_risk_label_adds_when_none_present(monkeypatch):
     result = ensure_pr_risk_label("/repo", "https://github.com/o/r/pull/1", "low")
     assert result == "go:risk-low"
     assert ["gh", "pr", "view", "https://github.com/o/r/pull/1", "--json", "labels"] in calls
-    assert ["gh", "pr", "edit", "https://github.com/o/r/pull/1",
-            "--add-label", "go:risk-low"] in calls
+    assert ["gh", "api", "repos/o/r/issues/1/labels",
+            "-X", "POST", "-f", "labels[]=go:risk-low"] in calls
 
 
 def test_ensure_pr_risk_label_noop_when_risk_label_already_present(monkeypatch):
@@ -48,7 +49,7 @@ def test_ensure_pr_risk_label_noop_when_risk_label_already_present(monkeypatch):
         if cmd[:3] == ["gh", "pr", "view"]:
             return _FakeCompleted(0, json.dumps({"labels": [{"name": "go:risk-high"},
                                                              {"name": "go:no-automerge"}]}))
-        raise AssertionError(f"gh pr edit must not run: {cmd}")
+        raise AssertionError(f"gh api add-label must not run: {cmd}")
 
     monkeypatch.setattr(pr_labels.subprocess, "run", fake_run)
     result = ensure_pr_risk_label("/repo", "https://github.com/o/r/pull/1", "low")
@@ -59,22 +60,22 @@ def test_ensure_pr_risk_label_never_touches_no_automerge(monkeypatch):
     """A go:no-automerge label an agent legitimately added must survive
     untouched -- this corrector only ADDS a missing risk label, it never
     inspects or removes go:no-automerge."""
-    edit_calls = []
+    add_calls = []
 
     def fake_run(cmd, capture_output, text, cwd, timeout):
         if cmd[:3] == ["gh", "pr", "view"]:
             return _FakeCompleted(0, json.dumps({"labels": [{"name": "go:no-automerge"}]}))
-        if cmd[:3] == ["gh", "pr", "edit"]:
-            edit_calls.append(cmd)
+        if cmd[:2] == ["gh", "api"]:
+            add_calls.append(cmd)
             return _FakeCompleted(0, "")
         raise AssertionError(f"unexpected command: {cmd}")
 
     monkeypatch.setattr(pr_labels.subprocess, "run", fake_run)
     result = ensure_pr_risk_label("/repo", "https://github.com/o/r/pull/1", "high")
     assert result == "go:risk-high"
-    assert edit_calls == [["gh", "pr", "edit", "https://github.com/o/r/pull/1",
-                           "--add-label", "go:risk-high"]]
-    for call in edit_calls:
+    assert add_calls == [["gh", "api", "repos/o/r/issues/1/labels",
+                          "-X", "POST", "-f", "labels[]=go:risk-high"]]
+    for call in add_calls:
         assert "go:no-automerge" not in call
 
 
@@ -100,15 +101,54 @@ def test_ensure_pr_risk_label_noop_when_gh_view_fails(monkeypatch):
     assert result is None
 
 
-def test_ensure_pr_risk_label_returns_none_when_gh_edit_fails(monkeypatch):
+def test_ensure_pr_risk_label_returns_none_when_gh_api_add_fails(monkeypatch, capsys):
     def fake_run(cmd, capture_output, text, cwd, timeout):
         if cmd[:3] == ["gh", "pr", "view"]:
             return _FakeCompleted(0, json.dumps({"labels": []}))
-        return _FakeCompleted(1, "")  # gh pr edit fails
+        return _FakeCompleted(1, "", stderr="GraphQL: Projects (classic) is being deprecated")
 
     monkeypatch.setattr(pr_labels.subprocess, "run", fake_run)
     result = ensure_pr_risk_label("/repo", "https://github.com/o/r/pull/1", "medium")
     assert result is None
+    assert "failed to add label" in capsys.readouterr().err
+
+
+def test_ensure_pr_risk_label_returns_none_and_warns_when_owner_repo_unresolvable(monkeypatch, capsys):
+    def fake_run(cmd, **kwargs):
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return _FakeCompleted(0, json.dumps({"labels": []}))
+        if cmd == ["git", "remote", "get-url", "origin"]:
+            return _FakeCompleted(1, "")  # no origin remote to fall back to
+        raise AssertionError(f"gh api must not run when owner/repo is unresolvable: {cmd}")
+
+    monkeypatch.setattr(pr_labels.subprocess, "run", fake_run)
+    # not a full PR URL and not a bare PR number either -- nothing to resolve
+    result = ensure_pr_risk_label("/repo", "https://github.com/o/r/issues/1", "medium")
+    assert result is None
+    assert "could not resolve" in capsys.readouterr().err
+
+
+def test_ensure_pr_no_automerge_label_resolves_owner_repo_from_git_for_bare_pr_number(monkeypatch):
+    """check_review_threads.py passes a bare PR number (gh pr edit resolves
+    the repo from cwd) -- the REST endpoint needs owner/repo explicitly, so
+    this must fall back to the local git remote instead of failing to parse."""
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return _FakeCompleted(0, json.dumps({"labels": []}))
+        if cmd == ["git", "remote", "get-url", "origin"]:
+            return _FakeCompleted(0, "https://github.com/acme/widgets.git\n")
+        if cmd[:2] == ["gh", "api"]:
+            return _FakeCompleted(0, "")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(pr_labels.subprocess, "run", fake_run)
+    result = ensure_pr_no_automerge_label("/repo", "42", eligible=False)
+    assert result == "go:no-automerge"
+    assert ["gh", "api", "repos/acme/widgets/issues/42/labels",
+            "-X", "POST", "-f", "labels[]=go:no-automerge"] in calls
 
 
 # ---------------------------------------------------------------------------
@@ -121,15 +161,15 @@ def test_ensure_pr_no_automerge_label_adds_when_ineligible_and_none_present(monk
         calls.append(cmd)
         if cmd[:3] == ["gh", "pr", "view"]:
             return _FakeCompleted(0, json.dumps({"labels": [{"name": "go:risk-high"}]}))
-        if cmd[:3] == ["gh", "pr", "edit"]:
+        if cmd[:2] == ["gh", "api"]:
             return _FakeCompleted(0, "")
         raise AssertionError(f"unexpected command: {cmd}")
 
     monkeypatch.setattr(pr_labels.subprocess, "run", fake_run)
     result = ensure_pr_no_automerge_label("/repo", "https://github.com/o/r/pull/1", eligible=False)
     assert result == "go:no-automerge"
-    assert ["gh", "pr", "edit", "https://github.com/o/r/pull/1",
-            "--add-label", "go:no-automerge"] in calls
+    assert ["gh", "api", "repos/o/r/issues/1/labels",
+            "-X", "POST", "-f", "labels[]=go:no-automerge"] in calls
 
 
 def test_ensure_pr_no_automerge_label_noop_when_eligible(monkeypatch):
@@ -145,7 +185,7 @@ def test_ensure_pr_no_automerge_label_noop_when_already_present(monkeypatch):
     def fake_run(cmd, capture_output, text, cwd, timeout):
         if cmd[:3] == ["gh", "pr", "view"]:
             return _FakeCompleted(0, json.dumps({"labels": [{"name": "go:no-automerge"}]}))
-        raise AssertionError(f"gh pr edit must not run: {cmd}")
+        raise AssertionError(f"gh api add-label must not run: {cmd}")
 
     monkeypatch.setattr(pr_labels.subprocess, "run", fake_run)
     result = ensure_pr_no_automerge_label("/repo", "https://github.com/o/r/pull/1", eligible=False)
@@ -185,15 +225,16 @@ def test_ensure_pr_no_automerge_label_noop_when_gh_view_fails(monkeypatch):
     assert result is None
 
 
-def test_ensure_pr_no_automerge_label_returns_none_when_gh_edit_fails(monkeypatch):
+def test_ensure_pr_no_automerge_label_returns_none_when_gh_api_add_fails(monkeypatch, capsys):
     def fake_run(cmd, capture_output, text, cwd, timeout):
         if cmd[:3] == ["gh", "pr", "view"]:
             return _FakeCompleted(0, json.dumps({"labels": []}))
-        return _FakeCompleted(1, "")  # gh pr edit fails
+        return _FakeCompleted(1, "", stderr="GraphQL: Projects (classic) is being deprecated")
 
     monkeypatch.setattr(pr_labels.subprocess, "run", fake_run)
     result = ensure_pr_no_automerge_label("/repo", "https://github.com/o/r/pull/1", eligible=False)
     assert result is None
+    assert "failed to add label" in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------
