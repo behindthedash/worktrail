@@ -477,6 +477,27 @@ def _journaled_task_heads(entries: list) -> dict[str, str]:
     return heads
 
 
+def journal_foreign_task_ids(entries: list, tasks: list) -> set[str]:
+    """Return journal entry task ids that have no match in the currently loaded *tasks*.
+
+    A journal recorded against a different `--spec` path (or a stale one from before
+    tasks.md was edited) still parses and replays cleanly through `reconcile_from_journal`
+    -- `dispatch.apply_report` just swallows the `KeyError` for any id it can't find and
+    resume proceeds as if that task's history never happened. Observability-only
+    `{"event": ...}` markers carry no `task` id tied to the current run's task set and are
+    skipped here, matching `reconcile_from_journal`'s own skip.
+    """
+    task_ids = {t["id"] for t in tasks}
+    foreign: set[str] = set()
+    for e in entries:
+        if e.get("event"):
+            continue
+        task_id = e.get("task")
+        if task_id and task_id not in task_ids:
+            foreign.add(task_id)
+    return foreign
+
+
 def validate_task_metadata(tasks: list) -> None:
     """Refuse live fan-out when implementation tasks have no scope AND no serialization
     boundary. `conductor/compile.py`'s own prompt tells the model that an empty `files`
