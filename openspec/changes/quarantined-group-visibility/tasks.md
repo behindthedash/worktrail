@@ -45,9 +45,9 @@
 
 ## 3. Verification
 
-- [ ] 3.1 Run `PYTHONPATH=src pytest -q` and `PYTHONPATH=src python3 -m
+- [ ] 3.1 [e2e] Run `PYTHONPATH=src pytest -q` and `PYTHONPATH=src python3 -m
       worktrail.orchestrator.orchestrate check`; both must be green.
-- [ ] 3.2 Run `worktrail-quarantine-selfcheck --repo <this-checkout>` manually
-      and confirm it exits 0 with no findings against this repo's own
+- [ ] 3.2 [e2e] Run `worktrail-quarantine-selfcheck --repo <this-checkout>`
+      manually and confirm it exits 0 with no findings against this repo's own
       `run-*.json` state (or correctly reports any real quarantined group if
       one exists), as an end-to-end sanity check beyond unit tests.
