@@ -39,6 +39,7 @@ re-checked per group so a retargeted child PR is reconciled by the resolve loop.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -125,6 +126,11 @@ _NO_AUTOMERGE_LABEL = "go:no-automerge"
 # Transient gh/network failures should not quarantine a healthy group on the first
 # blip: pr_status retries a failed `gh pr view` this many times before giving up.
 GH_RETRIES = 3
+
+# Same env var `_run_integration_smoke` (integrate.py) honors, so one knob tunes
+# both the pre-PR and post-merge smoke timeouts for the common case of reusing
+# the same command for both.
+POST_MERGE_SMOKE_TIMEOUT = int(os.environ.get("ORCH_SMOKE_TIMEOUT", "1800"))
 
 # Structural backstop for dispatch.py's prompt-level "Hard rules" (resolve/ci-fix/
 # assembly-resolve workers must not touch shared CI config or orchestrator/spec
@@ -245,7 +251,12 @@ class Verifier:
                  git_lock: Optional[threading.Lock] = None,
                  merge_method: Optional[str] = None,
                  spec_rel: Optional[str] = None,
-                 declared_files: Optional[Dict[str, List[str]]] = None) -> None:
+                 declared_files: Optional[Dict[str, List[str]]] = None,
+                 post_merge_smoke_cmd: Optional[str] = None,
+                 post_merge_smoke: Optional[
+                     Callable[[str, Path], Tuple[bool, str]]] = None,
+                 merge_lock: Optional[threading.Lock] = None,
+                 cumulative_regression: Optional[Dict[str, str]] = None) -> None:
         self.repo = Path(repo).resolve()
         self.remote = remote
         self.base = base
@@ -307,10 +318,52 @@ class Verifier:
         # group written from independent verify-wave threads, same safety as
         # `_automerge_evidence` above.
         self._preflight_fallbacks: Dict[str, Dict[str, Any]] = {}
+        # Cumulative post-merge gate (go-policy.yaml's post_merge_smoke_cmd, falling
+        # back to integrate_smoke_cmd -- see policy.resolve_post_merge_smoke_cmd()).
+        # None = gate disabled, identical to pre-existing behavior. See auto_merge's
+        # caller (verify_one) and _merge_with_cumulative_gate below for the mechanism:
+        # independent FEATURE groups within a wave verify (mergeability + CI wait)
+        # CONCURRENTLY as before, but the actual merge step is serialized on
+        # `_merge_lock` so each confirmed merge is re-validated against the ACTUAL
+        # updated base HEAD before the next group's merge is attempted.
+        self.post_merge_smoke_cmd = post_merge_smoke_cmd
+        self._post_merge_smoke = post_merge_smoke or self._default_post_merge_smoke
+        # `merge_lock`/`cumulative_regression` are injectable (like `git_lock`)
+        # because the pipeline scheduler (live.py `_pipeline_scheduler`)
+        # constructs a FRESH Verifier per group -- a plain instance attribute
+        # would give each group its own isolated lock/flag and silently defeat
+        # cross-group serialization in that mode. The caller shares one
+        # `threading.Lock()` and one `dict` across every per-group Verifier it
+        # builds; a plain Verifier() with neither passed (e.g. the serial
+        # run_all path, or a test) gets private ones, identical in effect to
+        # not having this seam at all.
+        self._merge_lock = merge_lock if merge_lock is not None else threading.Lock()
+        # group name -> failure detail, for every group whose CONFIRMED merge
+        # failed the cumulative post-merge smoke check. Normally holds at most
+        # one entry -- once non-empty, no further group in this run is allowed
+        # to merge (the merge that caused it already landed and cannot be
+        # undone here, so the safest response is to stop compounding the run's
+        # changes onto a known-broken base and surface it loudly) -- but stays
+        # a dict rather than a single slot because two groups racing past the
+        # check in the same instant (before either observes the other's entry)
+        # can both legitimately regress independently; both must be visible.
+        self._cumulative_regression: Dict[str, str] = (
+            cumulative_regression if cumulative_regression is not None else {})
+        # Lazily created, reused across every post-merge smoke check in this run
+        # (one worktree, reset to the fetched base HEAD before each check) rather
+        # than a throwaway-per-check worktree -- there is at most one smoke run
+        # in flight at a time (serialized on `_merge_lock`), so reuse is safe and
+        # avoids repeated `git worktree add`/`remove` churn on the shared registry.
+        self._post_merge_worktree_path: Optional[Path] = None
 
     # -- low-level helpers ------------------------------------------------- #
     def _git(self, *args: str):
         return self.run(["git", "-C", str(self.repo), *args])
+
+    def _git_in(self, path: Path, *args: str):
+        """`git -C <path>`, for commands scoped to a worktree other than
+        `self.repo` (the shared post-merge smoke worktree)."""
+        return self.run(["git", "-C", str(path), *args])
 
     def _wm_runner(self, cmd: List[str]):
         return self.run(cmd)
@@ -432,6 +485,80 @@ class Verifier:
                      f"{(getattr(p, 'stderr', '') or '').strip()[:200]}")
             return None
         return path
+
+    def _post_merge_worktree(self) -> Optional[Path]:
+        """Lazily create (once per run) a detached worktree tracking `base`,
+        reused for every cumulative post-merge smoke check in this run -- reset
+        to the freshly fetched `remote/base` HEAD before each check rather than
+        recreated. Safe to reuse because at most one smoke check runs at a time
+        (the caller holds `_merge_lock` for the duration)."""
+        if self._post_merge_worktree_path is not None:
+            return self._post_merge_worktree_path
+        path = self.worktree_base / f"{self.spec_id}-postmerge"
+        with self._git_lock:  # `git worktree add` mutates the shared .git registry
+            if self._post_merge_worktree_path is not None:
+                return self._post_merge_worktree_path
+            self.worktree_base.mkdir(parents=True, exist_ok=True)
+            fetch = self._git("fetch", "-q", self.remote, self.base)
+            if getattr(fetch, "returncode", 1) != 0:
+                self.log(f"    post-merge smoke: could not fetch {self.remote}/{self.base}: "
+                         f"{(getattr(fetch, 'stderr', '') or '').strip()[:200]}")
+                return None
+            p = self._git("worktree", "add", "-f", "--detach", str(path),
+                          f"{self.remote}/{self.base}")
+            if getattr(p, "returncode", 1) != 0:
+                self.log(f"    post-merge smoke: could not create worktree: "
+                         f"{(getattr(p, 'stderr', '') or '').strip()[:200]}")
+                return None
+            self._post_merge_worktree_path = path
+        return path
+
+    def _default_post_merge_smoke(self, name: str, wt: Path) -> Tuple[bool, str]:
+        """Run `post_merge_smoke_cmd` in `wt` (already reset to the fetched base
+        HEAD by the caller). Real subprocess -- mirrors integrate.py's
+        `_run_integration_smoke`; fail-closed on timeout/spawn error (never treat
+        an unverified post-merge state as clean)."""
+        cmd = self.post_merge_smoke_cmd
+        if not cmd:
+            return False, "post_merge_smoke_cmd not configured"
+        self.log(f"  POST-MERGE SMOKE [{name:9}] against updated base: {cmd}")
+        try:
+            r = subprocess.run(
+                cmd, shell=True, cwd=str(wt), capture_output=True, text=True,
+                timeout=POST_MERGE_SMOKE_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            return False, f"timed out after {POST_MERGE_SMOKE_TIMEOUT}s"
+        except OSError as e:
+            return False, f"could not run post-merge smoke command: {e}"
+        if r.returncode == 0:
+            return True, "ok"
+        tail = ((r.stderr or "") + (r.stdout or "")).strip()[-300:]
+        return False, f"exit {r.returncode}: {tail}"
+
+    def _run_post_merge_smoke(self, name: str) -> Tuple[bool, str]:
+        """Fetch + hard-reset the shared post-merge worktree to the ACTUAL
+        updated base HEAD and run the configured smoke command there.
+
+        Called only when `post_merge_smoke_cmd` is configured and a group's PR
+        just CONFIRMED merged (see `_merge_with_cumulative_gate`); the caller
+        holds `_merge_lock`, so this is never concurrent with another group's
+        merge+smoke attempt.
+        """
+        wt = self._post_merge_worktree()
+        if wt is None:
+            return False, "could not prepare post-merge smoke worktree"
+        with self._git_lock:
+            fetch = self._git("fetch", "-q", self.remote, self.base)
+            if getattr(fetch, "returncode", 1) != 0:
+                return False, (f"could not fetch {self.remote}/{self.base}: "
+                               f"{(getattr(fetch, 'stderr', '') or '').strip()[:200]}")
+            reset = self._git_in(wt, "reset", "--hard", f"{self.remote}/{self.base}")
+            if getattr(reset, "returncode", 1) != 0:
+                return False, (f"could not reset post-merge worktree to "
+                               f"{self.remote}/{self.base}: "
+                               f"{(getattr(reset, 'stderr', '') or '').strip()[:200]}")
+        return self._post_merge_smoke(name, wt)
 
     def _spawn_group_worker(self, role: str, group: Dict[str, Any], gb: str,
                             extra: Dict[str, Any]) -> bool:
@@ -892,6 +1019,49 @@ class Verifier:
             return False, f"auto-merge failed: {err2[:200]}"
         return False, f"auto-merge failed: {err[:200]}"
 
+    def _merge_with_cumulative_gate(self, group: Dict[str, Any], gb: str) -> Tuple[bool, str]:
+        """`auto_merge()`, plus the cumulative post-merge gate around a CONFIRMED
+        merge (PR #167 root-cause class: independent FEATURE groups within a wave
+        verify -- mergeability + CI wait -- CONCURRENTLY, so a semantic dependency
+        between two groups that produced no `deps`/shared-file edge is invisible
+        to any per-group-isolated check).
+
+        `ensure_mergeable`/`wait_and_fix_ci` (the expensive, multi-minute part)
+        still run concurrently across a wave -- only this method's body is
+        serialized on `_merge_lock`, so at most one group merges (and is
+        re-validated) at a time. `auto_merge()`'s "queued" outcome (GitHub will
+        merge asynchronously later, e.g. pending required review) is NOT
+        re-validated here -- there is no synchronous landing to check yet, and
+        the orchestrator cannot block on unbounded human review time (see
+        `auto_merge`'s own docstring for that tradeoff).
+
+        On smoke failure the merge that triggered it has ALREADY landed and
+        cannot be undone here (no automatic revert -- too risky to do
+        unattended); `_cumulative_regression` is set instead so every group
+        still pending in `run_all`'s wave loop is quarantined without
+        attempting its own merge, stopping the run from compounding more
+        changes onto a base now confirmed broken.
+        """
+        name = group["name"]
+        with self._merge_lock:
+            if self._cumulative_regression:
+                bad_name, detail = next(iter(self._cumulative_regression.items()))
+                return False, (f"blocked: cumulative post-merge regression in group "
+                               f"'{bad_name}' -- {detail}")
+            ok, reason = self.auto_merge(group, gb)
+            if not ok or reason == "queued" or not self.post_merge_smoke_cmd:
+                return ok, reason
+            smoke_ok, detail = self._run_post_merge_smoke(name)
+            if smoke_ok:
+                return ok, reason
+            self._cumulative_regression[name] = detail
+            self.log(
+                f"  POST-MERGE REGRESSION [{name}] -- {detail} "
+                "(merge already landed on base; remaining groups in this run are "
+                "blocked, worktrees kept for inspection)"
+            )
+            return False, f"post-merge cumulative smoke failed: {detail}"
+
     def cleanup_group(self, group: Dict[str, Any], gb: str,
                       delivered: Optional[Dict[str, List[str]]] = None,
                       skip_remote_branch_delete: bool = False) -> None:
@@ -947,15 +1117,20 @@ class Verifier:
                 self.log(f"    cleanup: prune skipped: {e}")
 
     # -- single-group verify seam (AC-008 / TASK-002) ---------------------- #
+    _POST_MERGE_SMOKE_PREFIX = "post-merge cumulative smoke failed:"
+    _CUMULATIVE_BLOCKED_PREFIX = "blocked: cumulative post-merge regression"
+
     def verify_one(self, group: Dict[str, Any], group_branch: str,
                    delivered: Optional[Dict[str, List[str]]],
                    merged: List[str], quarantined: Dict[str, str],
                    lock: threading.Lock,
                    self_merged: Optional[Dict[str, str]] = None,
-                   armed: Optional[Dict[str, str]] = None) -> None:
+                   armed: Optional[Dict[str, str]] = None,
+                   post_merge_regressed: Optional[Dict[str, str]] = None) -> None:
         """Verify exactly one group's PR: retarget (if dependent) →
-        ensure_mergeable → wait_and_fix_ci → auto_merge → gated cleanup
-        (delivered tasks only). Quarantines and keeps worktrees on failure.
+        ensure_mergeable → wait_and_fix_ci → auto_merge (cumulative-gated) →
+        gated cleanup (delivered tasks only). Quarantines and keeps worktrees
+        on failure.
 
         `merged`/`quarantined` are caller-owned accumulators mutated under
         `lock`, safe for concurrent calls within a wave. Consumed by run_all
@@ -981,24 +1156,53 @@ class Verifier:
         a required check stuck red). Optional for backward compatibility;
         when omitted, a queued group is still recorded in `merged` (prior
         behavior) rather than silently dropped.
+
+        `post_merge_regressed`: a distinct accumulator (not folded into
+        `quarantined`) for a group whose CONFIRMED merge landed but then
+        failed the cumulative post-merge smoke check (`post_merge_smoke_cmd`).
+        Unlike `quarantined`, this group's PR IS merged -- there is nothing to
+        retry or keep a worktree open for; the accumulator exists purely to
+        surface the regression distinctly from an ordinary clean merge.
+        Optional for backward compatibility; when omitted the group still
+        lands in `quarantined` (not `merged`) so the failure is never silently
+        dropped.
         """
         name = group["name"]
         self.log(f"  VERIFY [{name}] {group_branch}")
+        # Read under `_merge_lock` -- the lock that actually guards writes to
+        # `_cumulative_regression` (see `_merge_with_cumulative_gate`), not the
+        # caller's accumulator `lock`. An early, best-effort check: a regression
+        # detected mid-CI-wait for THIS group is still caught below, when this
+        # group itself reaches `_merge_with_cumulative_gate`.
+        with self._merge_lock:
+            blocked = dict(self._cumulative_regression)
+        if blocked:
+            bad_name, detail = next(iter(blocked.items()))
+            reason = f"{self._CUMULATIVE_BLOCKED_PREFIX} in group '{bad_name}' -- {detail}"
+            with lock:
+                quarantined[name] = reason
+            self.log(f"  SKIP [{name}] -- {reason} (worktree kept)")
+            return
         if group.get("depends_on"):
             self.retarget_to_base(group, group_branch)
         ok, reason = self.ensure_mergeable(group, group_branch)
         if ok:
             ok, reason = self.wait_and_fix_ci(group, group_branch)
         if ok:
-            ok, reason = self.auto_merge(group, group_branch)
+            ok, reason = self._merge_with_cumulative_gate(group, group_branch)
         if not ok:
             violation = self._self_merge_violations.get(name)
+            is_regression = reason.startswith(self._POST_MERGE_SMOKE_PREFIX)
             with lock:
-                if violation and self_merged is not None:
+                if is_regression and post_merge_regressed is not None:
+                    post_merge_regressed[name] = reason
+                elif violation and self_merged is not None:
                     self_merged[name] = violation
                 else:
                     quarantined[name] = reason
-            if violation and self_merged is not None:
+            if is_regression and post_merge_regressed is not None:
+                self.log(f"  POST-MERGE REGRESSED [{name}] -- merged, then {reason}")
+            elif violation and self_merged is not None:
                 self.log(f"  SELF-MERGE VIOLATION [{name}] -- {violation} (worktree kept)")
             else:
                 self.log(f"  QUARANTINE [{name}] -- {reason} (worktree kept)")
@@ -1027,6 +1231,7 @@ class Verifier:
         quarantined: Dict[str, str] = {}
         self_merged: Dict[str, str] = {}
         armed: Dict[str, str] = {}
+        post_merge_regressed: Dict[str, str] = {}
         lock = threading.Lock()
 
         # Verify in dependency WAVES (base before its dependents). Within a wave
@@ -1056,13 +1261,15 @@ class Verifier:
                 break
             if len(ready) == 1:
                 self.verify_one(ready[0], group_branch[ready[0]["name"]],
-                                delivered, merged, quarantined, lock, self_merged, armed)
+                                delivered, merged, quarantined, lock, self_merged, armed,
+                                post_merge_regressed)
             else:
                 self.log(f"  VERIFY WAVE [parallel x{len(ready)}]: "
                          f"{', '.join(g['name'] for g in ready)}")
                 with ThreadPoolExecutor(max_workers=len(ready)) as ex:
                     futs = [ex.submit(self.verify_one, g, group_branch[g["name"]],
-                                      delivered, merged, quarantined, lock, self_merged, armed)
+                                      delivered, merged, quarantined, lock, self_merged, armed,
+                                      post_merge_regressed)
                             for g in ready]
                     for fut in futs:
                         fut.result()
@@ -1076,15 +1283,22 @@ class Verifier:
             self.log("VERIFY: SELF-MERGE VIOLATIONS (worktrees kept for inspection):")
             for n, r in self_merged.items():
                 self.log(f"  - {n}: {r}")
+        if post_merge_regressed:
+            self.log("VERIFY: POST-MERGE REGRESSIONS (merged, but broke the cumulative "
+                     "base -- human review required, no automatic revert):")
+            for n, r in post_merge_regressed.items():
+                self.log(f"  - {n}: {r}")
         self.log(f"VERIFY DONE: {len(merged)} merged, "
                  f"{len(armed)} auto-merge armed (unconfirmed), "
                  f"{len(quarantined)} quarantined, "
-                 f"{len(self_merged)} self-merge violation(s).")
+                 f"{len(self_merged)} self-merge violation(s), "
+                 f"{len(post_merge_regressed)} post-merge regression(s).")
         return {
             "merged": merged,
             "automerge_armed": armed,
             "quarantined": quarantined,
             "self_merged": self_merged,
+            "post_merge_regressed": post_merge_regressed,
             "automerge_evidence": dict(self._automerge_evidence),
             "preflight_fallbacks": dict(self._preflight_fallbacks),
         }

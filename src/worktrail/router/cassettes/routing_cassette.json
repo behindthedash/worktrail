@@ -152,6 +152,11 @@
       "expect": {"route": "J", "confidence": "medium", "gates_include": ["routing_cassette_required"]}
     },
     {
+      "id": "cumulative-post-merge-gate-is-workflow-evolution",
+      "request": "Design and implement a cumulative post-merge integration gate in the parallel orchestrator: after each independent FEATURE group merges into base, re-run integrate_smoke_cmd against the actual updated base HEAD before the next independent group is allowed to merge, with new routing cassette coverage",
+      "expect": {"route": "J", "confidence": "high", "gates_include": ["routing_cassette_required"]}
+    },
+    {
       "id": "handoff-recommended-route-overrides-low-signal-guess",
       "request": "Extend the unit test suite for a platform component",
       "handoff_route": "H",

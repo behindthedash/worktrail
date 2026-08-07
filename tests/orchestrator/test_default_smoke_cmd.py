@@ -65,6 +65,40 @@ class DefaultSmokeCmdResolutionTests(unittest.TestCase):
         self.assertIsNone(live._default_smoke_cmd(Path(repo)))
 
 
+class DefaultPostMergeSmokeCmdResolutionTests(unittest.TestCase):
+    """Sibling of DefaultSmokeCmdResolutionTests for the cumulative post-merge
+    gate (worktrail PR #167 follow-up): post_merge_smoke_cmd wins,
+    integrate_smoke_cmd is the fallback, neither set = gate skipped."""
+
+    def _repo(self, policy_yaml: "str | None") -> str:
+        d = tempfile.mkdtemp(prefix="default-post-merge-smoke-")
+        if policy_yaml is not None:
+            spec = Path(d) / "docs" / "specs"
+            spec.mkdir(parents=True)
+            (spec / "go-policy.yaml").write_text(policy_yaml, encoding="utf-8")
+        return d
+
+    def test_resolves_post_merge_smoke_cmd_when_configured(self):
+        repo = self._repo('post_merge_smoke_cmd: "pytest -q -k smoke"\n')
+        self.assertEqual(live._default_post_merge_smoke_cmd(Path(repo)),
+                         "pytest -q -k smoke")
+
+    def test_falls_back_to_integrate_smoke_cmd(self):
+        repo = self._repo('integrate_smoke_cmd: "make check"\n')
+        self.assertEqual(live._default_post_merge_smoke_cmd(Path(repo)), "make check")
+
+    def test_post_merge_smoke_cmd_wins_over_integrate_smoke_cmd(self):
+        repo = self._repo(
+            'post_merge_smoke_cmd: "pytest -q -k smoke"\nintegrate_smoke_cmd: "make check"\n'
+        )
+        self.assertEqual(live._default_post_merge_smoke_cmd(Path(repo)),
+                         "pytest -q -k smoke")
+
+    def test_unconfigured_repo_resolves_none(self):
+        repo = self._repo(None)
+        self.assertIsNone(live._default_post_merge_smoke_cmd(Path(repo)))
+
+
 class FullRealCLIAutoResolveTests(unittest.TestCase):
     """`live.main()` wiring: --smoke-cmd omitted auto-resolves from policy;
     an explicit --smoke-cmd always wins."""
@@ -105,6 +139,21 @@ class FullRealCLIAutoResolveTests(unittest.TestCase):
         repo = self._repo(None)
         captured = self._run(repo)
         self.assertIsNone(captured.get("smoke_cmd"))
+
+    def test_post_merge_smoke_cmd_omitted_auto_resolves_from_policy(self):
+        repo = self._repo('post_merge_smoke_cmd: "pytest -q -k smoke"\n')
+        captured = self._run(repo)
+        self.assertEqual(captured.get("post_merge_smoke_cmd"), "pytest -q -k smoke")
+
+    def test_explicit_post_merge_smoke_cmd_wins_over_policy(self):
+        repo = self._repo('post_merge_smoke_cmd: "pytest -q -k smoke"\n')
+        captured = self._run(repo, "--post-merge-smoke-cmd", "make postmerge")
+        self.assertEqual(captured.get("post_merge_smoke_cmd"), "make postmerge")
+
+    def test_post_merge_smoke_cmd_unconfigured_repo_still_passes_none(self):
+        repo = self._repo(None)
+        captured = self._run(repo)
+        self.assertIsNone(captured.get("post_merge_smoke_cmd"))
 
 
 if __name__ == "__main__":

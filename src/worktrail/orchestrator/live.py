@@ -123,6 +123,20 @@ def _default_smoke_cmd(repo: Path) -> "str | None":
     return cmd
 
 
+def _default_post_merge_smoke_cmd(repo: Path) -> "str | None":
+    """Auto-resolve verify.py's cumulative post-merge gate command from policy
+    when `--post-merge-smoke-cmd` was not passed explicitly.
+
+    Mirrors `_default_smoke_cmd` above: `post_merge_smoke_cmd` wins,
+    `integrate_smoke_cmd` is the fallback (policy.resolve_post_merge_smoke_cmd),
+    a repo with neither key set resolves to None (gate skipped, no behavior
+    change), and explicit `--post-merge-smoke-cmd` always overrides this.
+    """
+    from ..router.policy import load_policy, resolve_post_merge_smoke_cmd
+
+    return resolve_post_merge_smoke_cmd(load_policy(repo))
+
+
 # DEFAULT_AGENT is resolved from the launching host via _detect_default_agent()
 # so that Claude Code, Codex, and OpenCode each use their own headless CLI
 # without an invocation-wide env var or a per-call --agent flag. Explicit
@@ -2821,6 +2835,7 @@ def full_real(
     pipeline: bool = False,
     re_integrate: bool = False,
     smoke_cmd: str | None = None,
+    post_merge_smoke_cmd: str | None = None,
     bootstrap_cmd: str | None = None,
     fork_research: bool = False,
     notify_cmd: str | None = None,
@@ -2873,6 +2888,7 @@ def full_real(
             pipeline=pipeline,
             re_integrate=re_integrate,
             smoke_cmd=smoke_cmd,
+            post_merge_smoke_cmd=post_merge_smoke_cmd,
             bootstrap_cmd=bootstrap_cmd,
             fork_research=fork_research,
             notify_cmd=notify_cmd,
@@ -2903,6 +2919,7 @@ def _pipeline_scheduler(
     journal_path: str,
     run_id: str,
     smoke_cmd: str | None = None,
+    post_merge_smoke_cmd: str | None = None,
     bootstrap_cmd: str | None = None,
     merge_method: str | None = None,
     pr_labels: list[str] | None = None,
@@ -3051,6 +3068,9 @@ def _pipeline_scheduler(
             ci_fix_spawn=ci_fix_spawn,
             git_lock=iv_lock,  # shared registry lock (AC-012 / TASK-005)
             merge_method=merge_method,
+            post_merge_smoke_cmd=post_merge_smoke_cmd,
+            merge_lock=pm_merge_lock,  # shared across every per-group Verifier
+            cumulative_regression=pm_cumulative_regression,  # ditto
             spec_rel=spec_rel,  # tells the deny-list which spec root to guard
         )
 
@@ -3067,7 +3087,17 @@ def _pipeline_scheduler(
     quarantined: dict = {}
     merged: list = []
     armed: dict = {}
+    post_merge_regressed: dict = {}
     prs: list = []
+
+    # Cumulative post-merge gate state (verify.py's `_merge_lock`/
+    # `_cumulative_regression`): `_default_make_verifier` builds a FRESH
+    # Verifier per group below, so this lock+dict must be constructed ONCE
+    # here and injected into every one of them -- otherwise each group's
+    # Verifier would carry its own isolated lock/flag and cross-group
+    # serialization would silently do nothing in pipeline mode.
+    pm_merge_lock = threading.Lock()
+    pm_cumulative_regression: dict = {}
 
     # One event per group: fired when the group reaches MERGED or quarantined so
     # dependent groups can unblock and observe the quarantined state before starting.
@@ -3187,6 +3217,7 @@ def _pipeline_scheduler(
                     quarantined,
                     iv_lock,
                     armed=armed,
+                    post_merge_regressed=post_merge_regressed,
                 )
             except Exception as exc:
                 with iv_lock:
@@ -3626,6 +3657,13 @@ def _pipeline_scheduler(
             f"{_ts()} NOTE: {len(quarantined)} group(s) quarantined for human review "
             f"(worktrees kept): {', '.join(quarantined)}"
         )
+    if post_merge_regressed:
+        print(
+            f"{_ts()} !! POST-MERGE REGRESSION: {len(post_merge_regressed)} group(s) "
+            f"merged, then failed the cumulative post-merge smoke check against the "
+            f"updated base -- human review required, no automatic revert: "
+            f"{', '.join(post_merge_regressed)}"
+        )
     integrate_module._mark_integrate_complete_if_terminal(journal_path, groups, tasks)
     progress.set_phase(journal_path, "done")
     _print_usage_report(journal_path)
@@ -3635,6 +3673,7 @@ def _pipeline_scheduler(
         "final": None,
         "quarantined": quarantined,
         "merged": merged,
+        "post_merge_regressed": post_merge_regressed,
     }
 
 
@@ -3661,6 +3700,7 @@ def _full_real_inner(
     pipeline: bool = False,
     re_integrate: bool = False,
     smoke_cmd: str | None = None,
+    post_merge_smoke_cmd: str | None = None,
     bootstrap_cmd: str | None = None,
     fork_research: bool = False,
     notify_cmd: str | None = None,
@@ -3701,6 +3741,13 @@ def _full_real_inner(
                   any task touching one is folded into coordinator.plan_groups()'s
                   BASE group so it can't be quarantined independently of code that
                   depends on the tables it creates. `()`/None = no behavior change.
+    post_merge_smoke_cmd — optional shell command re-run against the ACTUAL
+                  updated base HEAD immediately after each group's PR CONFIRMS
+                  merged, before the next independent group in this run is
+                  allowed to merge (verify.py's cumulative post-merge gate).
+                  None = gate disabled, no behavior change. See
+                  policy.resolve_post_merge_smoke_cmd() for the go-policy.yaml
+                  fallback to integrate_smoke_cmd.
 
     Run this DETACHED (background), never as a blocking foreground call: it fans
     out N tasks then blocks on each PR's CI, routinely exceeding a 10-minute
@@ -3773,6 +3820,7 @@ def _full_real_inner(
             spawn=resolve_spawn,
             ci_fix_spawn=ci_fix_spawn,
             merge_method=merge_method,
+            post_merge_smoke_cmd=post_merge_smoke_cmd,
             # Without these the deny-list falls back to devkit's spec root,
             # leaving an OpenSpec run's own tree unguarded.
             spec_rel=spec_rel,
@@ -3780,6 +3828,7 @@ def _full_real_inner(
         )
         quarantined = vres.get("quarantined", {})
         self_merged = vres.get("self_merged", {})
+        post_merge_regressed = vres.get("post_merge_regressed", {})
         automerge_evidence = vres.get("automerge_evidence", {})
         progress.append_safety_net_events(
             journal_path,
@@ -3796,6 +3845,13 @@ def _full_real_inner(
                 f"!! SELF-MERGE VIOLATION: {len(self_merged)} group(s) merged by a worker "
                 f"itself, not the orchestrator (worktrees kept): {', '.join(self_merged)}"
             )
+        if post_merge_regressed:
+            print(
+                f"!! POST-MERGE REGRESSION: {len(post_merge_regressed)} group(s) merged, "
+                f"then failed the cumulative post-merge smoke check against the updated "
+                f"base -- human review required, no automatic revert: "
+                f"{', '.join(post_merge_regressed)}"
+            )
         note = _format_automerge_evidence_note(automerge_evidence)
         if note:
             print(note)
@@ -3811,6 +3867,7 @@ def _full_real_inner(
             "merged": vres["merged"],
             "automerge_armed": vres.get("automerge_armed", {}),
             "self_merged": self_merged,
+            "post_merge_regressed": post_merge_regressed,
             "automerge_evidence": automerge_evidence,
         }
 
@@ -3840,6 +3897,7 @@ def _full_real_inner(
             journal_path=journal_path,
             run_id=run_id,
             smoke_cmd=smoke_cmd,
+            post_merge_smoke_cmd=post_merge_smoke_cmd,
             bootstrap_cmd=bootstrap_cmd,
             merge_method=merge_method,
             pr_labels=pr_labels,
@@ -4086,6 +4144,7 @@ def _full_real_inner(
         spawn=resolve_spawn,
         ci_fix_spawn=ci_fix_spawn,
         merge_method=merge_method,
+        post_merge_smoke_cmd=post_merge_smoke_cmd,
         # Without these the deny-list falls back to devkit's spec root,
         # leaving an OpenSpec run's own tree unguarded.
         spec_rel=spec_rel,
@@ -4093,6 +4152,7 @@ def _full_real_inner(
     )
     quarantined = {**quarantined, **vres["quarantined"]}
     self_merged = vres.get("self_merged", {})
+    post_merge_regressed = vres.get("post_merge_regressed", {})
     automerge_evidence = vres.get("automerge_evidence", {})
     progress.append_safety_net_events(
         journal_path,
@@ -4108,6 +4168,13 @@ def _full_real_inner(
         print(
             f"!! SELF-MERGE VIOLATION: {len(self_merged)} group(s) merged by a worker "
             f"itself, not the orchestrator (worktrees kept): {', '.join(self_merged)}"
+        )
+    if post_merge_regressed:
+        print(
+            f"!! POST-MERGE REGRESSION: {len(post_merge_regressed)} group(s) merged, "
+            f"then failed the cumulative post-merge smoke check against the updated "
+            f"base -- human review required, no automatic revert: "
+            f"{', '.join(post_merge_regressed)}"
         )
     note = _format_automerge_evidence_note(automerge_evidence)
     if note:
@@ -4126,6 +4193,7 @@ def _full_real_inner(
                 "quarantined": list(quarantined.keys()),
                 "merged": vres["merged"],
                 "self_merged": list(self_merged.keys()),
+                "post_merge_regressed": list(post_merge_regressed.keys()),
                 "automerge_evidence": automerge_evidence,
             },
         )
@@ -4138,6 +4206,7 @@ def _full_real_inner(
         "merged": vres["merged"],
         "automerge_armed": vres.get("automerge_armed", {}),
         "self_merged": self_merged,
+        "post_merge_regressed": post_merge_regressed,
         "automerge_evidence": automerge_evidence,
     }
 
@@ -4515,6 +4584,19 @@ def main(argv=None) -> int:
         "an already-configured repo, not repos with no gate configured at all.",
     )
     fr.add_argument(
+        "--post-merge-smoke-cmd",
+        default=None,
+        dest="post_merge_smoke_cmd",
+        help="Shell command re-run against the ACTUAL updated base HEAD immediately "
+        "after each group's PR CONFIRMS merged, before the next independent group in "
+        "this run is allowed to merge; a non-zero exit blocks every remaining group "
+        "from merging (the merge that triggered it already landed and is not reverted "
+        "automatically). Omit to auto-resolve from go-policy.yaml (post_merge_smoke_cmd, "
+        "falling back to integrate_smoke_cmd); explicit --post-merge-smoke-cmd always "
+        "wins over policy. Repos with neither key configured are unaffected (gate "
+        "skipped entirely, identical to pre-existing behavior).",
+    )
+    fr.add_argument(
         "--bootstrap-cmd",
         default=None,
         dest="bootstrap_cmd",
@@ -4739,6 +4821,9 @@ def main(argv=None) -> int:
         smoke_cmd = args.smoke_cmd
         if smoke_cmd is None:
             smoke_cmd = _default_smoke_cmd(Path(args.repo))
+        post_merge_smoke_cmd = args.post_merge_smoke_cmd
+        if post_merge_smoke_cmd is None:
+            post_merge_smoke_cmd = _default_post_merge_smoke_cmd(Path(args.repo))
         full_real(
             args.repo,
             args.spec,
@@ -4762,6 +4847,7 @@ def main(argv=None) -> int:
             pipeline=args.pipeline,
             re_integrate=args.re_integrate,
             smoke_cmd=smoke_cmd,
+            post_merge_smoke_cmd=post_merge_smoke_cmd,
             bootstrap_cmd=args.bootstrap_cmd,
             fork_research=args.fork_research,
             notify_cmd=getattr(args, "notify_cmd", None),
