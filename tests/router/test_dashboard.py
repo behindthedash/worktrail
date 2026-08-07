@@ -845,6 +845,53 @@ class ReposScan(unittest.TestCase):
             out = dashboard.render_dashboard(rows, None, [], [])
             self.assertIn("🚩 Policy drift (1): repo-a (orphaned-tests)", out)
 
+    def test_quarantine_findings_surfaced_in_repos_and_rendered(self):
+        # A QUARANTINED group in a repo's run journal must show up as a
+        # flagged row AND a one-line dashboard nudge, leaving a clean sibling
+        # (no journal at all) alone.
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp)
+            quarantined = self._repo(parent, "repo-a")
+            self._repo(parent, "repo-b")
+            worktrees_dir = parent / "repo-a-worktrees"
+            worktrees_dir.mkdir(parents=True)
+            (worktrees_dir / "run-001-x.json").write_text(
+                json.dumps(
+                    {
+                        "groups": {
+                            "group-1": {
+                                "state": "QUARANTINED",
+                                "pr_url": "https://example.com/pull/1",
+                            }
+                        }
+                    }
+                )
+            )
+            rows = dashboard.scan_repos(parent)
+            ra = next(r for r in rows if r["repo"] == "repo-a")
+            rb = next(r for r in rows if r["repo"] == "repo-b")
+            self.assertEqual(len(ra["quarantine_findings"]), 1)
+            finding = ra["quarantine_findings"][0]
+            self.assertEqual(finding["spec_id"], "001-x")
+            self.assertEqual(finding["group"], "group-1")
+            self.assertEqual(rb["quarantine_findings"], [])
+            out = dashboard.render_dashboard(rows, None, [], [])
+            self.assertIn("🚩 Quarantined groups (1): repo-a (001-x/group-1", out)
+            self.assertIn("→ review", out)
+
+    def test_quarantine_flags_line_omitted_when_no_findings(self):
+        # No repo has a QUARANTINED group anywhere -- the rendered dashboard
+        # must not gain a "Quarantined groups" line at all.
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp)
+            self._repo(parent, "repo-a")
+            self._repo(parent, "repo-b")
+            rows = dashboard.scan_repos(parent)
+            for r in rows:
+                self.assertEqual(r["quarantine_findings"], [])
+            out = dashboard.render_dashboard(rows, None, [], [])
+            self.assertNotIn("Quarantined groups", out)
+
 
 class CategoryPickerAndRender(unittest.TestCase):
     """The deterministic two-level category picker and compact render."""
