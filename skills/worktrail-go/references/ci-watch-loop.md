@@ -75,7 +75,11 @@ blocks up to 30 s and returns on a check_run event.)
        naturally on the next run of this gate) or record an explicit decision
        (`worktrail-run-record append "$RUN" decisions "thread <id> (<path>): <reason not
        fixing>"`) and re-run the gate — never proceed to either branch below while
-       `blocking: true`.
+       `blocking: true`. The tool itself also stamps `go:no-automerge` on the PR the moment
+       `blocking` goes true (additive-only, skipped under `--dry-run`) — the same label a
+       repo's own auto-merge automation already reads before arming, so native `gh pr merge
+       --auto` (which has no concept of `reviewThreads`) stops racing ahead of this gate on
+       any subsequent evaluation once the label lands, not just at this loop's own `finish()`.
 
      Once the gate clears (`checked: false`, or `checked: true` with `blocking: false`):
      - `autoMergeRequest` is non-null — auto-merge is armed (native GitHub toggle, bot, or

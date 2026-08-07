@@ -244,15 +244,22 @@ class TestCheck(unittest.TestCase):
         self.assertEqual(len(res["resolved_now"]), 1)
         self.assertTrue(res["resolved_now"][0]["resolved"])
 
-    def test_unaddressed_thread_blocks_and_is_not_mutated(self) -> None:
+    def test_unaddressed_thread_blocks_and_applies_no_automerge_label(self) -> None:
+        calls: List[List[str]] = []
+
         def runner(cmd: List[str], **kwargs: Any) -> _FakeResult:
+            calls.append(cmd)
             if cmd[:2] == ["git", "remote"]:
                 return _FakeResult(0, "https://github.com/acme/widgets.git\n")
             if cmd[:2] == ["gh", "api"] and "reviewThreads" in " ".join(cmd):
                 return _threads_response([_thread("T_1", "a.py", resolved=False)])
             if cmd[:2] == ["git", "-C"]:
                 return _FakeResult(0, "")  # nothing touched a.py
-            raise AssertionError(f"unscripted mutation call: {cmd}")
+            if cmd[:3] == ["gh", "pr", "view"]:
+                return _FakeResult(0, json.dumps({"labels": []}))  # no label yet
+            if cmd[:3] == ["gh", "pr", "edit"]:
+                return _FakeResult(0, "")
+            raise AssertionError(f"unscripted call: {cmd}")
 
         res = crt.check(Path("/repo"), 42, runner=runner)
         self.assertTrue(res["checked"])
@@ -260,6 +267,44 @@ class TestCheck(unittest.TestCase):
         self.assertEqual(len(res["unaddressed"]), 1)
         self.assertEqual(res["unaddressed"][0]["path"], "a.py")
         self.assertEqual(res["resolved_now"], [])
+        # no reply/resolve GraphQL mutation was issued for the thread itself
+        self.assertFalse(any("addPullRequestReviewThreadReply" in " ".join(c) or
+                              "resolveReviewThread" in " ".join(c) for c in calls))
+        # native auto-merge is blocked via the additive go:no-automerge label
+        self.assertEqual(res["no_automerge_label_applied"], "go:no-automerge")
+        self.assertIn(["gh", "pr", "edit", "42", "--add-label", "go:no-automerge"], calls)
+
+    def test_unaddressed_thread_skips_label_when_already_present(self) -> None:
+        def runner(cmd: List[str], **kwargs: Any) -> _FakeResult:
+            if cmd[:2] == ["git", "remote"]:
+                return _FakeResult(0, "https://github.com/acme/widgets.git\n")
+            if cmd[:2] == ["gh", "api"] and "reviewThreads" in " ".join(cmd):
+                return _threads_response([_thread("T_1", "a.py", resolved=False)])
+            if cmd[:2] == ["git", "-C"]:
+                return _FakeResult(0, "")
+            if cmd[:3] == ["gh", "pr", "view"]:
+                return _FakeResult(0, json.dumps({"labels": [{"name": "go:no-automerge"}]}))
+            if cmd[:3] == ["gh", "pr", "edit"]:
+                raise AssertionError("must not re-add an already-present label")
+            raise AssertionError(f"unscripted call: {cmd}")
+
+        res = crt.check(Path("/repo"), 42, runner=runner)
+        self.assertTrue(res["blocking"])
+        self.assertIsNone(res["no_automerge_label_applied"])
+
+    def test_dry_run_blocking_never_applies_no_automerge_label(self) -> None:
+        def runner(cmd: List[str], **kwargs: Any) -> _FakeResult:
+            if cmd[:2] == ["git", "remote"]:
+                return _FakeResult(0, "https://github.com/acme/widgets.git\n")
+            if cmd[:2] == ["gh", "api"] and "reviewThreads" in " ".join(cmd):
+                return _threads_response([_thread("T_1", "a.py", resolved=False)])
+            if cmd[:2] == ["git", "-C"]:
+                return _FakeResult(0, "")
+            raise AssertionError(f"dry-run must never call a mutation: {cmd}")
+
+        res = crt.check(Path("/repo"), 42, dry_run=True, runner=runner)
+        self.assertTrue(res["blocking"])
+        self.assertIsNone(res["no_automerge_label_applied"])
 
     def test_dry_run_never_mutates(self) -> None:
         def runner(cmd: List[str], **kwargs: Any) -> _FakeResult:

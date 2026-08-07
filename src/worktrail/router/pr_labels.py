@@ -26,15 +26,22 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from .run_record import _load as load_run_record
 
+Runner = Callable[..., "subprocess.CompletedProcess[str]"]
 
-def _current_pr_labels(repo: str, pr_url: str) -> Optional[List[str]]:
+
+def _current_pr_labels(repo: str, pr_url: str, runner: Optional[Runner] = None) -> Optional[List[str]]:
     """Live label names on a PR, or None if the `gh` call fails or is
-    unparseable (never guess from stale/absent data)."""
-    result = subprocess.run(
+    unparseable (never guess from stale/absent data).
+
+    `runner` defaults to a live lookup of `subprocess.run` at call time (not
+    a def-time-bound default) so existing callers that monkeypatch
+    `subprocess.run` globally keep working unchanged.
+    """
+    result = (runner or subprocess.run)(
         ["gh", "pr", "view", pr_url, "--json", "labels"],
         capture_output=True, text=True, cwd=repo, timeout=30,
     )
@@ -72,11 +79,15 @@ def ensure_pr_risk_label(repo: Optional[str], pr_url: Optional[str],
 
 
 def ensure_pr_no_automerge_label(repo: Optional[str], pr_url: Optional[str],
-                                 eligible: bool) -> Optional[str]:
+                                 eligible: bool, runner: Optional[Runner] = None) -> Optional[str]:
     """Add a `go:no-automerge` label to a PR that carries none but is
-    ineligible per a full `automerge_eligible()` recompute the caller already
-    performed (needs `gates`, which only run records persisting the
-    classifier's gates array can supply -- see `reconcile_pr_labels.py`).
+    ineligible -- either per a full `automerge_eligible()` recompute the
+    caller already performed (needs `gates`, which only run records
+    persisting the classifier's gates array can supply -- see
+    `reconcile_pr_labels.py`), or per any other caller-confirmed ineligible
+    state, e.g. `check_review_threads.check()` finding unresolved unaddressed
+    review threads (native `gh pr merge --auto` has no concept of
+    reviewThreads and would otherwise race ahead of that gate).
 
     Same one-directional, additive posture as `ensure_pr_risk_label()`: it
     only ADDS the label when missing and ineligible. It never removes an
@@ -86,10 +97,10 @@ def ensure_pr_no_automerge_label(repo: Optional[str], pr_url: Optional[str],
     """
     if not repo or not pr_url or eligible:
         return None
-    labels = _current_pr_labels(repo, pr_url)
+    labels = _current_pr_labels(repo, pr_url, runner=runner)
     if labels is None or "go:no-automerge" in labels:
         return None
-    result = subprocess.run(
+    result = (runner or subprocess.run)(
         ["gh", "pr", "edit", pr_url, "--add-label", "go:no-automerge"],
         capture_output=True, text=True, cwd=repo, timeout=30,
     )
