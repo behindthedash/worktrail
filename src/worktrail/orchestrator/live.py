@@ -2375,6 +2375,15 @@ def live_run_real(
             print(f"{_ts()} RESUME: journal {out_cassette} unreadable ({e}); starting fresh")
         else:
             entries = reconcile_from_journal(tasks, journal)
+            foreign_ids = journal_foreign_task_ids(entries, tasks)
+            if foreign_ids:
+                raise RuntimeError(
+                    f"Journal at {out_cassette} contains task id(s) "
+                    f"{sorted(foreign_ids)} not present in --spec {spec_rel!r}. This "
+                    f"journal likely belongs to a different spec/change whose trailing "
+                    f"path name collides with this one. Re-run with --fresh to discard "
+                    f"this journal and start clean."
+                )
             journaled_heads.update(_journaled_task_heads(entries))
             skipped = [t["id"] for t in tasks if t["status"] in coordinator.DONE]
             inflight = [t["id"] for t in tasks if t["status"] in coordinator.IN_FLIGHT]
@@ -3324,6 +3333,15 @@ def _pipeline_scheduler(
         try:
             jdata = json.loads(Path(journal_path).read_text())
             entries = reconcile_from_journal(tasks, jdata)
+            foreign_ids = journal_foreign_task_ids(entries, tasks)
+            if foreign_ids:
+                raise RuntimeError(
+                    f"Journal at {journal_path} contains task id(s) "
+                    f"{sorted(foreign_ids)} not present in --spec {spec_rel!r}. This "
+                    f"journal likely belongs to a different spec/change whose trailing "
+                    f"path name collides with this one. Re-run with --fresh to discard "
+                    f"this journal and start clean."
+                )
             journaled_heads.update(_journaled_task_heads(entries))
             groups_journal.update(jdata.get("groups", {}))
             done_ids = [t["id"] for t in tasks if t["status"] in coordinator.DONE]
