@@ -1,0 +1,104 @@
+# Pre-Dispatch Related-Brief Collision Guard {#related-brief-collision-check}
+
+`/go` Phase 5.5's third branch, alongside `spec-collision-check.md` (Route C/D: does a shipped
+spec already cover this request?) and `brief-staleness-check.md` (brief-sourced Route E/F: did
+this brief's own work already land?). This branch asks a different question again: a brief's
+`related:` frontmatter names other briefs describing adjacent or overlapping work — is one of
+*those* **actively claimed and in flight right now**, by this agent or another one? Nothing
+before dispatch checks this today, so a second agent can start work that collides with a session
+already underway, discovered only when the two land conflicting changes.
+
+**Gate: brief-sourced dispatch, claimed brief has a `related:` field, and the resolved route is
+not C, D, E, or F.** The Route C/D and brief-sourced Route E/F branches already ask their own
+"has this already been done?" question for those routes; this branch covers everything else a
+claimed brief can resolve to (Route A/B/G–J) without re-running work the other two branches
+already do. A brainstorm/free-text dispatch has no claimed brief to read `related:` off, so it
+skips this branch regardless of route. A claimed brief with no `related:` entries skips it too —
+`check()` itself short-circuits on that, but the caller should not invoke it needlessly.
+
+## Running it
+
+```bash
+RELATED_JSON=$(worktrail-check-related-brief-claims \
+  --brief "$CLAIMED_BRIEF_PATH" --json 2>/dev/null)
+```
+
+`--brief` is the only required flag; it reads the claimed brief's `related:` frontmatter directly
+(no separate extraction step). `--picked-dir` and `--queue-dir` default to the work queue's own
+`picked/` and `queue` directories and rarely need overriding. Like its two siblings, the command
+**always exits 0** — a signal source for a human decision, never a gate. Never test its exit
+code; read `checked`.
+
+## Reading the result
+
+```json
+{"checked": true,
+ "active": [{"id": "", "path": "", "claimed-by": "", "claimed-at": "", "repo": "",
+             "focus": "", "run_record": ""}],
+ "warning": null}
+```
+
+| Result | Meaning | Action |
+|---|---|---|
+| `checked: false` | The question could not be asked — the claimed brief itself couldn't be read or its `related:` field wasn't a list. | **Proceed.** Treat as no signal, never as "nothing collides". Do not prompt. |
+| `checked: true`, `active` empty | Every related id was checked; none currently resolves to a `picked`-status brief. A definite negative — a related id that is merely still queued, or already `done`, is not an active match. | **Proceed.** Do not prompt. |
+| `checked: true`, `active` non-empty | One or more related briefs are claimed and in flight right now. | **Prompt the operator** (below), batched across every entry in `active`. |
+
+`warning` may be non-null on any row (an individual related id that failed to resolve was
+skipped, not fatal to the rest of the check) and never changes the action on its own — surface it
+alongside the evidence when prompting; ignore it otherwise.
+
+Each `active` entry's `run_record` field is present only when that match's `claimed-by` is this
+same machine's own agent label *and* a local `~/.go/runs/<repo-name>/*.yaml` run record could be
+found referencing the related brief's id — purely informational, never required for the prompt.
+
+## The operator prompt
+
+One brief can have several `related:` entries actively claimed at once; ask about all of them in
+a single batched question rather than one prompt per match:
+
+```
+AskUserQuestion(
+  questions=[{
+    question: "This brief lists related work that is actively claimed right now:\n"
+              "{for each entry in active}\n"
+              "  {id}  claimed-by={claimed-by}  claimed-at={claimed-at}  repo={repo}\n"
+              "    focus: {focus}\n"
+              "{end for}\n\nHow should we proceed?",
+    header: "Related-brief collision",
+    options: [
+      {label: "Proceed with the dispatch",
+       description: "The overlap is unrelated or acceptable. Continue to Phase 6/7 unchanged."},
+      {label: "Pause and coordinate",
+       description: "Hold off dispatching this brief until the related, in-flight work lands or is checked with its owner."}
+    ]
+  }]
+)
+```
+
+Never default-select, never auto-proceed, and never infer the answer from the match count. Unlike
+the spec-collision and brief-staleness branches, a match here is never grounds to auto-close the
+brief — the related work being in flight says nothing about whether *this* brief's own work is
+already done, so `work_queue.py done` is never called from this branch.
+
+**On "proceed"** — continue to Phase 6/7 unchanged. Once Phase 6 has opened the run record,
+record the evidence and the decision on it, so a later session (including whoever lands the
+related work) does not re-discover the same overlap cold:
+
+```bash
+worktrail-run-record append "$RUN" decisions \
+  "Related-brief collision guard surfaced <N> actively-claimed related id(s) (<id list>); operator judged the overlap <unrelated|acceptable> and chose to proceed."
+```
+
+**On "pause and coordinate"** — do not open a worktree and do not start Phase 6/7 for this
+dispatch. Report the pause in the run's status output (e.g. `Dispatch paused: brief $BRIEF_ID
+lists related id(s) <id list> claimed by <claimed-by>, still in flight.`) and stop; the brief
+stays claimed by the current session (this branch never touches queue state), so it can simply be
+re-attempted later once the related work lands.
+
+## Relationship to the sibling branches
+
+All three Phase 5.5 branches ask "has this already been done?" from a different angle and are
+mutually exclusive by their own gates — a single dispatch runs at most one of them. This branch
+is the only one that can fire on a claimed brief regardless of route (A/B/G–J), because it is
+checking a *different* brief's status, not the one being dispatched.
