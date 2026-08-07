@@ -477,6 +477,27 @@ def _journaled_task_heads(entries: list) -> dict[str, str]:
     return heads
 
 
+def journal_foreign_task_ids(entries: list, tasks: list) -> set[str]:
+    """Return journal entry task ids that have no match in the currently loaded *tasks*.
+
+    A journal recorded against a different `--spec` path (or a stale one from before
+    tasks.md was edited) still parses and replays cleanly through `reconcile_from_journal`
+    -- `dispatch.apply_report` just swallows the `KeyError` for any id it can't find and
+    resume proceeds as if that task's history never happened. Observability-only
+    `{"event": ...}` markers carry no `task` id tied to the current run's task set and are
+    skipped here, matching `reconcile_from_journal`'s own skip.
+    """
+    task_ids = {t["id"] for t in tasks}
+    foreign: set[str] = set()
+    for e in entries:
+        if e.get("event"):
+            continue
+        task_id = e.get("task")
+        if task_id and task_id not in task_ids:
+            foreign.add(task_id)
+    return foreign
+
+
 def validate_task_metadata(tasks: list) -> None:
     """Refuse live fan-out when implementation tasks have no scope AND no serialization
     boundary. `conductor/compile.py`'s own prompt tells the model that an empty `files`
@@ -2354,6 +2375,15 @@ def live_run_real(
             print(f"{_ts()} RESUME: journal {out_cassette} unreadable ({e}); starting fresh")
         else:
             entries = reconcile_from_journal(tasks, journal)
+            foreign_ids = journal_foreign_task_ids(entries, tasks)
+            if foreign_ids:
+                raise RuntimeError(
+                    f"Journal at {out_cassette} contains task id(s) "
+                    f"{sorted(foreign_ids)} not present in --spec {spec_rel!r}. This "
+                    f"journal likely belongs to a different spec/change whose trailing "
+                    f"path name collides with this one. Re-run with --fresh to discard "
+                    f"this journal and start clean."
+                )
             journaled_heads.update(_journaled_task_heads(entries))
             skipped = [t["id"] for t in tasks if t["status"] in coordinator.DONE]
             inflight = [t["id"] for t in tasks if t["status"] in coordinator.IN_FLIGHT]
@@ -3303,6 +3333,15 @@ def _pipeline_scheduler(
         try:
             jdata = json.loads(Path(journal_path).read_text())
             entries = reconcile_from_journal(tasks, jdata)
+            foreign_ids = journal_foreign_task_ids(entries, tasks)
+            if foreign_ids:
+                raise RuntimeError(
+                    f"Journal at {journal_path} contains task id(s) "
+                    f"{sorted(foreign_ids)} not present in --spec {spec_rel!r}. This "
+                    f"journal likely belongs to a different spec/change whose trailing "
+                    f"path name collides with this one. Re-run with --fresh to discard "
+                    f"this journal and start clean."
+                )
             journaled_heads.update(_journaled_task_heads(entries))
             groups_journal.update(jdata.get("groups", {}))
             done_ids = [t["id"] for t in tasks if t["status"] in coordinator.DONE]
@@ -3775,6 +3814,34 @@ def _full_real_inner(
     if not resume and Path(journal_path).exists():
         Path(journal_path).unlink()  # --fresh: discard prior progress
         print(f"{_ts()} FRESH: discarded prior journal {journal_path}")
+
+    # Foreign-journal guard, fired directly in _full_real_inner's own resume
+    # block (spec-path-task-crosscheck 1.2) so it covers every path below --
+    # --from-verify, --pipeline, and the default sequential path -- before any
+    # of them reconcile a journal from a different --spec onto this run's
+    # tasks. live_run_real / _pipeline_scheduler carry the identical guard on
+    # their own reconcile_from_journal() call too, for callers that reach
+    # those functions directly (e.g. the `live-run-real` CLI command) without
+    # going through this function.
+    if resume and Path(journal_path).exists():
+        try:
+            _resume_journal = json.loads(Path(journal_path).read_text())
+        except (OSError, json.JSONDecodeError):
+            _resume_journal = None
+        if _resume_journal is not None:
+            _, _resume_tasks = taskformats.load_spec(str(repo / spec_rel))
+            reconcile_from_journal(_resume_tasks, _resume_journal)
+            foreign_ids = journal_foreign_task_ids(
+                _resume_journal.get("entries", []), _resume_tasks
+            )
+            if foreign_ids:
+                raise RuntimeError(
+                    f"Journal at {journal_path} contains task id(s) "
+                    f"{sorted(foreign_ids)} not present in --spec {spec_rel!r}. This "
+                    f"journal likely belongs to a different spec/change whose trailing "
+                    f"path name collides with this one. Re-run with --fresh to discard "
+                    f"this journal and start clean."
+                )
 
     # --from-verify entry point: skip fan-out and integrate, run only verify_and_cleanup
     if from_verify:
