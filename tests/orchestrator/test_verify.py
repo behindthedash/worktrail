@@ -767,18 +767,40 @@ class RetargetDependent(unittest.TestCase):
         base = {"name": "base", "tasks": ["TASK-001"], "reqs": [], "depends_on": []}
         feat = {"name": "feature-1", "tasks": ["TASK-002"], "reqs": [],
                 "depends_on": ["base"]}
-        run = FakeRun({"run/base": [view()], "run/feature-1": [view()]})
+        run = FakeRun({"run/base": [view()], "run/feature-1": [view(number=7)]})
         v = mk(run, FakeSpawn(), "/tmp/x")
         res = v.run_all([base, feat],
                         {"base": "run/base", "feature-1": "run/feature-1"})
 
         self.assertEqual(set(res["merged"]), {"base", "feature-1"})
-        edits = [c for c in run.calls if c[:3] == ["gh", "pr", "edit"]]
-        # the dependent was retargeted to the real base
+        # retargeted via the REST PATCH endpoint (not `gh pr edit --base`,
+        # which unconditionally requests `projectCards` pre-mutation and fails
+        # on repos/orgs with a legacy Projects (classic) board attached)
+        self.assertIn(["gh", "api", "repos/o/r/pulls/7", "-X", "PATCH",
+                       "-f", "base=dev"], run.calls)
+        # the base group (no depends_on) was NOT retargeted
+        self.assertFalse(run.find("gh", "pr", "edit"))
+
+    def test_retarget_falls_back_to_pr_edit_when_pr_number_unresolvable(self):
+        """If `pr_status` can't resolve a PR number (e.g. `gh pr view` failed),
+        fall back to `gh pr edit --base` rather than skip retargeting silently."""
+        base = {"name": "base", "tasks": ["TASK-001"], "reqs": [], "depends_on": []}
+        feat = {"name": "feature-1", "tasks": ["TASK-002"], "reqs": [],
+                "depends_on": ["base"]}
+        run = FakeRun({"run/base": [view()], "run/feature-1": [view()]})
+        v = mk(run, FakeSpawn(), "/tmp/x")
+        v.retarget_to_base({"name": "feature-1"}, "run/feature-1")
+        # sanity: normal path with a resolvable number/repo uses REST, not edit
+        self.assertFalse(run.find("gh", "pr", "edit"))
+
+        # now force the fallback: no resolvable owner/repo
+        run2 = FakeRun({"run/feature-1": [view()]})
+        v2 = mk(run2, FakeSpawn(), "/tmp/x")
+        v2.gh_repo = None
+        v2.retarget_to_base({"name": "feature-1"}, "run/feature-1")
+        edits = [c for c in run2.calls if c[:3] == ["gh", "pr", "edit"]]
         self.assertTrue(any("run/feature-1" in c and "--base" in c and "dev" in c
                             for c in edits))
-        # the base group (no depends_on) was NOT retargeted
-        self.assertFalse(any("run/base" in c for c in edits))
 
 
 class BranchProtectionAutoMergePath(unittest.TestCase):
@@ -1009,10 +1031,9 @@ class VerifyOneMethod(unittest.TestCase):
         v.verify_one(feat, "run/feature-1", None, merged, quarantined, lock)
 
         self.assertEqual(merged, ["feature-1"])
-        edits = [c for c in run.calls if c[:3] == ["gh", "pr", "edit"]]
-        self.assertTrue(any("run/feature-1" in c and "--base" in c and "dev" in c
-                            for c in edits),
-                        "dependent PR must be retargeted to base before verify")
+        self.assertIn(["gh", "api", "repos/o/r/pulls/1", "-X", "PATCH",
+                       "-f", "base=dev"], run.calls,
+                      "dependent PR must be retargeted to base before verify")
 
 
 class SquashMergeDetection(unittest.TestCase):

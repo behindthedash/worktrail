@@ -654,11 +654,28 @@ class Verifier:
         to `base` (idempotent if GitHub already auto-retargeted) keeps it mergeable
         instead of orphaned. Best-effort: a failure here is reconciled by the
         mergeability/resolve loop that follows.
+
+        Uses the REST `PATCH .../pulls/{number}` endpoint (`base` field) instead of
+        `gh pr edit --base`: `gh pr edit`'s pre-mutation PR lookup unconditionally
+        requests `projectCards` for every invocation, regardless of which flag is
+        edited (`cli/cli` `pr_edit.go` `editRun()`), so it fails outright on a
+        repo/org with a legacy Projects (classic) board attached -- the same failure
+        class fixed for label-add in `pr_labels.py`. `gh pr view` (used by
+        `pr_status`) is unaffected: with an explicit `--json` field list it never
+        falls back to that default field set. Falls back to `gh pr edit --base`
+        only when the PR number or owner/repo can't be resolved (best-effort).
         """
         st = self.pr_status(gb) or {}
         if (st.get("state") or "").upper() == "MERGED":
             return
-        p = self._gh("pr", "edit", gb, "--base", self.base)
+        number = st.get("number")
+        if number is not None and self.gh_repo:
+            # `gh api` has no `--repo` flag (unlike `gh pr`), so this bypasses
+            # `_gh()` and embeds owner/repo directly in the endpoint path.
+            p = self.run(["gh", "api", f"repos/{self.gh_repo}/pulls/{number}",
+                          "-X", "PATCH", "-f", f"base={self.base}"])
+        else:
+            p = self._gh("pr", "edit", gb, "--base", self.base)
         if getattr(p, "returncode", 1) == 0:
             self.log(f"    [{group['name']}] retargeted {gb} base -> {self.base}")
 
