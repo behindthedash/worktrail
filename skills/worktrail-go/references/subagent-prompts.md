@@ -625,23 +625,11 @@ derail cleanup before branch/remote teardown is confirmed. If an earlier step in
 did `cd "$WT"` anyway (e.g. to commit/push), `cd` back to `$REPO` (or anywhere outside every
 worktree about to be removed) before running any `git worktree remove` below.
 
-### Sibling worktree/branch check {#sibling-worktree-check}
+### Active-conflicts scan {#active-conflicts-scan}
 
-Shared by `#spec-worktree-setup` and `#change-spec-worktree-setup` — run before
-creating `$WT` on either pipeline. Another open or stalled worktree/branch may
-already target the same spec id: a prior claimed brief that was never
-orchestrated, or a same-`$SPEC_ID` race between two concurrent `/go`
-sessions/machines (not hypothetical — memory `project_orchestrator_concurrent_spec_collision`
-records a prior real incident where a machine had to stand down, clean up
-worktrees/branches, and reset to base after discovering mid-run that another
-machine was already implementing the same spec). Authoring or implementing
-blind against that risks silently contradicting already-reasoned,
-partially-implemented decisions, or two sessions duplicating the same spec id.
-
-Before the advisory glob check below, run an **active-conflict scan** — this
-part is a hard stop, not advisory. It catches what the local `git worktree
-list`/`for-each-ref` glob check below cannot: a non-terminal run record for
-this same `$SPEC_ID` (a prior claimed brief never orchestrated, or a
+This is a **hard stop, not advisory**. It catches what a local `git worktree
+list`/`for-each-ref` glob check cannot: a non-terminal run record for the
+same `$SPEC_ID` (a prior claimed brief never orchestrated, or a
 same-`$SPEC_ID` race between two concurrent `/go` sessions) whose worktree or
 branch doesn't yet exist or doesn't match the glob:
 
@@ -667,7 +655,23 @@ for r in json.load(sys.stdin):
 fi
 ```
 
-If `$CONFLICTS` is empty, proceed to the advisory glob check below unchanged.
+If `$CONFLICTS` is empty, proceed with the caller's next step.
+
+### Sibling worktree/branch check {#sibling-worktree-check}
+
+Shared by `#spec-worktree-setup` and `#change-spec-worktree-setup` — run before
+creating `$WT` on either pipeline. Another open or stalled worktree/branch may
+already target the same spec id: a prior claimed brief that was never
+orchestrated, or a same-`$SPEC_ID` race between two concurrent `/go`
+sessions/machines (not hypothetical — memory `project_orchestrator_concurrent_spec_collision`
+records a prior real incident where a machine had to stand down, clean up
+worktrees/branches, and reset to base after discovering mid-run that another
+machine was already implementing the same spec). Authoring or implementing
+blind against that risks silently contradicting already-reasoned,
+partially-implemented decisions, or two sessions duplicating the same spec id.
+
+Before the advisory glob check below, run `#active-conflicts-scan`. If
+`$CONFLICTS` is empty, proceed to the advisory glob check below unchanged.
 
 Set `$SIBLING_WT_GLOB` (a `git worktree list` grep pattern) and
 `$SIBLING_REF_GLOB` (a `for-each-ref` pattern) per call site, then run:

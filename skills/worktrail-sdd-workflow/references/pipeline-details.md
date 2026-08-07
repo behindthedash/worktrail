@@ -124,9 +124,16 @@ Route D, spec already on base branch.
 
 Pick a `ready-to-implement` spec (ask if several; else route to its actual next action).
 
-1. Run `../../worktrail-go/references/subagent-prompts.md#stale-spec-check` → `../../worktrail-go/references/subagent-prompts.md#precheck-gate`
-   (`SPEC_ROOT=$REPO`). If precheck reports a prior `fanout_failed` sidecar,
-   stop and recover the stuck run instead of re-launching the orchestrator.
+1a. Run `../../worktrail-go/references/subagent-prompts.md#active-conflicts-scan`
+    (`SPEC_ID`=the picked spec's id, `REPO=$REPO`). On a hit, stop per that
+    scan's own hard-stop handling — do not proceed to step 1b
+    (`#stale-spec-check`/`#precheck-gate`) and do not launch the orchestrator.
+    No advisory glob check (`$SIBLING_WT_GLOB`/`$SIBLING_REF_GLOB`) runs here:
+    `implement` never creates a `spec/$SPEC_ID` or `chg/$SPEC_ID-*` authoring
+    worktree/branch for that check to match against.
+1b. Run `../../worktrail-go/references/subagent-prompts.md#stale-spec-check` → `../../worktrail-go/references/subagent-prompts.md#precheck-gate`
+    (`SPEC_ROOT=$REPO`). If precheck reports a prior `fanout_failed` sidecar,
+    stop and recover the stuck run instead of re-launching the orchestrator.
 2. Launch the orchestrator per `../../worktrail-go/references/subagent-prompts.md#orchestrator` with
    `SPEC_ROOT=$REPO`, `run_in_background: true`. PRs into `$BASE`.
 
