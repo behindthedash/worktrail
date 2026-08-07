@@ -44,16 +44,47 @@ blocks up to 30 s and returns on a check_run event.)
      `worktrail-run-record finish "$RUN" --status "completed_and_merged" --merge-result "STALE-HEAD MERGE: merged headRefOid <headRefOid> predates fixup $PUSH_SHA -- original defect may have shipped"`,
      then open a same-fix follow-up PR carrying `$PUSH_SHA`'s commit (mirrors GGB #558) and
      stop.
-   - `state == "MERGED"` (no `$PUSH_SHA`, or `headRefOid` == `$PUSH_SHA`) —
+   - `state == "MERGED"` (no `$PUSH_SHA`, or `headRefOid` == `$PUSH_SHA`) — the PR is gone;
+     a merged thread can no longer be replied to or resolved through this loop, so skip the
+     review-thread gate below (no live PR left to act on) —
      `worktrail-run-record finish "$RUN" --status "completed_and_merged" --merge-result "merged externally"`
      and stop.
-   - `state != "MERGED"` and `autoMergeRequest` is non-null — auto-merge is armed (native
-     GitHub toggle, bot, or workflow) and will complete without further action. Name the
-     mechanism using whichever of `mergeMethod` / `enabledBy.login` is present:
-     `worktrail-run-record finish "$RUN" --status "completed_pr_open" --merge-result "auto-merge armed (<mergeMethod>, enabled by <enabledBy.login>); will complete without further action"`
-     and stop.
-   - `state != "MERGED"` and `autoMergeRequest` is null —
-     `worktrail-run-record finish "$RUN" --status "completed_pr_open"` and stop.
+   - `state != "MERGED"` — **review-thread gate (mandatory before either branch below):** a
+     required check going green only proves check pass/fail, never that reviewer findings
+     (e.g. `security-review-llm`'s line comments) were actually resolved — datalena PR #2133
+     accumulated 9 unresolved review threads across 4 rounds of findings that were all
+     either fixed or explicitly decided-not-to-fix, and nothing in this loop noticed until a
+     human manually replied+resolved each one via GraphQL. Run:
+     ```bash
+     worktrail-check-review-threads --repo "$PWD" --pr "$PR_NUM" --owner "$OWNER" --name "$REPO_NAME" --run "$RUN" --json
+     ```
+     Read the result the same way as the merge-state query above, not by exit code (always
+     0 — this is a signal source, like `gh pr checks`, not a hard gate the tool enforces
+     itself):
+     - `checked: false` — the question could not be answered (gh unavailable/unauthenticated,
+       unresolvable owner/repo, malformed GraphQL response). Treat as no signal — proceed to
+       the two branches below unchanged, and note the warning in the eventual `finish`
+       `--merge-result`.
+     - `checked: true`, `blocking: false` — every unresolved thread was either already
+       `isResolved`, or was auto-correlated (a commit in this run touched the thread's file
+       after the thread's first comment, or the run record's `decisions` log named the
+       thread/path) and the tool already posted a reply and resolved it. Proceed.
+     - `checked: true`, `blocking: true` — at least one unresolved thread has no
+       corresponding commit or recorded decision. Treat this exactly like case 3 below: for
+       each entry in `unaddressed`, either fix the finding in code (commit, push, resolve
+       naturally on the next run of this gate) or record an explicit decision
+       (`worktrail-run-record append "$RUN" decisions "thread <id> (<path>): <reason not
+       fixing>"`) and re-run the gate — never proceed to either branch below while
+       `blocking: true`.
+
+     Once the gate clears (`checked: false`, or `checked: true` with `blocking: false`):
+     - `autoMergeRequest` is non-null — auto-merge is armed (native GitHub toggle, bot, or
+       workflow) and will complete without further action. Name the mechanism using
+       whichever of `mergeMethod` / `enabledBy.login` is present:
+       `worktrail-run-record finish "$RUN" --status "completed_pr_open" --merge-result "auto-merge armed (<mergeMethod>, enabled by <enabledBy.login>); will complete without further action"`
+       and stop.
+     - `autoMergeRequest` is null —
+       `worktrail-run-record finish "$RUN" --status "completed_pr_open"` and stop.
 
 2. **Transient infrastructure failure** — matches any of:
    check name contains `Initialize containers` or `Set up job`; log contains
