@@ -162,7 +162,7 @@ class FakeVerifier:
         self._lock = threading.Lock()
 
     def verify_one(self, group, group_branch_ref, delivered, merged, quarantined, lock,
-                   self_merged=None, armed=None):
+                   self_merged=None, armed=None, post_merge_regressed=None):
         name = group["name"]
         with self._lock:
             self.calls.append(name)

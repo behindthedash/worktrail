@@ -11,7 +11,7 @@ from worktrail.router.policy import (
     _validate_routing_tiers, automerge_eligible,
     automerge_labels, detect_external_automerge, load_policy,
     merge_method_for_branch, parse_policy_yaml,
-    resolve_routing, resolve_tier_map,
+    resolve_post_merge_smoke_cmd, resolve_routing, resolve_tier_map,
 )
 
 
@@ -412,6 +412,38 @@ class TestMergeMethodByBase(unittest.TestCase):
 
     def test_merge_method_for_branch_unset_key(self):
         self.assertIsNone(merge_method_for_branch({}, "main"))
+
+
+class TestResolvePostMergeSmokeCmd(unittest.TestCase):
+    """resolve_post_merge_smoke_cmd() -- verify.py's cumulative post-merge gate
+    command (worktrail PR #167 follow-up). post_merge_smoke_cmd wins;
+    integrate_smoke_cmd is the fallback; neither set = gate skipped."""
+
+    def test_default_is_none(self):
+        pol = load_policy(Path(tempfile.mkdtemp()))
+        self.assertIsNone(resolve_post_merge_smoke_cmd(pol))
+
+    def test_post_merge_smoke_cmd_used_when_set(self):
+        repo = _repo_with('post_merge_smoke_cmd: "pytest -q -k smoke"\n')
+        pol = load_policy(repo)
+        self.assertEqual(resolve_post_merge_smoke_cmd(pol), "pytest -q -k smoke")
+
+    def test_falls_back_to_integrate_smoke_cmd(self):
+        repo = _repo_with('integrate_smoke_cmd: "make check"\n')
+        pol = load_policy(repo)
+        self.assertEqual(resolve_post_merge_smoke_cmd(pol), "make check")
+
+    def test_post_merge_smoke_cmd_wins_over_integrate_smoke_cmd(self):
+        repo = _repo_with(
+            'post_merge_smoke_cmd: "pytest -q -k smoke"\n'
+            'integrate_smoke_cmd: "make check"\n'
+        )
+        pol = load_policy(repo)
+        self.assertEqual(resolve_post_merge_smoke_cmd(pol), "pytest -q -k smoke")
+
+    def test_blank_value_treated_as_unset(self):
+        self.assertIsNone(resolve_post_merge_smoke_cmd(
+            {"post_merge_smoke_cmd": "   ", "integrate_smoke_cmd": None}))
 
 
 class TestCheckAutomergeCli(unittest.TestCase):
