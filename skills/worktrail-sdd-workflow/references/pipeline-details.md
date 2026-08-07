@@ -128,6 +128,9 @@ Pick a `ready-to-implement` spec (ask if several; else route to its actual next 
     (`SPEC_ID`=the picked spec's id, `REPO=$REPO`). On a hit, stop per that
     scan's own hard-stop handling — do not proceed to step 1b
     (`#stale-spec-check`/`#precheck-gate`) and do not launch the orchestrator.
+    No advisory glob check (`$SIBLING_WT_GLOB`/`$SIBLING_REF_GLOB`) runs here:
+    `implement` never creates a `spec/$SPEC_ID` or `chg/$SPEC_ID-*` authoring
+    worktree/branch for that check to match against.
 1b. Run `../../worktrail-go/references/subagent-prompts.md#stale-spec-check` → `../../worktrail-go/references/subagent-prompts.md#precheck-gate`
     (`SPEC_ROOT=$REPO`). If precheck reports a prior `fanout_failed` sidecar,
     stop and recover the stuck run instead of re-launching the orchestrator.
