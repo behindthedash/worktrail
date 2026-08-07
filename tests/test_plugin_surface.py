@@ -230,3 +230,30 @@ def test_opencode_bridge_exposes_session_end_parity():
     assert '"session.idle"' in text
     assert '"session.compacted"' in text
     assert "worktrail-handoff" in text
+
+
+def test_spec_worktree_setup_does_not_number_openspec_change_ids():
+    """`openspec new change` rejects any name not starting with a letter
+    (verified against OpenSpec 1.6.0: "Error: Change name must start with a
+    letter"). The devkit-only NNN-prefix convention must not reach the
+    openspec SPEC_ID, or every openspec-format `new`/Route-C dispatch fails.
+    Reproduced directly 2026-08-06 (brief 20260806-201014)."""
+    doc = SKILLS_DIR / "worktrail-go" / "references" / "subagent-prompts.md"
+    text = doc.read_text()
+    heading = "### Spec worktree setup {#spec-worktree-setup}"
+    start = text.index(heading)
+    block_start = text.index("```bash", start)
+    block_end = text.index("```", block_start + len("```bash"))
+    block = text[block_start:block_end]
+
+    assert '"$FORMAT" = "devkit"' in block, (
+        "spec-worktree-setup must branch the id convention on $FORMAT; "
+        "an unconditional NNN-prefixed SPEC_ID breaks every openspec-format dispatch"
+    )
+    devkit_branch, _, non_devkit_branch = block.partition('else')
+    assert 'SPEC_ID="$NNN-$slug"' in devkit_branch
+    assert "NNN=" not in non_devkit_branch and "$NNN-$slug" not in non_devkit_branch, (
+        "the non-devkit (openspec) branch must not carry the numeric NNN prefix "
+        "into SPEC_ID -- `openspec new change` rejects a name that doesn't start "
+        "with a letter"
+    )

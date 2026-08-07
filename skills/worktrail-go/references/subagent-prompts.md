@@ -683,21 +683,31 @@ workspace. Never infer the format from the task id alone.
 ```bash
 FORMAT="${WORKTRAIL_SPEC_FORMAT:-openspec}"
 case "$FORMAT" in openspec|devkit) ;; *) echo "Unsupported WORKTRAIL_SPEC_FORMAT=$FORMAT" >&2; exit 2 ;; esac
-NNN=$(ls -d "$REPO/docs/specs/[0-9]*/" 2>/dev/null | wc -l)   # zero-padded
-# Cross-session NNN-allocation race guard: two concurrent /go sessions (this
-# machine or another) can each compute the same NNN from their own local
-# checkout before either has pushed — not hypothetical, see brief
-# 20260722-160700-datalena-spec-093-numbering-collision (two sessions both
-# allocated 093). A same-NNN-different-slug branch may already be on origin
-# even though the local checkout hasn't fetched it. Advisory, not a hard
-# stop — if the remote lookup fails, fall through to the local-only count.
-REMOTE_MAX=$(git -C "$REPO" ls-remote --heads origin 'spec/[0-9]*' 2>/dev/null \
-  | sed -E 's#.*refs/heads/spec/0*([0-9]+)-.*#\1#' | sort -n | tail -1)
-if [ -n "$REMOTE_MAX" ]; then
-  NEXT_FROM_REMOTE=$((10#$REMOTE_MAX + 1))
-  [ "$NEXT_FROM_REMOTE" -gt "$NNN" ] && NNN="$NEXT_FROM_REMOTE"
+if [ "$FORMAT" = "devkit" ]; then
+  # devkit numbers specs sequentially under docs/specs/NNN-slug/.
+  NNN=$(ls -d "$REPO/docs/specs/[0-9]*/" 2>/dev/null | wc -l)   # zero-padded
+  # Cross-session NNN-allocation race guard: two concurrent /go sessions (this
+  # machine or another) can each compute the same NNN from their own local
+  # checkout before either has pushed — not hypothetical, see brief
+  # 20260722-160700-datalena-spec-093-numbering-collision (two sessions both
+  # allocated 093). A same-NNN-different-slug branch may already be on origin
+  # even though the local checkout hasn't fetched it. Advisory, not a hard
+  # stop — if the remote lookup fails, fall through to the local-only count.
+  REMOTE_MAX=$(git -C "$REPO" ls-remote --heads origin 'spec/[0-9]*' 2>/dev/null \
+    | sed -E 's#.*refs/heads/spec/0*([0-9]+)-.*#\1#' | sort -n | tail -1)
+  if [ -n "$REMOTE_MAX" ]; then
+    NEXT_FROM_REMOTE=$((10#$REMOTE_MAX + 1))
+    [ "$NEXT_FROM_REMOTE" -gt "$NNN" ] && NNN="$NEXT_FROM_REMOTE"
+  fi
+  # SPEC_ID="$NNN-$slug"  (slug confirmed via AskUserQuestion if unclear)
+else
+  # OpenSpec has no numeric-prefix convention — `openspec new change` rejects
+  # any name that doesn't start with a letter (verified against 1.6.0: "Error:
+  # Change name must start with a letter"), and collision detection is by
+  # change-name existence (openspec-propose's own guardrail), not sequence
+  # number. Never prefix $slug with $NNN here.
+  # SPEC_ID="$slug"  (slug confirmed via AskUserQuestion if unclear)
 fi
-# SPEC_ID="$NNN-$slug"  (slug confirmed via AskUserQuestion if unclear)
 SIBLING_WT_GLOB="$SPEC_ID-spec"
 SIBLING_REF_GLOB="refs/heads/spec/$SPEC_ID"
 # run the sibling check — #sibling-worktree-check
