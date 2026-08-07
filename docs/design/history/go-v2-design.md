@@ -361,6 +361,52 @@ approximate ("via commit SHA/line correlation or the run record's own
 decision log"), not proof — a human can always reopen a thread the gate
 resolved incorrectly.
 
+### 2.16 Cumulative post-merge integration gate
+
+`verify.py`'s `run_all()` verifies groups in dependency WAVES: within a wave,
+mutually independent FEATURE groups (no `deps` or shared-file edge) verify —
+mergeability, CI wait, and (until this change) auto-merge — CONCURRENTLY.
+Each group's own pre-PR `integrate_smoke_cmd` (`integrate.py`) only ever runs
+against `base` + that one group's own tasks; two groups in the same wave
+never see each other's changes before either merges. A cross-group semantic
+dependency that produced no `deps`/shared-file edge in `compile.py`'s
+inference pass is therefore structurally invisible to any per-group-isolated
+check — confirmed by two independent real incidents (datalena
+embed-widget-auth-hardening PRs #2138/#2139/#2144; worktrail's own
+duplicate-brief-detection PR #105), both root-caused in
+`docs/specs/research/post-integration-scope-consistency-check.md` (PR #167).
+
+The gate: `post_merge_smoke_cmd` (`policy.resolve_post_merge_smoke_cmd()`,
+falling back to `integrate_smoke_cmd`; unset in both = gate skipped, no
+behavior change) is re-run against the ACTUAL fetched `remote/base` HEAD
+immediately after a group's PR CONFIRMS merged (`auto_merge()` returning
+`(True, "")`, not the async `"queued"` outcome — there is no synchronous
+landing to re-validate yet for a queued merge, and the orchestrator cannot
+block on unbounded human review time). `ensure_mergeable`/`wait_and_fix_ci`
+(the expensive, multi-minute part) still run concurrently across a wave —
+only the actual merge+smoke step (`Verifier._merge_with_cumulative_gate`) is
+serialized on a dedicated `_merge_lock`, so at most one group merges and is
+re-validated at a time, without giving up the wave's CI-wait parallelism.
+
+On smoke failure the triggering merge has already landed and is not
+reverted automatically (too risky unattended); `_cumulative_regression`
+(group name → detail) is set instead, so every group still pending in the
+run — same-wave siblings and later waves alike — is quarantined without
+attempting its own merge, stopping the run from compounding more changes
+onto a base now confirmed broken. The triggering group itself lands in a
+distinct `post_merge_regressed` accumulator, not `quarantined` — its PR IS
+merged; there is nothing to retry.
+
+`live.py`'s pipeline scheduler (`_pipeline_scheduler`) builds a FRESH
+`Verifier` per group (`_default_make_verifier`), so `_merge_lock` and
+`_cumulative_regression` are constructor-injectable (mirroring the existing
+`git_lock` seam) — the scheduler constructs ONE lock and ONE dict, shared
+across every per-group Verifier it builds, or cross-group serialization
+would silently do nothing in pipeline mode. The non-pipeline serial path
+(a single long-lived `Verifier` for the whole run) needs no injection: a
+plain `Verifier()` with neither passed gets private ones, identical in
+effect.
+
 ---
 
 ## 3. Migration plan (v1 → v2)

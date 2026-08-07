@@ -70,6 +70,18 @@ DEFAULTS: Dict[str, Any] = {
     # install (e.g. "cd app && npm ci && npm test", "pytest -q"). None = skip entirely,
     # so repos without a wired command are never blocked.
     "integrate_smoke_cmd": None,
+    # Optional shell command re-run against the ACTUAL updated `base` HEAD
+    # immediately after each group's PR CONFIRMS merged, before the next
+    # independent group in the same run is allowed to merge (verify.py's
+    # cumulative post-merge gate). integrate_smoke_cmd only ever runs against
+    # base + that one group's own tasks; independent FEATURE groups with no
+    # declared deps/shared-file edge never see each other's changes before
+    # merging, so a missing cross-group dependency is structurally invisible
+    # to it. None = fall back to integrate_smoke_cmd; if that is also unset
+    # the gate is skipped entirely (no config, no behavior change). Set to a
+    # narrower command than integrate_smoke_cmd (e.g. skip slow e2e/browser
+    # suites) if the full command is too slow to re-run after every merge.
+    "post_merge_smoke_cmd": None,
     # Universal pre-PR test gate command (run by pre_pr_gate.py from the worktree
     # root). Enforced on EVERY PR-producing /go route — one-off claude/codex
     # subprocess workers included, not just orchestrator delivery groups. Preferred
@@ -754,6 +766,21 @@ def merge_method_for_branch(policy: Dict[str, Any], target_branch: str) -> Optio
     mapping = policy.get("merge_method_by_base") or {}
     method = mapping.get(target_branch)
     return method if method in VALID_MERGE_METHODS else None
+
+
+def resolve_post_merge_smoke_cmd(policy: Dict[str, Any]) -> Optional[str]:
+    """Resolve verify.py's cumulative post-merge gate command.
+
+    `post_merge_smoke_cmd` wins; `integrate_smoke_cmd` is the fallback (mirrors
+    `pre_pr_gate.resolve_cmd()`'s precedence pattern for its own two keys).
+    A repo with neither key set resolves to None — the gate is skipped
+    entirely, identical to pre-existing behavior.
+    """
+    for key in ("post_merge_smoke_cmd", "integrate_smoke_cmd"):
+        value = policy.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
 
 
 def main(argv=None) -> int:

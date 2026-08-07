@@ -734,6 +734,139 @@ class ParallelVerifyWave(unittest.TestCase):
                         "independent groups should verify in one concurrent wave")
 
 
+class CumulativePostMergeGate(unittest.TestCase):
+    """verify.py's cumulative post-merge gate (worktrail PR #167 follow-up):
+    independent FEATURE groups verify (mergeability + CI wait) concurrently,
+    but a CONFIRMED merge is re-validated against the ACTUAL updated base HEAD
+    -- via `post_merge_smoke_cmd` -- before the next group's merge is allowed.
+    """
+
+    def test_gate_disabled_by_default_no_smoke_call(self):
+        """post_merge_smoke_cmd=None (the default) -- identical to pre-existing
+        behavior: no smoke check, no post_merge_regressed."""
+        run = FakeRun({"run/feature-1": [view()]})
+        smoke_calls = []
+        v = mk(run, FakeSpawn(), "/tmp/x",
+              post_merge_smoke=lambda name, wt: smoke_calls.append(name) or (True, "ok"))
+        res = v.run_all([FEATURE], {"feature-1": "run/feature-1"})
+
+        self.assertEqual(res["merged"], ["feature-1"])
+        self.assertEqual(res["post_merge_regressed"], {})
+        self.assertEqual(smoke_calls, [])
+
+    def test_smoke_passes_merges_normally(self):
+        run = FakeRun({"run/feature-1": [view()]})
+        smoke_calls = []
+        v = mk(run, FakeSpawn(), "/tmp/x", post_merge_smoke_cmd="pytest -q",
+              post_merge_smoke=lambda name, wt: smoke_calls.append(name) or (True, "ok"))
+        res = v.run_all([FEATURE], {"feature-1": "run/feature-1"})
+
+        self.assertEqual(res["merged"], ["feature-1"])
+        self.assertEqual(res["post_merge_regressed"], {})
+        self.assertEqual(smoke_calls, ["feature-1"])
+        # the shared post-merge worktree was fetched + hard-reset before smoke
+        self.assertTrue(run.find("git", "-C", "/repo", "fetch", "-q", "origin", "dev"))
+
+    def test_smoke_failure_lands_in_post_merge_regressed_not_quarantined(self):
+        """The group's own merge DID land -- it must not be reported as an
+        ordinary quarantine (nothing to retry, no worktree to keep open for
+        that reason) or silently counted as a clean merge."""
+        run = FakeRun({"run/feature-1": [view()]})
+        v = mk(run, FakeSpawn(), "/tmp/x", post_merge_smoke_cmd="pytest -q",
+              post_merge_smoke=lambda name, wt: (False, "exit 1: boom"))
+        res = v.run_all([FEATURE], {"feature-1": "run/feature-1"})
+
+        self.assertEqual(res["merged"], [])
+        self.assertEqual(res["quarantined"], {})
+        self.assertIn("feature-1", res["post_merge_regressed"])
+        self.assertIn("boom", res["post_merge_regressed"]["feature-1"])
+        # the merge itself DID happen -- auto-merge was actually called
+        self.assertTrue(run.find("gh", "pr", "merge", "run/feature-1"))
+
+    def test_no_post_merge_regressed_accumulator_falls_back_to_quarantined(self):
+        """Backward compatibility: a caller that doesn't pass
+        post_merge_regressed= (verify_one's optional param) still records the
+        failure somewhere visible instead of silently dropping it."""
+        run = FakeRun({"run/feature-1": [view()]})
+        v = mk(run, FakeSpawn(), "/tmp/x", post_merge_smoke_cmd="pytest -q",
+              post_merge_smoke=lambda name, wt: (False, "exit 1: boom"))
+        merged, quarantined = [], {}
+        v.verify_one(FEATURE, "run/feature-1", None, merged, quarantined, threading.Lock())
+
+        self.assertEqual(merged, [])
+        self.assertIn("feature-1", quarantined)
+        self.assertIn("post-merge cumulative smoke failed", quarantined["feature-1"])
+
+    def test_queued_automerge_is_not_smoke_checked(self):
+        """auto_merge()'s 'queued' outcome (armed, not yet actually merged) has
+        no synchronous landing to re-validate -- the smoke command must not
+        run for it. Branch-protection is one of two paths auto_merge() can
+        return "queued" from (mirrors BranchProtectionAutoMergePath's fixture)."""
+        base = FakeRun({"run/feature-1": [view()]})
+
+        def run(cmd):
+            if cmd[:3] == ["gh", "pr", "merge"]:
+                if "--auto" in cmd:
+                    return Proc(0, "", "")
+                return Proc(1, "", "the base branch policy prohibits the merge")
+            return base(cmd)
+
+        smoke_calls = []
+        v = mk(run, FakeSpawn(), "/tmp/x", post_merge_smoke_cmd="pytest -q",
+              post_merge_smoke=lambda name, wt: smoke_calls.append(name) or (True, "ok"))
+        ok, reason = v._merge_with_cumulative_gate(FEATURE, "run/feature-1")
+
+        self.assertTrue(ok)
+        self.assertEqual(reason, "queued")
+        self.assertEqual(smoke_calls, [])
+
+    def test_regression_blocks_a_second_group_before_it_attempts_to_merge(self):
+        """Once one group's confirmed merge regresses the cumulative base, a
+        second (already-mergeable, CI-green) group must never call auto_merge
+        at all -- not just fail some later check."""
+        run = FakeRun({"run/feature-2": [view()]})
+        v = mk(run, FakeSpawn(), "/tmp/x", post_merge_smoke_cmd="pytest -q",
+              cumulative_regression={"feature-1": "boom"})
+        merged, quarantined = [], {}
+        v.verify_one(
+            {"name": "feature-2", "tasks": ["TASK-003"], "reqs": [], "depends_on": []},
+            "run/feature-2", None, merged, quarantined, threading.Lock(),
+        )
+
+        self.assertEqual(merged, [])
+        self.assertIn("feature-2", quarantined)
+        self.assertIn("feature-1", quarantined["feature-2"])
+        self.assertFalse(run.find("gh", "pr", "merge", "run/feature-2"))
+        self.assertFalse(run.find("gh", "pr", "view", "run/feature-2"))  # never even checked
+
+    def test_cumulative_regression_shared_across_separate_verifier_instances(self):
+        """live.py's pipeline scheduler builds a FRESH Verifier per group
+        (_default_make_verifier); merge_lock/cumulative_regression must be the
+        SAME injected objects across those instances or cross-group blocking
+        silently does nothing in pipeline mode (the bug this test guards)."""
+        shared_lock = threading.Lock()
+        shared_regression: dict = {}
+
+        run1 = FakeRun({"run/feature-1": [view()]})
+        v1 = mk(run1, FakeSpawn(), "/tmp/x", post_merge_smoke_cmd="pytest -q",
+                post_merge_smoke=lambda name, wt: (False, "boom"),
+                merge_lock=shared_lock, cumulative_regression=shared_regression)
+        v1._merge_with_cumulative_gate(FEATURE, "run/feature-1")
+        self.assertIn("feature-1", shared_regression)
+
+        run2 = FakeRun({"run/feature-2": [view()]})
+        v2 = mk(run2, FakeSpawn(), "/tmp/x", post_merge_smoke_cmd="pytest -q",
+                merge_lock=shared_lock, cumulative_regression=shared_regression)
+        ok, reason = v2._merge_with_cumulative_gate(
+            {"name": "feature-2", "tasks": ["TASK-003"], "reqs": [], "depends_on": []},
+            "run/feature-2",
+        )
+
+        self.assertFalse(ok)
+        self.assertIn("feature-1", reason)
+        self.assertFalse(run2.find("gh", "pr", "merge", "run/feature-2"))
+
+
 class GhRetry(unittest.TestCase):
     """#9: a transient `gh pr view` failure is retried, not read as 'unavailable'."""
 
