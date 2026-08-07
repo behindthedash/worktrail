@@ -843,7 +843,9 @@ def _fanout_incomplete_detail(tasks: list, with_tail: bool) -> dict:
     }
 
 
-def _stranded_after_integrate(tasks: list, journal_groups: dict) -> list:
+def _stranded_after_integrate(
+    tasks: list, journal_groups: dict, migration_patterns: "list[str] | None" = None
+) -> list:
     """Task ids whose work was fanned out but lands in NO integrated group.
 
     When the journal already marks every recorded group integrated
@@ -856,7 +858,7 @@ def _stranded_after_integrate(tasks: list, journal_groups: dict) -> list:
     they are excluded by construction."""
     by_id = {t["id"]: t for t in tasks}
     stranded = []
-    for g in coordinator.plan_groups(tasks):
+    for g in coordinator.plan_groups(tasks, migration_patterns=migration_patterns or ()):
         if g["name"] in journal_groups:
             continue
         stranded.extend(
@@ -2828,6 +2830,7 @@ def full_real(
     pr_pacing_wait: int = 0,
     route: str | None = None,
     gates: str = "",
+    migration_patterns: "list[str] | None" = None,
 ) -> dict:
     """End-to-end on a REAL repo (the public entry); see `_full_real_inner` for the
     full pipeline doc.
@@ -2879,6 +2882,7 @@ def full_real(
             pr_pacing_wait=pr_pacing_wait,
             route=route,
             gates=gates,
+            migration_patterns=migration_patterns,
         )
     finally:
         _lock.release()
@@ -2913,6 +2917,7 @@ def _pipeline_scheduler(
     fallback_chain: "list[str] | None" = None,
     effort: str | None = None,
     re_integrate: bool = False,
+    migration_patterns: "list[str] | None" = None,
     # Injectable seams (default to production implementations)
     _spawn=None,
     _integrate_one=None,
@@ -2963,7 +2968,7 @@ def _pipeline_scheduler(
             if t["id"] not in keep:
                 t["status"] = "completed"
 
-    groups = coordinator.plan_groups(tasks)
+    groups = coordinator.plan_groups(tasks, migration_patterns=migration_patterns or ())
     by_id = {t["id"]: t for t in tasks}
 
     # Spec-folder ownership (matches finish_real logic): only the first independent
@@ -3665,6 +3670,7 @@ def _full_real_inner(
     pr_pacing_wait: int = 0,
     route: str | None = None,
     gates: str = "",
+    migration_patterns: "list[str] | None" = None,
 ) -> dict:
     """End-to-end on a REAL repo: fan-out -> integrate -> grouped PRs into base branch.
 
@@ -3690,6 +3696,11 @@ def _full_real_inner(
     purpose_tier_map — optional {purpose: tier} table (routing.purpose_tiers),
                   threaded to every LiveSpawn this run constructs alongside
                   tier_map (task-purpose-classification 5.1).
+    migration_patterns — optional fnmatch glob list (go-policy.yaml's
+                  migration_path_patterns) identifying schema-migration file paths;
+                  any task touching one is folded into coordinator.plan_groups()'s
+                  BASE group so it can't be quarantined independently of code that
+                  depends on the tables it creates. `()`/None = no behavior change.
 
     Run this DETACHED (background), never as a blocking foreground call: it fans
     out N tasks then blocks on each PR's CI, routinely exceeding a 10-minute
@@ -3743,7 +3754,7 @@ def _full_real_inner(
 
         progress.set_phase(journal_path, "verify")
         print("=== VERIFY (from journal, skipping fan-out + integrate) ===")
-        groups = coordinator.plan_groups(tasks)
+        groups = coordinator.plan_groups(tasks, migration_patterns=migration_patterns or ())
         status = {t["id"]: t.get("status", "done") for t in tasks}
         delivered = {
             g["name"]: coordinator.deliverable_subset(g["tasks"], tasks, status)[0] for g in groups
@@ -3835,6 +3846,7 @@ def _full_real_inner(
             pr_pacing_wait=pr_pacing_wait,
             route=route,
             gates=gates,
+            migration_patterns=migration_patterns,
         )
 
     # Read or generate a stable run_id (persists in journal across invocations).
@@ -3987,7 +3999,9 @@ def _full_real_inner(
     )
     if all_integrated:
         print("=== INTEGRATE (skipped; all groups already integrated in journal) ===")
-        stranded = _stranded_after_integrate(tasks, journal_groups)
+        stranded = _stranded_after_integrate(
+            tasks, journal_groups, migration_patterns=migration_patterns
+        )
         if stranded:
             print(
                 f"{_ts()} WARNING: integrate skipped (journal marks every recorded group "
@@ -4023,6 +4037,7 @@ def _full_real_inner(
             pr_pacing_wait=pr_pacing_wait,
             route=route,
             gates=gates,
+            migration_patterns=migration_patterns,
         )
 
     if not group_branch:
@@ -4049,7 +4064,7 @@ def _full_real_inner(
             },
         )
     print("=== VERIFY (mergeability + CI -> auto-merge -> gated cleanup) ===")
-    groups = coordinator.plan_groups(tasks)
+    groups = coordinator.plan_groups(tasks, migration_patterns=migration_patterns or ())
     # Which tasks each group actually delivered (defect B: a split group ships its
     # healthy subset; the dropped task's worktree must survive cleanup). Recompute
     # from the same deliverable_subset finish_real used -- single source of truth.
@@ -4511,6 +4526,21 @@ def main(argv=None) -> int:
         "failed install is logged and the worker still self-installs.",
     )
     fr.add_argument(
+        "--migration-pattern",
+        action="append",
+        dest="migration_patterns",
+        default=None,
+        help="fnmatch glob (repeatable) identifying a schema-migration file path for this "
+        "repo (e.g. 'api/migrations/versions/*.py'). Any task whose declared files match "
+        "one is always folded into the parallel-orchestrator's BASE integration group, "
+        "even if its dependency graph would otherwise place it in an independent feature "
+        "group -- a migration and the code that depends on the tables it creates rarely "
+        "share a files entry, so a migration quarantined on its own can silently leave "
+        "consumer code merged against tables that don't exist. Sourced from "
+        "go-policy.yaml's migration_path_patterns by the sdd-workflow conductor; omit to "
+        "skip (no behavior change).",
+    )
+    fr.add_argument(
         "--pr-pacing-wait",
         type=int,
         default=0,
@@ -4741,6 +4771,7 @@ def main(argv=None) -> int:
             pr_pacing_wait=args.pr_pacing_wait,
             route=args.route,
             gates=args.gates,
+            migration_patterns=args.migration_patterns,
         )
         return 0
     if args.cmd == "precheck":

@@ -1022,6 +1022,7 @@ def finish_real(
     pr_pacing_wait: int = 0,
     route: Optional[str] = None,
     gates: str = "",
+    migration_patterns: Optional[list[str]] = None,
 ) -> tuple:
     """Integrate per-group branches into the REAL repo and open PRs against `base`.
 
@@ -1045,7 +1046,7 @@ def finish_real(
     Expressed as a loop over integrate_one so the per-group seam is callable
     independently by the pipeline scheduler (AC-009).
     """
-    groups = coordinator.plan_groups(tasks)
+    groups = coordinator.plan_groups(tasks, migration_patterns=migration_patterns or ())
     status = {t["id"]: t.get("status", "done") for t in tasks}
     group_branch: dict = {}
     quarantined: dict = {}
