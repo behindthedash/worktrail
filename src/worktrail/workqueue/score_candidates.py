@@ -27,7 +27,7 @@ session to actually doing the work; a loose textual echo isn't enough). Emits:
 with reason one of "related-link" | "same-target-spec" | "score", capped at
 BATCH_TOP_N companions.
 
-Stdlib-only; no yaml dependency; no import of work_queue.py.
+No import of work_queue.py.
 """
 
 from __future__ import annotations
@@ -38,6 +38,8 @@ import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from ..shared.brief_frontmatter import split_frontmatter
 
 # Scoring thresholds — conservative defaults per spec
 MIN_OVERLAP = 0.15  # minimum total score to include a candidate
@@ -50,74 +52,6 @@ BATCH_MIN = 0.45  # score floor for a companion with no structural signal
 TARGET_SPEC_BOOST = 0.25  # added when both briefs name the same target-spec
 BATCH_TOP_N = 3  # max companions per batch (keeps one run/PR reviewable)
 
-_FM_RE = re.compile(r"^---\r?\n(.*?)\n---\r?\n", re.DOTALL)
-
-
-# ---------------------------------------------------------------------------
-# Minimal YAML frontmatter parser (stdlib-only, handles handoff brief schema)
-# ---------------------------------------------------------------------------
-
-
-_BLOCK_SCALAR_RE = re.compile(r"^[|>][+-]?$")
-
-
-def _parse_fm(content: str) -> Dict[str, Any]:
-    """Parse the YAML frontmatter of a handoff brief without yaml library.
-
-    Handles scalar values, null, block-sequence lists (- item), and block
-    scalars (|, |-, >, >-) for multi-line fields like `focus:`.
-    Returns {} on parse failure or missing frontmatter.
-    """
-    m = _FM_RE.match(content)
-    if not m:
-        return {}
-    block = m.group(1)
-    result: Dict[str, Any] = {}
-    lines = block.split("\n")
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            i += 1
-            continue
-        kv = re.match(r"^([a-zA-Z][a-zA-Z0-9_-]*):\s*(.*)", line)
-        if not kv:
-            i += 1
-            continue
-        key = kv.group(1)
-        val = kv.group(2).strip()
-        if _BLOCK_SCALAR_RE.match(val):
-            fold = val[0] == ">"
-            content_lines: List[str] = []
-            i += 1
-            while i < len(lines) and (not lines[i].strip() or lines[i].startswith((" ", "\t"))):
-                content_lines.append(lines[i].strip())
-                i += 1
-            result[key] = (" " if fold else "\n").join(content_lines)
-            continue
-        if not val:
-            # Possible block-sequence list
-            items: List[str] = []
-            i += 1
-            while i < len(lines) and re.match(r"^\s+-", lines[i]):
-                item_m = re.match(r"^\s+-\s+(.*)", lines[i])
-                if item_m:
-                    items.append(item_m.group(1).strip())
-                i += 1
-            result[key] = items
-            continue
-        if val in ("null", "~"):
-            result[key] = None
-        elif val.startswith('"') and val.endswith('"') and len(val) >= 2:
-            result[key] = val[1:-1]
-        elif val.startswith("'") and val.endswith("'") and len(val) >= 2:
-            result[key] = val[1:-1]
-        else:
-            result[key] = val
-        i += 1
-    return result
-
 
 def _read_brief(path: Path):
     """Return (frontmatter_dict, body_text) or (None, None) on error."""
@@ -125,10 +59,7 @@ def _read_brief(path: Path):
         content = path.read_text(encoding="utf-8")
     except OSError:
         return None, None
-    fm = _parse_fm(content)
-    m = _FM_RE.match(content)
-    body = content[m.end() :] if m else content
-    return fm, body
+    return split_frontmatter(content)
 
 
 # ---------------------------------------------------------------------------

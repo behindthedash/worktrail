@@ -568,36 +568,64 @@ class TestBatchMode(ScoreCandidatesTestBase):
             self.assertEqual(set(entry), {"path", "id", "focus", "reason"})
 
 
-class TestBlockScalarFocusParsing(unittest.TestCase):
-    """Regression coverage for _parse_fm's YAML block-scalar handling.
+class TestReadBriefYamlParsing(unittest.TestCase):
+    """Coverage for _read_brief's frontmatter parsing (delegated to the
+    shared, PyYAML-backed worktrail.shared.brief_frontmatter parser since
+    brief 20260807-121604 replaced the hand-rolled _parse_fm regex parser).
 
-    Brief 20260807-114939-worktrail-score-candidates-batch-mode: a `focus: |-`
-    field (the common multi-line capture format — ~18% of a real queue) was
-    parsed as the literal indicator string "|-" instead of its text, silently
-    zeroing focus-token overlap in both capture and batch scoring.
+    The block-scalar cases are regression coverage carried over from brief
+    20260807-114939-worktrail-score-candidates-batch-mode (a `focus: |-`
+    field — the common multi-line capture format, ~18% of a real queue — was
+    previously parsed as the literal indicator string "|-" instead of its
+    text, silently zeroing focus-token overlap in both capture and batch
+    scoring). The flow-list and quoted-string cases are new: they prove the
+    migration eliminates the whole class of YAML constructs the regex parser
+    could not special-case, not just the one reported instance.
     """
 
-    def test_parse_fm_dash_style_block_scalar(self):
-        content = "---\nfocus: |-\n  the actual focus text here\nrepo: null\n---\n"
-        fm = sc._parse_fm(content)
+    def _fm(self, tmp_path: Path, content: str):
+        p = tmp_path / "brief.md"
+        p.write_text(content, encoding="utf-8")
+        fm, _ = sc._read_brief(p)
+        return fm
+
+    def test_dash_style_block_scalar(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            content = "---\nfocus: |-\n  the actual focus text here\nrepo: null\n---\n"
+            fm = self._fm(Path(tmp), content)
         self.assertEqual(fm["focus"], "the actual focus text here")
 
-    def test_parse_fm_multiline_dash_style_joins_with_newline(self):
-        content = "---\nfocus: |-\n  line one\n  line two\nrepo: null\n---\n"
-        fm = sc._parse_fm(content)
+    def test_multiline_dash_style_joins_with_newline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            content = "---\nfocus: |-\n  line one\n  line two\nrepo: null\n---\n"
+            fm = self._fm(Path(tmp), content)
         self.assertEqual(fm["focus"], "line one\nline two")
 
-    def test_parse_fm_folded_style_joins_with_space(self):
-        content = "---\nfocus: >-\n  line one\n  line two\nrepo: null\n---\n"
-        fm = sc._parse_fm(content)
+    def test_folded_style_joins_with_space(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            content = "---\nfocus: >-\n  line one\n  line two\nrepo: null\n---\n"
+            fm = self._fm(Path(tmp), content)
         self.assertEqual(fm["focus"], "line one line two")
 
-    def test_parse_fm_block_scalar_stops_at_next_key(self):
-        content = "---\nfocus: |-\n  the focus text\nrepo: /a/b\nstatus: queued\n---\n"
-        fm = sc._parse_fm(content)
+    def test_block_scalar_stops_at_next_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            content = "---\nfocus: |-\n  the focus text\nrepo: /a/b\nstatus: queued\n---\n"
+            fm = self._fm(Path(tmp), content)
         self.assertEqual(fm["focus"], "the focus text")
         self.assertEqual(fm["repo"], "/a/b")
         self.assertEqual(fm["status"], "queued")
+
+    def test_flow_style_list(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            content = "---\nfocus: flow list test\nrelated: [a, b, c]\n---\n"
+            fm = self._fm(Path(tmp), content)
+        self.assertEqual(fm["related"], ["a", "b", "c"])
+
+    def test_quoted_string_with_embedded_colon(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            content = '---\nfocus: "a value: with a colon in it"\nrepo: null\n---\n'
+            fm = self._fm(Path(tmp), content)
+        self.assertEqual(fm["focus"], "a value: with a colon in it")
 
 
 class TestBatchModeBlockScalarFocusRegression(ScoreCandidatesTestBase):
