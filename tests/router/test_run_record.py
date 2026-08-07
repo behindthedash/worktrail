@@ -402,6 +402,135 @@ class TestActiveConflicts(unittest.TestCase):
         after = Path(res["path"]).read_text(encoding="utf-8")
         self.assertEqual(before, after)
 
+    def test_toctou_two_sessions_both_pass_scan_before_either_sets_specification(self):
+        """Reproduces the race described in the 2026-08-07 duplicate-orchestrator
+        incident report: #active-conflicts-scan is read-only and a session's own
+        record is only tagged with `specification` *after* the scan comes back
+        clean. Two sessions can each start a run record and each pass the scan
+        before either has written its own `specification` field, so both end up
+        as non-terminal records targeting the same spec -- the scan alone cannot
+        prevent this, only detect it once at least one write has landed.
+        """
+        session_a = _start(self.tmp, request="session A implement")
+        session_b = _start(self.tmp, request="session B implement")
+
+        # Both sessions scan before either has tagged its own record with the
+        # spec_id it's about to implement -- this is the exact interleaving
+        # that makes the read-only scan insufficient.
+        scan_a = _active_conflicts(self.tmp, specification="spec-race",
+                                    exclude=session_a["path"])
+        scan_b = _active_conflicts(self.tmp, specification="spec-race",
+                                    exclude=session_b["path"])
+        self.assertEqual(scan_a, [], "session A's scan should see no conflict yet")
+        self.assertEqual(scan_b, [], "session B's scan should see no conflict yet")
+
+        # Both proceed to tag their own record with the spec_id, believing
+        # they're first -- this is the bug: nothing stopped both from reaching
+        # this point.
+        main(["set", session_a["path"], "specification", "spec-race"])
+        main(["set", session_b["path"], "specification", "spec-race"])
+
+        record_a = _load(Path(session_a["path"]))
+        record_b = _load(Path(session_b["path"]))
+        self.assertEqual(record_a["specification"], "spec-race")
+        self.assertEqual(record_b["specification"], "spec-race")
+        self.assertIsNone(record_a["final_status"])
+        self.assertIsNone(record_b["final_status"])
+        # Two distinct non-terminal runs now target the same spec_id -- the
+        # duplicate-orchestrator condition. `claim` (added by this change)
+        # closes this gap by making the scan-and-tag one atomic step.
+
+
+def _claim(run, **over):
+    argv = ["claim", run, "--specification", over.get("specification", "spec-a")]
+    out = StringIO()
+    with patch("sys.stdout", out):
+        rc = main(argv)
+    return rc, json.loads(out.getvalue())
+
+
+class TestClaim(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def test_second_claim_on_same_specification_fails_fast(self):
+        session_a = _start(self.tmp, request="session A implement")
+        session_b = _start(self.tmp, request="session B implement")
+
+        rc_a, out_a = _claim(session_a["path"], specification="spec-race")
+        rc_b, out_b = _claim(session_b["path"], specification="spec-race")
+
+        self.assertEqual(rc_a, 0)
+        self.assertEqual(out_a["status"], "claimed")
+        self.assertEqual(rc_b, 1)
+        self.assertEqual(out_b["status"], "already-claimed")
+        self.assertEqual(out_b["run_id"], session_a["run_id"])
+
+        record_a = _load(Path(session_a["path"]))
+        record_b = _load(Path(session_b["path"]))
+        self.assertEqual(record_a["specification"], "spec-race")
+        self.assertIsNone(record_b["specification"])
+
+    def test_claim_on_different_specification_does_not_conflict(self):
+        session_a = _start(self.tmp, request="session A implement")
+        session_b = _start(self.tmp, request="session B implement")
+
+        rc_a, out_a = _claim(session_a["path"], specification="spec-a")
+        rc_b, out_b = _claim(session_b["path"], specification="spec-b")
+
+        self.assertEqual(rc_a, 0)
+        self.assertEqual(rc_b, 0)
+        self.assertEqual(out_a["status"], "claimed")
+        self.assertEqual(out_b["status"], "claimed")
+
+    def test_finish_releases_the_claim_so_a_later_session_can_claim(self):
+        session_a = _start(self.tmp, request="session A implement")
+        _claim(session_a["path"], specification="spec-race")
+
+        out = StringIO()
+        with patch("sys.stdout", out):
+            main(["finish", session_a["path"], "--status", "completed_pr_open"])
+
+        session_b = _start(self.tmp, request="session B implement")
+        rc_b, out_b = _claim(session_b["path"], specification="spec-race")
+
+        self.assertEqual(rc_b, 0)
+        self.assertEqual(out_b["status"], "claimed")
+
+    def test_stale_claim_from_a_deleted_run_record_is_reclaimable(self):
+        session_a = _start(self.tmp, request="session A implement, then crashes")
+        _claim(session_a["path"], specification="spec-race")
+        # Start session B's record before deleting A's, so `start`'s
+        # same-second collision guard can't hand B the exact freed path A is
+        # about to vacate (which would make this an accidental same-run-id
+        # coincidence rather than a genuine second session).
+        session_b = _start(self.tmp, request="session B implement")
+        # Simulate a crashed session: its run record is gone but the lock
+        # file it wrote survives on disk.
+        Path(session_a["path"]).unlink()
+
+        rc_b, out_b = _claim(session_b["path"], specification="spec-race")
+
+        self.assertEqual(rc_b, 0)
+        self.assertEqual(out_b["status"], "claimed")
+        self.assertNotEqual(session_a["run_id"], session_b["run_id"])
+
+    def test_claim_still_honors_pre_existing_non_terminal_conflicts(self):
+        """A record tagged via plain `set` (not `claim`, e.g. from before this
+        primitive existed) has no lock file, but is still a real conflict --
+        `claim` must not blindly trust the absence of a lock file.
+        """
+        legacy = _start(self.tmp, request="legacy set-based session")
+        main(["set", legacy["path"], "specification", "spec-race"])
+
+        newcomer = _start(self.tmp, request="new claim-based session")
+        rc, out = _claim(newcomer["path"], specification="spec-race")
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(out["status"], "conflict")
+        record_newcomer = _load(Path(newcomer["path"]))
+        self.assertIsNone(record_newcomer["specification"])
+
 
 def _prune(tmp, **over):
     argv = ["prune", "--dir", tmp]
