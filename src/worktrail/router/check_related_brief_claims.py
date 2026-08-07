@@ -32,12 +32,17 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..shared.brief_frontmatter import read_frontmatter
+from ..workqueue.work_queue import _agent_label as _wq_agent_label
 from ..workqueue.work_queue import resolve as _wq_resolve
 
 # A related brief's focus is surfaced for a human to skim, not to read in
 # full -- truncated so one runaway focus paragraph doesn't dominate a
 # batched prompt covering several related ids.
 FOCUS_SUMMARY_LIMIT = 200
+
+# GO v2 run records live outside the project repo (`run_record.py`'s own
+# default `--dir`) -- operational telemetry, not project state.
+DEFAULT_RUNS_DIR = Path("~/.go/runs")
 
 _FOCUS_BODY_RE = re.compile(r"^##\s+Focus\s*$\r?\n(.+)$", re.MULTILINE)
 
@@ -92,6 +97,45 @@ def _resolve_active_match(related_id: str, picked_dir: Path, queue_dir: Path) ->
     }
 
 
+def _find_run_record(related_id: str, repo: Any, runs_dir: Path) -> Optional[str]:
+    """Scan `runs_dir/<repo-name>/*.yaml` for a run record whose raw content
+    references `related_id`, returning its path as a string, or `None` if
+    `repo` is missing/unusable, the directory doesn't exist, or nothing
+    matches. One unreadable record is skipped, not fatal to the scan."""
+    if not repo:
+        return None
+    repo_dir = runs_dir / Path(str(repo)).name
+    if not repo_dir.is_dir():
+        return None
+    for path in sorted(repo_dir.glob("*.yaml")):
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if related_id in content:
+            return str(path)
+    return None
+
+
+def _enrich_with_run_record(entry: Dict[str, Any], agent_label: str, runs_dir: Path) -> None:
+    """Best-effort: when `entry`'s `claimed-by` is this machine's own
+    `agent_label`, attach a `run_record` path if a local GO run record under
+    `runs_dir/<repo-name>/` references the related brief's id. Mutates
+    `entry` in place only on success. Wrapped in a broad except so any
+    failure here -- an unreadable directory, an unexpected frontmatter shape
+    -- never changes whether the match itself is reported, only whether it
+    carries this extra, purely informational field.
+    """
+    try:
+        if entry.get("claimed-by") != agent_label:
+            return
+        run_record_path = _find_run_record(entry["id"], entry.get("repo"), runs_dir)
+        if run_record_path:
+            entry["run_record"] = run_record_path
+    except Exception:  # noqa: BLE001 - enrichment is purely additive, never fatal
+        pass
+
+
 def check(
     claimed_brief_path: Path,
     picked_dir: Path,
@@ -104,14 +148,19 @@ def check(
 
     Returns `{"checked": bool, "active": [...], "warning": str|None}`.
     `active` entries carry `id`, `path`, `claimed-by`, `claimed-at`, `repo`,
-    and `focus` (see `_resolve_active_match`). Never raises; `checked` is
-    `false` only when the claimed brief itself can't be read or parsed --
-    an individual related id failing to resolve is skipped, not a reason to
-    report `checked: false` for the whole call.
+    `focus` (see `_resolve_active_match`), and -- when the match is claimed
+    by this same machine and a local run record can be found -- `run_record`
+    (see `_enrich_with_run_record`). Never raises; `checked` is `false` only
+    when the claimed brief itself can't be read or parsed -- an individual
+    related id failing to resolve is skipped, not a reason to report
+    `checked: false` for the whole call.
 
-    `agent_label` and `runs_dir` are accepted here to keep this the single
-    call signature callers use; local run-record enrichment keyed off them
-    is layered on separately.
+    `agent_label` defaults to this machine's own `work_queue._agent_label()`
+    value, so a match claimed by *this* caller (as opposed to some other
+    agent or machine) is recognized without the caller having to compute
+    that label itself. `runs_dir` defaults to `~/.go/runs`
+    (`run_record.py`'s own default), joined per-match with the matched
+    brief's `repo:` field to scan `runs_dir/<repo-name>/*.yaml`.
     """
     result: Dict[str, Any] = {"checked": False, "active": [], "warning": None}
 
@@ -142,6 +191,11 @@ def check(
 
     picked_dir = Path(picked_dir)
     queue_dir = Path(queue_dir)
+    try:
+        resolved_agent_label = agent_label or _wq_agent_label()
+    except Exception:  # noqa: BLE001 - enrichment gating only, never fatal
+        resolved_agent_label = agent_label
+    resolved_runs_dir = Path(runs_dir).expanduser() if runs_dir is not None else DEFAULT_RUNS_DIR.expanduser()
     active: List[Dict[str, Any]] = []
     warnings: List[str] = []
 
@@ -155,6 +209,8 @@ def check(
             warnings.append(f"could not resolve related id {related_id!r}: {exc!r}")
             continue
         if entry is not None:
+            if resolved_agent_label:
+                _enrich_with_run_record(entry, resolved_agent_label, resolved_runs_dir)
             active.append(entry)
 
     result["active"] = active
