@@ -81,6 +81,23 @@ class JournalForeignTaskIdsForeignMatchTest(unittest.TestCase):
         self.assertEqual(foreign, {"9.9", "9.10"})
 
 
+class JournalForeignTaskIdsMixedMatchTest(unittest.TestCase):
+    """2.3 (helper level): a journal with a mix of matching and foreign task
+    ids still reports the foreign ones -- partial collision is not treated
+    as safe, and matching entries are not allowed to mask foreign ones."""
+
+    def test_mixed_matching_and_foreign_task_ids_reports_only_foreign_ones(self):
+        tasks = [{"id": "1.1", "status": "done"}, {"id": "1.2", "status": "pending"}]
+        entries = [
+            {"task": "1.1", "report": {"head_sha": "aaa111"}},
+            {"task": "9.9", "report": {"head_sha": "deadbee"}},
+        ]
+
+        foreign = live.journal_foreign_task_ids(entries, tasks)
+
+        self.assertEqual(foreign, {"9.9"})
+
+
 class FullRealInnerForeignJournalRaisesTest(unittest.TestCase):
     """2.2: a journal with one or more entries whose task ids are absent from
     the current task set raises the foreign-journal error at the
@@ -139,6 +156,25 @@ class FullRealInnerForeignJournalRaisesTest(unittest.TestCase):
 
         self.assertIn("9.9", message)
         self.assertIn("9.10", message)
+
+    def test_mixed_matching_and_foreign_task_ids_still_raises(self):
+        """2.3: a journal with a mix of matching and foreign entries raises the
+        same error -- a partial collision (some entries match the current task
+        set) is not treated as safe, and nothing is reconciled from it."""
+        spec_rel = "docs/specs/spec-path-task-crosscheck"
+        message, journal_path = self._run_and_capture_error(
+            journal_entries=[
+                {"task": "1.1", "role": "implement", "report": {"head_sha": "aaa111"}},
+                {"task": "9.9", "role": "implement", "report": {"head_sha": "deadbee"}},
+            ],
+            current_tasks=[{"id": "1.1", "status": "done"}],
+            spec_rel=spec_rel,
+        )
+
+        self.assertIn("9.9", message)
+        self.assertIn(journal_path, message)
+        self.assertIn(spec_rel, message)
+        self.assertIn("--fresh", message)
 
 
 if __name__ == "__main__":
