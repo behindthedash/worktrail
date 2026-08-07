@@ -97,6 +97,41 @@ def _files_on_base(repo: Path, files: List[str], base: str = "") -> bool:
     return True
 
 
+def _merged_pr_matching(repo: Path, files: List[str]) -> Optional[str]:
+    """URL of the newest merged PR whose changed-file set is a superset of `files`.
+
+    Mirrors `reconcile_pr_labels.py`'s `_open_prs()` subprocess pattern: never
+    raises, `None` on any `gh` failure (missing, unauthenticated, offline,
+    non-zero exit, bad JSON) so a network hiccup fails a finding open (still
+    surfaced to a human) rather than guessing.
+    """
+    try:
+        result = subprocess.run(
+            ["gh", "pr", "list", "--state", "merged",
+             "--json", "url,files", "--limit", "50"],
+            capture_output=True, text=True, timeout=30, cwd=str(repo),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        prs = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(prs, list):
+        return None
+    wanted = set(files)
+    for pr in prs:
+        pr_files = pr.get("files")
+        if not isinstance(pr_files, list):
+            continue
+        changed = {f.get("path") for f in pr_files if isinstance(f, dict) and f.get("path")}
+        if wanted <= changed:
+            return pr.get("url")
+    return None
+
+
 def _iter_journal_files(worktrees_dir: Path):
     for path in sorted(worktrees_dir.glob("run-*.json")):
         if not path.is_file():
@@ -114,10 +149,45 @@ def _age_days(path: Path) -> float:
     return max(0.0, (time.time() - path.stat().st_mtime) / 86400.0)
 
 
+def reconcile_finding(repo: Path, finding: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Attempt to auto-resolve a raw QUARANTINED finding.
+
+    Tries base-branch file presence first (cheap, no network), then a
+    merged-PR file-set match (network). Returns a reconciliation record
+    (`spec_id`, `group`, `method`, `evidence`) on either signal succeeding,
+    else `None` (unreconciled -- the finding stays a finding).
+    """
+    files = _group_files(repo, finding["spec_id"], finding["group"])
+    if files is None:
+        return None
+    if _files_on_base(repo, files):
+        return {
+            "spec_id": finding["spec_id"],
+            "group": finding["group"],
+            "method": "base-branch-files",
+            "evidence": files,
+        }
+    pr_url = _merged_pr_matching(repo, files)
+    if pr_url:
+        return {
+            "spec_id": finding["spec_id"],
+            "group": finding["group"],
+            "method": "merged-pr-files",
+            "evidence": pr_url,
+        }
+    return None
+
+
 def check_repo(repo: Path) -> Dict[str, Any]:
-    """Findings for every run journal in one repo. Empty `findings` = clean."""
+    """Findings for every run journal in one repo. Empty `findings` = clean.
+
+    `findings` holds only unreconciled QUARANTINED groups; `reconciled` holds
+    the auto-resolved ones (never a silent drop -- see `reconcile_finding()`).
+    """
     repo = Path(repo)
-    result: Dict[str, Any] = {"repo": repo.name, "path": str(repo), "findings": []}
+    result: Dict[str, Any] = {
+        "repo": repo.name, "path": str(repo), "findings": [], "reconciled": [],
+    }
     worktrees_dir = repo.parent / f"{repo.name}-worktrees"
     if not worktrees_dir.is_dir():
         return result
@@ -138,14 +208,17 @@ def check_repo(repo: Path) -> Dict[str, Any]:
                 continue
             if group.get("state") != "QUARANTINED":
                 continue
-            result["findings"].append(
-                {
-                    "spec_id": spec_id,
-                    "group": group_name,
-                    "pr_url": group.get("pr_url", ""),
-                    "age_days": age_days,
-                }
-            )
+            finding = {
+                "spec_id": spec_id,
+                "group": group_name,
+                "pr_url": group.get("pr_url", ""),
+                "age_days": age_days,
+            }
+            reconciliation = reconcile_finding(repo, finding)
+            if reconciliation is not None:
+                result["reconciled"].append(reconciliation)
+            else:
+                result["findings"].append(finding)
     return result
 
 
