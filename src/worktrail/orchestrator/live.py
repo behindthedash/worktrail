@@ -3815,6 +3815,34 @@ def _full_real_inner(
         Path(journal_path).unlink()  # --fresh: discard prior progress
         print(f"{_ts()} FRESH: discarded prior journal {journal_path}")
 
+    # Foreign-journal guard, fired directly in _full_real_inner's own resume
+    # block (spec-path-task-crosscheck 1.2) so it covers every path below --
+    # --from-verify, --pipeline, and the default sequential path -- before any
+    # of them reconcile a journal from a different --spec onto this run's
+    # tasks. live_run_real / _pipeline_scheduler carry the identical guard on
+    # their own reconcile_from_journal() call too, for callers that reach
+    # those functions directly (e.g. the `live-run-real` CLI command) without
+    # going through this function.
+    if resume and Path(journal_path).exists():
+        try:
+            _resume_journal = json.loads(Path(journal_path).read_text())
+        except (OSError, json.JSONDecodeError):
+            _resume_journal = None
+        if _resume_journal is not None:
+            _, _resume_tasks = taskformats.load_spec(str(repo / spec_rel))
+            reconcile_from_journal(_resume_tasks, _resume_journal)
+            foreign_ids = journal_foreign_task_ids(
+                _resume_journal.get("entries", []), _resume_tasks
+            )
+            if foreign_ids:
+                raise RuntimeError(
+                    f"Journal at {journal_path} contains task id(s) "
+                    f"{sorted(foreign_ids)} not present in --spec {spec_rel!r}. This "
+                    f"journal likely belongs to a different spec/change whose trailing "
+                    f"path name collides with this one. Re-run with --fresh to discard "
+                    f"this journal and start clean."
+                )
+
     # --from-verify entry point: skip fan-out and integrate, run only verify_and_cleanup
     if from_verify:
         journal_file = Path(journal_path)
