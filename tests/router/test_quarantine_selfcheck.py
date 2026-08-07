@@ -2,7 +2,9 @@
 """Tests for quarantine_selfcheck.py. Run: python3 -m pytest test_quarantine_selfcheck.py -q"""
 import io
 import json
+import os
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -50,15 +52,16 @@ class TestCheckRepo(unittest.TestCase):
     def test_journal_with_one_quarantined_group_yields_one_finding(self):
         repo = _repo_with_worktrees(self.tmp, "myrepo")
         worktrees_dir = self.tmp / "myrepo-worktrees"
-        _journal(worktrees_dir, "some-spec", _QUARANTINED_GROUPS)
+        journal_path = _journal(worktrees_dir, "some-spec", _QUARANTINED_GROUPS)
+        three_days_ago = time.time() - 3 * 86400.0
+        os.utime(journal_path, (three_days_ago, three_days_ago))
         result = check_repo(repo)
         self.assertEqual(len(result["findings"]), 1)
         finding = result["findings"][0]
         self.assertEqual(finding["spec_id"], "some-spec")
         self.assertEqual(finding["group"], "1.2")
         self.assertEqual(finding["pr_url"], "https://example.com/pr/2")
-        self.assertIsInstance(finding["age_days"], float)
-        self.assertGreaterEqual(finding["age_days"], 0.0)
+        self.assertAlmostEqual(finding["age_days"], 3.0, places=1)
 
 
 class TestSweep(unittest.TestCase):
