@@ -463,6 +463,17 @@ a role pinned to a different agent falls back to that agent's own default model.
   `#spec-worktree-setup` bootstrap step). It is **non-fatal** — a failed install is logged
   and the worker still self-installs — so a flaky registry never quarantines a task. Omit
   the flag when the policy key is unset (repos with no install step are unaffected).
+- **Migration-group isolation (opt-in, from policy):** when `migration_path_patterns`
+  is set in `docs/specs/go-policy.yaml` (loaded in Phase 4), pass each pattern through
+  as a repeated `--migration-pattern "<glob>"`. Any task whose declared files match one
+  is always folded into `coordinator.plan_groups()`'s BASE integration group, even if
+  its dependency graph would otherwise place it in an independent feature group — a
+  schema migration and the code that depends on the tables it creates rarely share a
+  `files` entry, so neither the dependency graph nor the shared-file union-find
+  reliably catches that coupling, and a migration quarantined on its own (e.g. by an
+  unrelated flaky test) can leave already-merged consumer code depending on tables
+  that don't exist on any already-migrated database. Omit the flag when the policy key
+  is unset (repos with no configured patterns are unaffected).
 - **Fan-out width (opt-in, from policy):** when `max_workers` is set in
   `docs/specs/go-policy.yaml` (loaded in Phase 4), pass it through as
   `--max-workers <n>` — it bounds how many task worktrees with live agent workers run

@@ -91,6 +91,19 @@ DEFAULTS: Dict[str, Any] = {
     # `live.py full-real` as `--bootstrap-cmd`. Non-fatal (a failed install is logged and
     # the worker self-recovers); None = skip, so repos with no install step are unaffected.
     "worktree_bootstrap_cmd": None,
+    # Optional glob patterns (fnmatch, matched against a task's declared `files`)
+    # identifying schema-migration files for this repo (e.g. Alembic revisions,
+    # Drizzle/Rails migrations). A task touching a matching path is always folded
+    # into the parallel-orchestrator's BASE integration group (coordinator.py
+    # `plan_groups()`), even if its own dependency graph would otherwise place it
+    # in an independent feature group -- migrations and the code that depends on
+    # the tables they create rarely share a `files` entry, so the shared-file
+    # union-find can't catch that coupling, and a migration quarantined on its own
+    # can silently leave dev with model/router code for tables that don't exist.
+    # Threaded to `live.py full-real` as `--migration-pattern` (repeatable).
+    # Empty by default: migration tooling/paths are repo-specific, not a
+    # worktrail convention, so repos without this key see no behavior change.
+    "migration_path_patterns": [],
     # Optional repo-owned worker defaults. Explicit invocation values still win;
     # these override machine-wide GO_/ORCH_ environment defaults.
     "agent_cli": None,

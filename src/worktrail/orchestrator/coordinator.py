@@ -39,10 +39,11 @@ from __future__ import annotations
 
 import argparse
 import copy
+import fnmatch
 import json
 import os
 import sys
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Sequence
 
 TAIL_KINDS = {"e2e", "cleanup"}
 DONE = {"done", "completed"}
@@ -197,13 +198,22 @@ def _reqs(ids, by_id) -> List[str]:
     return sorted(out)
 
 
-def plan_groups(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _touches_migration(task: Dict[str, Any], patterns: Sequence[str]) -> bool:
+    """True if any of `task`'s declared files match a migration path pattern."""
+    files = _norm_files(task.get("files"))
+    return any(fnmatch.fnmatch(f, pat) for f in files for pat in patterns)
+
+
+def plan_groups(
+    tasks: List[Dict[str, Any]], migration_patterns: Sequence[str] = ()
+) -> List[Dict[str, Any]]:
     """Partition the DAG into a base group + independent feature groups.
 
     Algorithm:
       1. Hold out tail tasks (e2e/cleanup).
       2. BASE = impl roots (no intra-impl deps) with >= 2 transitive dependents
-         -- the foundations many tasks build on.
+         -- the foundations many tasks build on -- **plus** any task whose
+         declared files match `migration_patterns` (see below).
       3. Union-find the remaining FEATURE tasks over dependency edges **and
          shared-file edges**: two feature tasks merge if either one depends on
          the other, or they write the same file. Result: feature groups are
@@ -224,6 +234,30 @@ def plan_groups(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     collisions and cost 8 of 213 groups. No spec newly collapsed to a single
     group -- file overlap inside a spec turns out to be sparse and mostly already
     aligned with the dependency structure, so no hub-file threshold is needed.
+
+    Why migration tasks are forced into BASE: a schema migration and the code
+    that reads/writes the tables it creates rarely share a `files` entry (the
+    migration file and the consuming service/router file are different paths),
+    so neither the dependency graph nor the shared-file union-find reliably
+    catches the coupling -- it depends entirely on `deps` inference (compile.py's
+    LLM pass, or hand-authored task frontmatter) correctly noticing an implicit
+    "this task's code touches that migration's table" relationship, which is not
+    dependable. A migration left in its own singleton/feature group can then be
+    quarantined (e.g. on an unrelated flaky test) independently of consumer code
+    that already merged and now depends on a table that doesn't exist on any
+    already-migrated database -- observed on datalena's embed-widget-auth-hardening
+    run (PRs #2138 base, #2139 feature-2, both merged; the migration task's own
+    feature-1 group quarantined on an unrelated stale-head assertion and was never
+    merged until the manual recovery in #2144, leaving dev broken in between).
+    Folding migration tasks into BASE does not fix the missing-deps-edge root
+    cause, but it removes the specific failure mode: BASE is the group everything
+    else stacks on and merges first, so a migration quarantined inside BASE blocks
+    the whole run rather than silently letting an independent, non-stacking
+    sibling group merge around it. `migration_patterns` is empty by default (no
+    behavior change for callers that don't pass it) -- each repo declares its own
+    patterns via `docs/specs/go-policy.yaml`'s `migration_path_patterns`, since
+    migration tooling/paths are repo-specific (Alembic, Drizzle, Rails, etc.), not
+    a worktrail convention.
 
     TODO: requirement-cluster labels; detect foundational cut-vertices beyond
     pure roots.
@@ -255,6 +289,8 @@ def plan_groups(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if not [d for d in t.get("deps", []) if d in ids]  # root within impl
         and len(transitive_dependents(t["id"])) >= 2  # fans out
     }
+    if migration_patterns:
+        base |= {t["id"] for t in impl if _touches_migration(t, migration_patterns)}
 
     feat = ids - base
     parent = {tid: tid for tid in feat}
