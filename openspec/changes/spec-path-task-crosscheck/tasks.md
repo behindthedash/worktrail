@@ -31,6 +31,6 @@
 
 ## 3. Validation
 
-- [ ] 3.1 Run `PYTHONPATH=src pytest -q` and
+- [ ] 3.1 [e2e] Run `PYTHONPATH=src pytest -q` and
       `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`
       green.
