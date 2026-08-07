@@ -23,9 +23,7 @@
 - [ ] 3.6 Test: `finish` on a run that claimed with `--remote` deletes the remote ref (assert via `git ls-remote` on the bare repo returns empty).
 - [ ] 3.7 Test: `finish` on a run whose remote delete fails (point at an unreachable/removed bare repo path) still completes successfully and returns the normal `finish` JSON output.
 - [ ] 3.8 Test: `claim` without `--remote` makes no git network calls and behaves identically to pre-change behavior (regression guard against this change accidentally changing default behavior).
-- [ ] 3.9 Run `PYTHONPATH=src pytest -q && PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` and confirm both are green.
 
 ## 4. Documentation
 
-- [ ] 4.1 Update `run_record.py`'s module-level docstring (already covered by 2.5) — confirm it reads correctly end to end after 2.1-2.4 land.
-- [ ] 4.2 Do NOT wire `--remote` into `#active-conflicts-scan` in `subagent-prompts.md` or change any policy default in this change (design.md Non-Goals) — leave a one-line note in this change's own proposal/design only; the follow-up decision belongs to a separate change.
+- [ ] 4.1 Do NOT wire `--remote` into `#active-conflicts-scan` in `subagent-prompts.md` or change any policy default in this change (design.md Non-Goals) — leave a one-line note in this change's own proposal/design only; the follow-up decision belongs to a separate change.
