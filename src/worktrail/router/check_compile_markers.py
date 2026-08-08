@@ -71,6 +71,14 @@ def changed_change_dirs(repo: "str | Path", base_ref: str, head_ref: str = "HEAD
         parts = change_dir.relative_to(repo).parts
         if len(parts) < 3 or parts[0] != TASKS_GLOB_SUFFIX[0] or parts[1] != TASKS_GLOB_SUFFIX[1]:
             continue
+        # `openspec archive` moves a change one level deeper, under
+        # openspec/changes/archive/<name>/ -- matches dashboard.py's own
+        # `d.name != "archive"` convention for the same directory. An
+        # archived change's tasks.md is historical, not a still-live plan;
+        # resolve._split() assumes the fixed openspec/changes/<id> depth and
+        # mis-splits a deeper archived path (worktrail PR #206).
+        if parts[2] == "archive":
+            continue
         if change_dir in seen:
             continue
         seen.add(change_dir)
