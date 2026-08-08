@@ -459,6 +459,42 @@ def find_verify_pending_specs(
     return found
 
 
+def find_stale_bookkeeping_specs(
+    repos_root: Path, go_repo: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """Every (repo, spec) pair currently in the `stale-bookkeeping` stage with
+    at least one stale task id, across every repo under `repos_root` (or just
+    `go_repo` when given). These are invisible to `worktrail-go auto` the same
+    way verify-pending specs are -- auto mode only claims work-queue briefs --
+    so without this sweep they sit until a human notices the dashboard's
+    stage."""
+    names = discover_repo_names(repos_root)
+    if go_repo:
+        names = [n for n in names if n == go_repo]
+    found: List[Dict[str, Any]] = []
+    for name in names:
+        repo_path = repos_root / name
+        rows = dashboard.scan(repo_path / "docs" / "specs")
+        for row in rows:
+            if row.get("stage") != "stale-bookkeeping":
+                continue
+            stale_task_ids = row.get("stale_task_ids") or []
+            if not stale_task_ids:
+                continue
+            spec_id = row.get("id")
+            if not spec_id:
+                continue
+            spec_rel = resolve_spec_rel(repo_path, spec_id)
+            if spec_rel is None:
+                continue
+            found.append({
+                "repo": repo_path, "repo_name": name,
+                "spec_id": spec_id, "spec_rel": spec_rel,
+                "stale_task_ids": stale_task_ids,
+            })
+    return found
+
+
 def _base_branch_for(repo: Path) -> str:
     try:
         return load_policy(repo).get("base_branch") or "dev"
