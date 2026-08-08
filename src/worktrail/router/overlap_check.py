@@ -39,6 +39,16 @@ _PROBLEM_STMT_RE = re.compile(
 
 _DATE_PREFIX = re.compile(r"^\d{4}-\d{2}-\d{2}--(.+)\.md$")
 
+_CAPABILITIES_SECTION_RE = re.compile(
+    r"^##[ \t]+Capabilities[ \t]*\n(.*?)(?=\n##\s|\Z)",
+    re.DOTALL | re.IGNORECASE | re.MULTILINE,
+)
+
+_WHY_SECTION_RE = re.compile(
+    r"^##[ \t]+Why[ \t]*\n(.*?)(?=\n##\s|\Z)",
+    re.DOTALL | re.IGNORECASE | re.MULTILINE,
+)
+
 
 def _slug_to_title(spec_id: str) -> str:
     """'003-donor-search' → 'Donor Search'"""
@@ -148,15 +158,42 @@ def _is_openspec_root(specs_root: Path) -> bool:
     return (specs_root / "changes").is_dir() or (specs_root / "specs").is_dir()
 
 
+def _first_sentence(block: str) -> Optional[str]:
+    for line in block.splitlines():
+        line = line.strip()
+        if line and not line.startswith("[") and not line.startswith("#"):
+            sentence_end = re.search(r"[.!?]", line)
+            return line[: sentence_end.end()].strip() if sentence_end else line
+    return None
+
+
+def _feature_summary_from_proposal(text: str) -> Optional[str]:
+    m = _CAPABILITIES_SECTION_RE.search(text)
+    if m:
+        block = m.group(1).strip()
+        if block:
+            return block
+
+    m = _WHY_SECTION_RE.search(text)
+    if m:
+        return _first_sentence(m.group(1).strip())
+
+    return None
+
+
 def _extract_openspec_change(change_dir: Path) -> Optional[Dict[str, Any]]:
     proposal = change_dir / "proposal.md"
     if not proposal.is_file():
         return None
+    try:
+        text = proposal.read_text(errors="ignore")
+    except OSError:
+        text = ""
     return {
         "spec_id": change_dir.name,
         "stage": "active",
         "title": _slug_to_title(change_dir.name),
-        "feature_summary": None,
+        "feature_summary": _feature_summary_from_proposal(text),
         "user_request_excerpt": None,
     }
 
