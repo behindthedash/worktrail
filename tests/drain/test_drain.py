@@ -1150,6 +1150,19 @@ def test_find_verify_pending_specs_skips_spec_with_no_resolvable_path(tmp_path, 
     assert find_verify_pending_specs(tmp_path) == []
 
 
+def test_find_verify_pending_specs_go_repo_filter(tmp_path):
+    repo_a = _make_repo(tmp_path, "repo-a")
+    _write_verify_pending_spec(
+        repo_a, "spec-a", "https://github.com/test/repo/pull/1"
+    )
+    repo_b = _make_repo(tmp_path, "repo-b")
+    _write_verify_pending_spec(
+        repo_b, "spec-b", "https://github.com/test/repo/pull/2"
+    )
+    found = find_verify_pending_specs(tmp_path, go_repo="repo-b")
+    assert [f["repo_name"] for f in found] == ["repo-b"]
+
+
 def test_build_full_real_resume_command_has_no_fresh_flag():
     cmd = build_full_real_resume_command(
         Path("/repo"), "docs/specs/some-spec", "dev", "claude")
