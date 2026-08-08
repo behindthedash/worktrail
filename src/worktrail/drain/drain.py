@@ -597,15 +597,46 @@ def _resolve_stale_task_path(repo: Path, spec_id: str, task_id: str) -> Optional
     return None
 
 
-def _run_git(cwd: Path, *args: str) -> None:
-    result = subprocess.run(["git", *args], capture_output=True, text=True, cwd=str(cwd))
+def _run_git(cwd: Path, *args: str, timeout: int) -> None:
+    result = subprocess.run(
+        ["git", *args], capture_output=True, text=True, cwd=str(cwd), timeout=timeout)
     if result.returncode != 0:
         raise RuntimeError(
             f"git {' '.join(args)} (in {cwd}) failed: {(result.stderr or result.stdout).strip()}")
 
 
+def _existing_stale_bookkeeping_pr(repo: Path, branch: str, timeout: int) -> Optional[str]:
+    """The URL of an already-open PR for `branch`, or None. Best-effort: a
+    `gh` failure (network, auth) is treated the same as "no open PR" rather
+    than aborting the finding, since the git steps below are the ones that
+    actually need to succeed or raise."""
+    result = subprocess.run(
+        ["gh", "pr", "list", "--head", branch, "--state", "open",
+         "--json", "url", "--jq", ".[0].url"],
+        capture_output=True, text=True, cwd=str(repo), timeout=timeout)
+    if result.returncode != 0:
+        return None
+    url = result.stdout.strip()
+    return url or None
+
+
+def _reset_stale_bookkeeping_worktree(repo: Path, branch: str, wt: Path, timeout: int) -> None:
+    """Best-effort teardown of a previous run's leftover worktree/branch --
+    e.g. one left behind by a `git commit`/`push`/`gh pr create` failure
+    before the `try/finally` below existed -- so `worktree add -b branch`
+    below is safe to retry. Errors are swallowed: the common case (nothing
+    left over from a prior run) exits non-zero on all three calls."""
+    for cmd in (
+        ["git", "worktree", "remove", "--force", str(wt)],
+        ["git", "worktree", "prune"],
+        ["git", "branch", "-D", branch],
+    ):
+        subprocess.run(cmd, capture_output=True, text=True, cwd=str(repo), timeout=timeout)
+
+
 def _open_stale_bookkeeping_pr(
     wt: Path, repo_name: str, spec_id: str, task_ids: List[str], base: str, branch: str,
+    timeout: int,
 ) -> str:
     """`gh pr create` for the status-flip-only branch, carrying `go:risk-low`
     (a status-only flip of already-shipped work is inherently low risk -- no
@@ -623,7 +654,7 @@ def _open_stale_bookkeeping_pr(
         f"{', '.join(task_ids)} in `{spec_id}` -- their `files:` are already merged "
         f"on `{base}`; no code change.\n\nOpened by drain's stale-bookkeeping sweep.",
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(wt))
+    result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(wt), timeout=timeout)
     out = ((result.stdout or result.stderr).strip().splitlines()[-1]
            if (result.stdout or result.stderr) else "(no output)")
     if result.returncode != 0 or not out.startswith("http"):
@@ -650,9 +681,18 @@ def close_stale_bookkeeping(
     merge, mirroring how the two full-real-resume actions spawn and record
     the outcome without blocking on their run finishing either.
 
-    `agent`/`timeout`/`spawner` are unused -- this action never spawns a
-    one-shot -- kept only so the signature matches StageRemediation's
-    uniform `action` shape (see design.md D1).
+    `agent`/`spawner` are unused -- this action never spawns a one-shot --
+    kept only so the signature matches StageRemediation's uniform `action`
+    shape (see design.md D1). `timeout` IS used, as the per-call timeout for
+    every `git`/`gh` subprocess call below -- this is the unattended
+    queue-drainer holding an exclusive lockfile for the run's duration, and
+    `git push`/`gh pr create` are its only network calls.
+
+    Re-entrant across sweeps: an already-open PR for this finding's branch is
+    detected up front and returned as-is rather than re-attempted (a PR that
+    has not yet merged must not read as a remediation *failure* on every
+    sweep between opening and merge), and any worktree/branch left behind by
+    a prior run's mid-flight failure is reset before retrying.
 
     Raises on `gh pr create` failure (caught by the sweep engine's
     per-finding try/except, per D2) rather than returning a result dict with
@@ -669,20 +709,36 @@ def close_stale_bookkeeping(
     slug = f"close-stale-{spec_id}"
     branch = f"fix/{slug}"
     wt = repo.parent / f"{repo.name}-worktrees" / slug
+
+    existing_pr = _existing_stale_bookkeeping_pr(repo, branch, timeout)
+    if existing_pr:
+        log(f"close-stale-bookkeeping: {repo_name} {spec_id} already has an "
+            f"open PR, skipping: {existing_pr}")
+        return {"repo": repo_name, "spec_id": spec_id, "task_ids": task_ids,
+                "pr_url": existing_pr}
+
+    _reset_stale_bookkeeping_worktree(repo, branch, wt, timeout)
     log(f"close-stale-bookkeeping: {repo_name} {spec_id} -> {', '.join(task_ids)}")
-    _run_git(repo, "worktree", "add", "-b", branch, str(wt), base)
+    _run_git(repo, "worktree", "add", "-b", branch, str(wt), base, timeout=timeout)
+    try:
+        changed_rel = [str(path.relative_to(repo)) for path in task_paths]
+        for rel in changed_rel:
+            set_status_completed(wt / rel)
+        _run_git(wt, "add", *changed_rel, timeout=timeout)
+        _run_git(wt, "commit", "-m",
+                 f"chore({spec_id}): close stale bookkeeping ({', '.join(task_ids)})",
+                 timeout=timeout)
+        _run_git(wt, "push", "-u", "origin", branch, timeout=timeout)
+        pr_url = _open_stale_bookkeeping_pr(
+            wt, repo_name, spec_id, task_ids, base, branch, timeout)
+    finally:
+        # Best-effort: on the success path this must not raise past a real
+        # result, and on the failure path it must not mask the real
+        # exception -- either way, a worktree left behind here is cleaned up
+        # by _reset_stale_bookkeeping_worktree on the finding's next sweep.
+        subprocess.run(["git", "worktree", "remove", "--force", str(wt)],
+                        capture_output=True, text=True, cwd=str(repo), timeout=timeout)
 
-    changed_rel = [str(path.relative_to(repo)) for path in task_paths]
-    for rel in changed_rel:
-        set_status_completed(wt / rel)
-    _run_git(wt, "add", *changed_rel)
-    _run_git(wt, "commit", "-m",
-             f"chore({spec_id}): close stale bookkeeping ({', '.join(task_ids)})")
-    _run_git(wt, "push", "-u", "origin", branch)
-
-    pr_url = _open_stale_bookkeeping_pr(wt, repo_name, spec_id, task_ids, base, branch)
-
-    _run_git(repo, "worktree", "remove", str(wt))
     log(f"close-stale-bookkeeping result: {repo_name} {spec_id} -> {pr_url}")
     return {"repo": repo_name, "spec_id": spec_id, "task_ids": task_ids, "pr_url": pr_url}
 
