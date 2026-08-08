@@ -483,5 +483,55 @@ class TestScanOpenSpec(unittest.TestCase):
                              set(openspec_results[0].keys()))
 
 
+class TestScanDevkitRegression(unittest.TestCase):
+    """Regression guard for Requirement: Devkit-Shaped Root Scanning Is
+    Unchanged — scans this repo's own real `docs/specs` devkit-format tree
+    (not a synthetic fixture) and asserts the OpenSpec-shape branch added to
+    `scan()` leaves devkit output byte-for-byte identical to pre-change
+    behavior."""
+
+    def test_scan_docs_specs_matches_pre_change_snapshot(self):
+        repo_root = Path(__file__).resolve().parents[2]
+        docs_specs = repo_root / "docs" / "specs"
+        self.assertTrue(docs_specs.is_dir(), "fixture docs/specs must exist")
+
+        results = scan(docs_specs)
+
+        self.assertEqual(
+            results,
+            [
+                {
+                    "spec_id": "001-task-ac-verification-gate",
+                    "stage": "complete",
+                    "title": "Task Ac Verification Gate",
+                    "feature_summary": (
+                        "Add automated AC-verification to the worktrail SDD "
+                        "workflow's task-completion gate: before a task can be "
+                        "marked status:completed (or before its PR mer"
+                    ),
+                    "user_request_excerpt": (
+                        "Add automated AC-verification to the worktrail SDD "
+                        "workflow's task-completion gate: before a task can be "
+                        "marked status:completed (or before its PR merges), "
+                        "re-run that task's own literal DoD assertion"
+                    ),
+                },
+            ],
+        )
+
+    def test_scan_docs_specs_routes_through_devkit_path_not_openspec(self):
+        """`docs/specs` has no `changes/` or `specs/` subdirectory, so `scan()`
+        must take the `^\\d{3,}-` devkit iteration, matching `extract_spec_summary`
+        called directly on the same folder rather than the OpenSpec extractors."""
+        repo_root = Path(__file__).resolve().parents[2]
+        docs_specs = repo_root / "docs" / "specs"
+
+        results = scan(docs_specs)
+        direct = extract_spec_summary(docs_specs / "001-task-ac-verification-gate")
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0], direct)
+
+
 if __name__ == "__main__":
     unittest.main()
