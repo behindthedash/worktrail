@@ -3441,6 +3441,7 @@ def _pipeline_scheduler(
                 f"in-flight: {', '.join(inflight_ids) or '-'}"
             )
             _resume_drift_report(repo, base, spec_id, tasks)
+            _resume_quarantine_staleness_warning(repo, base, spec_id, groups, groups_journal)
         except (OSError, json.JSONDecodeError) as exc:
             print(f"{_ts()} PIPELINE RESUME: journal unreadable ({exc}); starting fresh")
 
