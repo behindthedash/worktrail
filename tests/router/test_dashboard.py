@@ -11,6 +11,7 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -19,6 +20,8 @@ from unittest import mock
 
 from worktrail.router import dashboard
 from worktrail.router.policy import load_policy, resolve_routing
+
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 def _spec(
@@ -607,6 +610,28 @@ class ScanFiltering(unittest.TestCase):
             )
             rows = dashboard.scan(repo / "docs" / "specs")
             assert [row["id"] for row in rows] == ["first-change"]
+
+
+class NonSpecDirsGitignoreSync(unittest.TestCase):
+    """artifact-policy.md documents which _NON_SPEC_DIRS entries are gitignored
+    SDD scratch (PR #195: _ralph_loop, reviews). A rename on either side would
+    silently desync them again with nothing to catch it."""
+
+    def test_gitignored_scratch_dirs_are_non_spec_dirs(self):
+        policy_text = (
+            REPO_ROOT / "skills" / "worktrail-go" / "references" / "artifact-policy.md"
+        ).read_text()
+        gitignore_paragraph = policy_text.split("**Gitignore", 1)[1].split(
+            "Rationale:", 1
+        )[0]
+        scratch_dirs = set(re.findall(r"`([\w.-]+)/", gitignore_paragraph))
+        self.assertEqual(scratch_dirs, {"reviews", "_ralph_loop"})
+        self.assertTrue(
+            scratch_dirs.issubset(dashboard._NON_SPEC_DIRS),
+            f"artifact-policy.md's gitignored scratch dirs {scratch_dirs} are not all "
+            f"in dashboard._NON_SPEC_DIRS ({dashboard._NON_SPEC_DIRS}) -- "
+            "update whichever side was renamed",
+        )
 
 
 class SpecFileDiscovery(unittest.TestCase):

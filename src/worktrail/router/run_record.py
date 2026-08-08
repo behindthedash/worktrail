@@ -409,9 +409,58 @@ def cmd_finish(args: argparse.Namespace) -> int:
     return 0
 
 
-def _active_conflicts(repo_dir: Path, specification: str, exclude: Path | None) -> List[Dict[str, Any]]:
-    """Other non-terminal run records under `repo_dir` targeting `specification`."""
-    results: List[Dict[str, Any]] = []
+def _extract_path_candidate(entry: str) -> str:
+    """Leading whitespace-delimited token of a `files_changed` entry.
+
+    Entries may carry trailing free-text annotation, e.g.
+    `"docs/specs/foo/tasks.md (data-model, contracts, KG, 28 tasks)"` — only
+    the path itself is a candidate for on-disk/git-tree resolution.
+    """
+    return entry.strip().split()[0] if entry.strip() else ""
+
+
+def _is_stale(record: Dict[str, Any], repo_dir: Path, base_branch: str) -> bool:
+    """Whether `record`'s worktree is gone and its files already landed on `base_branch`.
+
+    Never inferred from `files_changed` alone — a record with no `worktree`
+    field is treated as live, since that's the only signal that a worktree
+    ever existed to go missing.
+    """
+    worktree = record.get("worktree")
+    if not worktree:
+        return False
+    if Path(worktree).exists():
+        return False
+    files_changed = record.get("files_changed") or []
+    if not files_changed:
+        return False
+    for entry in files_changed:
+        candidate = _extract_path_candidate(entry)
+        if not candidate:
+            return False
+        result = subprocess.run(
+            ["git", "-C", str(repo_dir), "cat-file", "-e", f"{base_branch}:{candidate}"],
+            capture_output=True,
+        )
+        if result.returncode != 0:
+            return False
+    return True
+
+
+def _active_conflicts(
+    repo_dir: Path, repo_root: Path, specification: str, exclude: Path | None
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Other non-terminal run records under `repo_dir` targeting `specification`,
+    partitioned into `{"live": [...], "stale": [...]}` via `_is_stale()`.
+
+    `repo_root` is the actual git repository (for `_is_stale()`'s `git cat-file`
+    check), distinct from `repo_dir` (the run-records directory for this repo).
+    Each record's own `base_branch` is used — never a single value shared
+    across records, since concurrent runs may target different base branches.
+    A record with no `base_branch` is treated as live (can't check staleness).
+    """
+    live: List[Dict[str, Any]] = []
+    stale: List[Dict[str, Any]] = []
     if repo_dir.is_dir():
         for path in sorted(repo_dir.glob("*.yaml")):
             if exclude and path.resolve() == exclude:
@@ -421,23 +470,61 @@ def _active_conflicts(repo_dir: Path, specification: str, exclude: Path | None) 
                 continue
             if record.get("specification") != specification:
                 continue
-            results.append({
+            entry = {
                 "run_id": record.get("run_id"),
                 "path": str(path),
                 "started_at": record.get("started_at"),
                 "request_summary": record.get("request_summary"),
                 "agent": record.get("agent"),
-            })
-    return results
+            }
+            base_branch = record.get("base_branch")
+            is_stale = bool(base_branch) and _is_stale(record, repo_root, base_branch)
+            (stale if is_stale else live).append(entry)
+    return {"live": live, "stale": stale}
 
 
 def cmd_active_conflicts(args: argparse.Namespace) -> int:
-    """Read-only scan for other non-terminal runs on the same repo+specification."""
+    """Read-only scan for other non-terminal runs on the same repo+specification.
+
+    Prints the `{"live": [...], "stale": [...]}` partition from
+    `_active_conflicts()`.
+    """
     repo = Path(args.repo).resolve()
     repo_dir = Path(args.dir).expanduser() / repo.name
     exclude = Path(args.exclude).resolve() if args.exclude else None
-    print(json.dumps(_active_conflicts(repo_dir, args.specification, exclude)))
+    print(json.dumps(_active_conflicts(repo_dir, repo, args.specification, exclude)))
     return 0
+
+
+def cmd_reconcile(args: argparse.Namespace) -> int:
+    """Re-check one specific run record's staleness and close it if still stale.
+
+    Unlike `active-conflicts` (a fresh scan across all records), this re-runs
+    `_is_stale()` against the run record at `args.run` directly, using its own
+    `repository`/`base_branch` fields. If still stale, closes it via the same
+    finish path `cmd_finish` uses with `--status completed_and_merged`. If no
+    longer stale (its worktree reappeared, or a file no longer resolves on its
+    base_branch), makes no write.
+    """
+    run_path = Path(args.run)
+    record = _load(run_path)
+    repo_root = Path(record["repository"]) if record.get("repository") else run_path.parent
+    base_branch = record.get("base_branch")
+    if not base_branch or not _is_stale(record, repo_root, base_branch):
+        print(json.dumps({
+            "status": "not_stale",
+            "run_id": record.get("run_id"),
+            "path": str(run_path),
+        }))
+        return 0
+    merge_result = args.note or (
+        f"auto-reconciled: staleness reconciler closed run {record.get('run_id')}"
+    )
+    finish_args = argparse.Namespace(
+        path=str(run_path), status="completed_and_merged", pr=None,
+        merge_result=merge_result,
+    )
+    return cmd_finish(finish_args)
 
 
 def _claim_slug(specification: str) -> str:
@@ -898,6 +985,11 @@ def main(argv=None) -> int:
     s.add_argument("--remote", action="store_true")
     s.add_argument("--remote-ttl-seconds", type=int, default=86400)
     s.set_defaults(func=cmd_claim)
+
+    s = sub.add_parser("reconcile")
+    s.add_argument("run")
+    s.add_argument("--note", default=None)
+    s.set_defaults(func=cmd_reconcile)
 
     s = sub.add_parser("prune")
     s.add_argument("--dir", default="~/.go/runs")

@@ -405,6 +405,45 @@ def read_or_create_run_id(journal_path: "Path") -> str:
     return run_id
 
 
+def _resolve_journaled_head_branch(name: str, rec: dict, run_id: str) -> tuple[str, str | None]:
+    """Validate one group's journaled head_branch before trusting it for VERIFY.
+
+    Returns ``(branch, quarantine_reason)``. ``quarantine_reason`` is ``None``
+    when the journal's ``head_branch`` is unset or matches this run's own
+    orchestrator-owned integration branch (``f"{run_id}/{name}"`` -- the only
+    value ``integrate.py`` ever pushes a group's commits to). A mismatch means
+    PR discovery recorded some other PR's real ``headRefName`` (its matching
+    heuristic found the wrong PR); trusting that value would let VERIFY check
+    out and ci-fix/merge a real, unrelated branch (e.g. "stg", a live
+    stg->prd promotion branch) under a fabricated justification, so it is
+    rejected outright rather than substituted or guessed at.
+    """
+    owned = f"{run_id}/{name}"
+    candidate = rec.get("head_branch")
+    if candidate and candidate != owned:
+        return candidate, (
+            f"resumed head_branch {candidate!r} does not match this run's owned "
+            f"branch {owned!r} -- refusing to VERIFY a possibly-unrelated real branch"
+        )
+    return candidate or owned, None
+
+
+def _group_branch_from_journal(journal_groups: dict, run_id: str) -> tuple[dict, dict]:
+    """Build a resumed group_branch map from journal records, quarantining any
+    group whose head_branch fails `_resolve_journaled_head_branch` instead of
+    trusting it for VERIFY."""
+    group_branch: dict = {}
+    quarantined: dict = {}
+    for name, rec in journal_groups.items():
+        branch, reason = _resolve_journaled_head_branch(name, rec, run_id)
+        if reason:
+            quarantined[name] = reason
+            print(f"{_ts()}   !! GROUP [{name}] {reason}")
+        else:
+            group_branch[name] = branch
+    return group_branch, quarantined
+
+
 def reconcile_from_journal(tasks: list, journal: dict) -> list:
     """Replay a run journal onto in-memory task state so a RESUMED run skips
     roles that already completed.
@@ -475,6 +514,27 @@ def _journaled_task_heads(entries: list) -> dict[str, str]:
         if task_id and head_sha:
             heads[task_id] = str(head_sha)
     return heads
+
+
+def journal_foreign_task_ids(entries: list, tasks: list) -> set[str]:
+    """Return journal entry task ids that have no match in the currently loaded *tasks*.
+
+    A journal recorded against a different `--spec` path (or a stale one from before
+    tasks.md was edited) still parses and replays cleanly through `reconcile_from_journal`
+    -- `dispatch.apply_report` just swallows the `KeyError` for any id it can't find and
+    resume proceeds as if that task's history never happened. Observability-only
+    `{"event": ...}` markers carry no `task` id tied to the current run's task set and are
+    skipped here, matching `reconcile_from_journal`'s own skip.
+    """
+    task_ids = {t["id"] for t in tasks}
+    foreign: set[str] = set()
+    for e in entries:
+        if e.get("event"):
+            continue
+        task_id = e.get("task")
+        if task_id and task_id not in task_ids:
+            foreign.add(task_id)
+    return foreign
 
 
 def validate_task_metadata(tasks: list) -> None:
@@ -1024,6 +1084,49 @@ def _resume_drift_report(repo: Path, base: str, spec_id: str, tasks: list) -> No
                     "conflicts are more likely the longer this run has spanned"
                 )
         return
+
+
+def _resume_quarantine_staleness_warning(
+    repo: Path, base: str, spec_id: str, groups: list, groups_journal: dict
+) -> None:
+    """Best-effort: on a pipeline resume, warn per-group when a QUARANTINED
+    group's task branches have fallen behind `base` -- a resume with no
+    --fresh replays that group's cached quarantine verdict as-is, even if a
+    fix has since landed on `base`. Unlike `_resume_drift_report` (a single
+    generic heads-up scoped to the first task branch found), this iterates
+    every QUARANTINED group and uses the MAX drift across that group's own
+    task branches, since drift on an unrelated non-quarantined group's
+    branch says nothing about whether this group's verdict is stale.
+
+    Never raises: any branch that doesn't exist or any failing git call is
+    skipped for that group (silently, matching `_resume_drift_report`'s own
+    failure posture) rather than blocking or failing the resume.
+    """
+    for g in groups:
+        if groups_journal.get(g["name"], {}).get("state") != "QUARANTINED":
+            continue
+        max_count = 0
+        for tid in g["tasks"]:
+            branch = f"{spec_id}/{tid.lower()}"
+            if not _branch_exists(repo, branch):
+                continue
+            mb = _git(repo, "merge-base", branch, base, check=False)
+            if mb.returncode != 0 or not mb.stdout.strip():
+                continue
+            merge_base_sha = mb.stdout.strip()
+            count = _git(repo, "rev-list", "--count", f"{merge_base_sha}..{base}", check=False)
+            if count.returncode != 0 or not count.stdout.strip().isdigit():
+                continue
+            max_count = max(max_count, int(count.stdout.strip()))
+        if max_count != 0:
+            print(
+                f"{_ts()} PIPELINE RESUME WARNING: group '{g['name']}' is QUARANTINED in "
+                f"the resumed journal, and base '{base}' has moved {max_count} commit(s) "
+                "since that group's task branch was forked. This resume will replay the "
+                "prior quarantine verdict as-is. If the blocker may already be fixed on "
+                f"{base}, re-run with --fresh to re-evaluate instead of trusting the "
+                "cached result."
+            )
 
 
 def build_external_deps_by_ref(repo: Path, tasks: list, spec_rel: str | None = None) -> dict:
@@ -2354,6 +2457,15 @@ def live_run_real(
             print(f"{_ts()} RESUME: journal {out_cassette} unreadable ({e}); starting fresh")
         else:
             entries = reconcile_from_journal(tasks, journal)
+            foreign_ids = journal_foreign_task_ids(entries, tasks)
+            if foreign_ids:
+                raise RuntimeError(
+                    f"Journal at {out_cassette} contains task id(s) "
+                    f"{sorted(foreign_ids)} not present in --spec {spec_rel!r}. This "
+                    f"journal likely belongs to a different spec/change whose trailing "
+                    f"path name collides with this one. Re-run with --fresh to discard "
+                    f"this journal and start clean."
+                )
             journaled_heads.update(_journaled_task_heads(entries))
             skipped = [t["id"] for t in tasks if t["status"] in coordinator.DONE]
             inflight = [t["id"] for t in tasks if t["status"] in coordinator.IN_FLIGHT]
@@ -3149,8 +3261,15 @@ def _pipeline_scheduler(
                 # Already integrated but not merged; restore branch ref for verify.
                 with iv_lock:
                     if name not in group_branch:
-                        group_branch[name] = journal_rec.get("head_branch", f"{run_id}/{name}")
+                        candidate, reason = _resolve_journaled_head_branch(name, journal_rec, run_id)
+                        if reason:
+                            quarantined[name] = reason
+                        else:
+                            group_branch[name] = candidate
                     prs.append((name, base, journal_rec.get("pr_url")))
+                if name in quarantined:
+                    _record_group_fn(name, "", journal_rec.get("head_branch", ""), "QUARANTINED")
+                    print(f"{_ts()}   !! GROUP [{name}] {quarantined[name]}")
 
             if not _skip_integrate:
                 # Integrate
@@ -3195,11 +3314,11 @@ def _pipeline_scheduler(
                     )
                     return
 
-                if name in quarantined:
-                    return  # quarantined by integrate_one (empty subset, conflict, etc.)
-
-                if name not in group_branch:
-                    return  # MERGED on a prior run: integrate_one returned None
+            if name in quarantined:
+                return  # quarantined by integrate_one, or resumed head_branch validation above
+            if name not in group_branch:
+                return  # MERGED on a prior run (integrate_one returned None), or resumed
+                        # head_branch failed validation above
 
             # Verify
             with iv_lock:
@@ -3303,6 +3422,15 @@ def _pipeline_scheduler(
         try:
             jdata = json.loads(Path(journal_path).read_text())
             entries = reconcile_from_journal(tasks, jdata)
+            foreign_ids = journal_foreign_task_ids(entries, tasks)
+            if foreign_ids:
+                raise RuntimeError(
+                    f"Journal at {journal_path} contains task id(s) "
+                    f"{sorted(foreign_ids)} not present in --spec {spec_rel!r}. This "
+                    f"journal likely belongs to a different spec/change whose trailing "
+                    f"path name collides with this one. Re-run with --fresh to discard "
+                    f"this journal and start clean."
+                )
             journaled_heads.update(_journaled_task_heads(entries))
             groups_journal.update(jdata.get("groups", {}))
             done_ids = [t["id"] for t in tasks if t["status"] in coordinator.DONE]
@@ -3313,6 +3441,7 @@ def _pipeline_scheduler(
                 f"in-flight: {', '.join(inflight_ids) or '-'}"
             )
             _resume_drift_report(repo, base, spec_id, tasks)
+            _resume_quarantine_staleness_warning(repo, base, spec_id, groups, groups_journal)
         except (OSError, json.JSONDecodeError) as exc:
             print(f"{_ts()} PIPELINE RESUME: journal unreadable ({exc}); starting fresh")
 
@@ -3776,6 +3905,34 @@ def _full_real_inner(
         Path(journal_path).unlink()  # --fresh: discard prior progress
         print(f"{_ts()} FRESH: discarded prior journal {journal_path}")
 
+    # Foreign-journal guard, fired directly in _full_real_inner's own resume
+    # block (spec-path-task-crosscheck 1.2) so it covers every path below --
+    # --from-verify, --pipeline, and the default sequential path -- before any
+    # of them reconcile a journal from a different --spec onto this run's
+    # tasks. live_run_real / _pipeline_scheduler carry the identical guard on
+    # their own reconcile_from_journal() call too, for callers that reach
+    # those functions directly (e.g. the `live-run-real` CLI command) without
+    # going through this function.
+    if resume and Path(journal_path).exists():
+        try:
+            _resume_journal = json.loads(Path(journal_path).read_text())
+        except (OSError, json.JSONDecodeError):
+            _resume_journal = None
+        if _resume_journal is not None:
+            _, _resume_tasks = taskformats.load_spec(str(repo / spec_rel))
+            reconcile_from_journal(_resume_tasks, _resume_journal)
+            foreign_ids = journal_foreign_task_ids(
+                _resume_journal.get("entries", []), _resume_tasks
+            )
+            if foreign_ids:
+                raise RuntimeError(
+                    f"Journal at {journal_path} contains task id(s) "
+                    f"{sorted(foreign_ids)} not present in --spec {spec_rel!r}. This "
+                    f"journal likely belongs to a different spec/change whose trailing "
+                    f"path name collides with this one. Re-run with --fresh to discard "
+                    f"this journal and start clean."
+                )
+
     # --from-verify entry point: skip fan-out and integrate, run only verify_and_cleanup
     if from_verify:
         journal_file = Path(journal_path)
@@ -3794,10 +3951,9 @@ def _full_real_inner(
 
         # Reconstruct group_branch from journal's per-group integrate records
         journal_groups = journal.get("groups", {})
-        group_branch = {
-            name: rec.get("head_branch", f"{journal.get('run_id', 'unknown')}/{name}")
-            for name, rec in journal_groups.items()
-        }
+        group_branch, from_verify_quarantined = _group_branch_from_journal(
+            journal_groups, journal.get("run_id", "unknown")
+        )
 
         progress.set_phase(journal_path, "verify")
         print("=== VERIFY (from journal, skipping fan-out + integrate) ===")
@@ -3826,7 +3982,7 @@ def _full_real_inner(
             spec_rel=spec_rel,
             declared_files=coordinator.declared_files_by_group(groups, tasks),
         )
-        quarantined = vres.get("quarantined", {})
+        quarantined = {**from_verify_quarantined, **vres.get("quarantined", {})}
         self_merged = vres.get("self_merged", {})
         post_merge_regressed = vres.get("post_merge_regressed", {})
         automerge_evidence = vres.get("automerge_evidence", {})
@@ -4067,11 +4223,8 @@ def _full_real_inner(
                 f"and were delivered to no PR: {', '.join(stranded)}. Re-run with "
                 f"--re-integrate to rebuild the group branches/PRs and deliver them."
             )
-        group_branch = {
-            name: rec.get("head_branch", f"{run_id}/{name}") for name, rec in journal_groups.items()
-        }
+        group_branch, quarantined = _group_branch_from_journal(journal_groups, run_id)
         prs = [(name, base, rec.get("pr_url")) for name, rec in journal_groups.items()]
-        quarantined = {}
     else:
         print("=== INTEGRATE ===")
         # Same role-aware assembly-resolve worker the pipeline path gets: without

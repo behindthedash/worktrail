@@ -114,6 +114,50 @@ class CleanGreenPath(unittest.TestCase):
         self.assertTrue(run.find("git", "-C", "/repo", "worktree", "prune"))
 
 
+def _empty_rollup_view(**kw):
+    # `view(rollup=[])` can't express a genuinely empty rollup: `view()`'s own
+    # `rollup or GREEN` default treats `[]` as falsy and silently substitutes
+    # GREEN. Build the dict then overwrite the key directly.
+    d = view(**kw)
+    d["statusCheckRollup"] = []
+    return d
+
+
+class RequiredCheckNotYetScheduledPath(unittest.TestCase):
+    """PR #197 incident: a group PR must not be declared CI-green while a
+    required check (per the branch ruleset) has not yet reported into
+    statusCheckRollup -- an empty/partial rollup right after PR creation is
+    "not scheduled yet", not "nothing to wait on"."""
+
+    def test_empty_rollup_polls_again_instead_of_merging_immediately(self):
+        run = FakeRun({"run/feature-1": [
+            _empty_rollup_view(),  # first poll: nothing has reported yet
+            view(rollup=GREEN),    # second poll: the required "build" check landed
+        ]})
+        spawn = FakeSpawn()
+        v = mk(run, spawn, "/tmp/x")
+        res = v.run_all([FEATURE], {"feature-1": "run/feature-1"})
+
+        self.assertEqual(res["merged"], ["feature-1"])
+        self.assertEqual(spawn.prompts, [])
+        # Must have polled `gh pr view` at least twice for this branch before
+        # merging -- proof it did not declare green on the empty first rollup.
+        self.assertGreaterEqual(
+            len(run.find("gh", "pr", "view", "run/feature-1")), 2)
+
+    def test_stays_pending_when_required_check_never_arrives(self):
+        # Every poll returns an empty rollup -- the required "build" check is
+        # never scheduled/reported. Must time out, never merge.
+        run = FakeRun({"run/feature-1": [_empty_rollup_view()] * 10})
+        spawn = FakeSpawn()
+        v = mk(run, spawn, "/tmp/x")
+        res = v.run_all([FEATURE], {"feature-1": "run/feature-1"})
+
+        self.assertEqual(res["merged"], [])
+        self.assertIn("feature-1", res["quarantined"])
+        self.assertFalse(run.find("gh", "pr", "merge", "run/feature-1"))
+
+
 class ConflictResolvePath(unittest.TestCase):
     def test_resolve_worker_then_merge(self):
         run = FakeRun({"run/feature-1": [view(mergeable="CONFLICTING"), view()]})
@@ -272,6 +316,29 @@ class ClassifyChecks(unittest.TestCase):
         self.assertEqual(
             verify.classify_checks([{"context": "legacy", "state": "FAILURE"}]),
             (False, ["legacy"]))
+
+    def test_required_check_missing_from_rollup_is_pending_not_green(self):
+        # PR #197 incident: an empty/null rollup with a required check that
+        # simply hasn't been scheduled/reported yet must not be read as
+        # "no required checks" -> green.
+        self.assertEqual(
+            verify.classify_checks(None, required=["Version bump check"]),
+            (True, []))
+        self.assertEqual(
+            verify.classify_checks([], required=["Version bump check"]),
+            (True, []))
+        # Rollup reports other checks, but the required one hasn't landed yet.
+        self.assertEqual(
+            verify.classify_checks(GREEN, required=["build", "Version bump check"]),
+            (True, []))
+
+    def test_required_check_present_and_green_stays_green(self):
+        self.assertEqual(
+            verify.classify_checks(GREEN, required=["build"]), (False, []))
+
+    def test_no_required_list_preserves_pre_existing_behavior(self):
+        self.assertEqual(verify.classify_checks(None, required=None), (False, []))
+        self.assertEqual(verify.classify_checks(None, required=[]), (False, []))
 
 
 class MergedPRTreatedAsSuccess(unittest.TestCase):
@@ -865,6 +932,46 @@ class CumulativePostMergeGate(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("feature-1", reason)
         self.assertFalse(run2.find("gh", "pr", "merge", "run/feature-2"))
+
+    def test_post_merge_worktree_reused_across_separate_verifier_instances(self):
+        """live.py's pipeline scheduler builds a FRESH Verifier per group, so a
+        second group's post-merge smoke check runs against a NEW instance whose
+        `_post_merge_worktree_path` starts as None -- even though the first
+        group's instance already created (and, on real git, registered) a
+        worktree at the shared `<spec_id>-postmerge` path. Before the fix, the
+        second instance blindly retried `git worktree add` at that same path
+        and failed with "already exists", which then permanently poisons the
+        shared `cumulative_regression` dict for every remaining group in the
+        run. `path.exists()` must short-circuit the second instance's own
+        `git worktree add` attempt entirely."""
+        with tempfile.TemporaryDirectory() as tmp:
+            run1 = FakeRun({"run/feature-1": [view()]})
+            v1 = mk(run1, FakeSpawn(), tmp, post_merge_smoke_cmd="pytest -q")
+            path1 = v1._post_merge_worktree()
+            self.assertIsNotNone(path1)
+            self.assertEqual(len(run1.find("git", "-C", "/repo", "worktree", "add")), 1)
+
+            # Simulate the real `git worktree add` in v1's call above having
+            # actually created the directory on disk (FakeRun never touches
+            # the filesystem) -- exactly as test_verify_worktree_reused_on_second_call
+            # does for `_group_worktree` above.
+            path1.mkdir(parents=True, exist_ok=True)
+
+            # A second group's Verifier: a FRESH instance (its own
+            # _post_merge_worktree_path is None), with a `run` that FAILS any
+            # further "worktree add" -- if the fix regresses, this instance
+            # would call `git worktree add` again at the same path, get this
+            # injected failure, and return None.
+            def run2(cmd):
+                if cmd[:4] == ["git", "-C", "/repo", "worktree"] and "add" in cmd:
+                    return Proc(1, "", f"fatal: '{path1}' already exists")
+                return run1(cmd)
+
+            v2 = mk(run2, FakeSpawn(), tmp, post_merge_smoke_cmd="pytest -q")
+            path2 = v2._post_merge_worktree()
+
+            self.assertEqual(path1, path2)
+            self.assertIsNotNone(path2)
 
 
 class GhRetry(unittest.TestCase):

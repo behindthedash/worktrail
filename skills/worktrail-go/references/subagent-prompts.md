@@ -640,6 +640,30 @@ local `git worktree list`/`for-each-ref` glob check cannot: a prior claimed
 brief never orchestrated, whose worktree or branch doesn't yet exist or
 doesn't match the glob.
 
+`claim`'s own conflict check only ever considers *live* records — a record
+whose worktree is gone and whose files already landed on its own
+`base_branch` (`stale`, per `_is_stale()`) never blocks a claim. But a stale
+record left untouched just rots forever with no `finish` entry, so before
+the hard-stop check below, scan for and close any stale records on this
+`$SPEC_ID`:
+
+```bash
+RUN_RECORDS_DIR="$(dirname "$(dirname "$RUN")")"
+SCAN=$(worktrail-run-record active-conflicts \
+  --dir "$RUN_RECORDS_DIR" --repo "$REPO" --specification "$SPEC_ID" --exclude "$RUN")
+echo "$SCAN" | python3 -c '
+import json, sys
+for r in json.load(sys.stdin)["stale"]:
+    print(r["path"])
+' | while IFS= read -r STALE_PATH; do
+  worktrail-run-record reconcile "$STALE_PATH" \
+    --note "auto-reconciled: active-conflicts-staleness-reconciliation"
+done
+```
+
+Then run the atomic claim itself, whose hard stop below only ever fires on
+`live` conflicts:
+
 ```bash
 CLAIM=$(worktrail-run-record claim "$RUN" --specification "$SPEC_ID")
 CLAIM_STATUS=$(echo "$CLAIM" | python3 -c 'import sys, json; print(json.load(sys.stdin)["status"])')

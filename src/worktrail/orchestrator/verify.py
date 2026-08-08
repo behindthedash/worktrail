@@ -46,7 +46,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from . import dispatch
 from . import spawnlib
@@ -204,16 +204,25 @@ def _is_informational(check: Dict[str, Any], name: str) -> bool:
     return any(m in low for m in _INFORMATIONAL_NAME_MARKERS)
 
 
-def classify_checks(rollup: Optional[List[Dict[str, Any]]]) -> Tuple[bool, List[str]]:
+def classify_checks(
+    rollup: Optional[List[Dict[str, Any]]],
+    required: Optional[Iterable[str]] = None,
+) -> Tuple[bool, List[str]]:
     """Return (any_pending, [failing check names]) for a statusCheckRollup list.
 
-    A null/empty rollup means no required checks -> (False, []) -> treated as
-    green (nothing to wait on).
+    A null/empty rollup with no `required` names means no required checks ->
+    (False, []) -> treated as green (nothing to wait on). When `required` is
+    given (the branch ruleset's required status check contexts), any of those
+    names still absent from `rollup` counts as pending too -- a required check
+    that has not yet been scheduled/reported must never be read as "nothing to
+    wait on" just because the rollup is currently empty or partial.
     """
     pending = False
     failing: List[str] = []
+    seen: set = set()
     for c in rollup or []:
         name = c.get("name") or c.get("context") or "(check)"
+        seen.add(name)
         if _is_informational(c, name):                  # never gates a merge
             continue
         if "conclusion" in c or "status" in c:          # CheckRun
@@ -230,6 +239,8 @@ def classify_checks(rollup: Optional[List[Dict[str, Any]]]) -> Tuple[bool, List[
                 pending = True
             elif state in _FAIL_CONTEXT_STATE:
                 failing.append(name)
+    if required and any(name not in seen for name in required):
+        pending = True
     return pending, failing
 
 
@@ -284,6 +295,12 @@ class Verifier:
         self.poll_interval_max = poll_interval_max
         self.max_polls = max_polls
         self.gh_repo = self._derive_gh_repo()
+        # Memoized required-status-check contexts for `self.base` (see
+        # `_required_check_names`). Fetched at most once per Verifier -- every
+        # group in a run shares the same base branch, so there is nothing to
+        # gain from re-querying per group or per poll.
+        self._required_check_names_fetched = False
+        self._required_check_names_cache: Optional[List[str]] = None
         # WorktreeManager routed through the SAME injected runner, so live runs
         # use worktree.remove()/prune() and tests stay hermetic.
         self.wm = worktree.WorktreeManager(
@@ -392,6 +409,38 @@ class Verifier:
             return url.rstrip("/").removesuffix(".git").split("github.com", 1)[-1].lstrip(":/")
         return None
 
+    def _required_check_names(self) -> Optional[List[str]]:
+        """Required status check context names for `self.base`, memoized.
+
+        `_block_on_checks` cross-checks the live `statusCheckRollup` against
+        this list so a required check that has not yet reported (a fresh PR,
+        or a workflow GitHub hasn't scheduled yet) is never read as "no
+        required checks" -- see `classify_checks`. None means the query
+        itself failed after retries, or `gh_repo` is unresolved; callers fall
+        back to rollup-only classification rather than blocking forever on an
+        unrelated `gh api` outage (same query-error posture as
+        `automerge_preflight.required_checks_gate`).
+        """
+        if self._required_check_names_fetched:
+            return self._required_check_names_cache
+        self._required_check_names_fetched = True
+        if self.gh_repo is None:
+            return None
+        names: Optional[List[str]] = None
+        for attempt in range(3):
+            try:
+                names = automerge_preflight.required_status_check_contexts(
+                    self.gh_repo, self.base, runner=self._preflight_runner)
+            except ImportError:
+                names = None
+                break
+            if names is not None:
+                break
+            if attempt < 2:
+                self.sleep(2.0 * (attempt + 1))
+        self._required_check_names_cache = names
+        return names
+
     def _detect_merge_method(self) -> str:
         """Query repo settings and return the best available merge method.
 
@@ -487,17 +536,33 @@ class Verifier:
         return path
 
     def _post_merge_worktree(self) -> Optional[Path]:
-        """Lazily create (once per run) a detached worktree tracking `base`,
-        reused for every cumulative post-merge smoke check in this run -- reset
+        """Lazily create a detached worktree tracking `base`, reused for every
+        cumulative post-merge smoke check this Verifier instance runs -- reset
         to the freshly fetched `remote/base` HEAD before each check rather than
         recreated. Safe to reuse because at most one smoke check runs at a time
-        (the caller holds `_merge_lock` for the duration)."""
+        (the caller holds `_merge_lock` for the duration).
+
+        The pipeline scheduler builds a FRESH Verifier per group (see
+        `_merge_lock`/`cumulative_regression`'s injection note above), so a
+        worktree already registered at this path by an earlier group's
+        Verifier -- or left over from a prior interrupted run against this
+        same spec -- is a normal, expected condition here, not a defect.
+        `git worktree add` refuses to create over an existing path; check
+        `path.exists()` first and reuse it, mirroring `_group_worktree`'s
+        same idiom above, instead of failing the whole post-merge gate on
+        every group after the first that reuses this path."""
         if self._post_merge_worktree_path is not None:
             return self._post_merge_worktree_path
         path = self.worktree_base / f"{self.spec_id}-postmerge"
+        if path.exists():
+            self._post_merge_worktree_path = path
+            return path
         with self._git_lock:  # `git worktree add` mutates the shared .git registry
             if self._post_merge_worktree_path is not None:
                 return self._post_merge_worktree_path
+            if path.exists():
+                self._post_merge_worktree_path = path
+                return path
             self.worktree_base.mkdir(parents=True, exist_ok=True)
             fetch = self._git("fetch", "-q", self.remote, self.base)
             if getattr(fetch, "returncode", 1) != 0:
@@ -758,11 +823,12 @@ class Verifier:
         fixed interval) and grow the gap toward poll_interval_max (cheap while a
         long suite runs) instead of hammering `gh` at a fixed cadence.
         """
+        required = self._required_check_names()
         for poll in range(self.max_polls):
             st = self.pr_status(gb)
             if st is None:
                 return False, ["(pr view unavailable)"]
-            pending, failing = classify_checks(st.get("statusCheckRollup"))
+            pending, failing = classify_checks(st.get("statusCheckRollup"), required=required)
             if not pending:
                 if failing:
                     return False, failing
