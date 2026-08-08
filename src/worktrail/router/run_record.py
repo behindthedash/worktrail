@@ -52,6 +52,8 @@ import argparse
 import json
 import os
 import re
+import socket
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -422,6 +424,84 @@ def _claim_slug(specification: str) -> str:
 
 def _claim_ref(specification: str) -> str:
     return f"refs/worktrail-claims/{_claim_slug(specification)}"
+
+
+# SHA of the empty tree (`git hash-object -t tree /dev/null`) — the same
+# constant for every git repo, so `commit-tree` needs no working-tree state.
+_EMPTY_TREE_SHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+# Wall-clock budget for a single git subprocess that talks to `origin`.
+_REMOTE_GIT_TIMEOUT = 30
+
+
+class RemoteClaimError(Exception):
+    """Typed failure from a remote (cross-machine) claim git/network operation.
+
+    `reason` is one of "git_error", "push_rejected", "verify_mismatch" so a
+    caller can branch on failure kind without parsing the message text.
+    """
+
+    def __init__(self, reason: str, message: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+def _run_remote_git(repo_dir: Path, args: List[str]) -> "subprocess.CompletedProcess[str]":
+    try:
+        return subprocess.run(
+            ["git", "-C", str(repo_dir), *args],
+            capture_output=True, text=True, timeout=_REMOTE_GIT_TIMEOUT,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RemoteClaimError("git_error", f"git {' '.join(args)}: {exc}") from exc
+
+
+def _push_remote_claim(
+    repo_dir: Path,
+    ref: str,
+    run_id: str,
+    ttl_seconds: int,
+    expect_sha: str | None = None,
+) -> str:
+    """Publish a cross-machine claim: push an empty commit to `ref` on `origin`.
+
+    The commit message carries the claim payload (`run_id`, `claimed_at`,
+    `hostname`, `ttl_seconds`) so a reader needs only `git log -1
+    --format=%B` on the ref, no working-tree checkout. `--force-with-lease`
+    makes the push git's own atomic compare-and-swap: an empty `expect_sha`
+    requires `ref` not already exist remotely (fresh claim); a stale claim's
+    SHA requires the remote is still exactly that value (reclaim) -- so two
+    machines racing the same reclaim resolve to exactly one winner. Returns
+    the pushed commit SHA on success; raises `RemoteClaimError` on push
+    rejection, a post-push verify mismatch (guards against a remote that
+    silently drops the custom ref namespace), or any git/network error.
+    """
+    payload = json.dumps({
+        "run_id": run_id,
+        "claimed_at": _now(),
+        "hostname": socket.gethostname(),
+        "ttl_seconds": ttl_seconds,
+    })
+    commit = _run_remote_git(repo_dir, ["commit-tree", _EMPTY_TREE_SHA, "-m", payload])
+    if commit.returncode != 0:
+        raise RemoteClaimError("git_error", f"commit-tree failed: {commit.stderr.strip()}")
+    sha = commit.stdout.strip()
+
+    lease = f"--force-with-lease={ref}:{expect_sha or ''}"
+    push = _run_remote_git(repo_dir, ["push", "origin", f"{sha}:{ref}", lease])
+    if push.returncode != 0:
+        raise RemoteClaimError("push_rejected", (push.stderr or push.stdout).strip())
+
+    verify = _run_remote_git(repo_dir, ["ls-remote", "origin", ref])
+    if verify.returncode != 0:
+        raise RemoteClaimError("git_error", f"ls-remote failed: {verify.stderr.strip()}")
+    remote_sha = verify.stdout.split()[0] if verify.stdout.strip() else None
+    if remote_sha != sha:
+        raise RemoteClaimError(
+            "verify_mismatch",
+            f"pushed {sha} but ls-remote reports {remote_sha!r}",
+        )
+    return sha
 
 
 def _lock_path(run_path: Path, specification: str) -> Path:
