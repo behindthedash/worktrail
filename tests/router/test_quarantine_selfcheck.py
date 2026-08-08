@@ -55,6 +55,14 @@ _QUARANTINED_GROUPS = {
     "1.1": {"state": "MERGED", "pr_url": "https://example.com/pr/1"},
     "1.2": {"state": "QUARANTINED", "pr_url": "https://example.com/pr/2"},
 }
+_BUDGET_EXHAUSTED_GROUPS = {
+    "1.1": {"state": "MERGED", "pr_url": "https://example.com/pr/1"},
+    "1.2": {
+        "state": "QUARANTINED",
+        "pr_url": "",
+        "quarantine_reason": "budget_exhausted",
+    },
+}
 
 
 class TestCheckRepo(unittest.TestCase):
@@ -86,6 +94,42 @@ class TestCheckRepo(unittest.TestCase):
         self.assertEqual(finding["group"], "1.2")
         self.assertEqual(finding["pr_url"], "https://example.com/pr/2")
         self.assertAlmostEqual(finding["age_days"], 3.0, places=1)
+        self.assertEqual(finding["quarantine_reason"], "")
+
+    def test_budget_exhausted_group_yields_resumable_not_finding(self):
+        """A group quarantined only because --run-budget ran out mid-fan-out
+        never failed -- it should route to `resumable`, not `findings`'
+        human-triage list (and skip reconcile_finding()'s base-branch/PR
+        lookups, which don't apply to a group that never even ran)."""
+        repo = _repo_with_worktrees(self.tmp, "myrepo")
+        worktrees_dir = self.tmp / "myrepo-worktrees"
+        _journal(worktrees_dir, "some-spec", _BUDGET_EXHAUSTED_GROUPS)
+        result = check_repo(repo)
+        self.assertEqual(result["findings"], [])
+        self.assertEqual(len(result["resumable"]), 1)
+        resumable = result["resumable"][0]
+        self.assertEqual(resumable["spec_id"], "some-spec")
+        self.assertEqual(resumable["group"], "1.2")
+        self.assertEqual(resumable["quarantine_reason"], "budget_exhausted")
+
+    def test_task_failure_group_still_a_finding(self):
+        """A non-budget quarantine_reason (e.g. task_failure) is unaffected --
+        it stays subject to reconciliation and lands in `findings` when
+        unreconciled, same as a group with no reason at all."""
+        repo = _repo_with_worktrees(self.tmp, "myrepo")
+        worktrees_dir = self.tmp / "myrepo-worktrees"
+        groups = {
+            "1.2": {
+                "state": "QUARANTINED",
+                "pr_url": "https://example.com/pr/2",
+                "quarantine_reason": "task_failure",
+            },
+        }
+        _journal(worktrees_dir, "some-spec", groups)
+        result = check_repo(repo)
+        self.assertEqual(result["resumable"], [])
+        self.assertEqual(len(result["findings"]), 1)
+        self.assertEqual(result["findings"][0]["quarantine_reason"], "task_failure")
 
 
 class TestGroupFiles(unittest.TestCase):
@@ -338,6 +382,20 @@ class TestCli(unittest.TestCase):
     def test_cli_requires_a_target(self):
         with self.assertRaises(SystemExit):
             main([])
+
+    def test_cli_exits_zero_for_resumable_only(self):
+        """A repo whose only QUARANTINED groups are budget-exhausted (safely
+        resumable) is not `flagged` -- exit 0, not the 1 a genuine finding
+        would produce."""
+        repo = _repo_with_worktrees(self.tmp, "resumable-repo")
+        _journal(self.tmp / "resumable-repo-worktrees", "spec-c", _BUDGET_EXHAUSTED_GROUPS)
+
+        out = io.StringIO()
+        with redirect_stdout(out):
+            exit_code = main(["--repo", str(repo)])
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("resumable, no action needed", out.getvalue())
 
 
 if __name__ == "__main__":
