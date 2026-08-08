@@ -105,6 +105,14 @@ from .quarantine_selfcheck import check_repo as _quarantine_check_repo
 
 from ..orchestrator.agent_capacity import gate_snapshot as _capacity_gate_snapshot
 
+# audit_postmerge is a sibling module (spec post-merge-reconciliation-audit):
+# its dashboard_snapshot() is a pure state-file read (no `gh` calls), reused
+# here rather than re-reading the persisted state a second way.
+from .audit_postmerge import (
+    dashboard_snapshot as _postmerge_dashboard_snapshot,
+    resolve_state_dir as _postmerge_resolve_state_dir,
+)
+
 # Policy routing is used only to annotate picker items.
 from .policy import DEFAULTS as _POLICY_DEFAULTS, load_policy as _load_policy, resolve_routing as _resolve_routing
 
@@ -2296,6 +2304,13 @@ def main(argv=None) -> int:
         except Exception:  # noqa: BLE001 — telemetry must never break the dashboard
             capacity = None
 
+    postmerge_check_failures = None
+    if _postmerge_dashboard_snapshot is not None:
+        try:
+            postmerge_check_failures = _postmerge_dashboard_snapshot(_postmerge_resolve_state_dir())
+        except Exception:  # noqa: BLE001 — telemetry must never break the dashboard
+            postmerge_check_failures = None
+
     # Parse queue briefs from --queue-json if provided.
     queue_briefs: List[Dict[str, Any]] = []
     if args.queue_json:
@@ -2359,6 +2374,7 @@ def main(argv=None) -> int:
                         "clusters": clusters,
                         "cluster_precision": cluster_precision,
                         "capacity": capacity,
+                        "postmerge_check_failures": postmerge_check_failures,
                         "staleness_warnings": staleness_warnings,
                         "rendered": rendered,
                     },
@@ -2404,6 +2420,7 @@ def main(argv=None) -> int:
                     "clusters": clusters,
                     "cluster_precision": cluster_precision,
                     "capacity": capacity,
+                    "postmerge_check_failures": postmerge_check_failures,
                     "recent_runs": recent_runs,
                     "staleness_warnings": staleness_warnings,
                     "rendered": rendered,
