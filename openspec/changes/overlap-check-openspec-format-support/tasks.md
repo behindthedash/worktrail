@@ -41,13 +41,14 @@
       `$REPO` (`$REPO/docs/specs` and/or `$REPO/openspec`) and merge the
       resulting `specs` arrays before the comparison step, instead of the
       current single hard-coded `--root "$REPO/docs/specs"` call.
-- [ ] 3.2 Manually verify `worktrail-overlap-check --root
+- [ ] 3.2 [e2e] Manually verify `worktrail-overlap-check --root
       <worktrail-repo>/openspec --json` returns a non-empty `specs` array
       against this repo's own `openspec/` tree — the exact reproduction
       from the originating handoff brief.
 
 ## 4. Verification
 
-- [ ] 4.1 Run `PYTHONPATH=src pytest -q` — full suite green.
-- [ ] 4.2 Run `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate
-      check` — golden record/replay regression green.
+- [ ] 4.1 [e2e] Run `PYTHONPATH=src pytest -q` — full suite green.
+- [ ] 4.2 [e2e] Run `PYTHONPATH=src python3 -m
+      worktrail.orchestrator.orchestrate check` — golden record/replay
+      regression green.
