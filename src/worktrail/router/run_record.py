@@ -811,14 +811,18 @@ def cmd_claim(args: argparse.Namespace) -> int:
     # Still honor any pre-existing non-terminal record tagged via plain
     # `set` (predates this primitive, or an out-of-band write) -- the lock
     # alone only guards against other `claim` callers, not stale
-    # `specification` writes.
-    conflicts = _active_conflicts(repo_dir, args.specification, run_path.resolve())
-    if conflicts:
+    # `specification` writes. Only a LIVE conflict blocks the claim -- a
+    # STALE one (crashed run, worktree gone, files already merged) is not a
+    # real contender, per _active_conflicts()'s own live/stale partition.
+    repo_root = Path(record.get("repository") or repo_dir)
+    conflicts = _active_conflicts(repo_dir, repo_root, args.specification, run_path.resolve())
+    live_conflicts = conflicts.get("live") or []
+    if live_conflicts:
         os.close(fd)
         lock_path.unlink(missing_ok=True)
         if remote_project_repo_dir is not None and remote_ref is not None:
             _delete_remote_claim(remote_project_repo_dir, remote_ref)
-        print(json.dumps({"status": "conflict", "conflicts": conflicts}))
+        print(json.dumps({"status": "conflict", "conflicts": live_conflicts}))
         return 1
 
     lock_payload: Dict[str, Any] = {
