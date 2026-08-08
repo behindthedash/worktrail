@@ -734,6 +734,7 @@ def integrate_one(
             gb_implicit = f"{run_id}/{name}"
             print(f"  MERGED [{name:9}] (all tasks already integrated from prior run)")
             _do_journal(name, "", gb_implicit, "MERGED")
+            group_branch[name] = gb_implicit
             return None
         quarantined[name] = f"incomplete task(s): {', '.join(dropped)}"
         print(f"  SKIP [{name:9}] -- {quarantined[name]}")
@@ -797,6 +798,7 @@ def integrate_one(
                 pr_url = pr_data.get("url", "")
                 print(f"  MERGED [{name:9}] (already integrated, skipping)")
                 _do_journal(name, pr_url, gb, "MERGED")
+                group_branch[name] = gb
                 return None
         except Exception:
             pass

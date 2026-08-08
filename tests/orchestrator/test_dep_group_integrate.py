@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Regression tests for dependent-group integration defects.
 
-Three defects fixed:
+Four defects fixed:
   1. Deleted start ref: dep group quarantined when base group's branch was deleted
      after merge (start ref no longer exists). Fix: fall back to pre-squash merge-base
      + squash reconcile merge.
@@ -10,11 +10,20 @@ Three defects fixed:
   3. Broken MERGED reconcile on --re-integrate: _clear_integration_state wiped
      MERGED group records, causing --re-integrate to rebuild already-merged groups.
      Fix: preserve MERGED records in _clear_integration_state.
+  4. Already-merged group never registered in group_branch: both MERGED early-return
+     paths (no-deliverable-because-completed, and gh-pr-view-already-MERGED) journaled
+     the group correctly but left group_branch untouched. When a spec's ONLY impl group
+     was already fully integrated before this run started (e.g. finished in a prior
+     session), finish_real() returned an empty group_branch and full-real's sequential
+     scheduler bailed out at "nothing to assemble" BEFORE ever reaching PR#235's
+     tail-dispatch call -- so the spec's e2e/cleanup tail tasks never dispatched, even
+     on the fixed post-PR#235 code. Fix: populate group_branch[name] on both paths.
 
 Run: python3 test_dep_group_integrate.py
 """
 from __future__ import annotations
 
+import json
 import threading
 import unittest
 from collections import namedtuple
@@ -193,6 +202,69 @@ class DeletedDepBranchFallback(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # Fix 3: _clear_integration_state preserves MERGED records
 # ---------------------------------------------------------------------------
+
+class AlreadyIntegratedGroupRegistersBranch(unittest.TestCase):
+    """A group whose every task is already status:"completed" (ALREADY_INTEGRATED --
+    impl work merged in a prior session, outside this orchestrator's own bookkeeping)
+    has an empty deliverable subset and is journaled MERGED, but must also register in
+    group_branch so callers (finish_real -> full-real) see it as integrated rather than
+    concluding "nothing to assemble" and skipping tail dispatch."""
+
+    def test_group_branch_populated_when_all_tasks_already_integrated(self):
+        quarantined: dict = {}
+        group_branch: dict = {}
+        git_dispatch = _GitDispatch()
+        subprocess_dispatch = _GitDispatch({
+            ("gh", "pr", "view"): Proc(1, "", "no pr"),
+        })
+        with patch("worktrail.orchestrator.integrate._git", side_effect=git_dispatch):
+            with patch("worktrail.orchestrator.integrate.subprocess.run",
+                       side_effect=subprocess_dispatch):
+                result = integrate.integrate_one(
+                    _mock_group("feature-1", ["T001"]),
+                    Path("/repo"), "spec-049",
+                    [_mock_task("T001", status="completed")],
+                    "origin", "full-run", "main",
+                    None, {"T001": "completed"}, group_branch, quarantined,
+                )
+
+        self.assertIsNone(result, "already-merged group opens no new PR")
+        self.assertNotIn("feature-1", quarantined, "must not be quarantined")
+        self.assertIn(
+            "feature-1", group_branch,
+            "group_branch must register the group so callers see it as integrated, "
+            "not conclude 'nothing to assemble' and skip tail dispatch",
+        )
+
+    def test_group_branch_populated_on_gh_pr_view_merged_reconcile(self):
+        """Same fix, second code path: a group whose PR already shows MERGED via the
+        `gh pr view` reconcile check (not the no-deliverable-because-completed branch)."""
+        quarantined: dict = {}
+        group_branch: dict = {}
+        git_dispatch = _GitDispatch({("ls-remote",): Proc(1, "", "")})
+        subprocess_dispatch = _GitDispatch({
+            ("gh", "pr", "view"): Proc(
+                0, json.dumps({"state": "MERGED", "url": "https://g/p/9"}), "",
+            ),
+        })
+        with patch("worktrail.orchestrator.integrate._git", side_effect=git_dispatch):
+            with patch("worktrail.orchestrator.integrate.subprocess.run",
+                       side_effect=subprocess_dispatch):
+                result = integrate.integrate_one(
+                    _mock_group("feature-1", ["T001"]),
+                    Path("/repo"), "spec-049",
+                    [_mock_task("T001", status="done")],
+                    "origin", "full-run", "main",
+                    None, {"T001": "done"}, group_branch, quarantined,
+                )
+
+        self.assertIsNone(result)
+        self.assertIn(
+            "feature-1", group_branch,
+            "group_branch must register the group on the gh-pr-view MERGED reconcile "
+            "path too",
+        )
+
 
 class ClearIntegrationStatePreservesMerged(unittest.TestCase):
     """_clear_integration_state must preserve MERGED group records and only remove
