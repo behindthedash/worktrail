@@ -1605,8 +1605,12 @@ def test_close_stale_bookkeeping_flips_status_and_opens_pr(tmp_path, monkeypatch
 
     assert result == {"repo": "repo-a", "spec_id": "spec-a",
                        "task_ids": ["TASK-001"], "pr_url": "https://example.invalid/pr/9"}
-    task_file = repo / "docs" / "specs" / "spec-a" / "tasks" / "TASK-001.md"
-    assert "status: completed" in task_file.read_text()
+    # The flip lands on the fix branch (pushed, PR opened), not on `repo`'s
+    # own checked-out `dev` -- that branch is never touched by the action.
+    flipped = subprocess.run(
+        ["git", "-C", str(repo), "show", "fix/close-stale-spec-a:docs/specs/spec-a/tasks/TASK-001.md"],
+        capture_output=True, text=True, check=True).stdout
+    assert "status: completed" in flipped
 
 
 def test_close_stale_bookkeeping_missing_task_file_raises(tmp_path):
