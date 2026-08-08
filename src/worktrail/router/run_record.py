@@ -715,12 +715,15 @@ def cmd_claim(args: argparse.Namespace) -> int:
         print(json.dumps({"status": "conflict", "conflicts": conflicts}))
         return 1
 
+    lock_payload: Dict[str, Any] = {
+        "run_id": record.get("run_id"),
+        "path": str(run_path),
+        "claimed_at": _now(),
+    }
+    if remote_project_repo_dir is not None and remote_ref is not None:
+        lock_payload["remote"] = True
     with os.fdopen(fd, "w") as f:
-        f.write(json.dumps({
-            "run_id": record.get("run_id"),
-            "path": str(run_path),
-            "claimed_at": _now(),
-        }))
+        f.write(json.dumps(lock_payload))
     record["specification"] = args.specification
     _save(run_path, record)
     print(json.dumps({"status": "claimed", "specification": args.specification}))
