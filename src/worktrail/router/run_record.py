@@ -792,6 +792,8 @@ def main(argv=None) -> int:
     s = sub.add_parser("claim")
     s.add_argument("run")
     s.add_argument("--specification", required=True)
+    s.add_argument("--remote", action="store_true")
+    s.add_argument("--remote-ttl-seconds", type=int, default=86400)
     s.set_defaults(func=cmd_claim)
 
     s = sub.add_parser("prune")
