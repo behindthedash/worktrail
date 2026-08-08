@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Tests for run_record.py. Run: python3 test_run_record.py"""
 import json
+import subprocess
 import tempfile
 import unittest
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from worktrail.router.run_record import ALLOWED_AGENTS, COMPLETION_STATES, _load, main
 
@@ -530,6 +533,27 @@ class TestClaim(unittest.TestCase):
         self.assertEqual(out["status"], "conflict")
         record_newcomer = _load(Path(newcomer["path"]))
         self.assertIsNone(record_newcomer["specification"])
+
+
+@pytest.fixture()
+def remote_origin(tmp_path: Path):
+    """A local bare git repo standing in for `origin`, plus a working clone.
+
+    Lets `--remote` claim tests exercise real `git push`/`fetch`/`ls-remote`
+    against `_push_remote_claim`/`_read_remote_claim`/`_delete_remote_claim`
+    with no network dependency and no reliance on a hosted remote's specific
+    behavior. Returns `(bare_dir, clone_dir)`; pass `clone_dir` as the
+    project repo (`record["repository"]`) the claim functions operate on.
+    """
+    bare_dir = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "--quiet", "--bare", str(bare_dir)], check=True)
+
+    clone_dir = tmp_path / "clone"
+    subprocess.run(["git", "clone", "--quiet", str(bare_dir), str(clone_dir)], check=True)
+    subprocess.run(["git", "-C", str(clone_dir), "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(["git", "-C", str(clone_dir), "config", "user.name", "Test"], check=True)
+
+    return bare_dir, clone_dir
 
 
 def _prune(tmp, **over):
