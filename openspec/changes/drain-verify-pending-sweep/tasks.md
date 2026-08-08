@@ -27,5 +27,5 @@
 
 ## 5. Verification
 
-- [ ] 5.1 Run `PYTHONPATH=src pytest tests/drain/test_drain.py -q` and confirm all new and existing tests pass.
-- [ ] 5.2 Run the full `pre_pr_cmd` (`PYTHONPATH=src pytest -q && PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`) before opening the PR.
+- [ ] 5.1 [cleanup] Run `PYTHONPATH=src pytest tests/drain/test_drain.py -q` and confirm all new and existing tests pass.
+- [ ] 5.2 [cleanup] Run the full `pre_pr_cmd` (`PYTHONPATH=src pytest -q && PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`) before opening the PR.
