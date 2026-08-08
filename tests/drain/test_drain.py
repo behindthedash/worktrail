@@ -24,11 +24,13 @@ from worktrail.drain.drain import (
     decide,
     ensure_pr_risk_label,
     find_resumable_quarantines,
+    find_verify_pending_specs,
     newest_run_record,
     parse_run_record,
     release_lock,
     resolve_spec_rel,
     resume_quarantined_budget_exhausted,
+    resume_verify_pending,
     select_available_agent,
     write_iteration_transcript,
 )
@@ -1078,6 +1080,144 @@ def test_find_resumable_quarantines_go_repo_filter(tmp_path):
     assert [f["repo_name"] for f in found] == ["repo-b"]
 
 
+# ---------------------------------------------------------------------------
+# Verify-pending sweep
+
+
+def _write_verify_pending_spec(repo: Path, spec_id: str, pr_url: str) -> None:
+    """A spec whose tasks are all completed and whose run journal has
+    integrate_complete: true plus a non-MERGED group -- the fixture shape
+    dashboard.detect_stage requires to label a spec "verify-pending"
+    (mirrors tests/router/test_dashboard.py's own verify-pending fixture)."""
+    spec_dir = repo / "docs" / "specs" / spec_id
+    tasks_dir = spec_dir / "tasks"
+    tasks_dir.mkdir(parents=True)
+    (spec_dir / "2026-05-29--feature.md").write_text(
+        f"# Feature Specification: X\n\n**ID**: {spec_id}\n\n## Summary\nstuff\n"
+    )
+    (tasks_dir / "TASK-001.md").write_text(
+        "---\nid: TASK-001\nstatus: completed\nkind: impl\ndependencies: []\n---\n# TASK-001\n"
+    )
+    worktrees_dir = repo.parent / f"{repo.name}-worktrees"
+    worktrees_dir.mkdir(parents=True, exist_ok=True)
+    (worktrees_dir / f"run-{spec_id}.json").write_text(json.dumps({
+        "integrate_complete": True,
+        "groups": {"base": {"pr_url": pr_url, "state": "OPEN"}},
+    }))
+
+
+def test_find_verify_pending_specs_discovers_across_repos(tmp_path):
+    repo_a = _make_repo(tmp_path, "repo-a")
+    _write_verify_pending_spec(
+        repo_a, "spec-a", "https://github.com/test/repo/pull/1"
+    )
+    repo_b = _make_repo(tmp_path, "repo-b")  # clean repo, nothing verify-pending
+    found = find_verify_pending_specs(tmp_path)
+    assert [f["repo_name"] for f in found] == ["repo-a"]
+    assert found[0]["spec_id"] == "spec-a"
+    assert found[0]["spec_rel"] == "docs/specs/spec-a"
+    assert found[0]["repo"] == repo_a
+
+
+def _write_ready_to_implement_spec(repo: Path, spec_id: str) -> None:
+    """A spec with a pending task and no run journal -- dashboard.detect_stage
+    labels this "ready-to-implement", not "verify-pending"."""
+    spec_dir = repo / "docs" / "specs" / spec_id
+    tasks_dir = spec_dir / "tasks"
+    tasks_dir.mkdir(parents=True)
+    (spec_dir / "2026-05-29--feature.md").write_text(
+        f"# Feature Specification: X\n\n**ID**: {spec_id}\n\n## Summary\nstuff\n"
+    )
+    (tasks_dir / "TASK-001.md").write_text(
+        "---\nid: TASK-001\nstatus: pending\nkind: impl\ndependencies: []\n---\n# TASK-001\n"
+    )
+
+
+def test_find_verify_pending_specs_excludes_non_verify_pending_stages(tmp_path):
+    repo = _make_repo(tmp_path, "repo-a")
+    _write_ready_to_implement_spec(repo, "spec-a")
+    assert find_verify_pending_specs(tmp_path) == []
+
+
+def test_find_verify_pending_specs_skips_spec_with_no_resolvable_path(tmp_path, monkeypatch):
+    repo = _make_repo(tmp_path, "repo-a")
+    # dashboard.scan reports a verify-pending row for "spec-a", but no
+    # docs/specs/spec-a or openspec/changes/spec-a folder exists on disk --
+    # e.g. the spec was since deleted/archived after the scan ran.
+    monkeypatch.setattr(
+        drain.dashboard, "scan",
+        lambda specs_root: [{"id": "spec-a", "stage": "verify-pending"}],
+    )
+    assert find_verify_pending_specs(tmp_path) == []
+
+
+def test_find_verify_pending_specs_go_repo_filter(tmp_path):
+    repo_a = _make_repo(tmp_path, "repo-a")
+    _write_verify_pending_spec(
+        repo_a, "spec-a", "https://github.com/test/repo/pull/1"
+    )
+    repo_b = _make_repo(tmp_path, "repo-b")
+    _write_verify_pending_spec(
+        repo_b, "spec-b", "https://github.com/test/repo/pull/2"
+    )
+    found = find_verify_pending_specs(tmp_path, go_repo="repo-b")
+    assert [f["repo_name"] for f in found] == ["repo-b"]
+
+
+def test_resume_verify_pending_invokes_full_real_once_per_spec(tmp_path):
+    repo = _make_repo(tmp_path, "repo-a")
+    _write_verify_pending_spec(
+        repo, "spec-a", "https://github.com/test/repo/pull/1"
+    )
+    calls = []
+
+    def spawner(cmd, timeout):
+        calls.append(cmd)
+        return SpawnOutcome(0)
+
+    logs = []
+    result = resume_verify_pending(
+        tmp_path, None, "claude", 60, spawner, logs.append)
+    assert len(calls) == 1
+    assert calls[0][:2] == ["worktrail-live", "full-real"]
+    assert "--fresh" not in calls[0]
+    assert result == [{"repo": "repo-a", "spec_id": "spec-a", "exit_code": 0}]
+    assert any("resume-verify-pending" in line for line in logs)
+
+
+def test_resume_verify_pending_no_hits_is_noop(tmp_path):
+    _make_repo(tmp_path, "repo-a")  # no verify-pending spec at all
+    calls = []
+    result = resume_verify_pending(
+        tmp_path, None, "claude", 60, lambda c, t: calls.append(c), lambda _l: None)
+    assert calls == []
+    assert result == []
+
+
+def test_resume_verify_pending_one_failure_does_not_block_others(tmp_path):
+    repo_a = _make_repo(tmp_path, "repo-a")
+    _write_verify_pending_spec(
+        repo_a, "spec-a", "https://github.com/test/repo/pull/1"
+    )
+    repo_b = _make_repo(tmp_path, "repo-b")
+    _write_verify_pending_spec(
+        repo_b, "spec-b", "https://github.com/test/repo/pull/2"
+    )
+    calls = []
+
+    def spawner(cmd, timeout):
+        calls.append(cmd)
+        return SpawnOutcome(1 if len(calls) == 1 else 0)
+
+    result = resume_verify_pending(
+        tmp_path, None, "claude", 60, spawner, lambda _l: None)
+    assert len(calls) == 2
+    assert result == [
+        {"repo": "repo-a", "spec_id": "spec-a", "exit_code": 1},
+        {"repo": "repo-b", "spec_id": "spec-b", "exit_code": 0},
+    ]
+
+
 def test_build_full_real_resume_command_has_no_fresh_flag():
     cmd = build_full_real_resume_command(
         Path("/repo"), "docs/specs/some-spec", "dev", "claude")
@@ -1198,3 +1338,40 @@ def test_drain_after_sweep_catches_quarantine_created_by_this_passs_own_iteratio
     assert len(resume_calls) == 1  # only the post-loop sweep found it
     assert summary["resumed_quarantines"] == [
         {"repo": "repo-a", "spec_id": "spec-a", "exit_code": 0}]
+
+
+def test_drain_sweeps_verify_pending_at_pre_and_post_loop_points(tmp_path, monkeypatch):
+    # Mirrors the quarantine sweep's own pre-loop/post-loop wiring test: one
+    # queue iteration (satisfying state.iteration > 0) must produce exactly
+    # two resume_verify_pending calls -- the pre-loop sweep and the post-loop
+    # re-sweep -- under the same repos_root/dry_run guards as the quarantine
+    # sweep.
+    fake = FakeQueue([1, 0])
+    install_fake_queue(monkeypatch, fake)
+    repos_root = tmp_path / "projects"
+    _make_repo(repos_root, "repo-a")
+    config = make_config(tmp_path, repos_root=repos_root)
+
+    real_resume_verify_pending = drain.resume_verify_pending
+    sweep_calls = []
+
+    def spy_resume_verify_pending(*args, **kwargs):
+        sweep_calls.append(args)
+        return real_resume_verify_pending(*args, **kwargs)
+
+    monkeypatch.setattr(drain, "resume_verify_pending", spy_resume_verify_pending)
+
+    def spawner(cmd, timeout):
+        if cmd[:2] == ["worktrail-live", "full-real"]:
+            return SpawnOutcome(0)
+        write_run_record(config.runs_dir, "go-1", "completed_pr_open", pr="https://pr/1")
+        return SpawnOutcome(0)
+
+    summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
+
+    assert len(sweep_calls) == 2  # pre-loop sweep + post-loop re-sweep
+    for call in sweep_calls:
+        assert call[0] == repos_root
+        assert call[1] == config.go_repo
+    assert "resumed_quarantines" in summary
+    assert "resumed_verify_pending" in summary
