@@ -19,9 +19,11 @@ GO/worktrail" scan a second time.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -34,7 +36,7 @@ __all__ = [
     "DEFAULT_STATE_DIR", "DEFAULT_LOOKBACK_DAYS", "DEFAULT_MAX_PRS",
     "resolve_state_dir", "first_run_lookback", "load_state",
     "read_marker", "write_marker", "effective_since",
-    "list_merged_prs", "sweep_repo", "dashboard_snapshot",
+    "list_merged_prs", "sweep_repo", "dashboard_snapshot", "main",
 ]
 
 DEFAULT_STATE_DIR = "~/.go/postmerge-audit-state"
@@ -281,3 +283,55 @@ def dashboard_snapshot(state_dir: Path) -> Dict[str, Any]:
         summary["prs_flagged"] += len(flagged)
         summary["flagged"].extend(flagged)
     return summary
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--repo", help="single repo to sweep")
+    p.add_argument("--repos-root", help="sweep every go-policy.yaml repo under this directory")
+    p.add_argument("--state-dir", help="persisted per-repo marker/flag state directory "
+                    f"(default: $GO_POSTMERGE_AUDIT_STATE or {DEFAULT_STATE_DIR})")
+    p.add_argument("--lookback-days", type=int, default=DEFAULT_LOOKBACK_DAYS,
+                    help="first-run window for a repo with no persisted marker")
+    p.add_argument("--max-prs", type=int, default=DEFAULT_MAX_PRS,
+                    help="per-repo per-sweep cap on merged PRs fetched")
+    p.add_argument("--json", action="store_true")
+    args = p.parse_args(argv)
+
+    if not args.repo and not args.repos_root:
+        p.error("one of --repo or --repos-root is required")
+
+    state_dir = resolve_state_dir(args.state_dir)
+
+    if args.repos_root:
+        root = Path(args.repos_root).expanduser()
+        if args.repo:
+            targets = [Path(args.repo).expanduser()]
+        else:
+            targets = [root / name for name in discover_managed_repos(root)]
+    else:
+        targets = [Path(args.repo).expanduser()]
+
+    results = [
+        sweep_repo(repo, state_dir, lookback_days=args.lookback_days, max_prs=args.max_prs)
+        for repo in targets
+    ]
+    total_checked = sum(r["checked"] for r in results)
+    total_flagged = sum(len(r["flagged"]) for r in results)
+
+    if args.json:
+        print(json.dumps({"results": results, "checked": total_checked,
+                           "flagged": total_flagged}, indent=2))
+    else:
+        for r in results:
+            if r.get("error"):
+                print(f"{r['repo']}: ERROR {r['error']}")
+            elif r["flagged"]:
+                print(f"{r['repo']}: checked={r['checked']} flagged={len(r['flagged'])}")
+        print(f"audit_postmerge: {total_checked} PR(s) checked, "
+              f"{total_flagged} PR(s) flagged with failing checks")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
