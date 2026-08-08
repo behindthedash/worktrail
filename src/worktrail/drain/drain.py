@@ -102,7 +102,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from ..orchestrator import agent_capacity
-from ..router import quarantine_selfcheck
+from ..router import dashboard, quarantine_selfcheck
 from ..router.policy import load_policy
 from ..router.policy_selfcheck import discover_repo_names
 from ..router.pr_labels import ensure_pr_risk_label
@@ -420,6 +420,37 @@ def find_resumable_quarantines(
             if spec_rel is None:
                 continue
             seen.add(key)
+            found.append({
+                "repo": repo_path, "repo_name": name,
+                "spec_id": spec_id, "spec_rel": spec_rel,
+            })
+    return found
+
+
+def find_verify_pending_specs(
+    repos_root: Path, go_repo: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """Every (repo, spec) pair currently in the `verify-pending` stage, across
+    every repo under `repos_root` (or just `go_repo` when given). These are
+    invisible to `worktrail-go auto` the same way budget_exhausted quarantines
+    are -- auto mode only claims work-queue briefs -- so without this sweep
+    they sit until a human notices the dashboard's stage."""
+    names = discover_repo_names(repos_root)
+    if go_repo:
+        names = [n for n in names if n == go_repo]
+    found: List[Dict[str, Any]] = []
+    for name in names:
+        repo_path = repos_root / name
+        rows = dashboard.scan(repo_path / "docs" / "specs")
+        for row in rows:
+            if row.get("stage") != "verify-pending":
+                continue
+            spec_id = row.get("id")
+            if not spec_id:
+                continue
+            spec_rel = resolve_spec_rel(repo_path, spec_id)
+            if spec_rel is None:
+                continue
             found.append({
                 "repo": repo_path, "repo_name": name,
                 "spec_id": spec_id, "spec_rel": spec_rel,
