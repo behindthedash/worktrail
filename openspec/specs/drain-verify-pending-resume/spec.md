@@ -59,18 +59,33 @@ from being attempted.
 - **THEN** the system still attempts the resume for every other detected spec, and reports
   the failing spec's exit code in its result
 
-### Requirement: Verify-pending sweep runs alongside the existing quarantine sweep
-The unattended queue-drainer SHALL run the verify-pending sweep at the same points in its
-loop where it already runs the existing budget-exhausted-quarantine sweep — once before the
-queue-draining loop starts, and once after it finishes when at least one queue iteration ran.
+### Requirement: Verify-pending sweep runs alongside the existing quarantine and stale-bookkeeping sweeps
+The unattended queue-drainer SHALL run the verify-pending sweep, together with
+the budget-exhausted-quarantine sweep and the stale-bookkeeping sweep, as
+table entries in the shared `REMEDIATION_TABLE` remediation engine (see the
+`drain-stage-remediation-table` capability), at the same points in its loop
+where these sweeps already ran before this change — once before the
+queue-draining loop starts, and once after it finishes when at least one
+queue iteration ran. `resume_verify_pending`'s existing public signature and
+return shape are unchanged; it now delegates to the shared sweep engine
+scoped to only the verify-pending table entry, rather than running its own
+hand-rolled loop.
 
 #### Scenario: Drain invocation with a configured repos-root
 - **WHEN** `drain()` is invoked with `--repos-root` set and not in dry-run mode
-- **THEN** both the quarantine sweep and the verify-pending sweep run before the queue loop
-  starts, and both run again after the loop finishes if the loop executed at least one
+- **THEN** the quarantine sweep, the verify-pending sweep, and the
+  stale-bookkeeping sweep all run before the queue loop starts, and all three
+  run again after the loop finishes if the loop executed at least one
   iteration
 
 #### Scenario: Drain invocation without a configured repos-root
 - **WHEN** `drain()` is invoked without `--repos-root`
-- **THEN** neither the quarantine sweep nor the verify-pending sweep runs, matching today's
-  existing gating for the quarantine sweep
+- **THEN** none of the three sweeps run, matching today's existing gating for
+  the quarantine sweep
+
+#### Scenario: `resume_verify_pending` called directly (existing test/caller path)
+- **WHEN** `resume_verify_pending(repos_root, go_repo, agent, timeout,
+  spawner, log)` is called directly, outside of `drain()`
+- **THEN** it returns exactly the verify-pending findings' results, identical
+  in shape to its pre-change behavior, without also invoking the quarantine
+  or stale-bookkeeping remediations as a side effect
