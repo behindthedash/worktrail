@@ -624,14 +624,18 @@ def _reset_stale_bookkeeping_worktree(repo: Path, branch: str, wt: Path, timeout
     """Best-effort teardown of a previous run's leftover worktree/branch --
     e.g. one left behind by a `git commit`/`push`/`gh pr create` failure
     before the `try/finally` below existed -- so `worktree add -b branch`
-    below is safe to retry. Errors are swallowed: the common case (nothing
-    left over from a prior run) exits non-zero on all three calls."""
+    below is safe to retry. Errors are swallowed, including timeouts: the
+    common case (nothing left over from a prior run) exits non-zero on all
+    three calls."""
     for cmd in (
         ["git", "worktree", "remove", "--force", str(wt)],
         ["git", "worktree", "prune"],
         ["git", "branch", "-D", branch],
     ):
-        subprocess.run(cmd, capture_output=True, text=True, cwd=str(repo), timeout=timeout)
+        try:
+            subprocess.run(cmd, capture_output=True, text=True, cwd=str(repo), timeout=timeout)
+        except Exception:
+            pass
 
 
 def _open_stale_bookkeeping_pr(
@@ -728,7 +732,14 @@ def close_stale_bookkeeping(
         _run_git(wt, "commit", "-m",
                  f"chore({spec_id}): close stale bookkeeping ({', '.join(task_ids)})",
                  timeout=timeout)
-        _run_git(wt, "push", "-u", "origin", branch, timeout=timeout)
+        # --force: this branch is exclusively owned by this action (the
+        # drain sweep holds an exclusive lockfile for its duration) and is
+        # rebuilt from `base` on every retry, so a remote copy left behind by
+        # a prior run's mid-flight failure (e.g. `gh pr create` rejected, or
+        # a `gh pr list` outage during the open-PR check above) must be
+        # overwritten rather than rejected non-fast-forward -- otherwise the
+        # finding wedges permanently even after the original cause clears.
+        _run_git(wt, "push", "--force", "-u", "origin", branch, timeout=timeout)
         pr_url = _open_stale_bookkeeping_pr(
             wt, repo_name, spec_id, task_ids, base, branch, timeout)
     finally:
@@ -736,8 +747,11 @@ def close_stale_bookkeeping(
         # result, and on the failure path it must not mask the real
         # exception -- either way, a worktree left behind here is cleaned up
         # by _reset_stale_bookkeeping_worktree on the finding's next sweep.
-        subprocess.run(["git", "worktree", "remove", "--force", str(wt)],
-                        capture_output=True, text=True, cwd=str(repo), timeout=timeout)
+        try:
+            subprocess.run(["git", "worktree", "remove", "--force", str(wt)],
+                           capture_output=True, text=True, cwd=str(repo), timeout=timeout)
+        except Exception:
+            pass
 
     log(f"close-stale-bookkeeping result: {repo_name} {spec_id} -> {pr_url}")
     return {"repo": repo_name, "spec_id": spec_id, "task_ids": task_ids, "pr_url": pr_url}
