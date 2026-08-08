@@ -24,6 +24,7 @@ from worktrail.drain.drain import (
     decide,
     ensure_pr_risk_label,
     find_resumable_quarantines,
+    find_verify_pending_specs,
     newest_run_record,
     parse_run_record,
     release_lock,
@@ -1076,6 +1077,45 @@ def test_find_resumable_quarantines_go_repo_filter(tmp_path):
     _write_journal(repo_b, "spec-b", _BUDGET_EXHAUSTED_GROUPS)
     found = find_resumable_quarantines(tmp_path, go_repo="repo-b")
     assert [f["repo_name"] for f in found] == ["repo-b"]
+
+
+# ---------------------------------------------------------------------------
+# Verify-pending sweep
+
+
+def _write_verify_pending_spec(repo: Path, spec_id: str, pr_url: str) -> None:
+    """A spec whose tasks are all completed and whose run journal has
+    integrate_complete: true plus a non-MERGED group -- the fixture shape
+    dashboard.detect_stage requires to label a spec "verify-pending"
+    (mirrors tests/router/test_dashboard.py's own verify-pending fixture)."""
+    spec_dir = repo / "docs" / "specs" / spec_id
+    tasks_dir = spec_dir / "tasks"
+    tasks_dir.mkdir(parents=True)
+    (spec_dir / "2026-05-29--feature.md").write_text(
+        f"# Feature Specification: X\n\n**ID**: {spec_id}\n\n## Summary\nstuff\n"
+    )
+    (tasks_dir / "TASK-001.md").write_text(
+        "---\nid: TASK-001\nstatus: completed\nkind: impl\ndependencies: []\n---\n# TASK-001\n"
+    )
+    worktrees_dir = repo.parent / f"{repo.name}-worktrees"
+    worktrees_dir.mkdir(parents=True, exist_ok=True)
+    (worktrees_dir / f"run-{spec_id}.json").write_text(json.dumps({
+        "integrate_complete": True,
+        "groups": {"base": {"pr_url": pr_url, "state": "OPEN"}},
+    }))
+
+
+def test_find_verify_pending_specs_discovers_across_repos(tmp_path):
+    repo_a = _make_repo(tmp_path, "repo-a")
+    _write_verify_pending_spec(
+        repo_a, "spec-a", "https://github.com/test/repo/pull/1"
+    )
+    repo_b = _make_repo(tmp_path, "repo-b")  # clean repo, nothing verify-pending
+    found = find_verify_pending_specs(tmp_path)
+    assert [f["repo_name"] for f in found] == ["repo-a"]
+    assert found[0]["spec_id"] == "spec-a"
+    assert found[0]["spec_rel"] == "docs/specs/spec-a"
+    assert found[0]["repo"] == repo_a
 
 
 def test_build_full_real_resume_command_has_no_fresh_flag():
