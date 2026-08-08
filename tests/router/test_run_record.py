@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests for run_record.py. Run: python3 test_run_record.py"""
 import json
+import shutil
 import subprocess
 import tempfile
 import time
@@ -738,6 +739,38 @@ class TestRemoteClaim:
         )
         assert deleted.returncode == 0
         assert deleted.stdout.strip() == ""
+
+    def test_finish_still_completes_normally_when_remote_delete_fails(self, remote_origin, tmp_path):
+        """The bare repo backing `origin` is removed after the claim succeeds,
+        so `_delete_remote_claim`'s `git push --delete` has nowhere to reach --
+        this must stay confined to a logged warning and never surface in
+        `finish`'s exit code or JSON output.
+        """
+        bare_dir, clone_dir = remote_origin
+        run_dir = tmp_path / "runs"
+        run_dir.mkdir()
+        res = _start(str(run_dir), repo=str(clone_dir), request="remote claim session")
+
+        out = StringIO()
+        with patch("sys.stdout", out):
+            rc = main(["claim", res["path"], "--specification", "spec-remote-delete-fails", "--remote"])
+        result = json.loads(out.getvalue())
+        assert rc == 0
+        assert result["status"] == "claimed"
+
+        shutil.rmtree(bare_dir)
+
+        out = StringIO()
+        with patch("sys.stdout", out):
+            rc = main(["finish", res["path"], "--status", "completed_pr_open"])
+        result = json.loads(out.getvalue())
+
+        assert rc == 0
+        assert result == {"final_status": "completed_pr_open", "path": res["path"]}
+        rec = _load(Path(res["path"]))
+        assert rec["final_status"] == "completed_pr_open"
+        assert rec["status"] == "done"
+        assert rec["completed_at"] is not None
 
 
 def _prune(tmp, **over):
