@@ -530,6 +530,37 @@ class TestClaim(unittest.TestCase):
         self.assertEqual(out_b["status"], "claimed")
         self.assertNotEqual(session_a["run_id"], session_b["run_id"])
 
+    def test_claim_without_remote_makes_no_git_network_calls_and_behaves_as_before(self):
+        """Regression guard: adding `--remote` must not change default `claim`
+        behavior or introduce any git subprocess call on the plain path --
+        `_run_remote_git` is the sole `subprocess.run` call site for the
+        remote layer, so patching it and asserting zero calls proves the
+        default path never touches git at all, while the claimed/
+        already-claimed outcomes below match the pre-`--remote` behavior
+        already covered by `test_second_claim_on_same_specification_fails_fast`.
+        """
+        session_a = _start(self.tmp, request="session A implement")
+        session_b = _start(self.tmp, request="session B implement")
+
+        with patch("worktrail.router.run_record.subprocess.run") as mock_run:
+            rc_a, out_a = _claim(session_a["path"], specification="spec-no-remote")
+            rc_b, out_b = _claim(session_b["path"], specification="spec-no-remote")
+
+        mock_run.assert_not_called()
+
+        self.assertEqual(rc_a, 0)
+        self.assertEqual(out_a["status"], "claimed")
+        self.assertNotIn("scope", out_a)
+        self.assertEqual(rc_b, 1)
+        self.assertEqual(out_b["status"], "already-claimed")
+        self.assertNotIn("scope", out_b)
+        self.assertEqual(out_b["run_id"], session_a["run_id"])
+
+        record_a = _load(Path(session_a["path"]))
+        record_b = _load(Path(session_b["path"]))
+        self.assertEqual(record_a["specification"], "spec-no-remote")
+        self.assertIsNone(record_b["specification"])
+
     def test_claim_still_honors_pre_existing_non_terminal_conflicts(self):
         """A record tagged via plain `set` (not `claim`, e.g. from before this
         primitive existed) has no lock file, but is still a real conflict --
