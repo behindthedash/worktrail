@@ -1338,3 +1338,40 @@ def test_drain_after_sweep_catches_quarantine_created_by_this_passs_own_iteratio
     assert len(resume_calls) == 1  # only the post-loop sweep found it
     assert summary["resumed_quarantines"] == [
         {"repo": "repo-a", "spec_id": "spec-a", "exit_code": 0}]
+
+
+def test_drain_sweeps_verify_pending_at_pre_and_post_loop_points(tmp_path, monkeypatch):
+    # Mirrors the quarantine sweep's own pre-loop/post-loop wiring test: one
+    # queue iteration (satisfying state.iteration > 0) must produce exactly
+    # two resume_verify_pending calls -- the pre-loop sweep and the post-loop
+    # re-sweep -- under the same repos_root/dry_run guards as the quarantine
+    # sweep.
+    fake = FakeQueue([1, 0])
+    install_fake_queue(monkeypatch, fake)
+    repos_root = tmp_path / "projects"
+    _make_repo(repos_root, "repo-a")
+    config = make_config(tmp_path, repos_root=repos_root)
+
+    real_resume_verify_pending = drain.resume_verify_pending
+    sweep_calls = []
+
+    def spy_resume_verify_pending(*args, **kwargs):
+        sweep_calls.append(args)
+        return real_resume_verify_pending(*args, **kwargs)
+
+    monkeypatch.setattr(drain, "resume_verify_pending", spy_resume_verify_pending)
+
+    def spawner(cmd, timeout):
+        if cmd[:2] == ["worktrail-live", "full-real"]:
+            return SpawnOutcome(0)
+        write_run_record(config.runs_dir, "go-1", "completed_pr_open", pr="https://pr/1")
+        return SpawnOutcome(0)
+
+    summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
+
+    assert len(sweep_calls) == 2  # pre-loop sweep + post-loop re-sweep
+    for call in sweep_calls:
+        assert call[0] == repos_root
+        assert call[1] == config.go_repo
+    assert "resumed_quarantines" in summary
+    assert "resumed_verify_pending" in summary
