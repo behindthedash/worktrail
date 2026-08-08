@@ -566,19 +566,30 @@ def _delete_remote_claim(repo_dir: Path, ref: str) -> None:
         )
 
 
-def _remote_claim_is_fresh(claim: Dict[str, Any], ttl_seconds: int) -> bool:
-    """Whether a remote claim payload is still within its TTL.
+def _remote_claim_is_fresh(claim: Dict[str, Any]) -> bool:
+    """Whether a remote claim payload is still within its own advertised TTL.
 
-    An unparsable/missing `claimed_at` is treated as fresh (conservative:
-    never reclaim over a claim whose age we cannot prove has expired).
+    Staleness is measured against the claim's own `ttl_seconds` field (the
+    value its claimer published via `_push_remote_claim`), not the reader's
+    `--remote-ttl-seconds` -- otherwise a claim published with a short TTL
+    would still block a reader applying its own longer default, and any
+    reader could steal a live claim by passing a shorter `--remote-ttl-seconds`.
+
+    An unparsable/missing `claimed_at` or `ttl_seconds` is logged and treated
+    as stale rather than fresh: "fresh" has no elapsed-time path back out, so
+    a single malformed claim ref would otherwise pin the specification on
+    every machine until someone manually deletes the ref.
     """
     claimed_at = claim.get("claimed_at")
-    if not isinstance(claimed_at, str):
-        return True
+    ttl_seconds = claim.get("ttl_seconds")
+    if not isinstance(claimed_at, str) or not isinstance(ttl_seconds, (int, float)):
+        logger.warning("remote claim has missing/invalid claimed_at or ttl_seconds, treating as stale: %r", claim)
+        return False
     try:
         claimed = datetime.strptime(claimed_at, "%Y-%m-%dT%H:%M:%S%z")
     except ValueError:
-        return True
+        logger.warning("remote claim has unparsable claimed_at, treating as stale: %r", claimed_at)
+        return False
     age = (datetime.now(claimed.tzinfo) - claimed).total_seconds()
     return age <= ttl_seconds
 
@@ -674,7 +685,7 @@ def cmd_claim(args: argparse.Namespace) -> int:
         except RemoteClaimError as exc:
             return _remote_already_claimed(None, exc)
 
-        if remote_claim is not None and _remote_claim_is_fresh(remote_claim, args.remote_ttl_seconds):
+        if remote_claim is not None and _remote_claim_is_fresh(remote_claim):
             return _remote_already_claimed(remote_claim, None)
 
         try:
