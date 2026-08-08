@@ -3385,6 +3385,17 @@ def _pipeline_scheduler(
                         group_branch.get(name, f"{run_id}/{name}"),
                         "AUTOMERGE_ARMED",
                     )
+                elif name in quarantined:
+                    # Ordinary (non-exception) verify-stage quarantine: verify_one()
+                    # set quarantined[name] directly and returned (real CI failure or
+                    # merge conflict), unlike the `except Exception` branch above which
+                    # only catches a raised exception. Persist it the same way, so a
+                    # pipeline-mode resume sees QUARANTINED instead of replaying the
+                    # stale pre-verify journal record.
+                    _record_group_fn(
+                        name, "", group_branch.get(name, f"{run_id}/{name}"), "QUARANTINED",
+                        integrate_module.QUARANTINE_INTEGRATION_ERROR,
+                    )
 
         finally:
             # Remove from active phase map (best-effort), then fire done event.
