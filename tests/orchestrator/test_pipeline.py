@@ -443,6 +443,51 @@ class IsolationTest(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Regression for brief 20260807-204909: an ordinary (non-exception) verify-stage
+# quarantine -- verify_one() sets quarantined[name] directly and returns, as
+# real CI-failure/merge-conflict quarantines do (verify.py's ensure_mergeable /
+# wait_and_fix_ci / _merge_with_cumulative_gate paths) -- must still persist
+# state=QUARANTINED to the on-disk journal, exactly like the exception-raised
+# and pre-verify dependency-cascade quarantine paths already do. Without this,
+# a pipeline-mode resume re-reads the stale pre-verify journal record instead
+# of seeing QUARANTINED (same class of bug as brief 20260807-175851's serial-
+# path gap, fixed in PR #221).
+# ---------------------------------------------------------------------------
+
+class OrdinaryVerifyQuarantinePersistenceTest(unittest.TestCase):
+    """FakeVerifier.fail_for sets quarantined[name] without raising -- the
+    ordinary quarantine case IsolationTest's raise_for tests do not cover."""
+
+    def test_ordinary_quarantine_written_to_journal(self):
+        """verify_one setting quarantined['feature-1'] (no raise) must land
+        state=QUARANTINED in the on-disk journal, not be left unrecorded."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            repo = _init_repo(Path(tmp))
+            journal_path = str(Path(tmp) / "pipeline-journal.json")
+            integrate_one, _ = _make_integrate_one()
+            verifier = FakeVerifier(fail_for={"feature-1"})
+
+            result = _run(
+                repo, tmp, FakeSpawn(), integrate_one, verifier,
+                journal_path=journal_path,
+            )
+
+            self.assertIn("feature-1", result["quarantined"])
+
+            journal = json.loads(Path(journal_path).read_text())
+            self.assertIn("feature-1", journal["groups"],
+                          "quarantined group missing from journal['groups'] entirely")
+            self.assertEqual(
+                journal["groups"]["feature-1"]["state"], "QUARANTINED",
+                "ordinary (non-exception) verify-stage quarantine was not persisted "
+                "to the journal -- a resume would re-read the stale pre-verify state",
+            )
+            # Groups that merged normally are unaffected.
+            self.assertEqual(journal["groups"]["base"]["state"], "MERGED")
+            self.assertEqual(journal["groups"]["feature-2"]["state"], "MERGED")
+
+
+# ---------------------------------------------------------------------------
 # AC-006: parity — summary shape matches sequential path
 # ---------------------------------------------------------------------------
 
