@@ -1194,6 +1194,30 @@ def test_resume_verify_pending_no_hits_is_noop(tmp_path):
     assert result == []
 
 
+def test_resume_verify_pending_one_failure_does_not_block_others(tmp_path):
+    repo_a = _make_repo(tmp_path, "repo-a")
+    _write_verify_pending_spec(
+        repo_a, "spec-a", "https://github.com/test/repo/pull/1"
+    )
+    repo_b = _make_repo(tmp_path, "repo-b")
+    _write_verify_pending_spec(
+        repo_b, "spec-b", "https://github.com/test/repo/pull/2"
+    )
+    calls = []
+
+    def spawner(cmd, timeout):
+        calls.append(cmd)
+        return SpawnOutcome(1 if len(calls) == 1 else 0)
+
+    result = resume_verify_pending(
+        tmp_path, None, "claude", 60, spawner, lambda _l: None)
+    assert len(calls) == 2
+    assert result == [
+        {"repo": "repo-a", "spec_id": "spec-a", "exit_code": 1},
+        {"repo": "repo-b", "spec_id": "spec-b", "exit_code": 0},
+    ]
+
+
 def test_build_full_real_resume_command_has_no_fresh_flag():
     cmd = build_full_real_resume_command(
         Path("/repo"), "docs/specs/some-spec", "dev", "claude")
