@@ -420,6 +420,10 @@ def _claim_slug(specification: str) -> str:
     return slug[:200] or "unknown"
 
 
+def _claim_ref(specification: str) -> str:
+    return f"refs/worktrail-claims/{_claim_slug(specification)}"
+
+
 def _lock_path(run_path: Path, specification: str) -> Path:
     return run_path.parent / ".claims" / f"{_claim_slug(specification)}.lock"
 
