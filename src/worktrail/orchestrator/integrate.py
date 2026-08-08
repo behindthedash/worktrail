@@ -38,6 +38,16 @@ from ..taskformats import resolve as taskformats
 TAIL = ("e2e", "cleanup")
 TERMINAL_GROUP_STATES = {"OPEN", "MERGED", "QUARANTINED"}
 
+# Structured classification for *why* a group was quarantined, written into
+# the journal's groups[name].quarantine_reason alongside state=="QUARANTINED".
+# Distinguishes a group that simply never got to run (safely resumable by a
+# plain re-run) from one that hit a real failure needing human review.
+QUARANTINE_BUDGET_EXHAUSTED = "budget_exhausted"
+QUARANTINE_TASK_FAILURE = "task_failure"
+QUARANTINE_MERGE_CONFLICT = "merge_conflict"
+QUARANTINE_INTEGRATION_ERROR = "integration_error"
+QUARANTINE_DEPENDENCY_QUARANTINED = "dependency_quarantined"
+
 
 _HERE = Path(__file__).resolve().parent
 
@@ -377,8 +387,15 @@ def _write_group_journal(
     pr_url: str,
     head_branch: str,
     state: str,
+    quarantine_reason: str = "",
 ) -> None:
-    """Atomically write one group's integrate record into the journal."""
+    """Atomically write one group's integrate record into the journal.
+
+    quarantine_reason: one of the QUARANTINE_* categories, recorded only when
+    non-empty (i.e. state == "QUARANTINED"). Rebuilding the record fresh each
+    call means a group that later transitions out of QUARANTINED drops any
+    stale reason automatically.
+    """
     if not journal_path:
         return
     try:
@@ -388,7 +405,10 @@ def _write_group_journal(
             journal = json.loads(journal_file.read_text())
         if "groups" not in journal:
             journal["groups"] = {}
-        journal["groups"][name] = {"pr_url": pr_url, "head_branch": head_branch, "state": state}
+        record = {"pr_url": pr_url, "head_branch": head_branch, "state": state}
+        if quarantine_reason:
+            record["quarantine_reason"] = quarantine_reason
+        journal["groups"][name] = record
         progress.atomic_write_text(
             journal_file, json.dumps(journal, indent=2, sort_keys=True) + "\n"
         )
@@ -668,8 +688,8 @@ def integrate_one(
     operator-PR discovery), reuses an existing remote branch, and creates only
     what is missing.
 
-    _record_group: optional callable(name, pr_url, head_branch, state) injected by
-    the pipeline scheduler so every group journal write is serialized under
+    _record_group: optional callable(name, pr_url, head_branch, state, quarantine_reason="")
+    injected by the pipeline scheduler so every group journal write is serialized under
     state_lock and merged with the in-memory entries list (AC-015). When None, falls
     back to _write_group_journal (sequential/non-pipeline path).
 
@@ -690,18 +710,18 @@ def integrate_one(
     """
     name = g["name"]
 
-    def _do_journal(nm: str, pu: str, hb: str, st: str) -> None:
+    def _do_journal(nm: str, pu: str, hb: str, st: str, quarantine_reason: str = "") -> None:
         if _record_group is not None:
-            _record_group(nm, pu, hb, st)
+            _record_group(nm, pu, hb, st, quarantine_reason)
         else:
-            _write_group_journal(journal_path, nm, pu, hb, st)
+            _write_group_journal(journal_path, nm, pu, hb, st, quarantine_reason)
 
     # Dep-on-quarantined cascade
     dep_q = next((d for d in g["depends_on"] if d in quarantined), None)
     if dep_q:
         quarantined[name] = f"depends on quarantined group '{dep_q}'"
         print(f"  SKIP [{name:9}] -- {quarantined[name]}")
-        _do_journal(name, "", f"{run_id}/{name}", "QUARANTINED")
+        _do_journal(name, "", f"{run_id}/{name}", "QUARANTINED", QUARANTINE_DEPENDENCY_QUARANTINED)
         return None
 
     # Deliverable subset
@@ -717,7 +737,7 @@ def integrate_one(
             return None
         quarantined[name] = f"incomplete task(s): {', '.join(dropped)}"
         print(f"  SKIP [{name:9}] -- {quarantined[name]}")
-        _do_journal(name, "", f"{run_id}/{name}", "QUARANTINED")
+        _do_journal(name, "", f"{run_id}/{name}", "QUARANTINED", QUARANTINE_TASK_FAILURE)
         return None
     if dropped:
         quarantined[f"{name}/dropped"] = f"split out of {name}: {', '.join(dropped)}"
@@ -725,7 +745,10 @@ def integrate_one(
             f"  SPLIT [{name:9}] -- shipping {', '.join(deliverable)}; "
             f"quarantined {', '.join(dropped)}"
         )
-        _do_journal(f"{name}/dropped", "", f"{run_id}/{name}/dropped", "QUARANTINED")
+        _do_journal(
+            f"{name}/dropped", "", f"{run_id}/{name}/dropped", "QUARANTINED",
+            QUARANTINE_TASK_FAILURE,
+        )
 
     gb = f"{run_id}/{name}"
     target = base if not g["depends_on"] else group_branch.get(g["depends_on"][0], base)
@@ -806,7 +829,7 @@ def integrate_one(
             if conflict:
                 quarantined[name] = f"merge conflict integrating {conflict}"
                 print(f"  SKIP [{name:9}] -- {quarantined[name]}")
-                _do_journal(name, "", gb, "QUARANTINED")
+                _do_journal(name, "", gb, "QUARANTINED", QUARANTINE_MERGE_CONFLICT)
                 return None
             # When we started from a pre-squash merge-base (dep branch was deleted after
             # squash-merge), bring in the squashed remote base with -X ours. The task
@@ -822,7 +845,7 @@ def integrate_one(
                 if not ok:
                     quarantined[name] = f"integrated smoke test failed: {detail}"
                     print(f"  SKIP [{name:9}] -- {quarantined[name]}")
-                    _do_journal(name, "", gb, "QUARANTINED")
+                    _do_journal(name, "", gb, "QUARANTINED", QUARANTINE_INTEGRATION_ERROR)
                     return None
             push = _git(iw, "push", "-q", remote, f"{gb}:{gb}", check=False)
             if push.returncode != 0:
@@ -834,13 +857,13 @@ def integrate_one(
                     _git(iw, "rebase", "--abort", check=False)
                     quarantined[name] = f"rebase failed after push rejection: {push.stderr.strip()[:200]}"
                     print(f"  SKIP [{name:9}] -- {quarantined[name]}")
-                    _do_journal(name, "", gb, "QUARANTINED")
+                    _do_journal(name, "", gb, "QUARANTINED", QUARANTINE_MERGE_CONFLICT)
                     return None
                 retry = _git(iw, "push", "-q", remote, f"{gb}:{gb}", check=False)
                 if retry.returncode != 0:
                     quarantined[name] = f"push still failing after rebase: {retry.stderr.strip()[:200]}"
                     print(f"  SKIP [{name:9}] -- {quarantined[name]}")
-                    _do_journal(name, "", gb, "QUARANTINED")
+                    _do_journal(name, "", gb, "QUARANTINED", QUARANTINE_INTEGRATION_ERROR)
                     return None
 
     group_branch[name] = gb
@@ -941,7 +964,7 @@ def integrate_one(
     if r.returncode != 0 or not out.startswith("http"):
         quarantined[name] = f"gh pr create failed: {out}"
         print(f"  SKIP [{name:9}] -- {quarantined[name]}")
-        _do_journal(name, "", gb, "QUARANTINED")
+        _do_journal(name, "", gb, "QUARANTINED", QUARANTINE_INTEGRATION_ERROR)
         return None
     print(f"  PR [{name:9}] base={pr_base:18} -> {out}")
     _do_journal(name, out, gb, "OPEN")

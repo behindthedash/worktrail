@@ -173,12 +173,16 @@ Never develop on the base checkout; all authoring and implementation use worktre
 Run before spec worktree setup in the `new` pipeline. Detects when a feature idea substantially
 overlaps an existing spec so the user can extend rather than duplicate.
 
+Run once per spec root that exists under `$REPO` — `$REPO/docs/specs` and/or `$REPO/openspec` —
+and merge the resulting `specs` arrays before the comparison step:
+
 ```bash
-worktrail-overlap-check --root "$REPO/docs/specs" --json
+[ -d "$REPO/docs/specs" ] && worktrail-overlap-check --root "$REPO/docs/specs" --json
+[ -d "$REPO/openspec" ] && worktrail-overlap-check --root "$REPO/openspec" --json
 ```
 
-Parse the JSON `specs` array. Each entry has `spec_id`, `stage`, `title`, `feature_summary`,
-and `user_request_excerpt`.
+Parse each JSON `specs` array and merge them into one list. Each entry has `spec_id`, `stage`,
+`title`, `feature_summary`, and `user_request_excerpt`.
 
 **Comparison rule:** Compare `$feature_idea` (the user's stated feature) against every
 `feature_summary` (and `user_request_excerpt` as a tiebreaker). An overlap exists when the
@@ -187,7 +191,7 @@ sub-set/extension of an existing spec.
 
 **If overlap is found:** Present `AskUserQuestion` before continuing (see `#overlap-menu`).
 **If no overlap or no existing specs:** Proceed silently to step 0.
-**If `docs/specs/` does not exist:** Skip this step entirely.
+**If neither `docs/specs/` nor `openspec/` exists:** Skip this step entirely.
 
 ---
 
@@ -392,12 +396,15 @@ for label in $PR_LABELS; do PR_LABEL_ARGS+=(--pr-label "$label"); done
 # Devkit specs already declare file scope in their task frontmatter and take
 # compile's free seed path (no model call), so this is a no-op there.
 if [ -d "$SPEC_ROOT/openspec/changes/$SPEC_ID" ]; then
+  SPEC_REF="openspec/changes/$SPEC_ID"
   worktrail-compile "$SPEC_ROOT/openspec/changes/$SPEC_ID" || {
     echo "ERROR: worktrail-compile failed for $SPEC_ID — inspect the error above before retrying full-real." >&2
     exit 1
   }
+else
+  SPEC_REF="docs/specs/$SPEC_ID"
 fi
-worktrail-live full-real --repo "$SPEC_ROOT" --spec docs/specs/$SPEC_ID --base "$BASE" --agent "$AGENT_CLI" "${AGENT_MODEL_ARGS[@]}" "${FALLBACK_AGENT_ARGS[@]}" "${ROLE_AGENT_MAP_ARGS[@]}" "${PR_LABEL_ARGS[@]}" --route "$ROUTE" --gates "$GATES"
+worktrail-live full-real --repo "$SPEC_ROOT" --spec "$SPEC_REF" --base "$BASE" --agent "$AGENT_CLI" "${AGENT_MODEL_ARGS[@]}" "${FALLBACK_AGENT_ARGS[@]}" "${ROLE_AGENT_MAP_ARGS[@]}" "${PR_LABEL_ARGS[@]}" --route "$ROUTE" --gates "$GATES"
 ```
 
 `AGENT_CLI` precedence is explicit invocation > repo policy `agent_cli` > machine-wide
@@ -639,6 +646,30 @@ same `$SPEC_ID` fails fast instead of racing to a scan. It also catches what a
 local `git worktree list`/`for-each-ref` glob check cannot: a prior claimed
 brief never orchestrated, whose worktree or branch doesn't yet exist or
 doesn't match the glob.
+
+`claim`'s own conflict check only ever considers *live* records — a record
+whose worktree is gone and whose files already landed on its own
+`base_branch` (`stale`, per `_is_stale()`) never blocks a claim. But a stale
+record left untouched just rots forever with no `finish` entry, so before
+the hard-stop check below, scan for and close any stale records on this
+`$SPEC_ID`:
+
+```bash
+RUN_RECORDS_DIR="$(dirname "$(dirname "$RUN")")"
+SCAN=$(worktrail-run-record active-conflicts \
+  --dir "$RUN_RECORDS_DIR" --repo "$REPO" --specification "$SPEC_ID" --exclude "$RUN")
+echo "$SCAN" | python3 -c '
+import json, sys
+for r in json.load(sys.stdin)["stale"]:
+    print(r["path"])
+' | while IFS= read -r STALE_PATH; do
+  worktrail-run-record reconcile "$STALE_PATH" \
+    --note "auto-reconciled: active-conflicts-staleness-reconciliation"
+done
+```
+
+Then run the atomic claim itself, whose hard stop below only ever fires on
+`live` conflicts:
 
 ```bash
 CLAIM=$(worktrail-run-record claim "$RUN" --specification "$SPEC_ID")

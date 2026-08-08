@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from worktrail.orchestrator.coordinator import plan_groups
+from worktrail.orchestrator.integrate import QUARANTINE_BUDGET_EXHAUSTED
 
 from .policy_selfcheck import discover_repo_names
 
@@ -181,12 +182,18 @@ def reconcile_finding(repo: Path, finding: Dict[str, Any]) -> Optional[Dict[str,
 def check_repo(repo: Path) -> Dict[str, Any]:
     """Findings for every run journal in one repo. Empty `findings` = clean.
 
-    `findings` holds only unreconciled QUARANTINED groups; `reconciled` holds
-    the auto-resolved ones (never a silent drop -- see `reconcile_finding()`).
+    `findings` holds only unreconciled QUARANTINED groups needing human
+    triage; `reconciled` holds the auto-resolved ones (never a silent drop --
+    see `reconcile_finding()`). `resumable` holds groups whose
+    `quarantine_reason` is `QUARANTINE_BUDGET_EXHAUSTED`: the group simply
+    never got a chance to run (it did not fail), so it is safely resumable
+    with a plain re-run and is routed here instead of into `findings`'
+    human-triage path.
     """
     repo = Path(repo)
     result: Dict[str, Any] = {
-        "repo": repo.name, "path": str(repo), "findings": [], "reconciled": [],
+        "repo": repo.name, "path": str(repo),
+        "findings": [], "reconciled": [], "resumable": [],
     }
     worktrees_dir = repo.parent / f"{repo.name}-worktrees"
     if not worktrees_dir.is_dir():
@@ -208,12 +215,17 @@ def check_repo(repo: Path) -> Dict[str, Any]:
                 continue
             if group.get("state") != "QUARANTINED":
                 continue
+            quarantine_reason = group.get("quarantine_reason", "")
             finding = {
                 "spec_id": spec_id,
                 "group": group_name,
                 "pr_url": group.get("pr_url", ""),
                 "age_days": age_days,
+                "quarantine_reason": quarantine_reason,
             }
+            if quarantine_reason == QUARANTINE_BUDGET_EXHAUSTED:
+                result["resumable"].append(finding)
+                continue
             reconciliation = reconcile_finding(repo, finding)
             if reconciliation is not None:
                 result["reconciled"].append(reconciliation)
@@ -253,10 +265,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         results = [check_repo(Path(args.repo).expanduser())]
 
     flagged = [r for r in results if r["findings"]]
+    resumable_repos = [r for r in results if r["resumable"]]
     if args.json:
         print(json.dumps({"results": results, "flagged": len(flagged)}, indent=2))
     else:
-        if not flagged:
+        if not flagged and not resumable_repos:
             print(f"quarantine_selfcheck: {len(results)} repo(s) checked, no QUARANTINED groups")
         for r in flagged:
             print(f"{r['repo']}:")
@@ -265,6 +278,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                     f"  spec={f['spec_id']} group={f['group']} pr_url={f['pr_url']} "
                     f"age_days={f['age_days']:.1f}"
                 )
+        for r in resumable_repos:
+            print(f"{r['repo']} (resumable, no action needed -- re-run full-real):")
+            for f in r["resumable"]:
+                print(f"  spec={f['spec_id']} group={f['group']} age_days={f['age_days']:.1f}")
     return 1 if flagged else 0
 
 

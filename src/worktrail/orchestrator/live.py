@@ -3246,7 +3246,10 @@ def _pipeline_scheduler(
                 if dep in quarantined:
                     with iv_lock:
                         quarantined[name] = f"base group '{dep}' quarantined"
-                    _record_group_fn(name, "", f"{run_id}/{name}", "QUARANTINED")
+                    _record_group_fn(
+                        name, "", f"{run_id}/{name}", "QUARANTINED",
+                        integrate_module.QUARANTINE_DEPENDENCY_QUARANTINED,
+                    )
                     return
 
             # Resume: skip already-completed IV phases for this group (AC-013, REQ-017)
@@ -3268,7 +3271,10 @@ def _pipeline_scheduler(
                             group_branch[name] = candidate
                     prs.append((name, base, journal_rec.get("pr_url")))
                 if name in quarantined:
-                    _record_group_fn(name, "", journal_rec.get("head_branch", ""), "QUARANTINED")
+                    _record_group_fn(
+                        name, "", journal_rec.get("head_branch", ""), "QUARANTINED",
+                        integrate_module.QUARANTINE_INTEGRATION_ERROR,
+                    )
                     print(f"{_ts()}   !! GROUP [{name}] {quarantined[name]}")
 
             if not _skip_integrate:
@@ -3308,7 +3314,10 @@ def _pipeline_scheduler(
                 except Exception as exc:
                     with iv_lock:
                         quarantined[name] = f"integrate exception: {exc!r}"
-                    _record_group_fn(name, "", f"{run_id}/{name}", "QUARANTINED")
+                    _record_group_fn(
+                        name, "", f"{run_id}/{name}", "QUARANTINED",
+                        integrate_module.QUARANTINE_INTEGRATION_ERROR,
+                    )
                     print(
                         f"{_ts()}   !! GROUP [{name}] integrate raised: {exc!r} -- quarantined, run continues"
                     )
@@ -3342,7 +3351,8 @@ def _pipeline_scheduler(
                 with iv_lock:
                     quarantined[name] = f"verify exception: {exc!r}"
                 _record_group_fn(
-                    name, "", group_branch.get(name, f"{run_id}/{name}"), "QUARANTINED"
+                    name, "", group_branch.get(name, f"{run_id}/{name}"), "QUARANTINED",
+                    integrate_module.QUARANTINE_INTEGRATION_ERROR,
                 )
                 print(
                     f"{_ts()}   !! GROUP [{name}] verify raised: {exc!r} -- quarantined, run continues"
@@ -3374,6 +3384,17 @@ def _pipeline_scheduler(
                         pr_url,
                         group_branch.get(name, f"{run_id}/{name}"),
                         "AUTOMERGE_ARMED",
+                    )
+                elif name in quarantined:
+                    # Ordinary (non-exception) verify-stage quarantine: verify_one()
+                    # set quarantined[name] directly and returned (real CI failure or
+                    # merge conflict), unlike the `except Exception` branch above which
+                    # only catches a raised exception. Persist it the same way, so a
+                    # pipeline-mode resume sees QUARANTINED instead of replaying the
+                    # stale pre-verify journal record.
+                    _record_group_fn(
+                        name, "", group_branch.get(name, f"{run_id}/{name}"), "QUARANTINED",
+                        integrate_module.QUARANTINE_INTEGRATION_ERROR,
                     )
 
         finally:
@@ -3459,10 +3480,15 @@ def _pipeline_scheduler(
             jdict["budget_stopped_at"] = _budget_stopped_at[0]
         progress.atomic_write_text(journal_path, json.dumps(jdict, indent=2, sort_keys=True) + "\n")
 
-    def _record_group_fn(name: str, pr_url: str, head_branch: str, state: str) -> None:
+    def _record_group_fn(
+        name: str, pr_url: str, head_branch: str, state: str, quarantine_reason: str = "",
+    ) -> None:
         """Serialize one group's integrate result under state_lock (AC-015 / TASK-006)."""
         with state_lock:
-            groups_journal[name] = {"pr_url": pr_url, "head_branch": head_branch, "state": state}
+            record = {"pr_url": pr_url, "head_branch": head_branch, "state": state}
+            if quarantine_reason:
+                record["quarantine_reason"] = quarantine_reason
+            groups_journal[name] = record
             _record()
 
     def _ensure_wt(task: dict) -> Path:
@@ -3757,7 +3783,10 @@ def _pipeline_scheduler(
                 with iv_lock:
                     quarantined[gname] = "fan-out incomplete (run budget exceeded)"
                     _group_phase_map.pop(gname, None)
-                _record_group_fn(gname, "", f"{run_id}/{gname}", "QUARANTINED")
+                _record_group_fn(
+                    gname, "", f"{run_id}/{gname}", "QUARANTINED",
+                    integrate_module.QUARANTINE_BUDGET_EXHAUSTED,
+                )
                 group_done_events[gname].set()
                 dispatched_groups.add(gname)
             elif _group_is_terminal(g):
@@ -3772,7 +3801,10 @@ def _pipeline_scheduler(
                 with iv_lock:
                     quarantined[gname] = "fan-out incomplete (run budget or error)"
                     _group_phase_map.pop(gname, None)
-                _record_group_fn(gname, "", f"{run_id}/{gname}", "QUARANTINED")
+                _record_group_fn(
+                    gname, "", f"{run_id}/{gname}", "QUARANTINED",
+                    integrate_module.QUARANTINE_TASK_FAILURE,
+                )
                 group_done_events[gname].set()
                 dispatched_groups.add(gname)
 
@@ -3905,6 +3937,21 @@ def _full_real_inner(
         Path(journal_path).unlink()  # --fresh: discard prior progress
         print(f"{_ts()} FRESH: discarded prior journal {journal_path}")
 
+    def _persist_newly_quarantined(quarantined_names, run_id_fallback: str) -> None:
+        """Persist newly-quarantined groups so a later resume sees QUARANTINED
+        instead of replaying the pre-verify journal state (matches the pipeline
+        path's _record_group_fn behavior in _integrate_verify_group). Single
+        shared call site for both the --from-verify and default sequential
+        branches below, so the sequential (non-pipeline) flow's quarantine-write
+        semantics live in exactly one place instead of two independently
+        maintained copies (PR #221, #227 each had to fix both).
+        """
+        for _qname in quarantined_names:
+            integrate._write_group_journal(
+                journal_path, _qname, "", group_branch.get(_qname, f"{run_id_fallback}/{_qname}"),
+                "QUARANTINED", integrate.QUARANTINE_INTEGRATION_ERROR,
+            )
+
     # Foreign-journal guard, fired directly in _full_real_inner's own resume
     # block (spec-path-task-crosscheck 1.2) so it covers every path below --
     # --from-verify, --pipeline, and the default sequential path -- before any
@@ -3983,6 +4030,7 @@ def _full_real_inner(
             declared_files=coordinator.declared_files_by_group(groups, tasks),
         )
         quarantined = {**from_verify_quarantined, **vres.get("quarantined", {})}
+        _persist_newly_quarantined(vres.get("quarantined", {}), journal.get("run_id", "unknown"))
         self_merged = vres.get("self_merged", {})
         post_merge_regressed = vres.get("post_merge_regressed", {})
         automerge_evidence = vres.get("automerge_evidence", {})
@@ -4304,6 +4352,9 @@ def _full_real_inner(
         declared_files=coordinator.declared_files_by_group(groups, tasks),
     )
     quarantined = {**quarantined, **vres["quarantined"]}
+    # Covers both the all_integrated fast path (skipped integrate, journal_groups
+    # reconstructed above) and the finish_real path (fresh integrate just ran).
+    _persist_newly_quarantined(vres["quarantined"], run_id)
     self_merged = vres.get("self_merged", {})
     post_merge_regressed = vres.get("post_merge_regressed", {})
     automerge_evidence = vres.get("automerge_evidence", {})
