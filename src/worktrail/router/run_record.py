@@ -423,9 +423,20 @@ def _is_stale(record: Dict[str, Any], repo_dir: Path, base_branch: str) -> bool:
     return True
 
 
-def _active_conflicts(repo_dir: Path, specification: str, exclude: Path | None) -> List[Dict[str, Any]]:
-    """Other non-terminal run records under `repo_dir` targeting `specification`."""
-    results: List[Dict[str, Any]] = []
+def _active_conflicts(
+    repo_dir: Path, repo_root: Path, specification: str, exclude: Path | None
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Other non-terminal run records under `repo_dir` targeting `specification`,
+    partitioned into `{"live": [...], "stale": [...]}` via `_is_stale()`.
+
+    `repo_root` is the actual git repository (for `_is_stale()`'s `git cat-file`
+    check), distinct from `repo_dir` (the run-records directory for this repo).
+    Each record's own `base_branch` is used — never a single value shared
+    across records, since concurrent runs may target different base branches.
+    A record with no `base_branch` is treated as live (can't check staleness).
+    """
+    live: List[Dict[str, Any]] = []
+    stale: List[Dict[str, Any]] = []
     if repo_dir.is_dir():
         for path in sorted(repo_dir.glob("*.yaml")):
             if exclude and path.resolve() == exclude:
@@ -435,14 +446,17 @@ def _active_conflicts(repo_dir: Path, specification: str, exclude: Path | None) 
                 continue
             if record.get("specification") != specification:
                 continue
-            results.append({
+            entry = {
                 "run_id": record.get("run_id"),
                 "path": str(path),
                 "started_at": record.get("started_at"),
                 "request_summary": record.get("request_summary"),
                 "agent": record.get("agent"),
-            })
-    return results
+            }
+            base_branch = record.get("base_branch")
+            is_stale = bool(base_branch) and _is_stale(record, repo_root, base_branch)
+            (stale if is_stale else live).append(entry)
+    return {"live": live, "stale": stale}
 
 
 def cmd_active_conflicts(args: argparse.Namespace) -> int:
