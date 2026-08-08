@@ -208,6 +208,24 @@ def test_classify_outcome_unfinished_record_is_failure():
     assert out.kind == "failed"
 
 
+def test_classify_outcome_clean_exit_unfinished_record_is_pending_not_failed():
+    # Regression (brief 20260806-084302): a Route-C run that stops to ask the
+    # operator an implementation-intent question, or a Route-G run that
+    # dispatches an async background pipeline and returns, both exit 0
+    # without the run record ever reaching a terminal final_status. Neither
+    # is the one-shot process crashing, so it must not count as a plain
+    # circuit-breaker failure -- but it also never reached a completion
+    # state, so (like timeout_after_pr) it must not reset the counter either.
+    out = classify_outcome({"final_status": None}, claimed_delta=1, exit_code=0)
+    assert out.kind == "pending"
+
+
+def test_classify_outcome_clean_exit_unfinished_record_attributes_claimed_brief():
+    out = classify_outcome({"final_status": None}, claimed_delta=1, exit_code=0,
+                           claimed_briefs=["20260806-brief"])
+    assert out.kind == "pending" and out.brief_id == "20260806-brief"
+
+
 def test_classify_outcome_no_record_no_claim_clean_exit_is_no_pick():
     assert classify_outcome(None, claimed_delta=0, exit_code=0).kind == "no_pick"
 
@@ -491,6 +509,15 @@ def test_decide_awaiting_approval_continues():
     assert d.proceed is True
 
 
+def test_decide_pending_outcome_does_not_trip_circuit_breaker():
+    # Two consecutive "pending" outcomes (clean-exit, unfinished record) must
+    # not read as consecutive_failures -- the drain loop never increments
+    # the counter for this kind, so decide() sees it unchanged below threshold.
+    d = decide(make_state(last_outcome=Outcome("pending"),
+                          consecutive_failures=0), now=0)
+    assert d.proceed is True
+
+
 # ---------------------------------------------------------------------------
 # lockfile
 
@@ -703,6 +730,28 @@ def test_drain_timeout_after_pr_does_not_trip_circuit_breaker(tmp_path, monkeypa
     summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
     assert len(summary["iterations"]) == 3
     assert all(i["kind"] == "timeout_after_pr" for i in summary["iterations"])
+    assert summary["stopped"].startswith("max_items")
+
+
+def test_drain_pending_outcome_does_not_trip_circuit_breaker(tmp_path, monkeypatch):
+    # Regression (brief 20260806-084302): a run that exits 0 (the one-shot
+    # process itself did not crash) but leaves its run record unfinished --
+    # e.g. Route C stopping to ask an implementation-intent question, or
+    # Route G returning after dispatching an async background pipeline --
+    # must not trip the 2-consecutive-failure breaker the way real crashes do.
+    fake = FakeQueue([5])
+    install_fake_queue(monkeypatch, fake)
+    config = make_config(tmp_path, max_items=3, failure_threshold=2)
+    calls = {"n": 0}
+
+    def spawner(cmd, timeout):
+        calls["n"] += 1
+        write_run_record(config.runs_dir, f"go-{calls['n']}", None)
+        return SpawnOutcome(0)
+
+    summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
+    assert len(summary["iterations"]) == 3
+    assert all(i["kind"] == "pending" for i in summary["iterations"])
     assert summary["stopped"].startswith("max_items")
 
 
