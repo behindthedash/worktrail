@@ -24,12 +24,16 @@ Subcommands:
           [--retry-after ISO8601] [--note "..."]
          -> record a sanitized all-provider capacity gate
 finish PATH --status completed_pr_open [--pr URL] [--merge-result ...]
+         -> release this run's claim (if any). If the claim was staked with
+            `claim --remote`, also best-effort deletes the remote claim ref
+            on `origin` (failure here never affects `finish`'s exit code or
+            JSON output; the claim just expires via its own TTL instead).
   scope-review PATH --item "..." --status complete|out-of-scope|blocked
                (--evidence "..." | --reason "...")
   active-conflicts --dir DIR --repo REPO --specification SPEC [--exclude PATH]
          -> read-only scan for other non-terminal runs on the same
             repo+specification; prints a JSON array (see contracts/active-conflicts-cli.md)
-  claim  RUN_PATH --specification SPEC
+  claim  RUN_PATH --specification SPEC [--remote] [--remote-ttl-seconds N]
          -> atomically claim repo+specification for the run at RUN_PATH before
             committing to implement it. Closes the TOCTOU gap in the read-only
             active-conflicts scan (two sessions can each pass the scan before
@@ -39,6 +43,15 @@ finish PATH --status completed_pr_open [--pr URL] [--merge-result ...]
             for the same repo+specification fails fast with
             {"status": "already-claimed", ...} instead of racing to the scan.
             `finish` releases the claim automatically.
+            With `--remote` (default `--remote-ttl-seconds 86400`), also
+            stakes the claim on `origin` via a claim ref
+            (refs/worktrail-claims/<spec-slug>) so a second *machine* --
+            invisible to this machine's local lock file -- is blocked too.
+            A live remote claim fails with
+            {"status": "already-claimed", "scope": "remote", ...}; a stale
+            one (older than its own TTL) is reclaimed. Without `--remote`,
+            behavior and network usage are unchanged from before this layer
+            existed.
   prune  [--dir DIR] [--repo REPO] [--keep-count N] [--keep-days N] [--dry-run]
          -> delete old run records under <dir>/<repo-name>/*.yaml. Hybrid
             retention: a record is kept if it is among the --keep-count most
