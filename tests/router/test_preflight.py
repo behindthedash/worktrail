@@ -5,13 +5,17 @@ from __future__ import annotations
 import json
 import subprocess
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from worktrail.router.preflight import (
-    check, duplicate_work_warning, is_unparseable_command, labels_in_command,
-    main, marker_path, read_marker, tree_state, write_marker,
+    check, duplicate_work_warning, is_running, is_unparseable_command,
+    labels_in_command, main, marker_path, read_marker, read_running_lock,
+    remove_running_lock, running_lock_path, tree_state, write_marker,
+    write_running_lock,
 )
 from worktrail.router.preflight import _pr_touched_files, _resolve_base_ref, _touched_files
 
@@ -110,6 +114,44 @@ class TestMarkerRoundtrip(_GitRepoCase):
         write_marker(Path(repo), state, "pytest -q")
         marker = read_marker(Path(repo))
         self.assertEqual(marker["labels"], [])
+
+
+class TestRunningLock(_GitRepoCase):
+    def test_no_lock_is_not_running(self) -> None:
+        repo = self._init_repo()
+        self.assertIsNone(read_running_lock(Path(repo)))
+        self.assertFalse(is_running(Path(repo)))
+
+    def test_lock_lives_in_private_git_dir(self) -> None:
+        repo = self._init_repo()
+        path = running_lock_path(Path(repo))
+        self.assertEqual(path.parent, Path(repo) / ".git")
+
+    def test_own_pid_lock_is_running(self) -> None:
+        repo = self._init_repo()
+        write_running_lock(Path(repo))
+        self.assertTrue(is_running(Path(repo)))
+        remove_running_lock(Path(repo))
+        self.assertFalse(is_running(Path(repo)))
+
+    def test_stale_lock_with_dead_pid_self_heals(self) -> None:
+        # A lock whose pid has already exited (crash before the `finally`
+        # cleanup ran, e.g. kill -9) must not wedge every future check --
+        # is_running() removes it and reports not-running.
+        repo = self._init_repo()
+        proc = subprocess.Popen(["true"])
+        dead_pid = proc.pid
+        proc.wait()
+        running_lock_path(Path(repo)).write_text(
+            json.dumps({"pid": dead_pid, "started_at": 0}), encoding="utf-8",
+        )
+        self.assertFalse(is_running(Path(repo)))
+        self.assertIsNone(read_running_lock(Path(repo)))
+
+    def test_malformed_lock_is_not_running(self) -> None:
+        repo = self._init_repo()
+        running_lock_path(Path(repo)).write_text("not json", encoding="utf-8")
+        self.assertFalse(is_running(Path(repo)))
 
 
 class TestLabelsInCommand(unittest.TestCase):
@@ -366,6 +408,44 @@ class TestRunCli(_GitRepoCase):
             Path(repo), command="gh pr create --title x --label go:risk-critical",
         )
         self.assertEqual(verdict["decision"], "deny")
+
+    def test_run_success_leaves_no_running_lock(self) -> None:
+        repo = self._init_repo('pre_pr_cmd: "true"\n')
+        code = main(["run", "--repo", repo])
+        self.assertEqual(code, 0)
+        self.assertIsNone(read_running_lock(Path(repo)))
+
+    def test_run_failure_leaves_no_running_lock(self) -> None:
+        repo = self._init_repo('pre_pr_cmd: "exit 3"\n')
+        code = main(["run", "--repo", repo])
+        self.assertEqual(code, 3)
+        self.assertIsNone(read_running_lock(Path(repo)))
+
+
+class TestWaitCli(_GitRepoCase):
+    def test_wait_returns_immediately_when_not_running(self) -> None:
+        repo = self._init_repo()
+        code = main(["wait", "--repo", repo, "--timeout", "1", "--interval", "0.05"])
+        self.assertEqual(code, 0)
+
+    def test_wait_returns_once_lock_is_cleared_mid_poll(self) -> None:
+        repo = self._init_repo()
+        write_running_lock(Path(repo))
+
+        def _clear_shortly() -> None:
+            time.sleep(0.1)
+            remove_running_lock(Path(repo))
+
+        threading.Thread(target=_clear_shortly).start()
+        code = main(["wait", "--repo", repo, "--timeout", "5", "--interval", "0.02"])
+        self.assertEqual(code, 0)
+
+    def test_wait_times_out_while_still_running(self) -> None:
+        repo = self._init_repo()
+        write_running_lock(Path(repo))  # own pid: genuinely alive
+        code = main(["wait", "--repo", repo, "--timeout", "0.1", "--interval", "0.05"])
+        self.assertEqual(code, 1)
+        remove_running_lock(Path(repo))
 
 
 class TestOpenPrBranches(_GitRepoCase):
