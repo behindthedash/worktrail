@@ -67,12 +67,21 @@ or a clean success leaves no other trace of what the one-shot actually did,
 and reconstructing that after the fact otherwise means a fresh manual
 reproduction (confirmed live 2026-08-03).
 
+Before and after each drain pass, `--repos-root` (default ~/projects; a nonexistent path
+is a no-op sweep) is swept via quarantine_selfcheck.check_repo()['resumable'] for
+QUARANTINED groups whose quarantine_reason is budget_exhausted -- the group never failed,
+it just never got a chance to run before the run's --run-budget expired, so it is safely
+resumable with a plain `worktrail-live full-real` re-run (no --fresh, resume=True by
+default). These specs are invisible to `worktrail-go auto` itself (auto mode only claims
+work-queue briefs, never "Ready to implement" specs), so without this sweep they sit until
+a human notices the dashboard's "Resumable quarantines" line and re-runs full-real by hand.
+
 Usage:
   drain.py [--max-items N] [--budget-minutes M] [--agent claude|codex|opencode]
            [--fallback-agent AGENT]... [--transcript-dir DIR]
            [--agent-cmd TEMPLATE] [--permission-arg FLAG]...
            [--consecutive-failures N] [--iteration-timeout-minutes M]
-           [--queue-dir DIR] [--runs-dir DIR]
+           [--queue-dir DIR] [--runs-dir DIR] [--repos-root DIR]
            [--capacity-cache PATH] [--lock-file PATH] [--dry-run] [--json]
 
 Exit codes: 0 = drained/stopped cleanly with a reported reason; 2 = refused to
@@ -90,9 +99,12 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from ..orchestrator import agent_capacity
+from ..router import quarantine_selfcheck
+from ..router.policy import load_policy
+from ..router.policy_selfcheck import discover_repo_names
 from ..router.pr_labels import ensure_pr_risk_label
 
 PROMPT = "worktrail-go auto"
@@ -361,6 +373,105 @@ def record_capacity_gate(cache_path: Path, agent: str, failure_class: str,
 
 
 # ---------------------------------------------------------------------------
+# Resumable quarantine sweep
+#
+# QUARANTINED groups whose quarantine_reason is budget_exhausted never failed --
+# the fan-out's --run-budget simply ran out before their tasks got a chance to
+# run (see quarantine_selfcheck.check_repo docstring). They are safely resumable
+# with a plain `worktrail-live full-real` re-run (resume=True is the default; no
+# --fresh), but `worktrail-go auto` never surfaces them -- auto mode only claims
+# work-queue briefs, never the "Ready to implement" specs shown in the dashboard's
+# Active Work section. Without this sweep they sit until a human notices the
+# dashboard's "Resumable quarantines" line.
+
+
+def resolve_spec_rel(repo: Path, spec_id: str) -> Optional[str]:
+    """The --spec path full-real expects, relative to `repo`, for whichever
+    task format the spec was authored in. None if neither location exists
+    (e.g. the spec folder was since deleted/archived)."""
+    if (repo / "docs" / "specs" / spec_id).is_dir():
+        return f"docs/specs/{spec_id}"
+    if (repo / "openspec" / "changes" / spec_id).is_dir():
+        return f"openspec/changes/{spec_id}"
+    return None
+
+
+def find_resumable_quarantines(
+    repos_root: Path, go_repo: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """Every (repo, spec) pair with a QUARANTINED/budget_exhausted group, across
+    every repo under `repos_root` (or just `go_repo` when given). One entry per
+    spec even when multiple groups in its journal are resumable -- a single
+    full-real re-run covers the whole journal."""
+    names = discover_repo_names(repos_root)
+    if go_repo:
+        names = [n for n in names if n == go_repo]
+    found: List[Dict[str, Any]] = []
+    seen: set = set()
+    for name in names:
+        repo_path = repos_root / name
+        resumable = quarantine_selfcheck.check_repo(repo_path).get("resumable") or []
+        for finding in resumable:
+            spec_id = finding.get("spec_id")
+            key = (name, spec_id)
+            if not spec_id or key in seen:
+                continue
+            spec_rel = resolve_spec_rel(repo_path, spec_id)
+            if spec_rel is None:
+                continue
+            seen.add(key)
+            found.append({
+                "repo": repo_path, "repo_name": name,
+                "spec_id": spec_id, "spec_rel": spec_rel,
+            })
+    return found
+
+
+def _base_branch_for(repo: Path) -> str:
+    try:
+        return load_policy(repo).get("base_branch") or "dev"
+    except Exception:
+        return "dev"
+
+
+def build_full_real_resume_command(repo: Path, spec_rel: str, base: str, agent: str) -> List[str]:
+    """No --fresh: resume=True is full-real's own default, so this simply
+    continues the interrupted fan-out from its run journal."""
+    return ["worktrail-live", "full-real", "--repo", str(repo),
+            "--spec", spec_rel, "--base", base, "--agent", agent]
+
+
+def resume_quarantined_budget_exhausted(
+    repos_root: Path,
+    go_repo: Optional[str],
+    agent: str,
+    timeout: int,
+    spawner: Callable[[List[str], int], SpawnOutcome],
+    log: Callable[[str], None],
+) -> List[Dict[str, Any]]:
+    """Resume every budget_exhausted-only QUARANTINED spec found under
+    `repos_root` with a plain full-real re-run. Best-effort: a spec whose repo
+    or journal has since gone away is silently skipped by
+    find_resumable_quarantines, and one spec's resume failing does not stop
+    the others."""
+    resumed: List[Dict[str, Any]] = []
+    for finding in find_resumable_quarantines(repos_root, go_repo):
+        repo, spec_id = finding["repo"], finding["spec_id"]
+        base = _base_branch_for(repo)
+        cmd = build_full_real_resume_command(repo, finding["spec_rel"], base, agent)
+        log(f"resume-quarantine: {finding['repo_name']} {spec_id} "
+            f"(QUARANTINED/budget_exhausted) -> full-real --base {base}")
+        outcome = spawner(cmd, timeout)
+        log(f"resume-quarantine result: {finding['repo_name']} {spec_id} "
+            f"exit={outcome.exit_code}")
+        resumed.append({
+            "repo": finding["repo_name"], "spec_id": spec_id,
+            "exit_code": outcome.exit_code,
+        })
+    return resumed
+
+
+# ---------------------------------------------------------------------------
 # Lockfile
 
 
@@ -542,6 +653,7 @@ class DrainConfig:
     iteration_timeout: int = 45 * 60
     queue_dir: Optional[Path] = None
     dry_run: bool = False
+    repos_root: Optional[Path] = None
 
 
 @dataclass
@@ -587,6 +699,7 @@ def drain(config: DrainConfig,
     )
     iterations: List[Dict[str, object]] = []
     pending_approvals: List[str] = []
+    resumed_quarantines: List[Dict[str, Any]] = []
     # Candidates are evaluated in this fixed priority order every iteration
     # (see select_available_agent) -- a fallback is never "sticky": once a
     # higher-priority agent's persisted gate expires, the very next iteration
@@ -594,6 +707,10 @@ def drain(config: DrainConfig,
     candidates = [config.agent] + list(config.fallback_agents)
     active_agent = config.agent
     try:
+        if config.repos_root is not None and not config.dry_run:
+            resumed_quarantines += resume_quarantined_budget_exhausted(
+                config.repos_root, config.go_repo, active_agent,
+                config.iteration_timeout, spawner, log)
         cmd = build_command(active_agent, config.permission_args,
                             config.agent_cmd, config.go_repo)
         while True:
@@ -696,12 +813,21 @@ def drain(config: DrainConfig,
                 "exit_code": exit_code, "elapsed_s": elapsed,
                 "transcript": str(transcript_path) if transcript_path else None,
             })
+        if config.repos_root is not None and not config.dry_run and state.iteration > 0:
+            # Re-swept post-pass, but only when this pass actually ran a queue
+            # iteration -- an empty queue means nothing could have changed
+            # since the pre-loop sweep above, so re-sweeping would just
+            # re-invoke full-real for the exact same still-open quarantine.
+            resumed_quarantines += resume_quarantined_budget_exhausted(
+                config.repos_root, config.go_repo, active_agent,
+                config.iteration_timeout, spawner, log)
     finally:
         release_lock(config.lock_file)
     summary: Dict[str, object] = {
         "stopped": decision.reason if not decision.proceed else "dry_run",
         "iterations": iterations,
         "pending_approvals": pending_approvals,
+        "resumed_quarantines": resumed_quarantines,
         "elapsed_s": int(clock() - started),
     }
     if pending_approvals:
@@ -762,6 +888,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                              "nothing, matching prior behavior")
     parser.add_argument("--work-queue-py", type=Path, default=default_work_queue_py(),
                         help="path to work_queue.py (auto-resolved from sibling skill)")
+    parser.add_argument("--repos-root", type=Path,
+                        default=Path.home() / "projects",
+                        help="swept before and after each drain pass for QUARANTINED/"
+                             "budget_exhausted groups (quarantine_selfcheck), each resumed "
+                             "with a plain full-real re-run; a nonexistent path is a no-op")
     parser.add_argument("--dry-run", action="store_true",
                         help="report the first decision + command, launch nothing")
     parser.add_argument("--json", action="store_true", dest="as_json",
@@ -788,6 +919,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         iteration_timeout=args.iteration_timeout_minutes * 60,
         queue_dir=args.queue_dir,
         dry_run=args.dry_run,
+        repos_root=args.repos_root,
     )
     try:
         summary = drain(config)
