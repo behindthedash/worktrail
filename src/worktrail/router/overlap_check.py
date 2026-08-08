@@ -49,6 +49,11 @@ _WHY_SECTION_RE = re.compile(
     re.DOTALL | re.IGNORECASE | re.MULTILINE,
 )
 
+_PURPOSE_SECTION_RE = re.compile(
+    r"^##[ \t]+Purpose[ \t]*\n(.*?)(?=\n##\s|\Z)",
+    re.DOTALL | re.IGNORECASE | re.MULTILINE,
+)
+
 
 def _slug_to_title(spec_id: str) -> str:
     """'003-donor-search' → 'Donor Search'"""
@@ -198,15 +203,28 @@ def _extract_openspec_change(change_dir: Path) -> Optional[Dict[str, Any]]:
     }
 
 
+def _feature_summary_from_openspec_spec(text: str) -> Optional[str]:
+    m = _PURPOSE_SECTION_RE.search(text)
+    if m:
+        block = m.group(1).strip()
+        if block:
+            return block
+    return None
+
+
 def _extract_openspec_spec(spec_dir: Path) -> Optional[Dict[str, Any]]:
     spec_file = spec_dir / "spec.md"
     if not spec_file.is_file():
         return None
+    try:
+        text = spec_file.read_text(errors="ignore")
+    except OSError:
+        text = ""
     return {
         "spec_id": spec_dir.name,
         "stage": "complete",
         "title": _slug_to_title(spec_dir.name),
-        "feature_summary": None,
+        "feature_summary": _feature_summary_from_openspec_spec(text),
         "user_request_excerpt": None,
     }
 
