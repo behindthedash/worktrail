@@ -591,6 +591,43 @@ class TestRemoteClaim:
         assert lock["remote"] is True
         assert lock["run_id"] == res["run_id"]
 
+    def test_second_claim_while_first_is_fresh_fails_with_remote_scope_and_no_local_lock(
+        self, remote_origin, tmp_path
+    ):
+        """Two machines never share a local run-record dir, so this uses two
+        separate `--dir` roots (session A's, session B's) both pointing their
+        `repository` field at the same clone -- session B's local lock
+        acquisition succeeds (no visibility into session A's local lock),
+        so it's the remote push conflict alone that must reject it.
+        """
+        bare_dir, clone_dir = remote_origin
+        run_dir_a = tmp_path / "runs-a"
+        run_dir_a.mkdir()
+        run_dir_b = tmp_path / "runs-b"
+        run_dir_b.mkdir()
+        res_a = _start(str(run_dir_a), repo=str(clone_dir), request="session A remote claim")
+        res_b = _start(str(run_dir_b), repo=str(clone_dir), request="session B remote claim")
+
+        out_a = StringIO()
+        with patch("sys.stdout", out_a):
+            rc_a = main(["claim", res_a["path"], "--specification", "spec-remote-second", "--remote"])
+        result_a = json.loads(out_a.getvalue())
+        assert rc_a == 0
+        assert result_a["status"] == "claimed"
+
+        out_b = StringIO()
+        with patch("sys.stdout", out_b):
+            rc_b = main(["claim", res_b["path"], "--specification", "spec-remote-second", "--remote"])
+        result_b = json.loads(out_b.getvalue())
+
+        assert rc_b == 1
+        assert result_b["status"] == "already-claimed"
+        assert result_b["scope"] == "remote"
+
+        lock_path_b = _lock_path(Path(res_b["path"]), "spec-remote-second")
+        assert not lock_path_b.exists()
+        assert _load(Path(res_b["path"]))["specification"] is None
+
 
 def _prune(tmp, **over):
     argv = ["prune", "--dir", tmp]
