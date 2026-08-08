@@ -4021,7 +4021,8 @@ def _full_real_inner(
         _fv_run_id = journal.get("run_id", "unknown")
         for _qname in vres.get("quarantined", {}):
             integrate._write_group_journal(
-                journal_path, _qname, "", group_branch.get(_qname, f"{_fv_run_id}/{_qname}"), "QUARANTINED"
+                journal_path, _qname, "", group_branch.get(_qname, f"{_fv_run_id}/{_qname}"), "QUARANTINED",
+                integrate.QUARANTINE_INTEGRATION_ERROR,
             )
         self_merged = vres.get("self_merged", {})
         post_merge_regressed = vres.get("post_merge_regressed", {})
@@ -4351,7 +4352,8 @@ def _full_real_inner(
     # above) and the finish_real path (fresh integrate just ran).
     for _qname in vres["quarantined"]:
         integrate._write_group_journal(
-            journal_path, _qname, "", group_branch.get(_qname, f"{run_id}/{_qname}"), "QUARANTINED"
+            journal_path, _qname, "", group_branch.get(_qname, f"{run_id}/{_qname}"), "QUARANTINED",
+            integrate.QUARANTINE_INTEGRATION_ERROR,
         )
     self_merged = vres.get("self_merged", {})
     post_merge_regressed = vres.get("post_merge_regressed", {})
