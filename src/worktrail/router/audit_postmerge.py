@@ -180,16 +180,29 @@ def list_merged_prs(repo: Path, since: str, max_prs: int = DEFAULT_MAX_PRS) -> O
 
 def _write_sweep_state(repo_name: str, state_dir: Path,
                         last_swept_at: Optional[str],
-                        flagged: List[Dict[str, Any]]) -> None:
-    """Persist this sweep's `flagged` list (fully replacing any prior sweep's
-    -- a PR that already scrolled past the marker was already reported once
-    and must not accumulate forever) and, only when `last_swept_at` is given,
-    the new marker. Other keys already in the repo's state file are kept."""
+                        flagged_this_sweep: List[Dict[str, Any]],
+                        checked_urls: "set[str]") -> None:
+    """Merge this sweep's `flagged_this_sweep` into the persisted `flagged`
+    list rather than replacing it outright: a PR whose URL is in
+    `checked_urls` (fetched and re-classified this sweep) is fully
+    superseded by this sweep's verdict -- present in `flagged_this_sweep` if
+    still failing, absent (and therefore dropped) if it now passes -- while a
+    previously-flagged PR that fell outside this sweep's fetch window is
+    carried forward untouched, since it was never re-verified as resolved.
+    Also persists the new marker when `last_swept_at` is given. Other keys
+    already in the repo's state file are kept."""
     state_dir.mkdir(parents=True, exist_ok=True)
     state = load_state(repo_name, state_dir)
     if last_swept_at is not None:
         state["last_swept_at"] = last_swept_at
-    state["flagged"] = flagged
+    existing = state.get("flagged")
+    if not isinstance(existing, list):
+        existing = []
+    carried = [
+        entry for entry in existing
+        if not (isinstance(entry, dict) and entry.get("url") in checked_urls)
+    ]
+    state["flagged"] = carried + flagged_this_sweep
     _state_path(repo_name, state_dir).write_text(json.dumps(state, indent=2))
 
 
@@ -224,14 +237,17 @@ def sweep_repo(repo: Path, state_dir: Path, *, repo_name: Optional[str] = None,
 
     result["checked"] = len(prs)
     flagged: List[Dict[str, Any]] = []
+    checked_urls: set = set()
     latest_merged_at: Optional[str] = None
     for pr in prs:
         merged_at = pr.get("mergedAt")
+        url = pr.get("url")
+        checked_urls.add(url)
         _, failing = classify_checks(pr.get("statusCheckRollup"))
         if failing:
             flagged.append({
                 "repo": name,
-                "url": pr.get("url"),
+                "url": url,
                 "failing_checks": failing,
                 "merged_at": merged_at,
             })
@@ -239,5 +255,5 @@ def sweep_repo(repo: Path, state_dir: Path, *, repo_name: Optional[str] = None,
             latest_merged_at = merged_at
 
     result["flagged"] = flagged
-    _write_sweep_state(name, state_dir, latest_merged_at, flagged)
+    _write_sweep_state(name, state_dir, latest_merged_at, flagged, checked_urls)
     return result
