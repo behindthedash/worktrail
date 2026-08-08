@@ -7,7 +7,13 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-from worktrail.router.run_record import ALLOWED_AGENTS, COMPLETION_STATES, _load, main
+from worktrail.router.run_record import (
+    ALLOWED_AGENTS,
+    COMPLETION_STATES,
+    _extract_path_candidate,
+    _load,
+    main,
+)
 
 
 def _start(tmp, **over):
@@ -332,6 +338,25 @@ class TestLifecycle(unittest.TestCase):
         res = _start(self.tmp)
         with self.assertRaises(SystemExit):
             main(["scope-review", res["path"], "--item", "smoke", "--status", "complete"])
+
+
+class TestExtractPathCandidate(unittest.TestCase):
+    def test_clean_path_returned_unchanged(self):
+        self.assertEqual(
+            _extract_path_candidate("docs/specs/foo/tasks.md"),
+            "docs/specs/foo/tasks.md",
+        )
+
+    def test_trailing_descriptive_text_is_stripped(self):
+        self.assertEqual(
+            _extract_path_candidate(
+                "docs/specs/foo/tasks.md (data-model, contracts, KG, 28 tasks)"
+            ),
+            "docs/specs/foo/tasks.md",
+        )
+
+    def test_empty_string_returns_empty_string(self):
+        self.assertEqual(_extract_path_candidate(""), "")
 
 
 def _active_conflicts(tmp, **over):
