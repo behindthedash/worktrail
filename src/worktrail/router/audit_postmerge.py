@@ -21,18 +21,20 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from .reconcile_pr_labels import discover_managed_repos
 from ..orchestrator.verify import classify_checks
 
 __all__ = [
     "discover_managed_repos", "classify_checks",
-    "DEFAULT_STATE_DIR", "DEFAULT_LOOKBACK_DAYS",
+    "DEFAULT_STATE_DIR", "DEFAULT_LOOKBACK_DAYS", "DEFAULT_MAX_PRS",
     "resolve_state_dir", "first_run_lookback", "load_state",
     "read_marker", "write_marker", "effective_since",
+    "list_merged_prs",
 ]
 
 DEFAULT_STATE_DIR = "~/.go/postmerge-audit-state"
@@ -41,6 +43,11 @@ DEFAULT_STATE_DIR = "~/.go/postmerge-audit-state"
 # marker looks for merged PRs, so a brand-new/never-swept repo doesn't pull
 # in a repo's entire merge history on its first sweep.
 DEFAULT_LOOKBACK_DAYS = 7
+
+# Per-repo per-sweep cap on how many merged PRs get a `gh pr view` rollup
+# fetch, so one repo with a merge backlog can't starve every other repo's
+# sweep in the same run.
+DEFAULT_MAX_PRS = 50
 
 
 def resolve_state_dir(cli_arg: Optional[str] = None) -> Path:
@@ -106,3 +113,66 @@ def effective_since(repo_name: str, state_dir: Path,
     """The ISO8601 timestamp to sweep from: the repo's marker if present and
     valid, else the bounded first-run lookback window."""
     return read_marker(repo_name, state_dir) or first_run_lookback(lookback_days)
+
+
+def _run_gh(args: List[str], repo: Path, timeout: float = 30) -> Optional[Any]:
+    """Run a `gh` subcommand in `repo` and parse its JSON stdout. `None` on
+    any failure (missing, unauthenticated, offline, non-zero exit, non-JSON
+    output) -- matches `reconcile_pr_labels.py`'s `_open_prs()` never-guess
+    posture."""
+    try:
+        result = subprocess.run(
+            ["gh", *args], capture_output=True, text=True, timeout=timeout, cwd=str(repo),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+
+
+def list_merged_prs(repo: Path, since: str, max_prs: int = DEFAULT_MAX_PRS) -> Optional[List[Dict[str, Any]]]:
+    """Merged PRs in `repo` merged at/after `since` (ISO8601), each carrying
+    its live `statusCheckRollup`.
+
+    Two `gh` calls per candidate PR: `gh pr list --state merged --search
+    "merged:>=<since>"` finds which PRs merged in-window, capped at
+    `max_prs` so one repo with a merge backlog can't starve every other
+    repo's sweep in the same run; a per-PR `gh pr view ... --json
+    url,number,mergedAt,statusCheckRollup` then re-fetches each one's
+    current rollup, since a merged PR's checks can keep resolving/re-running
+    after the listing call and `gh pr list` itself doesn't expose
+    `statusCheckRollup`.
+
+    `None` on any `gh` failure (missing, unauthenticated, offline, no GitHub
+    remote, or a later `pr view` call failing partway through) -- matches
+    `reconcile_pr_labels.py`'s `_open_prs()` fail-open posture: the caller
+    reports `error` and leaves the repo's marker unchanged rather than
+    advancing it past PRs it never actually got to classify.
+    """
+    listed = _run_gh(
+        ["pr", "list", "--state", "merged",
+         "--search", f"merged:>={since}",
+         "--json", "url,number,mergedAt",
+         "--limit", str(max_prs)],
+        repo,
+    )
+    if not isinstance(listed, list):
+        return None
+    prs: List[Dict[str, Any]] = []
+    for item in listed[:max_prs]:
+        number = item.get("number")
+        if number is None:
+            continue
+        detail = _run_gh(
+            ["pr", "view", str(number),
+             "--json", "url,number,mergedAt,statusCheckRollup"],
+            repo,
+        )
+        if not isinstance(detail, dict):
+            return None
+        prs.append(detail)
+    return prs
