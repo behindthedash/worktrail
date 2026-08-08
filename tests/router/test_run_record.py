@@ -598,6 +598,93 @@ class TestActiveConflictsPartitioning(unittest.TestCase):
         self.assertEqual(result, {"live": [], "stale": []})
 
 
+def _reconcile(run_path, **over):
+    argv = ["reconcile", run_path]
+    if "note" in over and over["note"] is not None:
+        argv += ["--note", over["note"]]
+    out = StringIO()
+    with patch("sys.stdout", out):
+        rc = main(argv)
+    return rc, json.loads(out.getvalue())
+
+
+class TestReconcile(unittest.TestCase):
+    """Exercises `cmd_reconcile` directly against a real git repo, mirroring
+    `TestActiveConflictsPartitioning`'s fixture so `_is_stale()` sees a real
+    tracked file resolving on `base_branch`.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.repo_root = Path(self.tmp) / "target-repo"
+        self.repo_root.mkdir()
+        self._git("init", "-b", "main")
+        self._git("config", "user.email", "test@example.com")
+        self._git("config", "user.name", "Test")
+        (self.repo_root / "tracked.md").write_text("tracked", encoding="utf-8")
+        self._git("add", "tracked.md")
+        self._git("commit", "-m", "initial")
+        self.runs_dir = Path(self.tmp) / "runs"
+
+    def _git(self, *args):
+        subprocess.run(["git", "-C", str(self.repo_root), *args], check=True,
+                        capture_output=True)
+
+    def _stale_run(self, request):
+        res = _start(str(self.runs_dir), request=request, repo=str(self.repo_root))
+        main(["set", res["path"], "base_branch", "main"])
+        main(["set", res["path"], "worktree", str(Path(self.tmp) / "worktree-gone")])
+        main(["append", res["path"], "files_changed", "tracked.md"])
+        return res
+
+    def test_stale_at_call_time_closes_record_with_default_merge_result(self):
+        run = self._stale_run("stale run, no note")
+
+        rc, out = _reconcile(run["path"])
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(out["final_status"], "completed_and_merged")
+        rec = _load(Path(run["path"]))
+        self.assertEqual(rec["final_status"], "completed_and_merged")
+        self.assertEqual(rec["status"], "done")
+        self.assertIsNotNone(rec["completed_at"])
+        self.assertIn(run["run_id"], rec["merge_result"])
+        self.assertIn("auto-reconciled", rec["merge_result"])
+
+    def test_stale_at_call_time_closes_record_with_explicit_note(self):
+        run = self._stale_run("stale run, with note")
+
+        rc, out = _reconcile(run["path"], note="auto-reconciled: custom staleness note")
+
+        self.assertEqual(rc, 0)
+        rec = _load(Path(run["path"]))
+        self.assertEqual(rec["final_status"], "completed_and_merged")
+        self.assertEqual(rec["merge_result"], "auto-reconciled: custom staleness note")
+
+    def test_no_longer_stale_leaves_record_unmodified(self):
+        run = _start(str(self.runs_dir), request="live run", repo=str(self.repo_root))
+        main(["set", run["path"], "base_branch", "main"])
+        existing_worktree = Path(self.tmp) / "still-here"
+        existing_worktree.mkdir()
+        main(["set", run["path"], "worktree", str(existing_worktree)])
+        main(["append", run["path"], "files_changed", "tracked.md"])
+        before = Path(run["path"]).read_text(encoding="utf-8")
+
+        rc, out = _reconcile(run["path"])
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(out, {
+            "status": "not_stale",
+            "run_id": run["run_id"],
+            "path": run["path"],
+        })
+        after = Path(run["path"]).read_text(encoding="utf-8")
+        self.assertEqual(before, after)
+        rec = _load(Path(run["path"]))
+        self.assertIsNone(rec["final_status"])
+        self.assertIsNone(rec["completed_at"])
+
+
 def _claim(run, **over):
     argv = ["claim", run, "--specification", over.get("specification", "spec-a")]
     out = StringIO()
