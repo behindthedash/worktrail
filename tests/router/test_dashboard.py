@@ -1723,6 +1723,7 @@ class StaleBookkeeping(unittest.TestCase):
         self.assertNotEqual(r["next_action"], "orchestrator")
         self.assertIn("TASK-068-19", r["next_action"])
         self.assertIn("confirm & close", r["next_action"])
+        self.assertEqual(r["stale_task_ids"], ["TASK-068-19"])
 
     def test_missing_file_still_routes_to_orchestrator(self):
         # One file shipped, one never created -> genuinely unimplemented -> orchestrator.
@@ -1851,6 +1852,7 @@ class StaleBookkeeping(unittest.TestCase):
         r = dashboard.detect_stage(spec)
         self.assertEqual(r["stage"], "stale-bookkeeping")
         self.assertIn("TASK-068-90", r["next_action"])
+        self.assertEqual(r["stale_task_ids"], ["TASK-068-90"])
 
     def test_mixed_real_and_stale_tail_keeps_tail_pending(self):
         # One tail task already merged (stale) + one tail task genuinely still
