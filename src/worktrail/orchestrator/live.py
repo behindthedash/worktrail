@@ -1086,6 +1086,49 @@ def _resume_drift_report(repo: Path, base: str, spec_id: str, tasks: list) -> No
         return
 
 
+def _resume_quarantine_staleness_warning(
+    repo: Path, base: str, spec_id: str, groups: list, groups_journal: dict
+) -> None:
+    """Best-effort: on a pipeline resume, warn per-group when a QUARANTINED
+    group's task branches have fallen behind `base` -- a resume with no
+    --fresh replays that group's cached quarantine verdict as-is, even if a
+    fix has since landed on `base`. Unlike `_resume_drift_report` (a single
+    generic heads-up scoped to the first task branch found), this iterates
+    every QUARANTINED group and uses the MAX drift across that group's own
+    task branches, since drift on an unrelated non-quarantined group's
+    branch says nothing about whether this group's verdict is stale.
+
+    Never raises: any branch that doesn't exist or any failing git call is
+    skipped for that group (silently, matching `_resume_drift_report`'s own
+    failure posture) rather than blocking or failing the resume.
+    """
+    for g in groups:
+        if groups_journal.get(g["name"], {}).get("state") != "QUARANTINED":
+            continue
+        max_count = 0
+        for tid in g["tasks"]:
+            branch = f"{spec_id}/{tid.lower()}"
+            if not _branch_exists(repo, branch):
+                continue
+            mb = _git(repo, "merge-base", branch, base, check=False)
+            if mb.returncode != 0 or not mb.stdout.strip():
+                continue
+            merge_base_sha = mb.stdout.strip()
+            count = _git(repo, "rev-list", "--count", f"{merge_base_sha}..{base}", check=False)
+            if count.returncode != 0 or not count.stdout.strip().isdigit():
+                continue
+            max_count = max(max_count, int(count.stdout.strip()))
+        if max_count != 0:
+            print(
+                f"{_ts()} PIPELINE RESUME WARNING: group '{g['name']}' is QUARANTINED in "
+                f"the resumed journal, and base '{base}' has moved {max_count} commit(s) "
+                "since that group's task branch was forked. This resume will replay the "
+                "prior quarantine verdict as-is. If the blocker may already be fixed on "
+                f"{base}, re-run with --fresh to re-evaluate instead of trusting the "
+                "cached result."
+            )
+
+
 def build_external_deps_by_ref(repo: Path, tasks: list, spec_rel: str | None = None) -> dict:
     """Resolve every task's `external_deps` refs (cross-spec `external-dependencies:`
     entries, spec 025) into the `external_deps_by_ref` shape `dispatch.build_worker_prompt`
@@ -3398,6 +3441,7 @@ def _pipeline_scheduler(
                 f"in-flight: {', '.join(inflight_ids) or '-'}"
             )
             _resume_drift_report(repo, base, spec_id, tasks)
+            _resume_quarantine_staleness_warning(repo, base, spec_id, groups, groups_journal)
         except (OSError, json.JSONDecodeError) as exc:
             print(f"{_ts()} PIPELINE RESUME: journal unreadable ({exc}); starting fresh")
 
