@@ -475,6 +475,37 @@ def cmd_active_conflicts(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_reconcile(args: argparse.Namespace) -> int:
+    """Re-check one specific run record's staleness and close it if still stale.
+
+    Unlike `active-conflicts` (a fresh scan across all records), this re-runs
+    `_is_stale()` against the run record at `args.run` directly, using its own
+    `repository`/`base_branch` fields. If still stale, closes it via the same
+    finish path `cmd_finish` uses with `--status completed_and_merged`. If no
+    longer stale (its worktree reappeared, or a file no longer resolves on its
+    base_branch), makes no write.
+    """
+    run_path = Path(args.run)
+    record = _load(run_path)
+    repo_root = Path(record["repository"]) if record.get("repository") else run_path.parent
+    base_branch = record.get("base_branch")
+    if not base_branch or not _is_stale(record, repo_root, base_branch):
+        print(json.dumps({
+            "status": "not_stale",
+            "run_id": record.get("run_id"),
+            "path": str(run_path),
+        }))
+        return 0
+    merge_result = args.note or (
+        f"auto-reconciled: staleness reconciler closed run {record.get('run_id')}"
+    )
+    finish_args = argparse.Namespace(
+        path=str(run_path), status="completed_and_merged", pr=None,
+        merge_result=merge_result,
+    )
+    return cmd_finish(finish_args)
+
+
 def _claim_slug(specification: str) -> str:
     slug = re.sub(r"[^A-Za-z0-9_.-]", "_", specification or "")
     return slug[:200] or "unknown"
