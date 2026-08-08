@@ -30,6 +30,7 @@ from worktrail.drain.drain import (
     release_lock,
     resolve_spec_rel,
     resume_quarantined_budget_exhausted,
+    resume_verify_pending,
     select_available_agent,
     write_iteration_transcript,
 )
@@ -1161,6 +1162,27 @@ def test_find_verify_pending_specs_go_repo_filter(tmp_path):
     )
     found = find_verify_pending_specs(tmp_path, go_repo="repo-b")
     assert [f["repo_name"] for f in found] == ["repo-b"]
+
+
+def test_resume_verify_pending_invokes_full_real_once_per_spec(tmp_path):
+    repo = _make_repo(tmp_path, "repo-a")
+    _write_verify_pending_spec(
+        repo, "spec-a", "https://github.com/test/repo/pull/1"
+    )
+    calls = []
+
+    def spawner(cmd, timeout):
+        calls.append(cmd)
+        return SpawnOutcome(0)
+
+    logs = []
+    result = resume_verify_pending(
+        tmp_path, None, "claude", 60, spawner, logs.append)
+    assert len(calls) == 1
+    assert calls[0][:2] == ["worktrail-live", "full-real"]
+    assert "--fresh" not in calls[0]
+    assert result == [{"repo": "repo-a", "spec_id": "spec-a", "exit_code": 0}]
+    assert any("resume-verify-pending" in line for line in logs)
 
 
 def test_build_full_real_resume_command_has_no_fresh_flag():
