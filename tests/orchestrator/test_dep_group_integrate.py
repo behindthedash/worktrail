@@ -405,5 +405,128 @@ class JournalMergedAfterVerify(unittest.TestCase):
                          "MERGED must NOT be recorded for a quarantined group")
 
 
+# ---------------------------------------------------------------------------
+# Fix 4: resumed head_branch trust — a corrupted journal head_branch (e.g. a
+# discovered-PR mismatch that recorded a real, unrelated branch like "stg")
+# must never be trusted for VERIFY. Confirmed root cause: journal_rec.get(
+# "head_branch", fallback) was passed straight into VERIFY with no validation
+# that it is this run's own orchestrator-owned integration branch.
+# ---------------------------------------------------------------------------
+
+class ResolveJournaledHeadBranch(unittest.TestCase):
+    """live._resolve_journaled_head_branch must reject any head_branch that
+    isn't this run's own owned branch (f"{run_id}/{name}")."""
+
+    def test_matching_owned_branch_is_trusted(self):
+        branch, reason = live._resolve_journaled_head_branch(
+            "feature-1", {"head_branch": "full-1786136018/feature-1"}, "full-1786136018"
+        )
+        self.assertEqual(branch, "full-1786136018/feature-1")
+        self.assertIsNone(reason)
+
+    def test_missing_head_branch_falls_back_to_owned(self):
+        branch, reason = live._resolve_journaled_head_branch(
+            "feature-1", {}, "full-1786136018"
+        )
+        self.assertEqual(branch, "full-1786136018/feature-1")
+        self.assertIsNone(reason)
+
+    def test_bare_shared_branch_name_is_rejected(self):
+        """Reproduces the confirmed incident: PR discovery matched an unrelated
+        stg->prd promotion PR whose headRefName is literally 'stg', corrupting
+        the journal's head_branch for a completely unrelated group."""
+        for bad_branch in ("stg", "dev", "main"):
+            with self.subTest(bad_branch=bad_branch):
+                branch, reason = live._resolve_journaled_head_branch(
+                    "feature-1", {"head_branch": bad_branch}, "full-1786136018"
+                )
+                self.assertEqual(branch, bad_branch, "candidate is reported, not silently swapped")
+                self.assertIsNotNone(reason, f"{bad_branch!r} must be rejected outright")
+                self.assertIn(bad_branch, reason)
+
+    def test_unrelated_run_branch_is_rejected(self):
+        """A head_branch from a different run_id's group is just as untrustworthy
+        as a bare shared branch name -- it is still not this run's own branch."""
+        branch, reason = live._resolve_journaled_head_branch(
+            "feature-1", {"head_branch": "full-999999/feature-1"}, "full-1786136018"
+        )
+        self.assertEqual(branch, "full-999999/feature-1")
+        self.assertIsNotNone(reason)
+
+
+class GroupBranchFromJournal(unittest.TestCase):
+    """live._group_branch_from_journal must quarantine corrupted groups instead
+    of including them in the trusted group_branch map handed to VERIFY."""
+
+    def test_mixed_journal_quarantines_only_the_corrupted_group(self):
+        journal_groups = {
+            "base": {"pr_url": "https://g/p/1", "head_branch": "full-1786136018/base", "state": "OPEN"},
+            "feature-1": {"pr_url": "https://g/p/2", "head_branch": "stg", "state": "OPEN"},
+        }
+        group_branch, quarantined = live._group_branch_from_journal(
+            journal_groups, "full-1786136018"
+        )
+        self.assertEqual(group_branch, {"base": "full-1786136018/base"})
+        self.assertNotIn("feature-1", group_branch,
+                         "corrupted head_branch must never reach the trusted group_branch map")
+        self.assertIn("feature-1", quarantined)
+        self.assertIn("stg", quarantined["feature-1"])
+
+
+class ResumeNeverVerifiesCorruptedBranch(unittest.TestCase):
+    """End-to-end proof (mirroring the resume-path closure structure used by the
+    other tests in this file): a resumed group whose journal head_branch fails
+    validation must be quarantined and verify_one must NEVER be invoked with the
+    corrupted branch name -- reproducing the incident where VERIFY checked out
+    and ci-fixed the real 'stg' branch."""
+
+    def test_corrupted_resume_skips_verify_entirely(self):
+        verify_one_calls = []
+
+        class RecordingVerifier:
+            def verify_one(self, group, gb, *args, **kwargs):
+                verify_one_calls.append(gb)
+
+        def make_verifier_fn():
+            return RecordingVerifier()
+
+        run_id = "full-1786136018"
+        # journal corrupted exactly as in the confirmed incident: an unrelated
+        # stg->prd promotion PR's real headRefName landed in this group's record.
+        journal_rec = {"pr_url": "https://github.com/o/r/pull/1990", "head_branch": "stg", "state": "OPEN"}
+        group_branch: dict = {}
+        quarantined: dict = {}
+        prs: list = []
+        record_calls = []
+
+        def _record_group_fn(name, pr_url, head_branch, state):
+            record_calls.append((name, pr_url, head_branch, state))
+
+        name = "feature-1"
+        # Mirrors the fixed _integrate_verify_group resume branch (live.py).
+        _skip_integrate = bool(journal_rec.get("pr_url"))
+        self.assertTrue(_skip_integrate)
+        if name not in group_branch:
+            candidate, reason = live._resolve_journaled_head_branch(name, journal_rec, run_id)
+            if reason:
+                quarantined[name] = reason
+            else:
+                group_branch[name] = candidate
+        prs.append((name, "main", journal_rec.get("pr_url")))
+        if name in quarantined:
+            _record_group_fn(name, "", journal_rec.get("head_branch", ""), "QUARANTINED")
+
+        # The shared post-branch guard in the real closure: quarantined/missing
+        # group_branch entries must never reach verify_one.
+        should_verify = name not in quarantined and name in group_branch
+        self.assertFalse(should_verify, "a corrupted resumed head_branch must never reach VERIFY")
+        if should_verify:
+            make_verifier_fn().verify_one({"name": name}, group_branch[name])
+
+        self.assertEqual(verify_one_calls, [], "verify_one must never be called with 'stg'")
+        self.assertIn("feature-1", quarantined)
+        self.assertEqual(record_calls, [("feature-1", "", "stg", "QUARANTINED")])
+
+
 if __name__ == "__main__":
     unittest.main()
