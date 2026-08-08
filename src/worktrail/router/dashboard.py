@@ -888,6 +888,7 @@ def detect_stage(spec_dir: Path, probe_stale: bool = True) -> Dict[str, Any]:
                 stage="stale-bookkeeping",
                 next_action=f"confirm & close{suffix} (files already merged on base; "
                 "flip task status → completed, no orchestrator)",
+                stale_task_ids=stale_ids,
             )
         elif _journal_verify_pending(spec_dir):
             # Impl complete but group PRs still need verify → merge → cleanup.
@@ -924,6 +925,7 @@ def detect_stage(spec_dir: Path, probe_stale: bool = True) -> Dict[str, Any]:
                     stage="stale-bookkeeping",
                     next_action=f"confirm & close{suffix} (files already merged on base; "
                     "flip task status → completed, no orchestrator)",
+                    stale_task_ids=stale_tail_ids,
                 )
         elif _sync_pending(spec_dir):
             info.update(
