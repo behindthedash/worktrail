@@ -139,6 +139,64 @@ def extract_spec_summary(spec_dir: Path) -> Optional[Dict[str, Any]]:
     }
 
 
+# --- OpenSpec extraction -------------------------------------------------------
+
+def _is_openspec_root(specs_root: Path) -> bool:
+    """True if `specs_root` looks like an OpenSpec project root (has a
+    `changes/` and/or `specs/` subdirectory) rather than a devkit
+    `docs/specs`-style root of `NNN-slug` folders."""
+    return (specs_root / "changes").is_dir() or (specs_root / "specs").is_dir()
+
+
+def _extract_openspec_change(change_dir: Path) -> Optional[Dict[str, Any]]:
+    proposal = change_dir / "proposal.md"
+    if not proposal.is_file():
+        return None
+    return {
+        "spec_id": change_dir.name,
+        "stage": "active",
+        "title": _slug_to_title(change_dir.name),
+        "feature_summary": None,
+        "user_request_excerpt": None,
+    }
+
+
+def _extract_openspec_spec(spec_dir: Path) -> Optional[Dict[str, Any]]:
+    spec_file = spec_dir / "spec.md"
+    if not spec_file.is_file():
+        return None
+    return {
+        "spec_id": spec_dir.name,
+        "stage": "complete",
+        "title": _slug_to_title(spec_dir.name),
+        "feature_summary": None,
+        "user_request_excerpt": None,
+    }
+
+
+def _scan_openspec(specs_root: Path) -> List[Dict[str, Any]]:
+    """OpenSpec extraction path: `changes/*/proposal.md` and `specs/*/spec.md`,
+    used in place of the devkit `NNN-slug` folder iteration below."""
+    results: List[Dict[str, Any]] = []
+    changes_dir = specs_root / "changes"
+    if changes_dir.is_dir():
+        for d in sorted(changes_dir.iterdir()):
+            if not d.is_dir():
+                continue
+            info = _extract_openspec_change(d)
+            if info:
+                results.append(info)
+    specs_dir = specs_root / "specs"
+    if specs_dir.is_dir():
+        for d in sorted(specs_dir.iterdir()):
+            if not d.is_dir():
+                continue
+            info = _extract_openspec_spec(d)
+            if info:
+                results.append(info)
+    return results
+
+
 # --- scan all specs -----------------------------------------------------------
 
 _DATE_FOLDER_RE = re.compile(r"^\d{3,}-")
@@ -148,6 +206,8 @@ def scan(specs_root: Path) -> List[Dict[str, Any]]:
     specs_root = Path(specs_root)
     if not specs_root.is_dir():
         return []
+    if _is_openspec_root(specs_root):
+        return _scan_openspec(specs_root)
     results = []
     for d in sorted(specs_root.iterdir()):
         if not d.is_dir():
