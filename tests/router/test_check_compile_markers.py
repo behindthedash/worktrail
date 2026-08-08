@@ -118,6 +118,41 @@ def test_changed_change_dirs_degrades_to_empty_on_an_unresolvable_ref(tmp_path):
     assert ccm.changed_change_dirs(repo, "main", "HEAD") == []
 
 
+@pytest.fixture()
+def repo_with_an_archived_change_on_a_branch(tmp_path: Path) -> Path:
+    """Reproduces `openspec archive`'s layout: the change directory moves one
+    level deeper, under `openspec/changes/archive/<name>/`."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "Test")
+    (repo / "README.md").write_text("base\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "base")
+
+    _git(repo, "checkout", "-q", "-b", "feature")
+    d = repo / "openspec" / "changes" / "archive" / "2026-08-08-add-thing"
+    d.mkdir(parents=True)
+    (d / "proposal.md").write_text("## Why\nBecause.\n")
+    (d / "tasks.md").write_text(TASKS_MD)
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "archive change")
+    return repo
+
+
+def test_changed_change_dirs_skips_archived_changes(repo_with_an_archived_change_on_a_branch):
+    """Regression: `openspec archive` moves a change to
+    `openspec/changes/archive/<name>/`, one level deeper than a live change.
+    `resolve._split()` assumes the fixed `openspec/changes/<id>` depth, so
+    treating an archived change's `tasks.md` as still-live crashed CI with
+    `FileNotFoundError` at a doubled `openspec/openspec/changes/...` path
+    (worktrail PR #206). An archived change's `tasks.md` is historical, not a
+    still-live plan subject to fresh scope verification -- it must never reach
+    `check_marker()`."""
+    assert ccm.changed_change_dirs(repo_with_an_archived_change_on_a_branch, "main", "feature") == []
+
+
 # --------------------------------------------------------------------------- #
 # check() / main() -- `--change-dir` bypasses git-diff discovery for direct,
 # fast unit coverage of the pass/fail contract itself.
