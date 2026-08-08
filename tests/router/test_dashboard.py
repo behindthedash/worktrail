@@ -2605,7 +2605,11 @@ class PostmergeAuditDashboardIntegration(unittest.TestCase):
             _spec(specs_dir / "001-x", spec_body=SPEC_MIN)
             state_dir = root / "no-such-postmerge-state"  # never created
 
-            baseline = self._run_json(["--root", str(specs_dir), "--json"])
+            baseline = self._run_json([
+                "--root", str(specs_dir),
+                "--postmerge-audit-state", str(state_dir),
+                "--json",
+            ])
             with_flag = self._run_json([
                 "--root", str(specs_dir),
                 "--postmerge-audit-state", str(state_dir),
@@ -2636,7 +2640,11 @@ class PostmergeAuditDashboardIntegration(unittest.TestCase):
             (parent / "repo-a" / ".git").mkdir(parents=True)
             state_dir = parent / "no-such-postmerge-state"  # never created
 
-            baseline = self._run_json(["--repos", str(parent), "--json"])
+            baseline = self._run_json([
+                "--repos", str(parent),
+                "--postmerge-audit-state", str(state_dir),
+                "--json",
+            ])
             with_flag = self._run_json([
                 "--repos", str(parent),
                 "--postmerge-audit-state", str(state_dir),
