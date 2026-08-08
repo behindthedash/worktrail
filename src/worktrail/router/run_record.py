@@ -52,6 +52,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -392,6 +393,34 @@ def _extract_path_candidate(entry: str) -> str:
     the path itself is a candidate for on-disk/git-tree resolution.
     """
     return entry.strip().split()[0] if entry.strip() else ""
+
+
+def _is_stale(record: Dict[str, Any], repo_dir: Path, base_branch: str) -> bool:
+    """Whether `record`'s worktree is gone and its files already landed on `base_branch`.
+
+    Never inferred from `files_changed` alone — a record with no `worktree`
+    field is treated as live, since that's the only signal that a worktree
+    ever existed to go missing.
+    """
+    worktree = record.get("worktree")
+    if not worktree:
+        return False
+    if Path(worktree).exists():
+        return False
+    files_changed = record.get("files_changed") or []
+    if not files_changed:
+        return False
+    for entry in files_changed:
+        candidate = _extract_path_candidate(entry)
+        if not candidate:
+            return False
+        result = subprocess.run(
+            ["git", "-C", str(repo_dir), "cat-file", "-e", f"{base_branch}:{candidate}"],
+            capture_output=True,
+        )
+        if result.returncode != 0:
+            return False
+    return True
 
 
 def _active_conflicts(repo_dir: Path, specification: str, exclude: Path | None) -> List[Dict[str, Any]]:
