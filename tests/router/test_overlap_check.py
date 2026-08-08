@@ -6,6 +6,8 @@ import unittest
 from pathlib import Path
 
 from worktrail.router.overlap_check import (
+    _extract_openspec_spec,
+    _feature_summary_from_openspec_spec,
     _feature_summary_from_proposal,
     _feature_summary_from_spec,
     _is_openspec_root,
@@ -275,6 +277,93 @@ class TestFeatureSummaryFromProposal(unittest.TestCase):
 
     def test_empty_text_returns_none_no_crash(self):
         self.assertIsNone(_feature_summary_from_proposal(""))
+
+
+class TestFeatureSummaryFromOpenspecSpec(unittest.TestCase):
+
+    def test_purpose_present_is_used(self):
+        text = (
+            "## Purpose\n\nSearch nonprofits by cause.\n\n"
+            "## Requirements\n\nDetails here.\n"
+        )
+        self.assertEqual(
+            _feature_summary_from_openspec_spec(text),
+            "Search nonprofits by cause.",
+        )
+
+    def test_purpose_empty_returns_none(self):
+        text = "## Purpose\n\n\n\n## Requirements\n\nDetails here.\n"
+        self.assertIsNone(_feature_summary_from_openspec_spec(text))
+
+    def test_purpose_absent_returns_none(self):
+        text = "## Requirements\n\nJust requirements, no Purpose section.\n"
+        self.assertIsNone(_feature_summary_from_openspec_spec(text))
+
+    def test_empty_text_returns_none_no_crash(self):
+        self.assertIsNone(_feature_summary_from_openspec_spec(""))
+
+    def test_purpose_is_last_section(self):
+        text = "## Requirements\n\nDetails here.\n\n## Purpose\n\nSearch nonprofits by cause.\n"
+        self.assertEqual(
+            _feature_summary_from_openspec_spec(text),
+            "Search nonprofits by cause.",
+        )
+
+
+class TestExtractOpenspecSpec(unittest.TestCase):
+
+    def test_returns_full_dict_when_purpose_present(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            spec_dir = Path(tmp) / "donor-search"
+            _write(spec_dir / "spec.md",
+                   "## Purpose\n\nSearch nonprofits by cause.\n")
+            result = _extract_openspec_spec(spec_dir)
+            self.assertIsNotNone(result)
+            assert result is not None
+            self.assertEqual(result["spec_id"], "donor-search")
+            self.assertEqual(result["stage"], "complete")
+            # _slug_to_title assumes an `NNN-slug` id and drops the first
+            # hyphen-delimited token; OpenSpec dir names carry no such prefix.
+            self.assertEqual(result["title"], "Search")
+            self.assertEqual(result["feature_summary"],
+                             "Search nonprofits by cause.")
+            self.assertIsNone(result["user_request_excerpt"])
+
+    def test_feature_summary_null_when_purpose_absent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            spec_dir = Path(tmp) / "donor-search"
+            _write(spec_dir / "spec.md", "## Requirements\n\nNo purpose here.\n")
+            result = _extract_openspec_spec(spec_dir)
+            self.assertIsNotNone(result)
+            assert result is not None
+            self.assertIsNone(result["feature_summary"])
+
+    def test_returns_none_when_spec_file_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            spec_dir = Path(tmp) / "donor-search"
+            spec_dir.mkdir()
+            self.assertIsNone(_extract_openspec_spec(spec_dir))
+
+    def test_key_set_matches_devkit_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            spec_dir = Path(tmp) / "donor-search"
+            _write(spec_dir / "spec.md",
+                   "## Purpose\n\nSearch nonprofits by cause.\n")
+            result = _extract_openspec_spec(spec_dir)
+            self.assertIsNotNone(result)
+            assert result is not None
+            self.assertEqual(
+                set(result.keys()),
+                {"spec_id", "stage", "title", "feature_summary", "user_request_excerpt"},
+            )
+
+    def test_unreadable_spec_file_degrades_not_crashes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            spec_dir = Path(tmp) / "donor-search"
+            spec_dir.mkdir()
+            (spec_dir / "spec.md").write_bytes(b"\xff\xfe broken")
+            result = _extract_openspec_spec(spec_dir)
+            self.assertIsNotNone(result)  # degraded row, no UnicodeDecodeError
 
 
 class TestScan(unittest.TestCase):
