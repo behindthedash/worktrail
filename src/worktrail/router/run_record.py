@@ -384,6 +384,16 @@ def cmd_finish(args: argparse.Namespace) -> int:
     return 0
 
 
+def _extract_path_candidate(entry: str) -> str:
+    """Leading whitespace-delimited token of a `files_changed` entry.
+
+    Entries may carry trailing free-text annotation, e.g.
+    `"docs/specs/foo/tasks.md (data-model, contracts, KG, 28 tasks)"` — only
+    the path itself is a candidate for on-disk/git-tree resolution.
+    """
+    return entry.strip().split()[0] if entry.strip() else ""
+
+
 def _active_conflicts(repo_dir: Path, specification: str, exclude: Path | None) -> List[Dict[str, Any]]:
     """Other non-terminal run records under `repo_dir` targeting `specification`."""
     results: List[Dict[str, Any]] = []
