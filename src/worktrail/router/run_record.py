@@ -24,15 +24,16 @@ Subcommands:
           [--retry-after ISO8601] [--note "..."]
          -> record a sanitized all-provider capacity gate
 finish PATH --status completed_pr_open [--pr URL] [--merge-result ...]
+         -> release this run's claim (if any). If the claim was staked with
+            `claim --remote`, also best-effort deletes the remote claim ref
+            on `origin` (failure here never affects `finish`'s exit code or
+            JSON output; the claim just expires via its own TTL instead).
   scope-review PATH --item "..." --status complete|out-of-scope|blocked
                (--evidence "..." | --reason "...")
   active-conflicts --dir DIR --repo REPO --specification SPEC [--exclude PATH]
          -> read-only scan for other non-terminal runs on the same
-            repo+specification; prints {"live": [...], "stale": [...]}. A
-            record is "stale" when its worktree is gone and every path in
-            its files_changed already resolves on its own base_branch
-            (see `_is_stale`); otherwise it's "live".
-  claim  RUN_PATH --specification SPEC
+            repo+specification; prints a JSON array (see contracts/active-conflicts-cli.md)
+  claim  RUN_PATH --specification SPEC [--remote] [--remote-ttl-seconds N]
          -> atomically claim repo+specification for the run at RUN_PATH before
             committing to implement it. Closes the TOCTOU gap in the read-only
             active-conflicts scan (two sessions can each pass the scan before
@@ -42,6 +43,15 @@ finish PATH --status completed_pr_open [--pr URL] [--merge-result ...]
             for the same repo+specification fails fast with
             {"status": "already-claimed", ...} instead of racing to the scan.
             `finish` releases the claim automatically.
+            With `--remote` (default `--remote-ttl-seconds 86400`), also
+            stakes the claim on `origin` via a claim ref
+            (refs/worktrail-claims/<spec-slug>) so a second *machine* --
+            invisible to this machine's local lock file -- is blocked too.
+            A live remote claim fails with
+            {"status": "already-claimed", "scope": "remote", ...}; a stale
+            one (older than its own TTL) is reclaimed. Without `--remote`,
+            behavior and network usage are unchanged from before this layer
+            existed.
   prune  [--dir DIR] [--repo REPO] [--keep-count N] [--keep-days N] [--dry-run]
          -> delete old run records under <dir>/<repo-name>/*.yaml. Hybrid
             retention: a record is kept if it is among the --keep-count most
@@ -53,11 +63,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import re
+import socket
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -94,6 +107,8 @@ PHASES = (
 SECRET_PAT = re.compile(
     r"(api[-_ ]?key|secret|token|password|authorization:\s*bearer)\s*[:=]\s*\S+",
     re.IGNORECASE)
+
+logger = logging.getLogger(__name__)
 
 
 def _now() -> str:
@@ -384,6 +399,12 @@ def cmd_finish(args: argparse.Namespace) -> int:
         owner = _load_lock(lock_path)
         if owner.get("run_id") == record.get("run_id"):
             lock_path.unlink(missing_ok=True)
+            if owner.get("remote") is True:
+                # Best-effort: a failure here must never affect `finish`'s
+                # exit code or JSON output, only leave the remote claim to
+                # expire via its own TTL.
+                project_repo_dir = Path(record.get("repository") or path.parent)
+                _delete_remote_claim(project_repo_dir, _claim_ref(specification))
     print(json.dumps({"final_status": args.status, "path": str(path)}))
     return 0
 
@@ -515,6 +536,170 @@ def _claim_ref(specification: str) -> str:
     return f"refs/worktrail-claims/{_claim_slug(specification)}"
 
 
+# SHA of the empty tree (`git hash-object -t tree /dev/null`) — the same
+# constant for every git repo, so `commit-tree` needs no working-tree state.
+_EMPTY_TREE_SHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+# Wall-clock budget for a single git subprocess that talks to `origin`.
+_REMOTE_GIT_TIMEOUT = 30
+
+
+class RemoteClaimError(Exception):
+    """Typed failure from a remote (cross-machine) claim git/network operation.
+
+    `reason` is one of "git_error", "push_rejected", "verify_mismatch" so a
+    caller can branch on failure kind without parsing the message text.
+    """
+
+    def __init__(self, reason: str, message: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+def _run_remote_git(repo_dir: Path, args: List[str]) -> "subprocess.CompletedProcess[str]":
+    try:
+        return subprocess.run(
+            ["git", "-C", str(repo_dir), *args],
+            capture_output=True, text=True, timeout=_REMOTE_GIT_TIMEOUT,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RemoteClaimError("git_error", f"git {' '.join(args)}: {exc}") from exc
+
+
+def _push_remote_claim(
+    repo_dir: Path,
+    ref: str,
+    run_id: str,
+    ttl_seconds: int,
+    expect_sha: str | None = None,
+) -> str:
+    """Publish a cross-machine claim: push an empty commit to `ref` on `origin`.
+
+    The commit message carries the claim payload (`run_id`, `claimed_at`,
+    `hostname`, `ttl_seconds`) so a reader needs only `git log -1
+    --format=%B` on the ref, no working-tree checkout. `--force-with-lease`
+    makes the push git's own atomic compare-and-swap: an empty `expect_sha`
+    requires `ref` not already exist remotely (fresh claim); a stale claim's
+    SHA requires the remote is still exactly that value (reclaim) -- so two
+    machines racing the same reclaim resolve to exactly one winner. Returns
+    the pushed commit SHA on success; raises `RemoteClaimError` on push
+    rejection, a post-push verify mismatch (guards against a remote that
+    silently drops the custom ref namespace), or any git/network error.
+    """
+    payload = json.dumps({
+        "run_id": run_id,
+        "claimed_at": _now(),
+        "hostname": socket.gethostname(),
+        "ttl_seconds": ttl_seconds,
+    })
+    commit = _run_remote_git(repo_dir, ["commit-tree", _EMPTY_TREE_SHA, "-m", payload])
+    if commit.returncode != 0:
+        raise RemoteClaimError("git_error", f"commit-tree failed: {commit.stderr.strip()}")
+    sha = commit.stdout.strip()
+
+    lease = f"--force-with-lease={ref}:{expect_sha or ''}"
+    push = _run_remote_git(repo_dir, ["push", "origin", f"{sha}:{ref}", lease])
+    if push.returncode != 0:
+        raise RemoteClaimError("push_rejected", (push.stderr or push.stdout).strip())
+
+    verify = _run_remote_git(repo_dir, ["ls-remote", "origin", ref])
+    if verify.returncode != 0:
+        raise RemoteClaimError("git_error", f"ls-remote failed: {verify.stderr.strip()}")
+    remote_sha = verify.stdout.split()[0] if verify.stdout.strip() else None
+    if remote_sha != sha:
+        raise RemoteClaimError(
+            "verify_mismatch",
+            f"pushed {sha} but ls-remote reports {remote_sha!r}",
+        )
+    return sha
+
+
+def _read_remote_claim(repo_dir: Path, ref: str) -> Dict[str, Any] | None:
+    """Read the current cross-machine claim on `ref`, if any.
+
+    `git ls-remote origin <ref>` alone tells us whether a claim exists and at
+    what SHA, with no fetch needed for the common "no claim" case. Only when
+    a SHA is present do we `git fetch origin <ref>` (to get the commit
+    locally) and `git log -1 --format=%B <sha>` to read back the JSON
+    payload `_push_remote_claim` wrote. Returns `None` when no claim ref
+    exists remotely (a "no claim exists" that's safe to reclaim fresh) --
+    distinct from a `RemoteClaimError` raised on any ls-remote/fetch/parse
+    failure, which means the claim state could not be determined and must
+    not be treated as "no claim". On success, returns the parsed payload
+    dict with the ref's current SHA added under `"sha"` (needed by a caller
+    doing a `--force-with-lease` reclaim).
+    """
+    ls = _run_remote_git(repo_dir, ["ls-remote", "origin", ref])
+    if ls.returncode != 0:
+        raise RemoteClaimError("git_error", f"ls-remote failed: {ls.stderr.strip()}")
+    if not ls.stdout.strip():
+        return None
+    sha = ls.stdout.split()[0]
+
+    fetch = _run_remote_git(repo_dir, ["fetch", "origin", ref])
+    if fetch.returncode != 0:
+        raise RemoteClaimError("git_error", f"fetch failed: {fetch.stderr.strip()}")
+
+    log = _run_remote_git(repo_dir, ["log", "-1", "--format=%B", sha])
+    if log.returncode != 0:
+        raise RemoteClaimError("git_error", f"log failed: {log.stderr.strip()}")
+
+    try:
+        payload = json.loads(log.stdout.strip())
+    except json.JSONDecodeError as exc:
+        raise RemoteClaimError("git_error", f"claim payload parse failed: {exc}") from exc
+
+    payload["sha"] = sha
+    return payload
+
+
+def _delete_remote_claim(repo_dir: Path, ref: str) -> None:
+    """Best-effort release of a cross-machine claim: delete `ref` on `origin`.
+
+    Called from `finish` after the local lock is already released, so a
+    failure here (network down, ref already gone, origin unreachable) must
+    never surface as a `finish` failure -- it only leaves a claim to expire
+    via its own TTL. Failures are logged, not raised.
+    """
+    try:
+        result = _run_remote_git(repo_dir, ["push", "origin", "--delete", ref])
+    except RemoteClaimError as exc:
+        logger.warning("remote claim delete failed for %s: %s", ref, exc)
+        return
+    if result.returncode != 0:
+        logger.warning(
+            "remote claim delete failed for %s: %s", ref, (result.stderr or result.stdout).strip()
+        )
+
+
+def _remote_claim_is_fresh(claim: Dict[str, Any]) -> bool:
+    """Whether a remote claim payload is still within its own advertised TTL.
+
+    Staleness is measured against the claim's own `ttl_seconds` field (the
+    value its claimer published via `_push_remote_claim`), not the reader's
+    `--remote-ttl-seconds` -- otherwise a claim published with a short TTL
+    would still block a reader applying its own longer default, and any
+    reader could steal a live claim by passing a shorter `--remote-ttl-seconds`.
+
+    An unparsable/missing `claimed_at` or `ttl_seconds` is logged and treated
+    as stale rather than fresh: "fresh" has no elapsed-time path back out, so
+    a single malformed claim ref would otherwise pin the specification on
+    every machine until someone manually deletes the ref.
+    """
+    claimed_at = claim.get("claimed_at")
+    ttl_seconds = claim.get("ttl_seconds")
+    if not isinstance(claimed_at, str) or not isinstance(ttl_seconds, (int, float)):
+        logger.warning("remote claim has missing/invalid claimed_at or ttl_seconds, treating as stale: %r", claim)
+        return False
+    try:
+        claimed = datetime.strptime(claimed_at, "%Y-%m-%dT%H:%M:%S%z")
+    except ValueError:
+        logger.warning("remote claim has unparsable claimed_at, treating as stale: %r", claimed_at)
+        return False
+    age = (datetime.now(claimed.tzinfo) - claimed).total_seconds()
+    return age <= ttl_seconds
+
+
 def _lock_path(run_path: Path, specification: str) -> Path:
     return run_path.parent / ".claims" / f"{_claim_slug(specification)}.lock"
 
@@ -571,27 +756,84 @@ def cmd_claim(args: argparse.Namespace) -> int:
             print(json.dumps({"status": "already-claimed", **_load_lock(lock_path)}))
             return 1
 
-    # Lock held: no new racer can reach this point for the same
-    # repo+specification until we release or finish. Still honor any
-    # pre-existing non-terminal record tagged via plain `set` (predates this
-    # primitive, or an out-of-band write) -- the lock alone only guards
-    # against other `claim` callers, not stale `specification` writes.
     record = _load(run_path)
-    repo_root = Path(record["repository"]) if record.get("repository") else run_path.parent
+
+    # Lock held locally: no new racer on this machine can reach this point
+    # for the same repo+specification until we release or finish. When
+    # --remote is set, also stake the claim on `origin` before trusting the
+    # local lock, so a second machine (which has no visibility into this
+    # machine's local lock file) is blocked too. Any failure here (existing
+    # live claim, a stale claim's reclaim raced by a third machine, or a
+    # push/read error) fails closed: release the local lock and report it
+    # indistinguishably from a genuine conflict, extended with
+    # `"scope": "remote"` so a caller can tell which layer contended.
+    remote_project_repo_dir: Path | None = None
+    remote_ref: str | None = None
+
+    if args.remote:
+        project_repo_dir = Path(record.get("repository") or repo_dir)
+        ref = _claim_ref(args.specification)
+
+        def _remote_already_claimed(claim: Dict[str, Any] | None, exc: RemoteClaimError | None) -> int:
+            os.close(fd)
+            lock_path.unlink(missing_ok=True)
+            out: Dict[str, Any] = {"status": "already-claimed", "scope": "remote"}
+            if claim:
+                out.update(claim)
+            if exc is not None:
+                out["reason"] = exc.reason
+                out["error"] = str(exc)
+            print(json.dumps(out))
+            return 1
+
+        try:
+            remote_claim = _read_remote_claim(project_repo_dir, ref)
+        except RemoteClaimError as exc:
+            return _remote_already_claimed(None, exc)
+
+        if remote_claim is not None and _remote_claim_is_fresh(remote_claim):
+            return _remote_already_claimed(remote_claim, None)
+
+        try:
+            _push_remote_claim(
+                project_repo_dir, ref, record.get("run_id"), args.remote_ttl_seconds,
+                expect_sha=remote_claim.get("sha") if remote_claim else None,
+            )
+        except RemoteClaimError as exc:
+            return _remote_already_claimed(remote_claim, exc)
+
+        # Pushed successfully but not yet committed to the local lock/record --
+        # release it below if the conflict re-check aborts this claim, so a
+        # failed claim never orphans the remote ref for the full TTL.
+        remote_project_repo_dir = project_repo_dir
+        remote_ref = ref
+
+    # Still honor any pre-existing non-terminal record tagged via plain
+    # `set` (predates this primitive, or an out-of-band write) -- the lock
+    # alone only guards against other `claim` callers, not stale
+    # `specification` writes. Only a LIVE conflict blocks the claim -- a
+    # STALE one (crashed run, worktree gone, files already merged) is not a
+    # real contender, per _active_conflicts()'s own live/stale partition.
+    repo_root = Path(record.get("repository") or repo_dir)
     conflicts = _active_conflicts(repo_dir, repo_root, args.specification, run_path.resolve())
-    live_conflicts = conflicts["live"]
+    live_conflicts = conflicts.get("live") or []
     if live_conflicts:
         os.close(fd)
         lock_path.unlink(missing_ok=True)
+        if remote_project_repo_dir is not None and remote_ref is not None:
+            _delete_remote_claim(remote_project_repo_dir, remote_ref)
         print(json.dumps({"status": "conflict", "conflicts": live_conflicts}))
         return 1
 
+    lock_payload: Dict[str, Any] = {
+        "run_id": record.get("run_id"),
+        "path": str(run_path),
+        "claimed_at": _now(),
+    }
+    if remote_project_repo_dir is not None and remote_ref is not None:
+        lock_payload["remote"] = True
     with os.fdopen(fd, "w") as f:
-        f.write(json.dumps({
-            "run_id": record.get("run_id"),
-            "path": str(run_path),
-            "claimed_at": _now(),
-        }))
+        f.write(json.dumps(lock_payload))
     record["specification"] = args.specification
     _save(run_path, record)
     print(json.dumps({"status": "claimed", "specification": args.specification}))
@@ -744,6 +986,8 @@ def main(argv=None) -> int:
     s = sub.add_parser("claim")
     s.add_argument("run")
     s.add_argument("--specification", required=True)
+    s.add_argument("--remote", action="store_true")
+    s.add_argument("--remote-ttl-seconds", type=int, default=86400)
     s.set_defaults(func=cmd_claim)
 
     s = sub.add_parser("reconcile")

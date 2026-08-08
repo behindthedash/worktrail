@@ -1,20 +1,29 @@
 #!/usr/bin/env python3
 """Tests for run_record.py. Run: python3 test_run_record.py"""
 import json
+import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from worktrail.router.run_record import (
     ALLOWED_AGENTS,
     COMPLETION_STATES,
+    RemoteClaimError,
     _active_conflicts as _active_conflicts_impl,
+    _claim_ref,
     _extract_path_candidate,
     _is_stale,
     _load,
+    _load_lock,
+    _lock_path,
+    _push_remote_claim,
     main,
 )
 
@@ -761,6 +770,37 @@ class TestClaim(unittest.TestCase):
         self.assertEqual(out_b["status"], "claimed")
         self.assertNotEqual(session_a["run_id"], session_b["run_id"])
 
+    def test_claim_without_remote_makes_no_git_network_calls_and_behaves_as_before(self):
+        """Regression guard: adding `--remote` must not change default `claim`
+        behavior or introduce any git subprocess call on the plain path --
+        `_run_remote_git` is the sole `subprocess.run` call site for the
+        remote layer, so patching it and asserting zero calls proves the
+        default path never touches git at all, while the claimed/
+        already-claimed outcomes below match the pre-`--remote` behavior
+        already covered by `test_second_claim_on_same_specification_fails_fast`.
+        """
+        session_a = _start(self.tmp, request="session A implement")
+        session_b = _start(self.tmp, request="session B implement")
+
+        with patch("worktrail.router.run_record.subprocess.run") as mock_run:
+            rc_a, out_a = _claim(session_a["path"], specification="spec-no-remote")
+            rc_b, out_b = _claim(session_b["path"], specification="spec-no-remote")
+
+        mock_run.assert_not_called()
+
+        self.assertEqual(rc_a, 0)
+        self.assertEqual(out_a["status"], "claimed")
+        self.assertNotIn("scope", out_a)
+        self.assertEqual(rc_b, 1)
+        self.assertEqual(out_b["status"], "already-claimed")
+        self.assertNotIn("scope", out_b)
+        self.assertEqual(out_b["run_id"], session_a["run_id"])
+
+        record_a = _load(Path(session_a["path"]))
+        record_b = _load(Path(session_b["path"]))
+        self.assertEqual(record_a["specification"], "spec-no-remote")
+        self.assertIsNone(record_b["specification"])
+
     def test_claim_still_honors_pre_existing_non_terminal_conflicts(self):
         """A record tagged via plain `set` (not `claim`, e.g. from before this
         primitive existed) has no lock file, but is still a real conflict --
@@ -776,6 +816,232 @@ class TestClaim(unittest.TestCase):
         self.assertEqual(out["status"], "conflict")
         record_newcomer = _load(Path(newcomer["path"]))
         self.assertIsNone(record_newcomer["specification"])
+
+
+@pytest.fixture()
+def remote_origin(tmp_path: Path):
+    """A local bare git repo standing in for `origin`, plus a working clone.
+
+    Lets `--remote` claim tests exercise real `git push`/`fetch`/`ls-remote`
+    against `_push_remote_claim`/`_read_remote_claim`/`_delete_remote_claim`
+    with no network dependency and no reliance on a hosted remote's specific
+    behavior. Returns `(bare_dir, clone_dir)`; pass `clone_dir` as the
+    project repo (`record["repository"]`) the claim functions operate on.
+    """
+    bare_dir = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "--quiet", "--bare", str(bare_dir)], check=True)
+
+    clone_dir = tmp_path / "clone"
+    subprocess.run(["git", "clone", "--quiet", str(bare_dir), str(clone_dir)], check=True)
+    subprocess.run(["git", "-C", str(clone_dir), "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(["git", "-C", str(clone_dir), "config", "user.name", "Test"], check=True)
+
+    return bare_dir, clone_dir
+
+
+class TestRemoteClaim:
+    def test_first_claim_pushes_ref_and_records_remote_true(self, remote_origin, tmp_path):
+        bare_dir, clone_dir = remote_origin
+        run_dir = tmp_path / "runs"
+        run_dir.mkdir()
+        res = _start(str(run_dir), repo=str(clone_dir), request="remote claim session")
+
+        out = StringIO()
+        with patch("sys.stdout", out):
+            rc = main(["claim", res["path"], "--specification", "spec-remote", "--remote"])
+        result = json.loads(out.getvalue())
+
+        assert rc == 0
+        assert result["status"] == "claimed"
+
+        ref = _claim_ref("spec-remote")
+        pushed = subprocess.run(
+            ["git", "-C", str(bare_dir), "rev-parse", "--verify", ref],
+            capture_output=True, text=True,
+        )
+        assert pushed.returncode == 0
+        assert pushed.stdout.strip() != ""
+
+        lock = _load_lock(_lock_path(Path(res["path"]), "spec-remote"))
+        assert lock["remote"] is True
+        assert lock["run_id"] == res["run_id"]
+
+    def test_second_claim_while_first_is_fresh_fails_with_remote_scope_and_no_local_lock(
+        self, remote_origin, tmp_path
+    ):
+        """Two machines never share a local run-record dir, so this uses two
+        separate `--dir` roots (session A's, session B's) both pointing their
+        `repository` field at the same clone -- session B's local lock
+        acquisition succeeds (no visibility into session A's local lock),
+        so it's the remote push conflict alone that must reject it.
+        """
+        bare_dir, clone_dir = remote_origin
+        run_dir_a = tmp_path / "runs-a"
+        run_dir_a.mkdir()
+        run_dir_b = tmp_path / "runs-b"
+        run_dir_b.mkdir()
+        res_a = _start(str(run_dir_a), repo=str(clone_dir), request="session A remote claim")
+        res_b = _start(str(run_dir_b), repo=str(clone_dir), request="session B remote claim")
+
+        out_a = StringIO()
+        with patch("sys.stdout", out_a):
+            rc_a = main(["claim", res_a["path"], "--specification", "spec-remote-second", "--remote"])
+        result_a = json.loads(out_a.getvalue())
+        assert rc_a == 0
+        assert result_a["status"] == "claimed"
+
+        out_b = StringIO()
+        with patch("sys.stdout", out_b):
+            rc_b = main(["claim", res_b["path"], "--specification", "spec-remote-second", "--remote"])
+        result_b = json.loads(out_b.getvalue())
+
+        assert rc_b == 1
+        assert result_b["status"] == "already-claimed"
+        assert result_b["scope"] == "remote"
+
+        lock_path_b = _lock_path(Path(res_b["path"]), "spec-remote-second")
+        assert not lock_path_b.exists()
+        assert _load(Path(res_b["path"]))["specification"] is None
+
+    def test_second_claim_after_ttl_expiry_succeeds_via_stale_reclaim(self, remote_origin, tmp_path):
+        """First claim publishes with `--remote-ttl-seconds 0`, so it's stale
+        the instant a second reader checks it. A short sleep crosses the
+        claim payload's second-precision `claimed_at` boundary, guaranteeing
+        the freshness check (`age <= ttl_seconds`) sees `age > 0` rather than
+        racing an exact-same-second read that would still count as fresh.
+        """
+        bare_dir, clone_dir = remote_origin
+        run_dir_a = tmp_path / "runs-a"
+        run_dir_a.mkdir()
+        run_dir_b = tmp_path / "runs-b"
+        run_dir_b.mkdir()
+        res_a = _start(str(run_dir_a), repo=str(clone_dir), request="session A remote claim")
+        res_b = _start(str(run_dir_b), repo=str(clone_dir), request="session B remote claim")
+
+        out_a = StringIO()
+        with patch("sys.stdout", out_a):
+            rc_a = main([
+                "claim", res_a["path"], "--specification", "spec-remote-stale", "--remote",
+                "--remote-ttl-seconds", "0",
+            ])
+        result_a = json.loads(out_a.getvalue())
+        assert rc_a == 0
+        assert result_a["status"] == "claimed"
+
+        time.sleep(1.1)
+
+        out_b = StringIO()
+        with patch("sys.stdout", out_b):
+            rc_b = main(["claim", res_b["path"], "--specification", "spec-remote-stale", "--remote"])
+        result_b = json.loads(out_b.getvalue())
+
+        assert rc_b == 0
+        assert result_b["status"] == "claimed"
+
+        ref = _claim_ref("spec-remote-stale")
+        pushed = subprocess.run(
+            ["git", "-C", str(bare_dir), "rev-parse", "--verify", ref],
+            capture_output=True, text=True,
+        )
+        assert pushed.returncode == 0
+
+        lock_b = _load_lock(_lock_path(Path(res_b["path"]), "spec-remote-stale"))
+        assert lock_b["remote"] is True
+        assert lock_b["run_id"] == res_b["run_id"]
+        assert _load(Path(res_b["path"]))["specification"] == "spec-remote-stale"
+
+    def test_concurrent_reclaim_of_same_stale_sha_exactly_one_succeeds(self, remote_origin, tmp_path):
+        """Two machines racing a reclaim both read the same stale claim SHA
+        before either pushes, so both compute their `--force-with-lease`
+        check against that identical pre-read SHA. Git's compare-and-swap on
+        the ref means only whichever push lands first can still see that
+        expected SHA remotely; the second's lease check is rejected -- this
+        is what makes `--force-with-lease` sufficient without any additional
+        locking, even for a true concurrent race.
+        """
+        bare_dir, clone_dir = remote_origin
+        ref = _claim_ref("spec-remote-race")
+        stale_sha = _push_remote_claim(clone_dir, ref, "run-stale", ttl_seconds=0)
+
+        winner_sha = _push_remote_claim(
+            clone_dir, ref, "run-winner", ttl_seconds=86400, expect_sha=stale_sha
+        )
+
+        with pytest.raises(RemoteClaimError) as exc_info:
+            _push_remote_claim(
+                clone_dir, ref, "run-loser", ttl_seconds=86400, expect_sha=stale_sha
+            )
+        assert exc_info.value.reason == "push_rejected"
+
+        pushed = subprocess.run(
+            ["git", "-C", str(bare_dir), "rev-parse", "--verify", ref],
+            capture_output=True, text=True,
+        )
+        assert pushed.returncode == 0
+        assert pushed.stdout.strip() == winner_sha
+
+    def test_finish_on_remote_claim_deletes_the_remote_ref(self, remote_origin, tmp_path):
+        bare_dir, clone_dir = remote_origin
+        run_dir = tmp_path / "runs"
+        run_dir.mkdir()
+        res = _start(str(run_dir), repo=str(clone_dir), request="remote claim session")
+
+        out = StringIO()
+        with patch("sys.stdout", out):
+            rc = main(["claim", res["path"], "--specification", "spec-remote-finish", "--remote"])
+        result = json.loads(out.getvalue())
+        assert rc == 0
+        assert result["status"] == "claimed"
+
+        ref = _claim_ref("spec-remote-finish")
+        pushed = subprocess.run(
+            ["git", "-C", str(bare_dir), "ls-remote", str(bare_dir), ref],
+            capture_output=True, text=True,
+        )
+        assert pushed.stdout.strip() != ""
+
+        out = StringIO()
+        with patch("sys.stdout", out):
+            main(["finish", res["path"], "--status", "completed_pr_open"])
+
+        deleted = subprocess.run(
+            ["git", "-C", str(bare_dir), "ls-remote", str(bare_dir), ref],
+            capture_output=True, text=True,
+        )
+        assert deleted.returncode == 0
+        assert deleted.stdout.strip() == ""
+
+    def test_finish_still_completes_normally_when_remote_delete_fails(self, remote_origin, tmp_path):
+        """The bare repo backing `origin` is removed after the claim succeeds,
+        so `_delete_remote_claim`'s `git push --delete` has nowhere to reach --
+        this must stay confined to a logged warning and never surface in
+        `finish`'s exit code or JSON output.
+        """
+        bare_dir, clone_dir = remote_origin
+        run_dir = tmp_path / "runs"
+        run_dir.mkdir()
+        res = _start(str(run_dir), repo=str(clone_dir), request="remote claim session")
+
+        out = StringIO()
+        with patch("sys.stdout", out):
+            rc = main(["claim", res["path"], "--specification", "spec-remote-delete-fails", "--remote"])
+        result = json.loads(out.getvalue())
+        assert rc == 0
+        assert result["status"] == "claimed"
+
+        shutil.rmtree(bare_dir)
+
+        out = StringIO()
+        with patch("sys.stdout", out):
+            rc = main(["finish", res["path"], "--status", "completed_pr_open"])
+        result = json.loads(out.getvalue())
+
+        assert rc == 0
+        assert result == {"final_status": "completed_pr_open", "path": res["path"]}
+        rec = _load(Path(res["path"]))
+        assert rec["final_status"] == "completed_pr_open"
+        assert rec["status"] == "done"
+        assert rec["completed_at"] is not None
 
 
 def _prune(tmp, **over):
