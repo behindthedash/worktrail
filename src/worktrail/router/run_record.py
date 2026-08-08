@@ -504,6 +504,45 @@ def _push_remote_claim(
     return sha
 
 
+def _read_remote_claim(repo_dir: Path, ref: str) -> Dict[str, Any] | None:
+    """Read the current cross-machine claim on `ref`, if any.
+
+    `git ls-remote origin <ref>` alone tells us whether a claim exists and at
+    what SHA, with no fetch needed for the common "no claim" case. Only when
+    a SHA is present do we `git fetch origin <ref>` (to get the commit
+    locally) and `git log -1 --format=%B <sha>` to read back the JSON
+    payload `_push_remote_claim` wrote. Returns `None` when no claim ref
+    exists remotely (a "no claim exists" that's safe to reclaim fresh) --
+    distinct from a `RemoteClaimError` raised on any ls-remote/fetch/parse
+    failure, which means the claim state could not be determined and must
+    not be treated as "no claim". On success, returns the parsed payload
+    dict with the ref's current SHA added under `"sha"` (needed by a caller
+    doing a `--force-with-lease` reclaim).
+    """
+    ls = _run_remote_git(repo_dir, ["ls-remote", "origin", ref])
+    if ls.returncode != 0:
+        raise RemoteClaimError("git_error", f"ls-remote failed: {ls.stderr.strip()}")
+    if not ls.stdout.strip():
+        return None
+    sha = ls.stdout.split()[0]
+
+    fetch = _run_remote_git(repo_dir, ["fetch", "origin", ref])
+    if fetch.returncode != 0:
+        raise RemoteClaimError("git_error", f"fetch failed: {fetch.stderr.strip()}")
+
+    log = _run_remote_git(repo_dir, ["log", "-1", "--format=%B", sha])
+    if log.returncode != 0:
+        raise RemoteClaimError("git_error", f"log failed: {log.stderr.strip()}")
+
+    try:
+        payload = json.loads(log.stdout.strip())
+    except json.JSONDecodeError as exc:
+        raise RemoteClaimError("git_error", f"claim payload parse failed: {exc}") from exc
+
+    payload["sha"] = sha
+    return payload
+
+
 def _lock_path(run_path: Path, specification: str) -> Path:
     return run_path.parent / ".claims" / f"{_claim_slug(specification)}.lock"
 
