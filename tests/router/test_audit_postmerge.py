@@ -173,3 +173,64 @@ def test_state_file_not_a_json_object_degrades_to_first_run_window(tmp_path):
 
     assert audit.load_state("repo", state_dir) == {}
     assert audit.read_marker("repo", state_dir) is None
+
+
+# ---------------------------------------------------------------------------
+# classify_checks() reuse
+
+def _fake_gh_single_pr(rollup):
+    """A fake `subprocess.run` returning one merged PR whose `statusCheckRollup`
+    is `rollup` -- for exercising `sweep_repo()`'s reuse of `classify_checks()`."""
+    def fake_run(cmd, **kwargs):
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return _FakeCompleted(
+                0, json.dumps([{"url": "u1", "number": 1, "mergedAt": "2026-01-02T00:00:00+00:00"}])
+            )
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return _FakeCompleted(
+                0,
+                json.dumps({
+                    "url": "u1", "number": 1,
+                    "mergedAt": "2026-01-02T00:00:00+00:00",
+                    "statusCheckRollup": rollup,
+                }),
+            )
+        raise AssertionError(f"unexpected command: {cmd}")
+    return fake_run
+
+
+def test_sweep_repo_flags_merged_pr_with_failing_required_check(tmp_path, monkeypatch):
+    state_dir = tmp_path / "state"
+    monkeypatch.setattr(audit.subprocess, "run", _fake_gh_single_pr([
+        {"name": "ci/tests", "status": "COMPLETED", "conclusion": "FAILURE"},
+    ]))
+
+    result = audit.sweep_repo(tmp_path / "repo", state_dir, repo_name="repo")
+
+    assert result["checked"] == 1
+    assert len(result["flagged"]) == 1
+    assert result["flagged"][0]["failing_checks"] == ["ci/tests"]
+
+
+def test_sweep_repo_does_not_flag_merged_pr_with_all_green_checks(tmp_path, monkeypatch):
+    state_dir = tmp_path / "state"
+    monkeypatch.setattr(audit.subprocess, "run", _fake_gh_single_pr([
+        {"name": "ci/tests", "status": "COMPLETED", "conclusion": "SUCCESS"},
+    ]))
+
+    result = audit.sweep_repo(tmp_path / "repo", state_dir, repo_name="repo")
+
+    assert result["checked"] == 1
+    assert result["flagged"] == []
+
+
+def test_sweep_repo_does_not_flag_informational_check_failure(tmp_path, monkeypatch):
+    state_dir = tmp_path / "state"
+    monkeypatch.setattr(audit.subprocess, "run", _fake_gh_single_pr([
+        {"name": "E2E (informational)", "status": "COMPLETED", "conclusion": "FAILURE"},
+    ]))
+
+    result = audit.sweep_repo(tmp_path / "repo", state_dir, repo_name="repo")
+
+    assert result["checked"] == 1
+    assert result["flagged"] == []
