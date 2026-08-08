@@ -91,6 +91,7 @@ start (lock held, bad args, missing queue dir).
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import os
 import subprocess
@@ -551,6 +552,53 @@ class StageRemediation:
          Callable[[List[str], int], "SpawnOutcome"], Callable[[str], None]],
         Dict[str, Any],
     ]
+
+
+REMEDIATION_TABLE: List[StageRemediation] = [
+    StageRemediation(
+        "quarantined_budget_exhausted", "resume-quarantine",
+        find_resumable_quarantines,
+        functools.partial(_resume_via_full_real, label="resume-quarantine")),
+    StageRemediation(
+        "verify_pending", "resume-verify-pending",
+        find_verify_pending_specs,
+        functools.partial(_resume_via_full_real, label="resume-verify-pending")),
+]
+
+
+def sweep_remediations(
+    repos_root: Path,
+    go_repo: Optional[str],
+    agent: str,
+    timeout: int,
+    spawner: Callable[[List[str], int], SpawnOutcome],
+    log: Callable[[str], None],
+    keys: Optional[Iterable[str]] = None,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Run every `REMEDIATION_TABLE` row's finder + action (or only the rows
+    whose `key` is in `keys`, when given), one result dict per remediated
+    finding, keyed by each row's `key` -- even a row with zero findings gets
+    an empty-list entry, so callers can rely on the key always being present.
+
+    A finding's action raising is caught and logged (`{label} error: ...`)
+    without aborting the rest of that row's findings or the other rows --
+    the same best-effort guarantee `resume_quarantined_budget_exhausted` and
+    `resume_verify_pending` already documented individually."""
+    selected = (REMEDIATION_TABLE if keys is None
+                else [row for row in REMEDIATION_TABLE if row.key in set(keys)])
+    results: Dict[str, List[Dict[str, Any]]] = {}
+    for remediation in selected:
+        applied: List[Dict[str, Any]] = []
+        for finding in remediation.finder(repos_root, go_repo):
+            try:
+                applied.append(remediation.action(
+                    finding, agent, timeout, spawner, log))
+            except Exception as exc:  # noqa: BLE001 — one finding must not
+                                        # block the rest of the sweep
+                log(f"{remediation.label} error: "
+                    f"{finding.get('repo_name')} {finding.get('spec_id')}: {exc}")
+        results[remediation.key] = applied
+    return results
 
 
 # ---------------------------------------------------------------------------
