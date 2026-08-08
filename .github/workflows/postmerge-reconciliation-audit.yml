@@ -1,0 +1,35 @@
+name: 'CI: Postmerge Reconciliation Audit'
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    # Daily sweep for merged PRs with failing required checks.
+    - cron: '0 9 * * *'
+
+concurrency:
+  group: postmerge-reconciliation-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  postmerge-audit:
+    name: Postmerge reconciliation audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: Install package
+        run: pip install -e .
+
+      - name: Run postmerge reconciliation audit
+        run: worktrail-audit-postmerge --repo "$PWD" --json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -105,6 +105,14 @@ from .quarantine_selfcheck import check_repo as _quarantine_check_repo
 
 from ..orchestrator.agent_capacity import gate_snapshot as _capacity_gate_snapshot
 
+# audit_postmerge is a sibling module (spec post-merge-reconciliation-audit):
+# its dashboard_snapshot() is a pure state-file read (no `gh` calls), reused
+# here rather than re-reading the persisted state a second way.
+from .audit_postmerge import (
+    dashboard_snapshot as _postmerge_dashboard_snapshot,
+    resolve_state_dir as _postmerge_resolve_state_dir,
+)
+
 # Policy routing is used only to annotate picker items.
 from .policy import DEFAULTS as _POLICY_DEFAULTS, load_policy as _load_policy, resolve_routing as _resolve_routing
 
@@ -707,6 +715,12 @@ def _feature_summary(spec_text: str) -> Optional[str]:
 
 
 _PR_NUMBER_RE = re.compile(r"/pull/(\d+)")
+
+
+def _pr_number(pr_url: Optional[str]) -> str:
+    """Extract the `#N` PR number from a GitHub PR URL for compact rendering."""
+    m = _PR_NUMBER_RE.search(pr_url or "")
+    return m.group(1) if m else "?"
 
 
 def _group_merged_on_base(repo: Path, pr_url: str) -> bool:
@@ -1933,6 +1947,7 @@ def render_dashboard(
     clusters: Optional[List[Dict[str, Any]]] = None,
     cluster_precision: Optional[Dict[str, Any]] = None,
     capacity: Optional[Dict[str, Any]] = None,
+    postmerge_check_failures: Optional[Dict[str, Any]] = None,
     recent_runs: Optional[List[Dict[str, Any]]] = None,
     staleness_warnings: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
@@ -1945,9 +1960,9 @@ def render_dashboard(
     (automerge_selfcheck.py) get their own one-line review nudge; go-policy.yaml
     rationale-vs-reality drift signals (policy_drift_selfcheck.py) get theirs;
     QUARANTINED-group signals (quarantine_selfcheck.py) get their own one-line
-    review nudge, with budget-exhausted-only quarantines (safely resumable,
-    never failed) split into a separate resume nudge instead of the review
-    one; when a cluster
+    review nudge; post-merge check-failure signals (audit_postmerge.py's
+    dashboard_snapshot()) get their own one-line review nudge, only emitted
+    when `postmerge_check_failures` carries at least one flagged PR; when a cluster
     section is shown and
     `cluster_precision` (cluster_telemetry.summarize()'s result) has at least
     CLUSTER_PRECISION_MIN_DECIDED decided outcomes, an extra precision line is
@@ -2130,6 +2145,19 @@ def render_dashboard(
                 " → fallback may be available"
             )
 
+    if postmerge_check_failures and postmerge_check_failures.get("flagged"):
+        pmf_flagged = postmerge_check_failures["flagged"]
+        entries = ", ".join(
+            f"{item.get('repo', '?')}#{_pr_number(item.get('url'))}" for item in pmf_flagged[:4]
+        )
+        more = f" … +{len(pmf_flagged) - 4}" if len(pmf_flagged) > 4 else ""
+        lines.append(
+            f"🚨 Post-merge check failures "
+            f"({postmerge_check_failures.get('prs_flagged', len(pmf_flagged))} PR(s) across "
+            f"{postmerge_check_failures.get('repos_flagged', 0)} repo(s)): {entries}{more}"
+            " → review failing checks"
+        )
+
     cl = list(clusters or [])
     if cl:
         lines.append(f"🔗 Consolidatable briefs ({len(cl)})")
@@ -2240,6 +2268,12 @@ def main(argv=None) -> int:
         help="provider capacity cache path (default: GO_AGENT_CAPACITY_CACHE or ~/.go/agent-capacity.json)",
     )
     p.add_argument(
+        "--postmerge-audit-state",
+        default=None,
+        help="post-merge audit state dir (default: GO_POSTMERGE_AUDIT_STATE or "
+        "~/.go/postmerge-audit-state)",
+    )
+    p.add_argument(
         "--run-record-dir",
         default=None,
         help="go run-record root for the 'Recent runs' section "
@@ -2323,6 +2357,15 @@ def main(argv=None) -> int:
         except Exception:  # noqa: BLE001 — telemetry must never break the dashboard
             capacity = None
 
+    postmerge_check_failures = None
+    if _postmerge_dashboard_snapshot is not None:
+        try:
+            postmerge_check_failures = _postmerge_dashboard_snapshot(
+                _postmerge_resolve_state_dir(args.postmerge_audit_state)
+            )
+        except Exception:  # noqa: BLE001 — telemetry must never break the dashboard
+            postmerge_check_failures = None
+
     # Parse queue briefs from --queue-json if provided.
     queue_briefs: List[Dict[str, Any]] = []
     if args.queue_json:
@@ -2368,6 +2411,7 @@ def main(argv=None) -> int:
         rendered = render_dashboard(
             repo_rows, None, inflight, queue_briefs, clusters=clusters,
             cluster_precision=cluster_precision, capacity=capacity,
+            postmerge_check_failures=postmerge_check_failures,
             staleness_warnings=staleness_warnings,
         )
         if args.json:
@@ -2386,6 +2430,7 @@ def main(argv=None) -> int:
                         "clusters": clusters,
                         "cluster_precision": cluster_precision,
                         "capacity": capacity,
+                        "postmerge_check_failures": postmerge_check_failures,
                         "staleness_warnings": staleness_warnings,
                         "rendered": rendered,
                     },
@@ -2410,7 +2455,8 @@ def main(argv=None) -> int:
     )
     rendered = render_dashboard(
         None, rows, inflight, queue_briefs, worktrees, con, clusters=clusters,
-        cluster_precision=cluster_precision, capacity=capacity, recent_runs=recent_runs,
+        cluster_precision=cluster_precision, capacity=capacity,
+        postmerge_check_failures=postmerge_check_failures, recent_runs=recent_runs,
         staleness_warnings=staleness_warnings,
     )
     if args.json:
@@ -2431,6 +2477,7 @@ def main(argv=None) -> int:
                     "clusters": clusters,
                     "cluster_precision": cluster_precision,
                     "capacity": capacity,
+                    "postmerge_check_failures": postmerge_check_failures,
                     "recent_runs": recent_runs,
                     "staleness_warnings": staleness_warnings,
                     "rendered": rendered,

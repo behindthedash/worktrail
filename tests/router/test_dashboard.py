@@ -797,6 +797,33 @@ class ReposScan(unittest.TestCase):
         self.assertIn("transport", out)
         self.assertIn("retry after 2026-07-20T21:00:00+00:00", out)
 
+    def test_render_dashboard_surfaces_postmerge_check_failures(self):
+        out = dashboard.render_dashboard(
+            [], None, [], [], postmerge_check_failures={
+                "repos_flagged": 1,
+                "prs_flagged": 1,
+                "flagged": [
+                    {
+                        "repo": "repo-a",
+                        "url": "https://github.com/org/repo-a/pull/42",
+                        "failing_checks": ["ci/build"],
+                        "merged_at": "2026-08-01T00:00:00Z",
+                    },
+                ],
+            }
+        )
+        self.assertIn("Post-merge check failures", out)
+        self.assertIn("repo-a#42", out)
+
+    def test_render_dashboard_omits_postmerge_line_when_empty(self):
+        out = dashboard.render_dashboard(
+            [], None, [], [],
+            postmerge_check_failures={"repos_flagged": 0, "prs_flagged": 0, "flagged": []},
+        )
+        self.assertNotIn("Post-merge check failures", out)
+        out_none = dashboard.render_dashboard([], None, [], [], postmerge_check_failures=None)
+        self.assertNotIn("Post-merge check failures", out_none)
+
     def test_worktrees_reported_not_overlaid(self):
         # A worktree's docs/specs must NOT resurface a spec as active (overlay
         # removed); the worktree is reported by name for the cleanup action.
@@ -2538,6 +2565,218 @@ class RecentRuns(unittest.TestCase):
             self.assertEqual(len(ra["recent_runs"]), 1)
             self.assertEqual(rb["recent_runs"], [])
             self.assertIn("repo-a go-20260701-000000", output["rendered"])
+
+
+class PostmergeAuditDashboardIntegration(unittest.TestCase):
+    """spec post-merge-reconciliation-audit change 3 -- dashboard.py folds
+    audit_postmerge.dashboard_snapshot() into the JSON `postmerge_check_failures`
+    field and a rendered-text summary line, additively: every field that existed
+    before this integration must be unchanged in shape/content whether or not any
+    postmerge audit state has ever been written."""
+
+    def setUp(self):
+        # Isolate from this machine's real ~/work-queue (queue/cluster state
+        # there is otherwise picked up by default and would make baseline vs.
+        # with-flag renders nondeterministic across the two `main()` calls).
+        self._tmp = tempfile.TemporaryDirectory()
+        work_queue_dir = Path(self._tmp.name) / "work-queue"
+        (work_queue_dir / "queue").mkdir(parents=True)
+        self._env_patch = mock.patch.dict(os.environ, {"WORK_QUEUE_DIR": str(work_queue_dir)})
+        self._env_patch.start()
+
+    def tearDown(self):
+        self._env_patch.stop()
+        self._tmp.cleanup()
+
+    @staticmethod
+    def _run_json(argv):
+        import io
+        from contextlib import redirect_stdout
+
+        f = io.StringIO()
+        with redirect_stdout(f):
+            dashboard.main(argv)
+        return json.loads(f.getvalue())
+
+    def test_single_repo_json_shape_unchanged_when_no_postmerge_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            specs_dir = root / "myrepo" / "docs" / "specs"
+            _spec(specs_dir / "001-x", spec_body=SPEC_MIN)
+            state_dir = root / "no-such-postmerge-state"  # never created
+
+            baseline = self._run_json([
+                "--root", str(specs_dir),
+                "--postmerge-audit-state", str(state_dir),
+                "--json",
+            ])
+            with_flag = self._run_json([
+                "--root", str(specs_dir),
+                "--postmerge-audit-state", str(state_dir),
+                "--json",
+            ])
+
+            # cluster_precision reads a real shared telemetry log outside this
+            # test's control (see cluster_telemetry.summarize()) -- its own key
+            # presence is checked, but its value is not diffed across calls.
+            for key in (
+                "constitution", "specs", "active_specs", "handoff_queue",
+                "inflight", "worktrees", "category_actions", "category_items",
+                "auto_pick", "clusters", "capacity",
+                "recent_runs", "staleness_warnings",
+            ):
+                self.assertEqual(baseline[key], with_flag[key], key)
+            self.assertIn("cluster_precision", with_flag)
+            self.assertEqual(baseline["rendered"], with_flag["rendered"])
+            self.assertNotIn("Post-merge check failures", with_flag["rendered"])
+            self.assertEqual(
+                with_flag["postmerge_check_failures"],
+                {"repos_flagged": 0, "prs_flagged": 0, "flagged": []},
+            )
+
+    def test_multi_repo_json_shape_unchanged_when_no_postmerge_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp)
+            (parent / "repo-a" / ".git").mkdir(parents=True)
+            state_dir = parent / "no-such-postmerge-state"  # never created
+
+            baseline = self._run_json([
+                "--repos", str(parent),
+                "--postmerge-audit-state", str(state_dir),
+                "--json",
+            ])
+            with_flag = self._run_json([
+                "--repos", str(parent),
+                "--postmerge-audit-state", str(state_dir),
+                "--json",
+            ])
+
+            for key in (
+                "repos", "active_specs", "handoff_queue", "inflight",
+                "category_actions", "category_items", "auto_pick", "clusters",
+                "capacity", "staleness_warnings",
+            ):
+                self.assertEqual(baseline[key], with_flag[key], key)
+            self.assertIn("cluster_precision", with_flag)
+            self.assertEqual(baseline["rendered"], with_flag["rendered"])
+            self.assertNotIn("Post-merge check failures", with_flag["rendered"])
+            self.assertEqual(
+                with_flag["postmerge_check_failures"],
+                {"repos_flagged": 0, "prs_flagged": 0, "flagged": []},
+            )
+
+    def test_single_repo_json_postmerge_check_failures_present_when_state_exists(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            specs_dir = root / "myrepo" / "docs" / "specs"
+            _spec(specs_dir / "001-x", spec_body=SPEC_MIN)
+            state_dir = root / "postmerge-state"
+            state_dir.mkdir()
+            (state_dir / "myrepo.json").write_text(json.dumps({
+                "last_swept_at": "2026-08-01T00:00:00+00:00",
+                "flagged": [
+                    {
+                        "repo": "myrepo",
+                        "url": "https://github.com/org/myrepo/pull/7",
+                        "failing_checks": ["ci/build"],
+                        "merged_at": "2026-08-01T00:00:00Z",
+                    },
+                ],
+            }))
+
+            output = self._run_json([
+                "--root", str(specs_dir),
+                "--postmerge-audit-state", str(state_dir),
+                "--json",
+            ])
+
+            self.assertEqual(
+                output["postmerge_check_failures"],
+                {
+                    "repos_flagged": 1,
+                    "prs_flagged": 1,
+                    "flagged": [
+                        {
+                            "repo": "myrepo",
+                            "url": "https://github.com/org/myrepo/pull/7",
+                            "failing_checks": ["ci/build"],
+                            "merged_at": "2026-08-01T00:00:00Z",
+                        },
+                    ],
+                },
+            )
+            self.assertIn("Post-merge check failures", output["rendered"])
+            self.assertIn("myrepo#7", output["rendered"])
+
+    def test_multi_repo_json_postmerge_check_failures_present_when_state_exists(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp)
+            (parent / "repo-a" / ".git").mkdir(parents=True)
+            state_dir = parent / "postmerge-state"
+            state_dir.mkdir()
+            (state_dir / "repo-a.json").write_text(json.dumps({
+                "last_swept_at": "2026-08-01T00:00:00+00:00",
+                "flagged": [
+                    {
+                        "repo": "repo-a",
+                        "url": "https://github.com/org/repo-a/pull/3",
+                        "failing_checks": ["ci/test"],
+                        "merged_at": "2026-08-01T00:00:00Z",
+                    },
+                ],
+            }))
+
+            output = self._run_json([
+                "--repos", str(parent),
+                "--postmerge-audit-state", str(state_dir),
+                "--json",
+            ])
+
+            self.assertEqual(output["postmerge_check_failures"]["repos_flagged"], 1)
+            self.assertEqual(output["postmerge_check_failures"]["prs_flagged"], 1)
+            self.assertIn("Post-merge check failures", output["rendered"])
+            self.assertIn("repo-a#3", output["rendered"])
+
+    def test_text_mode_summary_line_only_emitted_when_state_present(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            import io
+            from contextlib import redirect_stdout
+
+            root = Path(tmp)
+            specs_dir = root / "myrepo" / "docs" / "specs"
+            _spec(specs_dir / "001-x", spec_body=SPEC_MIN)
+            empty_state_dir = root / "no-such-postmerge-state"
+
+            f = io.StringIO()
+            with redirect_stdout(f):
+                dashboard.main([
+                    "--root", str(specs_dir),
+                    "--postmerge-audit-state", str(empty_state_dir),
+                ])
+            self.assertNotIn("Post-merge check failures", f.getvalue())
+
+            state_dir = root / "postmerge-state"
+            state_dir.mkdir()
+            (state_dir / "myrepo.json").write_text(json.dumps({
+                "last_swept_at": "2026-08-01T00:00:00+00:00",
+                "flagged": [
+                    {
+                        "repo": "myrepo",
+                        "url": "https://github.com/org/myrepo/pull/9",
+                        "failing_checks": ["ci/build"],
+                        "merged_at": "2026-08-01T00:00:00Z",
+                    },
+                ],
+            }))
+
+            f2 = io.StringIO()
+            with redirect_stdout(f2):
+                dashboard.main([
+                    "--root", str(specs_dir),
+                    "--postmerge-audit-state", str(state_dir),
+                ])
+            self.assertIn("Post-merge check failures", f2.getvalue())
+            self.assertIn("myrepo#9", f2.getvalue())
 
 
 class StalenessWarnings(unittest.TestCase):
