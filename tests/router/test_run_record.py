@@ -440,10 +440,11 @@ class TestActiveConflicts(unittest.TestCase):
 
         results = _active_conflicts(self.tmp, specification="spec-a")
 
-        self.assertEqual(len(results), 1)
-        self.assertEqual(results[0]["run_id"], active["run_id"])
+        self.assertEqual(results["stale"], [])
+        self.assertEqual(len(results["live"]), 1)
+        self.assertEqual(results["live"][0]["run_id"], active["run_id"])
         for field in ("run_id", "path", "started_at", "request_summary", "agent"):
-            self.assertIn(field, results[0])
+            self.assertIn(field, results["live"][0])
 
     def test_no_match_for_different_specification(self):
         other = _start(self.tmp, request="unrelated run")
@@ -451,7 +452,7 @@ class TestActiveConflicts(unittest.TestCase):
 
         results = _active_conflicts(self.tmp, specification="spec-a")
 
-        self.assertEqual(results, [])
+        self.assertEqual(results, {"live": [], "stale": []})
 
     def test_exclude_omits_callers_own_record(self):
         mine = _start(self.tmp, request="my run")
@@ -459,7 +460,7 @@ class TestActiveConflicts(unittest.TestCase):
 
         results = _active_conflicts(self.tmp, specification="spec-a", exclude=mine["path"])
 
-        self.assertEqual(results, [])
+        self.assertEqual(results, {"live": [], "stale": []})
 
     def test_missing_run_record_directory_returns_empty_list(self):
         empty_dir = tempfile.mkdtemp()
@@ -467,7 +468,7 @@ class TestActiveConflicts(unittest.TestCase):
         results = _active_conflicts(empty_dir, repo="/tmp/never-seen-repo",
                                      specification="spec-a")
 
-        self.assertEqual(results, [])
+        self.assertEqual(results, {"live": [], "stale": []})
 
     def test_scan_is_read_only(self):
         res = _start(self.tmp, request="untouched run")
@@ -498,8 +499,9 @@ class TestActiveConflicts(unittest.TestCase):
                                     exclude=session_a["path"])
         scan_b = _active_conflicts(self.tmp, specification="spec-race",
                                     exclude=session_b["path"])
-        self.assertEqual(scan_a, [], "session A's scan should see no conflict yet")
-        self.assertEqual(scan_b, [], "session B's scan should see no conflict yet")
+        empty = {"live": [], "stale": []}
+        self.assertEqual(scan_a, empty, "session A's scan should see no conflict yet")
+        self.assertEqual(scan_b, empty, "session B's scan should see no conflict yet")
 
         # Both proceed to tag their own record with the spec_id, believing
         # they're first -- this is the bug: nothing stopped both from reaching
