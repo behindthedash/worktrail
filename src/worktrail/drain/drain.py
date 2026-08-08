@@ -411,7 +411,7 @@ def release_lock(lock_file: Path) -> None:
 class Outcome:
     """Classified result of one iteration."""
     kind: str                 # "success" | "blocked" | "failed"
-                               # | "timeout_after_pr" | "no_pick"
+                               # | "timeout_after_pr" | "no_pick" | "pending"
     state: Optional[str] = None      # run-record completion state, if any
     brief_id: Optional[str] = None
     pr_url: Optional[str] = None
@@ -499,6 +499,19 @@ def classify_outcome(record_fields: Optional[Dict[str, Optional[str]]],
         # circuit breaker. A timeout with no PR is a real failure.
         if exit_code == 124 and pr:
             return Outcome("timeout_after_pr", state, brief, pr)
+        # A clean exit (0) with an unfinished record means the one-shot
+        # process itself did not crash -- the workflow legitimately stopped
+        # short of a terminal state, e.g. a Route-C run asking the operator
+        # an implementation-intent question, or a Route-G run returning
+        # after dispatching an async background pipeline that keeps running
+        # independently of this process. That is not the automation
+        # misbehaving, so (like timeout_after_pr) it must not count against
+        # the circuit breaker -- but it also never reached a completion
+        # state, so it does not reset the counter either. A nonzero exit
+        # with an unfinished record is still a real failure: the process
+        # itself errored.
+        if exit_code == 0:
+            return Outcome("pending", state, brief, pr)
         return Outcome("failed", state, brief, pr)
     if claimed_delta == 0 and exit_code == 0:
         return Outcome("no_pick")
@@ -657,11 +670,11 @@ def drain(config: DrainConfig,
                 state.consecutive_failures += 1
             elif outcome.kind == "success":
                 state.consecutive_failures = 0
-            # "timeout_after_pr" leaves consecutive_failures unchanged: the
-            # substantive work succeeded (see classify_outcome), so it must
-            # not trip the breaker, but it is not a full `success` signal
-            # either (the run never reached a completion state), so it does
-            # not reset the counter.
+            # "timeout_after_pr" and "pending" leave consecutive_failures
+            # unchanged: neither is the automation crashing (see
+            # classify_outcome), so neither must trip the breaker, but
+            # neither is a full `success` signal either (the run never
+            # reached a completion state), so neither resets the counter.
             if outcome.state == "completed_awaiting_human_approval":
                 pending_approvals.append(outcome.pr_url or outcome.brief_id or "?")
             elapsed = int(clock() - iter_start)
