@@ -234,3 +234,76 @@ def test_sweep_repo_does_not_flag_informational_check_failure(tmp_path, monkeypa
 
     assert result["checked"] == 1
     assert result["flagged"] == []
+
+
+# ---------------------------------------------------------------------------
+# --max-prs capping
+
+def _fake_gh_many_candidates(count):
+    """A fake `subprocess.run` whose `gh pr list` returns `count` candidate
+    merged PRs (ignoring the `--limit` flag, as if the real `gh` returned
+    more candidates than the cap) in increasing `mergedAt` order, and whose
+    `gh pr view` raises if called for a PR number beyond `DEFAULT_MAX_PRS`'s
+    -- i.e. beyond whatever cap the caller passed -- worth of candidates, so
+    a test can prove the module's own defensive `listed[:max_prs]` slice
+    (not just the `--limit` flag it also passes to `gh`) is what stops
+    fetching, and that no PR past the cap is ever fetched at all."""
+    items = [
+        {"url": f"u{i}", "number": i, "mergedAt": f"2026-01-{i:02d}T00:00:00+00:00"}
+        for i in range(1, count + 1)
+    ]
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return _FakeCompleted(0, json.dumps(items))
+        if cmd[:3] == ["gh", "pr", "view"]:
+            number = int(cmd[3])
+            if number > count:
+                raise AssertionError(f"gh pr view called for uncapped PR number {number}")
+            return _FakeCompleted(
+                0,
+                json.dumps({
+                    "url": f"u{number}", "number": number,
+                    "mergedAt": f"2026-01-{number:02d}T00:00:00+00:00",
+                    "statusCheckRollup": [],
+                }),
+            )
+        raise AssertionError(f"unexpected command: {cmd}")
+    return fake_run
+
+
+def test_list_merged_prs_only_fetches_max_prs_worth_of_candidates(tmp_path, monkeypatch):
+    monkeypatch.setattr(audit.subprocess, "run", _fake_gh_many_candidates(5))
+
+    result = audit.list_merged_prs(
+        tmp_path / "repo", since="2026-01-01T00:00:00+00:00", max_prs=3
+    )
+
+    assert result is not None
+    assert len(result) == 3
+    assert [pr["number"] for pr in result] == [1, 2, 3]
+
+
+def test_sweep_repo_checked_count_capped_at_max_prs(tmp_path, monkeypatch):
+    state_dir = tmp_path / "state"
+    monkeypatch.setattr(audit.subprocess, "run", _fake_gh_many_candidates(5))
+
+    result = audit.sweep_repo(
+        tmp_path / "repo", state_dir, repo_name="repo", max_prs=3
+    )
+
+    assert result["checked"] == 3
+
+
+def test_sweep_repo_marker_advances_only_past_the_capped_prs_actually_processed(
+    tmp_path, monkeypatch
+):
+    state_dir = tmp_path / "state"
+    monkeypatch.setattr(audit.subprocess, "run", _fake_gh_many_candidates(5))
+
+    audit.sweep_repo(tmp_path / "repo", state_dir, repo_name="repo", max_prs=3)
+
+    # PR 3 (not PR 5) is the latest among the 3 actually fetched this sweep;
+    # PRs 4 and 5 stay in-window for the next sweep rather than being
+    # silently skipped past.
+    assert audit.read_marker("repo", state_dir) == "2026-01-03T00:00:00+00:00"
