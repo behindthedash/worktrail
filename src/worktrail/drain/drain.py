@@ -895,6 +895,7 @@ def drain(config: DrainConfig,
         "iterations": iterations,
         "pending_approvals": pending_approvals,
         "resumed_quarantines": resumed_quarantines,
+        "resumed_verify_pending": resumed_verify_pending,
         "elapsed_s": int(clock() - started),
     }
     if pending_approvals:
