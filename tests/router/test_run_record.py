@@ -10,7 +10,15 @@ from unittest.mock import patch
 
 import pytest
 
-from worktrail.router.run_record import ALLOWED_AGENTS, COMPLETION_STATES, _load, main
+from worktrail.router.run_record import (
+    ALLOWED_AGENTS,
+    COMPLETION_STATES,
+    _claim_ref,
+    _load,
+    _load_lock,
+    _lock_path,
+    main,
+)
 
 
 def _start(tmp, **over):
@@ -554,6 +562,34 @@ def remote_origin(tmp_path: Path):
     subprocess.run(["git", "-C", str(clone_dir), "config", "user.name", "Test"], check=True)
 
     return bare_dir, clone_dir
+
+
+class TestRemoteClaim:
+    def test_first_claim_pushes_ref_and_records_remote_true(self, remote_origin, tmp_path):
+        bare_dir, clone_dir = remote_origin
+        run_dir = tmp_path / "runs"
+        run_dir.mkdir()
+        res = _start(str(run_dir), repo=str(clone_dir), request="remote claim session")
+
+        out = StringIO()
+        with patch("sys.stdout", out):
+            rc = main(["claim", res["path"], "--specification", "spec-remote", "--remote"])
+        result = json.loads(out.getvalue())
+
+        assert rc == 0
+        assert result["status"] == "claimed"
+
+        ref = _claim_ref("spec-remote")
+        pushed = subprocess.run(
+            ["git", "-C", str(bare_dir), "rev-parse", "--verify", ref],
+            capture_output=True, text=True,
+        )
+        assert pushed.returncode == 0
+        assert pushed.stdout.strip() != ""
+
+        lock = _load_lock(_lock_path(Path(res["path"]), "spec-remote"))
+        assert lock["remote"] is True
+        assert lock["run_id"] == res["run_id"]
 
 
 def _prune(tmp, **over):
