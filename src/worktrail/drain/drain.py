@@ -584,8 +584,9 @@ def sweep_remediations(
     without aborting the rest of that row's findings or the other rows --
     the same best-effort guarantee `resume_quarantined_budget_exhausted` and
     `resume_verify_pending` already documented individually."""
-    selected = (REMEDIATION_TABLE if keys is None
-                else [row for row in REMEDIATION_TABLE if row.key in set(keys)])
+    wanted = None if keys is None else set(keys)
+    selected = (REMEDIATION_TABLE if wanted is None
+                else [row for row in REMEDIATION_TABLE if row.key in wanted])
     results: Dict[str, List[Dict[str, Any]]] = {}
     for remediation in selected:
         applied: List[Dict[str, Any]] = []
