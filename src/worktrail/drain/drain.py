@@ -760,6 +760,7 @@ def drain(config: DrainConfig,
     iterations: List[Dict[str, object]] = []
     pending_approvals: List[str] = []
     resumed_quarantines: List[Dict[str, Any]] = []
+    resumed_verify_pending: List[Dict[str, Any]] = []
     # Candidates are evaluated in this fixed priority order every iteration
     # (see select_available_agent) -- a fallback is never "sticky": once a
     # higher-priority agent's persisted gate expires, the very next iteration
