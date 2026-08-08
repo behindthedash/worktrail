@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from worktrail.router.overlap_check import (
+    _feature_summary_from_proposal,
     _feature_summary_from_spec,
     _is_openspec_root,
     _summary_from_problem_statement,
@@ -235,6 +236,45 @@ class TestIsOpenspecRoot(unittest.TestCase):
             root = Path(tmp)
             (root / "changes").write_text("not a directory")
             self.assertFalse(_is_openspec_root(root))
+
+
+class TestFeatureSummaryFromProposal(unittest.TestCase):
+
+    def test_capabilities_present_is_used(self):
+        text = (
+            "## Why\n\nBecause donors need this.\n\n"
+            "## Capabilities\n\nSearch nonprofits by cause.\n\n"
+            "## Design\n\nDetails here.\n"
+        )
+        self.assertEqual(
+            _feature_summary_from_proposal(text),
+            "Search nonprofits by cause.",
+        )
+
+    def test_capabilities_empty_falls_back_to_why_first_sentence(self):
+        text = (
+            "## Why\n\nDonors struggle to find nonprofits. More context.\n\n"
+            "## Capabilities\n\n\n\n"
+            "## Design\n\nDetails here.\n"
+        )
+        self.assertEqual(
+            _feature_summary_from_proposal(text),
+            "Donors struggle to find nonprofits.",
+        )
+
+    def test_capabilities_absent_falls_back_to_why(self):
+        text = "## Why\n\nDonors struggle to find nonprofits. More context.\n"
+        self.assertEqual(
+            _feature_summary_from_proposal(text),
+            "Donors struggle to find nonprofits.",
+        )
+
+    def test_neither_section_present_returns_none(self):
+        text = "## Design\n\nJust design notes, no Capabilities or Why.\n"
+        self.assertIsNone(_feature_summary_from_proposal(text))
+
+    def test_empty_text_returns_none_no_crash(self):
+        self.assertIsNone(_feature_summary_from_proposal(""))
 
 
 class TestScan(unittest.TestCase):
