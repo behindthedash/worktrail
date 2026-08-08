@@ -1,25 +1,22 @@
 #!/usr/bin/env python3
-"""audit_postmerge.py — scheduled fleet-wide post-merge CI reconciliation audit.
+"""audit_postmerge.py — scheduled fleet-wide post-merge reconciliation audit.
 
-Sweeps every worktrail-managed repo's recently-merged PRs for check-rollup
-outcomes that landed on `main` after merge (a required check that reported
-failing/pending too late to block the merge itself), and records them for
-`router/dashboard.py` to surface.
+Sweeps every worktrail-managed repo's recently-merged PRs and flags any whose
+`statusCheckRollup` shows a failing required check — catching CI results that
+only landed *after* merge (or were never observed by the orchestrator's own
+pre-merge gate) so drift is surfaced instead of silently going unnoticed.
 
-Deliberately reuses two existing building blocks rather than reimplementing
-them:
-
-- `discover_managed_repos` (`reconcile_pr_labels.py`) — the same
-  opted-into-worktrail repo discovery (`docs/specs/go-policy.yaml` presence)
-  every other fleet-wide sweep in this package already uses.
-- `classify_checks` (`orchestrator/verify.py`) — the same required/informational
-  check-rollup classification the live merge-gating path uses, so a PR this
-  audit flags is judged by the identical rule that governed its own merge.
-
-Neither is duplicated here.
+Reuses rather than reimplements:
+  - `discover_managed_repos()` (`reconcile_pr_labels.py`) for fleet discovery,
+    so "which repos are in scope" has exactly one definition.
+  - `classify_checks()` (`orchestrator/verify.py`) for check-rollup
+    classification, so "which checks gate a merge" has exactly one
+    definition and this audit can never drift from the orchestrator's own
+    pre-merge posture.
 """
+from __future__ import annotations
 
-from worktrail.router.reconcile_pr_labels import discover_managed_repos
-from worktrail.orchestrator.verify import classify_checks
+from .reconcile_pr_labels import discover_managed_repos
+from ..orchestrator.verify import classify_checks
 
 __all__ = ["discover_managed_repos", "classify_checks"]

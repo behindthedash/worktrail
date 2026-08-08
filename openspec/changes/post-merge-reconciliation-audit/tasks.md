@@ -5,7 +5,7 @@
 - [ ] 1.3 Implement merged-PR listing via `gh pr list --state merged --search "merged:>=<marker-or-lookback>"` and per-PR `gh pr view --json url,number,mergedAt,statusCheckRollup`, capped at `--max-prs` (default 50) per repo per sweep; `gh` failure/absence fails open (report `error`, leave marker unchanged) matching `reconcile_pr_labels.py`'s `_open_prs()` posture.
 - [ ] 1.4 Classify each fetched rollup with `classify_checks()`; record flagged PRs (repo, url, failing check names, merged-at) into the repo's state file; advance the marker only past PRs actually checked this sweep.
 - [ ] 1.5 Implement `dashboard_snapshot(state_dir)`: pure read of persisted state files, returns a summary dict — no `gh` calls, no side effects.
-- [ ] 1.6 Add `worktrail-audit-postmerge` console script entry to `pyproject.toml` `[project.scripts]`, with `--repo`/`--repos-root`/`--state-dir`/`--lookback-days`/`--max-prs`/`--json` flags mirroring `reconcile_pr_labels.py`'s CLI shape.
+- [ ] 1.6 Add a `main(argv)` CLI entrypoint to `src/worktrail/router/audit_postmerge.py` (argparse, `--repo`/`--repos-root`/`--state-dir`/`--lookback-days`/`--max-prs`/`--json` flags mirroring `reconcile_pr_labels.py`'s CLI shape) plus the matching `worktrail-audit-postmerge` console script entry in `pyproject.toml` `[project.scripts]` pointing at it — both files together, since the entry point is meaningless without the function it points to.
 
 ## 2. Tests for the core module
 
