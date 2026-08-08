@@ -57,6 +57,7 @@ import socket
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -565,6 +566,23 @@ def _delete_remote_claim(repo_dir: Path, ref: str) -> None:
         )
 
 
+def _remote_claim_is_fresh(claim: Dict[str, Any], ttl_seconds: int) -> bool:
+    """Whether a remote claim payload is still within its TTL.
+
+    An unparsable/missing `claimed_at` is treated as fresh (conservative:
+    never reclaim over a claim whose age we cannot prove has expired).
+    """
+    claimed_at = claim.get("claimed_at")
+    if not isinstance(claimed_at, str):
+        return True
+    try:
+        claimed = datetime.strptime(claimed_at, "%Y-%m-%dT%H:%M:%S%z")
+    except ValueError:
+        return True
+    age = (datetime.now(claimed.tzinfo) - claimed).total_seconds()
+    return age <= ttl_seconds
+
+
 def _lock_path(run_path: Path, specification: str) -> Path:
     return run_path.parent / ".claims" / f"{_claim_slug(specification)}.lock"
 
@@ -621,11 +639,53 @@ def cmd_claim(args: argparse.Namespace) -> int:
             print(json.dumps({"status": "already-claimed", **_load_lock(lock_path)}))
             return 1
 
-    # Lock held: no new racer can reach this point for the same
-    # repo+specification until we release or finish. Still honor any
-    # pre-existing non-terminal record tagged via plain `set` (predates this
-    # primitive, or an out-of-band write) -- the lock alone only guards
-    # against other `claim` callers, not stale `specification` writes.
+    record = _load(run_path)
+
+    # Lock held locally: no new racer on this machine can reach this point
+    # for the same repo+specification until we release or finish. When
+    # --remote is set, also stake the claim on `origin` before trusting the
+    # local lock, so a second machine (which has no visibility into this
+    # machine's local lock file) is blocked too. Any failure here (existing
+    # live claim, a stale claim's reclaim raced by a third machine, or a
+    # push/read error) fails closed: release the local lock and report it
+    # indistinguishably from a genuine conflict, extended with
+    # `"scope": "remote"` so a caller can tell which layer contended.
+    if args.remote:
+        project_repo_dir = Path(record.get("repository") or repo_dir)
+        ref = _claim_ref(args.specification)
+
+        def _remote_already_claimed(claim: Dict[str, Any] | None, exc: RemoteClaimError | None) -> int:
+            os.close(fd)
+            lock_path.unlink(missing_ok=True)
+            out: Dict[str, Any] = {"status": "already-claimed", "scope": "remote"}
+            if claim:
+                out.update(claim)
+            if exc is not None:
+                out["reason"] = exc.reason
+                out["error"] = str(exc)
+            print(json.dumps(out))
+            return 1
+
+        try:
+            remote_claim = _read_remote_claim(project_repo_dir, ref)
+        except RemoteClaimError as exc:
+            return _remote_already_claimed(None, exc)
+
+        if remote_claim is not None and _remote_claim_is_fresh(remote_claim, args.remote_ttl_seconds):
+            return _remote_already_claimed(remote_claim, None)
+
+        try:
+            _push_remote_claim(
+                project_repo_dir, ref, record.get("run_id"), args.remote_ttl_seconds,
+                expect_sha=remote_claim.get("sha") if remote_claim else None,
+            )
+        except RemoteClaimError as exc:
+            return _remote_already_claimed(remote_claim, exc)
+
+    # Still honor any pre-existing non-terminal record tagged via plain
+    # `set` (predates this primitive, or an out-of-band write) -- the lock
+    # alone only guards against other `claim` callers, not stale
+    # `specification` writes.
     conflicts = _active_conflicts(repo_dir, args.specification, run_path.resolve())
     if conflicts:
         os.close(fd)
@@ -633,7 +693,6 @@ def cmd_claim(args: argparse.Namespace) -> int:
         print(json.dumps({"status": "conflict", "conflicts": conflicts}))
         return 1
 
-    record = _load(run_path)
     with os.fdopen(fd, "w") as f:
         f.write(json.dumps({
             "run_id": record.get("run_id"),
