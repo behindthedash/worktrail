@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Extra coverage for live.py: RunLock, read_or_create_run_id, set_task_status_completed,
-_task_file_in_worktree, journal_path_for."""
+_task_file_in_worktree, journal_path_for, _resume_quarantine_staleness_warning."""
 
+import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -1107,6 +1110,125 @@ class LiveSpawnServingAgentLabelTests(unittest.TestCase):
             )
         self.assertIs(result, fake_result)
         self.assertEqual(spawn.last_agent, "opencode")
+
+
+def _run_git(repo: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, check=True)
+
+
+class ResumeQuarantineStalenessWarningTests(unittest.TestCase):
+    """journal-resume-staleness-warning 1.3: on resume, a QUARANTINED group
+    whose task branch has fallen behind `base` gets a loud, per-group warning
+    naming the group and the drift count, recommending --fresh."""
+
+    def _repo_with_task_branch(self, tmp: Path, branch: str, drift_commits: int) -> Path:
+        repo = tmp / "repo"
+        if not repo.exists():
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            _run_git(repo, "config", "user.email", "t@t")
+            _run_git(repo, "config", "user.name", "T")
+            (repo / "README.md").write_text("init\n")
+            _run_git(repo, "add", "-A")
+            _run_git(repo, "commit", "-q", "-m", "init")
+            _run_git(repo, "branch", "-M", "main")
+
+        _run_git(repo, "checkout", "-q", "main")
+        _run_git(repo, "checkout", "-q", "-b", branch)
+        (repo / f"{branch.replace('/', '-')}.txt").write_text("work\n")
+        _run_git(repo, "add", "-A")
+        _run_git(repo, "commit", "-q", "-m", f"{branch} work")
+        _run_git(repo, "checkout", "-q", "main")
+
+        for i in range(drift_commits):
+            (repo / f"drift-{branch.replace('/', '-')}-{i}.txt").write_text(f"{i}\n")
+            _run_git(repo, "add", "-A")
+            _run_git(repo, "commit", "-q", "-m", f"base moved on {branch} {i}")
+        return repo
+
+    def test_warns_naming_group_and_drift_count(self):
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            repo = self._repo_with_task_branch(tmp, "001-x/task-001", drift_commits=4)
+            groups = [{"name": "group-a", "tasks": ["TASK-001"]}]
+            groups_journal = {"group-a": {"state": "QUARANTINED"}}
+
+            out = io.StringIO()
+            with redirect_stdout(out):
+                live._resume_quarantine_staleness_warning(repo, "main", "001-x", groups, groups_journal)
+
+            output = out.getvalue()
+            self.assertIn("PIPELINE RESUME WARNING", output)
+            self.assertIn("group-a", output)
+            self.assertIn("QUARANTINED", output)
+            self.assertIn("4 commit(s)", output)
+            self.assertIn("--fresh", output)
+
+    def test_silent_when_quarantined_group_has_zero_drift(self):
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            repo = self._repo_with_task_branch(tmp, "001-x/task-001", drift_commits=0)
+            groups = [{"name": "group-a", "tasks": ["TASK-001"]}]
+            groups_journal = {"group-a": {"state": "QUARANTINED"}}
+
+            out = io.StringIO()
+            with redirect_stdout(out):
+                live._resume_quarantine_staleness_warning(repo, "main", "001-x", groups, groups_journal)
+
+            self.assertEqual(out.getvalue(), "")
+
+    def test_silent_when_no_quarantined_groups(self):
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            repo = self._repo_with_task_branch(tmp, "001-x/task-001", drift_commits=4)
+            groups = [{"name": "group-a", "tasks": ["TASK-001"]}]
+            groups_journal = {"group-a": {"state": "MERGED"}}
+
+            out = io.StringIO()
+            with redirect_stdout(out):
+                live._resume_quarantine_staleness_warning(repo, "main", "001-x", groups, groups_journal)
+                # _resume_drift_report's own output must be unaffected by this call.
+                live._resume_drift_report(repo, "main", "001-x", [{"id": "TASK-001"}])
+
+            output = out.getvalue()
+            self.assertNotIn("PIPELINE RESUME WARNING", output)
+            self.assertIn("PIPELINE RESUME: base 'main' is 4 commit(s) ahead", output)
+
+    def test_silent_and_no_raise_when_task_branch_does_not_exist(self):
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            repo = tmp / "repo"
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            _run_git(repo, "config", "user.email", "t@t")
+            _run_git(repo, "config", "user.name", "T")
+            (repo / "README.md").write_text("init\n")
+            _run_git(repo, "add", "-A")
+            _run_git(repo, "commit", "-q", "-m", "init")
+            _run_git(repo, "branch", "-M", "main")
+
+            groups = [{"name": "group-a", "tasks": ["TASK-001"]}]
+            groups_journal = {"group-a": {"state": "QUARANTINED"}}
+
+            out = io.StringIO()
+            try:
+                with redirect_stdout(out):
+                    live._resume_quarantine_staleness_warning(repo, "main", "001-x", groups, groups_journal)
+            except Exception as exc:  # noqa: BLE001
+                self.fail(f"must never raise when a quarantined group's task branch is missing; got {exc!r}")
+            self.assertEqual(out.getvalue(), "")
+
+    def test_uses_max_drift_across_multiple_group_task_branches(self):
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            repo = self._repo_with_task_branch(tmp, "001-x/task-001", drift_commits=2)
+            self._repo_with_task_branch(tmp, "001-x/task-002", drift_commits=5)
+            groups = [{"name": "group-a", "tasks": ["TASK-001", "TASK-002"]}]
+            groups_journal = {"group-a": {"state": "QUARANTINED"}}
+
+            out = io.StringIO()
+            with redirect_stdout(out):
+                live._resume_quarantine_staleness_warning(repo, "main", "001-x", groups, groups_journal)
+
+            self.assertIn("7 commit(s)", out.getvalue())
 
 
 if __name__ == "__main__":
