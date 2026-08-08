@@ -422,5 +422,66 @@ class TestScan(unittest.TestCase):
                 self.assertIn(k, keys)
 
 
+class TestScanOpenSpec(unittest.TestCase):
+
+    def test_changes_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write(root / "changes" / "add-donor-search" / "proposal.md",
+                   "## Why\n\nDonors need this.\n\n"
+                   "## Capabilities\n\nSearch nonprofits by cause.\n")
+            results = scan(root)
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0]["spec_id"], "add-donor-search")
+            self.assertEqual(results[0]["stage"], "active")
+            self.assertEqual(results[0]["feature_summary"],
+                             "Search nonprofits by cause.")
+            self.assertIsNone(results[0]["user_request_excerpt"])
+
+    def test_specs_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write(root / "specs" / "donor-search" / "spec.md",
+                   "## Purpose\n\nSearch nonprofits by cause.\n")
+            results = scan(root)
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0]["spec_id"], "donor-search")
+            self.assertEqual(results[0]["stage"], "complete")
+            self.assertEqual(results[0]["feature_summary"],
+                             "Search nonprofits by cause.")
+            self.assertIsNone(results[0]["user_request_excerpt"])
+
+    def test_both_present(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write(root / "changes" / "add-donor-search" / "proposal.md",
+                   "## Capabilities\n\nSearch nonprofits by cause.\n")
+            _write(root / "specs" / "donor-search" / "spec.md",
+                   "## Purpose\n\nSearch nonprofits by cause.\n")
+            results = scan(root)
+            self.assertEqual(len(results), 2)
+            by_id = {r["spec_id"]: r for r in results}
+            self.assertEqual(by_id["add-donor-search"]["stage"], "active")
+            self.assertEqual(by_id["donor-search"]["stage"], "complete")
+
+    def test_key_set_parity_with_devkit_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            devkit_root = Path(tmp) / "devkit"
+            devkit_spec = devkit_root / "001-auth"
+            _write(devkit_spec / "2025-01-01--auth.md",
+                   "**Feature Summary**: Auth feature.\n")
+            devkit_results = scan(devkit_root)
+
+            openspec_root = Path(tmp) / "openspec"
+            _write(openspec_root / "changes" / "add-auth" / "proposal.md",
+                   "## Capabilities\n\nAuth feature.\n")
+            openspec_results = scan(openspec_root)
+
+            self.assertEqual(len(devkit_results), 1)
+            self.assertEqual(len(openspec_results), 1)
+            self.assertEqual(set(devkit_results[0].keys()),
+                             set(openspec_results[0].keys()))
+
+
 if __name__ == "__main__":
     unittest.main()
