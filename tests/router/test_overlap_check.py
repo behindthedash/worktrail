@@ -7,6 +7,7 @@ from pathlib import Path
 
 from worktrail.router.overlap_check import (
     _feature_summary_from_spec,
+    _is_openspec_root,
     _summary_from_problem_statement,
     _user_request_excerpt,
     _spec_title,
@@ -195,6 +196,45 @@ class TestExtractSpecSummary(unittest.TestCase):
             self.assertIsNotNone(result)
             assert result is not None
             self.assertIn("stage", result)
+
+
+class TestIsOpenspecRoot(unittest.TestCase):
+
+    def test_changes_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "changes").mkdir()
+            self.assertTrue(_is_openspec_root(root))
+
+    def test_specs_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "specs").mkdir()
+            self.assertTrue(_is_openspec_root(root))
+
+    def test_both_present(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "changes").mkdir()
+            (root / "specs").mkdir()
+            self.assertTrue(_is_openspec_root(root))
+
+    def test_neither_present(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "001-devkit-spec").mkdir()
+            self.assertFalse(_is_openspec_root(root))
+
+    def test_neither_present_empty_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertFalse(_is_openspec_root(Path(tmp)))
+
+    def test_file_named_changes_does_not_count(self):
+        """A `changes` *file* (not a dir) must not be mistaken for OpenSpec shape."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "changes").write_text("not a directory")
+            self.assertFalse(_is_openspec_root(root))
 
 
 class TestScan(unittest.TestCase):
