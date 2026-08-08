@@ -3937,6 +3937,21 @@ def _full_real_inner(
         Path(journal_path).unlink()  # --fresh: discard prior progress
         print(f"{_ts()} FRESH: discarded prior journal {journal_path}")
 
+    def _persist_newly_quarantined(quarantined_names, run_id_fallback: str) -> None:
+        """Persist newly-quarantined groups so a later resume sees QUARANTINED
+        instead of replaying the pre-verify journal state (matches the pipeline
+        path's _record_group_fn behavior in _integrate_verify_group). Single
+        shared call site for both the --from-verify and default sequential
+        branches below, so the sequential (non-pipeline) flow's quarantine-write
+        semantics live in exactly one place instead of two independently
+        maintained copies (PR #221, #227 each had to fix both).
+        """
+        for _qname in quarantined_names:
+            integrate._write_group_journal(
+                journal_path, _qname, "", group_branch.get(_qname, f"{run_id_fallback}/{_qname}"),
+                "QUARANTINED", integrate.QUARANTINE_INTEGRATION_ERROR,
+            )
+
     # Foreign-journal guard, fired directly in _full_real_inner's own resume
     # block (spec-path-task-crosscheck 1.2) so it covers every path below --
     # --from-verify, --pipeline, and the default sequential path -- before any
@@ -4015,15 +4030,7 @@ def _full_real_inner(
             declared_files=coordinator.declared_files_by_group(groups, tasks),
         )
         quarantined = {**from_verify_quarantined, **vres.get("quarantined", {})}
-        # Persist newly-quarantined groups so a later resume sees QUARANTINED instead
-        # of replaying the pre-verify journal state (matches the pipeline path's
-        # _record_group_fn behavior in _integrate_verify_group).
-        _fv_run_id = journal.get("run_id", "unknown")
-        for _qname in vres.get("quarantined", {}):
-            integrate._write_group_journal(
-                journal_path, _qname, "", group_branch.get(_qname, f"{_fv_run_id}/{_qname}"), "QUARANTINED",
-                integrate.QUARANTINE_INTEGRATION_ERROR,
-            )
+        _persist_newly_quarantined(vres.get("quarantined", {}), journal.get("run_id", "unknown"))
         self_merged = vres.get("self_merged", {})
         post_merge_regressed = vres.get("post_merge_regressed", {})
         automerge_evidence = vres.get("automerge_evidence", {})
@@ -4345,16 +4352,9 @@ def _full_real_inner(
         declared_files=coordinator.declared_files_by_group(groups, tasks),
     )
     quarantined = {**quarantined, **vres["quarantined"]}
-    # Persist newly-quarantined groups so a later resume sees QUARANTINED instead of
-    # replaying the pre-verify journal state (matches the pipeline path's
-    # _record_group_fn behavior in _integrate_verify_group). Covers both the
-    # all_integrated fast path (skipped integrate, journal_groups reconstructed
-    # above) and the finish_real path (fresh integrate just ran).
-    for _qname in vres["quarantined"]:
-        integrate._write_group_journal(
-            journal_path, _qname, "", group_branch.get(_qname, f"{run_id}/{_qname}"), "QUARANTINED",
-            integrate.QUARANTINE_INTEGRATION_ERROR,
-        )
+    # Covers both the all_integrated fast path (skipped integrate, journal_groups
+    # reconstructed above) and the finish_real path (fresh integrate just ran).
+    _persist_newly_quarantined(vres["quarantined"], run_id)
     self_merged = vres.get("self_merged", {})
     post_merge_regressed = vres.get("post_merge_regressed", {})
     automerge_evidence = vres.get("automerge_evidence", {})
