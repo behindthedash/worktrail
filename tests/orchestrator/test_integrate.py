@@ -824,7 +824,12 @@ class SingleGroupIntegrateEntry(unittest.TestCase):
                 )
 
                 self.assertIsNone(result, "MERGED group must return None")
-                self.assertNotIn("base", group_branch)
+                self.assertIn(
+                    "base", group_branch,
+                    "a MERGED group must still register in group_branch so callers "
+                    "(finish_real) see it as integrated rather than concluding "
+                    "'nothing to assemble' and bailing out before tail dispatch",
+                )
                 checkout_b = [c for c in run.calls if "checkout" in c and "-B" in c]
                 self.assertEqual(len(checkout_b), 0, "Should not create branch for MERGED group")
                 self.assertEqual(
