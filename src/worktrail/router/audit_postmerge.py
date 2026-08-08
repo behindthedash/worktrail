@@ -34,7 +34,7 @@ __all__ = [
     "DEFAULT_STATE_DIR", "DEFAULT_LOOKBACK_DAYS", "DEFAULT_MAX_PRS",
     "resolve_state_dir", "first_run_lookback", "load_state",
     "read_marker", "write_marker", "effective_since",
-    "list_merged_prs",
+    "list_merged_prs", "sweep_repo",
 ]
 
 DEFAULT_STATE_DIR = "~/.go/postmerge-audit-state"
@@ -176,3 +176,68 @@ def list_merged_prs(repo: Path, since: str, max_prs: int = DEFAULT_MAX_PRS) -> O
             return None
         prs.append(detail)
     return prs
+
+
+def _write_sweep_state(repo_name: str, state_dir: Path,
+                        last_swept_at: Optional[str],
+                        flagged: List[Dict[str, Any]]) -> None:
+    """Persist this sweep's `flagged` list (fully replacing any prior sweep's
+    -- a PR that already scrolled past the marker was already reported once
+    and must not accumulate forever) and, only when `last_swept_at` is given,
+    the new marker. Other keys already in the repo's state file are kept."""
+    state_dir.mkdir(parents=True, exist_ok=True)
+    state = load_state(repo_name, state_dir)
+    if last_swept_at is not None:
+        state["last_swept_at"] = last_swept_at
+    state["flagged"] = flagged
+    _state_path(repo_name, state_dir).write_text(json.dumps(state, indent=2))
+
+
+def sweep_repo(repo: Path, state_dir: Path, *, repo_name: Optional[str] = None,
+               lookback_days: int = DEFAULT_LOOKBACK_DAYS,
+               max_prs: int = DEFAULT_MAX_PRS) -> Dict[str, Any]:
+    """Sweep `repo`'s merged PRs since its marker (or the first-run lookback
+    window), classify each fetched `statusCheckRollup` with the exact same
+    `classify_checks()` every in-flight verify run uses, and persist any
+    flagged PRs plus the advanced marker.
+
+    On a `gh` failure, `list_merged_prs()` returns `None`: this reports
+    `error` and returns without touching the repo's state file at all --
+    the marker must not advance past PRs this sweep never actually fetched,
+    and a transient `gh` outage must not wipe out flags a previous sweep
+    already recorded.
+
+    On success, the marker only advances to the latest `mergedAt` among the
+    PRs actually fetched this sweep (not to "now") -- when `--max-prs`
+    truncates a merge backlog, the untouched remainder stays in-window for
+    the next sweep instead of being silently skipped. When zero PRs were
+    fetched (a clean window, not a failure), the marker is left as-is: there
+    is nothing to advance past.
+    """
+    name = repo_name or repo.name
+    result: Dict[str, Any] = {"repo": name, "path": str(repo), "checked": 0, "flagged": []}
+    since = effective_since(name, state_dir, lookback_days)
+    prs = list_merged_prs(repo, since, max_prs)
+    if prs is None:
+        result["error"] = "gh pr list/view failed or unavailable"
+        return result
+
+    result["checked"] = len(prs)
+    flagged: List[Dict[str, Any]] = []
+    latest_merged_at: Optional[str] = None
+    for pr in prs:
+        merged_at = pr.get("mergedAt")
+        _, failing = classify_checks(pr.get("statusCheckRollup"))
+        if failing:
+            flagged.append({
+                "repo": name,
+                "url": pr.get("url"),
+                "failing_checks": failing,
+                "merged_at": merged_at,
+            })
+        if isinstance(merged_at, str) and (latest_merged_at is None or merged_at > latest_merged_at):
+            latest_merged_at = merged_at
+
+    result["flagged"] = flagged
+    _write_sweep_state(name, state_dir, latest_merged_at, flagged)
+    return result
