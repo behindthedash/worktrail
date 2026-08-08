@@ -107,6 +107,7 @@ from ..router import dashboard, quarantine_selfcheck
 from ..router.policy import load_policy
 from ..router.policy_selfcheck import discover_repo_names
 from ..router.pr_labels import ensure_pr_risk_label
+from ..taskformats.devkit.schema import set_status_completed
 
 PROMPT = "worktrail-go auto"
 
@@ -571,6 +572,119 @@ def resume_verify_pending(
         repos_root, go_repo, agent, timeout, spawner, log,
         keys=["verify_pending"],
     )["verify_pending"]
+
+
+# ---------------------------------------------------------------------------
+# Stale-bookkeeping closeout (status-flip PR, no orchestrator involved)
+
+
+def _resolve_stale_task_path(repo: Path, spec_id: str, task_id: str) -> Optional[Path]:
+    """The TASK-*.md file for `task_id` under this spec's task dirs -- the
+    top-level tasks/ dir plus every changes/<slug>/tasks/ dir, mirroring
+    dashboard._task_dirs. Matched by filename stem, the same id
+    find_stale_bookkeeping_specs' `stale_task_ids` already carries
+    (frontmatter `id:` defaults to the file stem when absent -- see
+    dashboard._load_tasks). None if no matching file exists."""
+    spec_dir = repo / "docs" / "specs" / spec_id
+    task_dirs = [spec_dir / "tasks"]
+    changes_dir = spec_dir / "changes"
+    if changes_dir.is_dir():
+        task_dirs += sorted(d / "tasks" for d in changes_dir.iterdir() if d.is_dir())
+    for tasks_dir in task_dirs:
+        candidate = tasks_dir / f"{task_id}.md"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _run_git(cwd: Path, *args: str) -> None:
+    result = subprocess.run(["git", *args], capture_output=True, text=True, cwd=str(cwd))
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"git {' '.join(args)} (in {cwd}) failed: {(result.stderr or result.stdout).strip()}")
+
+
+def _open_stale_bookkeeping_pr(
+    wt: Path, repo_name: str, spec_id: str, task_ids: List[str], base: str, branch: str,
+) -> str:
+    """`gh pr create` for the status-flip-only branch, carrying `go:risk-low`
+    (a status-only flip of already-shipped work is inherently low risk -- no
+    code change). Raises rather than returning a fabricated URL when `gh pr
+    create` fails outright, e.g. an unresolvable --label -- it fails the
+    WHOLE command with a non-zero exit and no PR created (see
+    orchestrator/integrate.py's identical guard)."""
+    cmd = [
+        "gh", "pr", "create",
+        "--base", base, "--head", branch,
+        "--label", "go:risk-low",
+        "--title", f"chore({spec_id}): close stale bookkeeping",
+        "--body",
+        f"Flips `status:` to `completed` for already-shipped task(s) "
+        f"{', '.join(task_ids)} in `{spec_id}` -- their `files:` are already merged "
+        f"on `{base}`; no code change.\n\nOpened by drain's stale-bookkeeping sweep.",
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(wt))
+    out = ((result.stdout or result.stderr).strip().splitlines()[-1]
+           if (result.stdout or result.stderr) else "(no output)")
+    if result.returncode != 0 or not out.startswith("http"):
+        raise RuntimeError(f"gh pr create failed for {repo_name} {spec_id}: {out}")
+    return out
+
+
+def close_stale_bookkeeping(
+    finding: Dict[str, Any],
+    agent: str,
+    timeout: int,
+    spawner: Callable[[List[str], int], SpawnOutcome],
+    log: Callable[[str], None],
+) -> Dict[str, Any]:
+    """Flip each of the finding's stale task ids' `status:` to `completed`
+    and open a docs-only PR. Not a spec-owned change (no artifact under
+    `openspec/changes/<id>/` or `docs/specs/<id>/changes/<slug>/` is being
+    authored), so it does not fit the `new`/`modify` pipelines' spec-worktree
+    setup -- it uses the same direct fix-branch worktree pattern Route F
+    already uses for unspecced-code fixes (subagent-prompts.md
+    #fix-branch-worktree-setup/#fix-branch-worktree-teardown): a short-lived
+    worktree off the target repo's base branch, commit, push, `gh pr create`,
+    then tear the worktree down once the PR is open -- this does not wait for
+    merge, mirroring how the two full-real-resume actions spawn and record
+    the outcome without blocking on their run finishing either.
+
+    `agent`/`timeout`/`spawner` are unused -- this action never spawns a
+    one-shot -- kept only so the signature matches StageRemediation's
+    uniform `action` shape (see design.md D1).
+
+    Raises on `gh pr create` failure (caught by the sweep engine's
+    per-finding try/except, per D2) rather than returning a result dict with
+    no PR."""
+    repo, repo_name, spec_id = finding["repo"], finding["repo_name"], finding["spec_id"]
+    task_ids = finding["stale_task_ids"]
+    task_paths = [_resolve_stale_task_path(repo, spec_id, task_id) for task_id in task_ids]
+    missing = [task_id for task_id, path in zip(task_ids, task_paths) if path is None]
+    if missing:
+        raise RuntimeError(
+            f"no TASK-*.md found for {repo_name} {spec_id}: {', '.join(missing)}")
+
+    base = _base_branch_for(repo)
+    slug = f"close-stale-{spec_id}"
+    branch = f"fix/{slug}"
+    wt = repo.parent / f"{repo.name}-worktrees" / slug
+    log(f"close-stale-bookkeeping: {repo_name} {spec_id} -> {', '.join(task_ids)}")
+    _run_git(repo, "worktree", "add", "-b", branch, str(wt), base)
+
+    changed_rel = [str(path.relative_to(repo)) for path in task_paths]
+    for rel in changed_rel:
+        set_status_completed(wt / rel)
+    _run_git(wt, "add", *changed_rel)
+    _run_git(wt, "commit", "-m",
+             f"chore({spec_id}): close stale bookkeeping ({', '.join(task_ids)})")
+    _run_git(wt, "push", "-u", "origin", branch)
+
+    pr_url = _open_stale_bookkeeping_pr(wt, repo_name, spec_id, task_ids, base, branch)
+
+    _run_git(repo, "worktree", "remove", str(wt))
+    log(f"close-stale-bookkeeping result: {repo_name} {spec_id} -> {pr_url}")
+    return {"repo": repo_name, "spec_id": spec_id, "task_ids": task_ids, "pr_url": pr_url}
 
 
 @dataclass(frozen=True)
