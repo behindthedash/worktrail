@@ -1185,6 +1185,15 @@ def test_resume_verify_pending_invokes_full_real_once_per_spec(tmp_path):
     assert any("resume-verify-pending" in line for line in logs)
 
 
+def test_resume_verify_pending_no_hits_is_noop(tmp_path):
+    _make_repo(tmp_path, "repo-a")  # no verify-pending spec at all
+    calls = []
+    result = resume_verify_pending(
+        tmp_path, None, "claude", 60, lambda c, t: calls.append(c), lambda _l: None)
+    assert calls == []
+    assert result == []
+
+
 def test_build_full_real_resume_command_has_no_fresh_flag():
     cmd = build_full_real_resume_command(
         Path("/repo"), "docs/specs/some-spec", "dev", "claude")
