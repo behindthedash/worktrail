@@ -1138,6 +1138,18 @@ def test_find_verify_pending_specs_excludes_non_verify_pending_stages(tmp_path):
     assert find_verify_pending_specs(tmp_path) == []
 
 
+def test_find_verify_pending_specs_skips_spec_with_no_resolvable_path(tmp_path, monkeypatch):
+    repo = _make_repo(tmp_path, "repo-a")
+    # dashboard.scan reports a verify-pending row for "spec-a", but no
+    # docs/specs/spec-a or openspec/changes/spec-a folder exists on disk --
+    # e.g. the spec was since deleted/archived after the scan ran.
+    monkeypatch.setattr(
+        drain.dashboard, "scan",
+        lambda specs_root: [{"id": "spec-a", "stage": "verify-pending"}],
+    )
+    assert find_verify_pending_specs(tmp_path) == []
+
+
 def test_build_full_real_resume_command_has_no_fresh_flag():
     cmd = build_full_real_resume_command(
         Path("/repo"), "docs/specs/some-spec", "dev", "claude")
