@@ -510,12 +510,12 @@ def resume_quarantined_budget_exhausted(
     `repos_root` with a plain full-real re-run. Best-effort: a spec whose repo
     or journal has since gone away is silently skipped by
     find_resumable_quarantines, and one spec's resume failing does not stop
-    the others."""
-    return [
-        _resume_via_full_real(finding, agent, timeout, spawner, log,
-                               label="resume-quarantine")
-        for finding in find_resumable_quarantines(repos_root, go_repo)
-    ]
+    the others. Thin wrapper over sweep_remediations, restricted to this
+    row's key."""
+    return sweep_remediations(
+        repos_root, go_repo, agent, timeout, spawner, log,
+        keys=["quarantined_budget_exhausted"],
+    )["quarantined_budget_exhausted"]
 
 
 def resume_verify_pending(
@@ -529,12 +529,12 @@ def resume_verify_pending(
     """Resume every verify-pending spec found under `repos_root` with a plain
     full-real re-run. Best-effort: a spec whose repo or journal has since gone
     away is silently skipped by find_verify_pending_specs, and one spec's
-    resume failing does not stop the others."""
-    return [
-        _resume_via_full_real(finding, agent, timeout, spawner, log,
-                               label="resume-verify-pending")
-        for finding in find_verify_pending_specs(repos_root, go_repo)
-    ]
+    resume failing does not stop the others. Thin wrapper over
+    sweep_remediations, restricted to this row's key."""
+    return sweep_remediations(
+        repos_root, go_repo, agent, timeout, spawner, log,
+        keys=["verify_pending"],
+    )["verify_pending"]
 
 
 @dataclass(frozen=True)
