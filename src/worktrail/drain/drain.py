@@ -651,11 +651,15 @@ def _open_stale_bookkeeping_pr(
     never silently missed here the way it was for four prior call sites
     (see test_pr_creation_callsite_enforcement_coverage.py). Falls back to
     the seed label only if refresh itself is unavailable (gate script
-    unresolvable). Raises rather than returning a fabricated URL when `gh pr
-    create` fails outright, e.g. an unresolvable --label -- it fails the
-    WHOLE command with a non-zero exit and no PR created (see
-    orchestrator/integrate.py's identical guard)."""
-    labels = _refresh_pr_labels(repo, ["go:risk-low"], base) or ["go:risk-low"]
+    unresolvable). Resolved against `wt`, not `repo`: `wt`'s HEAD is this
+    PR's actual diff (the flip commit off `base`), while `repo` is whatever
+    branch the drain target happens to be checked out to -- diffing that
+    against `base` would stamp labels computed from an unrelated diff.
+    Raises rather than returning a fabricated URL when `gh pr create` fails
+    outright, e.g. an unresolvable --label -- it fails the WHOLE command
+    with a non-zero exit and no PR created (see orchestrator/integrate.py's
+    identical guard)."""
+    labels = _refresh_pr_labels(wt, ["go:risk-low"], base) or ["go:risk-low"]
     cmd = ["gh", "pr", "create", "--base", base, "--head", branch]
     for label in labels:
         cmd += ["--label", label]
@@ -708,7 +712,14 @@ def close_stale_bookkeeping(
 
     Raises on `gh pr create` failure (caught by the sweep engine's
     per-finding try/except, per D2) rather than returning a result dict with
-    no PR."""
+    no PR.
+
+    If every resolved task file already reads `status: completed` with no
+    unticked checkboxes on `base` (e.g. the flip landed via another route
+    since this finding was computed), `set_status_completed` makes no
+    change to any of them: there is nothing to commit, so no branch/PR is
+    opened and `pr_url` comes back `None` -- a clean no-op rather than a
+    `git commit` "nothing to commit" `RuntimeError` on every sweep."""
     repo, repo_name, spec_id = finding["repo"], finding["repo_name"], finding["spec_id"]
     task_ids = finding["stale_task_ids"]
     task_paths = [_resolve_stale_task_path(repo, spec_id, task_id) for task_id in task_ids]
@@ -734,8 +745,12 @@ def close_stale_bookkeeping(
     _run_git(repo, "worktree", "add", "-b", branch, str(wt), base, timeout=timeout)
     try:
         changed_rel = [str(path.relative_to(repo)) for path in task_paths]
-        for rel in changed_rel:
-            set_status_completed(wt / rel)
+        changed = [set_status_completed(wt / rel) for rel in changed_rel]
+        if not any(changed):
+            log(f"close-stale-bookkeeping: {repo_name} {spec_id} tasks already "
+                f"completed on {base}, nothing to flip")
+            return {"repo": repo_name, "spec_id": spec_id, "task_ids": task_ids,
+                    "pr_url": None}
         _run_git(wt, "add", *changed_rel, timeout=timeout)
         _run_git(wt, "commit", "-m",
                  f"chore({spec_id}): close stale bookkeeping ({', '.join(task_ids)})",
