@@ -1520,7 +1520,11 @@ def scan_repos(parent: Path) -> List[Dict[str, Any]]:
 
     `quarantine_findings` is `quarantine_selfcheck.check_repo()`'s signals for
     this repo's orchestrator run journals recording a `QUARANTINED` group
-    (empty = clean or no run journals present).
+    that needs human review (empty = clean or no run journals present).
+    `quarantine_resumable` is the same check's groups quarantined only because
+    a run's `--run-budget` was exhausted mid-fan-out -- the group never
+    failed, so these are safely resumable with a plain re-run and are kept
+    out of `quarantine_findings`' human-triage list.
 
     detect_stage calls are parallelised with a flat ThreadPoolExecutor across
     all spec dirs in all repos -- no nested pools, one thread per spec dir.
@@ -1551,8 +1555,11 @@ def scan_repos(parent: Path) -> List[Dict[str, Any]]:
         if _policy_drift_check_repo is not None:
             drift_findings = _policy_drift_check_repo(repo)["findings"]
         quarantine_findings: List[Dict[str, Any]] = []
+        quarantine_resumable: List[Dict[str, Any]] = []
         if _quarantine_check_repo is not None:
-            quarantine_findings = _quarantine_check_repo(repo)["findings"]
+            _qr = _quarantine_check_repo(repo)
+            quarantine_findings = _qr["findings"]
+            quarantine_resumable = _qr["resumable"]
         repo_info[repo_key] = {
             "name": repo.name,
             "path": str(repo),
@@ -1562,6 +1569,7 @@ def scan_repos(parent: Path) -> List[Dict[str, Any]]:
             "automerge_findings": automerge_findings,
             "drift_findings": drift_findings,
             "quarantine_findings": quarantine_findings,
+            "quarantine_resumable": quarantine_resumable,
         }
         if specs_root.is_dir():
             for d in sorted(specs_root.iterdir()):
@@ -1605,6 +1613,7 @@ def scan_repos(parent: Path) -> List[Dict[str, Any]]:
                 "automerge_findings": info["automerge_findings"],
                 "drift_findings": info["drift_findings"],
                 "quarantine_findings": info["quarantine_findings"],
+                "quarantine_resumable": info["quarantine_resumable"],
                 "backlog": len(backlog_ids),
                 "backlog_ids": backlog_ids,
                 "worktrees": info["worktrees"],
@@ -1936,7 +1945,9 @@ def render_dashboard(
     (automerge_selfcheck.py) get their own one-line review nudge; go-policy.yaml
     rationale-vs-reality drift signals (policy_drift_selfcheck.py) get theirs;
     QUARANTINED-group signals (quarantine_selfcheck.py) get their own one-line
-    review nudge; when a cluster
+    review nudge, with budget-exhausted-only quarantines (safely resumable,
+    never failed) split into a separate resume nudge instead of the review
+    one; when a cluster
     section is shown and
     `cluster_precision` (cluster_telemetry.summarize()'s result) has at least
     CLUSTER_PRECISION_MIN_DECIDED decided outcomes, an extra precision line is
@@ -1957,6 +1968,7 @@ def render_dashboard(
     automerge_flags: List[str] = []
     drift_flags: List[str] = []
     quarantine_flags: List[str] = []
+    quarantine_resumable_flags: List[str] = []
     runs: List[Dict[str, Any]] = []
     if repo_rows is not None:
         for r in repo_rows:
@@ -1970,6 +1982,10 @@ def render_dashboard(
             quarantine_flags.extend(
                 f"{r['repo']} ({f['spec_id']}/{f['group']}, {f['age_days']:.0f}d)"
                 for f in r.get("quarantine_findings", [])
+            )
+            quarantine_resumable_flags.extend(
+                f"{r['repo']} ({f['spec_id']}/{f['group']}, {f['age_days']:.0f}d)"
+                for f in r.get("quarantine_resumable", [])
             )
             for run in r.get("recent_runs", []) or []:
                 runs.append({"who": r["repo"], **run})
@@ -2084,6 +2100,17 @@ def render_dashboard(
         head = ", ".join(quarantine_flags[:4])
         more = f" … +{len(quarantine_flags) - 4}" if len(quarantine_flags) > 4 else ""
         lines.append(f"🚩 Quarantined groups ({len(quarantine_flags)}): {head}{more} → review")
+
+    if quarantine_resumable_flags:
+        head = ", ".join(quarantine_resumable_flags[:4])
+        more = (
+            f" … +{len(quarantine_resumable_flags) - 4}"
+            if len(quarantine_resumable_flags) > 4 else ""
+        )
+        lines.append(
+            f"🔁 Resumable quarantines ({len(quarantine_resumable_flags)}): {head}{more} "
+            "→ just re-run full-real"
+        )
 
     if capacity and capacity.get("gated"):
         entries = ", ".join(

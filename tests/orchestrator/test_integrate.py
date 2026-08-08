@@ -133,6 +133,40 @@ class FakeRun:
         return [c for c in self.calls if c[: len(prefix)] == list(prefix)]
 
 
+class WriteGroupJournalQuarantineReason(unittest.TestCase):
+    """_write_group_journal persists quarantine_reason only when non-empty, and
+    a later write for the same group (e.g. re-integrated after --fresh) drops
+    any stale reason since the record is rebuilt fresh each call."""
+
+    def test_reason_omitted_when_empty(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            journal_path = str(Path(tmpdir) / "journal.json")
+            integrate._write_group_journal(journal_path, "base", "https://x/pr/1", "b", "OPEN")
+            record = json.loads(Path(journal_path).read_text())["groups"]["base"]
+            self.assertNotIn("quarantine_reason", record)
+
+    def test_reason_persisted_when_provided(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            journal_path = str(Path(tmpdir) / "journal.json")
+            integrate._write_group_journal(
+                journal_path, "base", "", "b", "QUARANTINED",
+                integrate.QUARANTINE_BUDGET_EXHAUSTED,
+            )
+            record = json.loads(Path(journal_path).read_text())["groups"]["base"]
+            self.assertEqual(record["quarantine_reason"], integrate.QUARANTINE_BUDGET_EXHAUSTED)
+
+    def test_reason_dropped_on_transition_to_non_quarantined_state(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            journal_path = str(Path(tmpdir) / "journal.json")
+            integrate._write_group_journal(
+                journal_path, "base", "", "b", "QUARANTINED",
+                integrate.QUARANTINE_BUDGET_EXHAUSTED,
+            )
+            integrate._write_group_journal(journal_path, "base", "https://x/pr/1", "b", "OPEN")
+            record = json.loads(Path(journal_path).read_text())["groups"]["base"]
+            self.assertNotIn("quarantine_reason", record)
+
+
 class ReuseExistingOpenPR(unittest.TestCase):
     """AC-005, AC-013: Reuse existing open PR instead of creating new one."""
 
@@ -382,6 +416,7 @@ class FailedLabelAddDoesNotCorruptPrUrl(unittest.TestCase):
             self.assertEqual(record["pr_url"], "", "pr_url must stay empty, never the error text")
             self.assertNotIn("could not add label", record["pr_url"])
             self.assertEqual(record["state"], "QUARANTINED")
+            self.assertEqual(record["quarantine_reason"], integrate.QUARANTINE_INTEGRATION_ERROR)
 
     def test_finish_real_quarantines_group_on_label_failure(self):
         """End-to-end via finish_real: no PR recorded, group quarantined."""
@@ -859,6 +894,63 @@ class SingleGroupIntegrateEntry(unittest.TestCase):
                     len(run.find_calls("gh", "pr", "create")), 0,
                     "Should not create PR for quarantined group",
                 )
+
+    def test_integrate_one_empty_deliverable_records_task_failure_reason(self):
+        """The journal record for an empty-deliverable quarantine carries the
+        structured task_failure reason (distinct from budget_exhausted -- this
+        group's tasks actually failed, so it is NOT safely re-runnable as-is)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            journal_path = str(Path(tmpdir) / "journal.json")
+            run = FakeRun()
+            with patch("worktrail.orchestrator.integrate._git", side_effect=run):
+                with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
+                    result = integrate.integrate_one(
+                        mock_group("base", ["T001"]),
+                        Path("/repo"),
+                        "spec-001",
+                        [mock_task("T001", status="failed")],
+                        "origin",
+                        "run-eq",
+                        "main",
+                        journal_path,
+                        {"T001": "failed"},
+                        {},
+                        {},
+                    )
+            self.assertIsNone(result)
+            record = json.loads(Path(journal_path).read_text())["groups"]["base"]
+            self.assertEqual(record["state"], "QUARANTINED")
+            self.assertEqual(record["quarantine_reason"], integrate.QUARANTINE_TASK_FAILURE)
+
+    def test_dep_on_quarantined_cascades_records_dependency_reason(self):
+        """A cascade-quarantined dependent group's journal record carries the
+        dependency_quarantined reason, distinct from its base's own reason."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            journal_path = str(Path(tmpdir) / "journal.json")
+            run = FakeRun()
+            group_branch: dict = {}
+            quarantined = {"base": "incomplete task(s): T001"}
+            with patch("worktrail.orchestrator.integrate._git", side_effect=run):
+                with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
+                    result = integrate.integrate_one(
+                        mock_group("feature", ["T002"], depends_on=["base"]),
+                        Path("/repo"),
+                        "spec-001",
+                        [mock_task("T001", status="failed"), mock_task("T002")],
+                        "origin",
+                        "run-cas",
+                        "main",
+                        journal_path,
+                        {"T001": "failed", "T002": "done"},
+                        group_branch,
+                        quarantined,
+                    )
+            self.assertIsNone(result)
+            record = json.loads(Path(journal_path).read_text())["groups"]["feature"]
+            self.assertEqual(record["state"], "QUARANTINED")
+            self.assertEqual(
+                record["quarantine_reason"], integrate.QUARANTINE_DEPENDENCY_QUARANTINED
+            )
 
 
 class FinishRealOverSeam(unittest.TestCase):

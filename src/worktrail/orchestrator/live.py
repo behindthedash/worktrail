@@ -3246,7 +3246,10 @@ def _pipeline_scheduler(
                 if dep in quarantined:
                     with iv_lock:
                         quarantined[name] = f"base group '{dep}' quarantined"
-                    _record_group_fn(name, "", f"{run_id}/{name}", "QUARANTINED")
+                    _record_group_fn(
+                        name, "", f"{run_id}/{name}", "QUARANTINED",
+                        integrate_module.QUARANTINE_DEPENDENCY_QUARANTINED,
+                    )
                     return
 
             # Resume: skip already-completed IV phases for this group (AC-013, REQ-017)
@@ -3268,7 +3271,10 @@ def _pipeline_scheduler(
                             group_branch[name] = candidate
                     prs.append((name, base, journal_rec.get("pr_url")))
                 if name in quarantined:
-                    _record_group_fn(name, "", journal_rec.get("head_branch", ""), "QUARANTINED")
+                    _record_group_fn(
+                        name, "", journal_rec.get("head_branch", ""), "QUARANTINED",
+                        integrate_module.QUARANTINE_INTEGRATION_ERROR,
+                    )
                     print(f"{_ts()}   !! GROUP [{name}] {quarantined[name]}")
 
             if not _skip_integrate:
@@ -3308,7 +3314,10 @@ def _pipeline_scheduler(
                 except Exception as exc:
                     with iv_lock:
                         quarantined[name] = f"integrate exception: {exc!r}"
-                    _record_group_fn(name, "", f"{run_id}/{name}", "QUARANTINED")
+                    _record_group_fn(
+                        name, "", f"{run_id}/{name}", "QUARANTINED",
+                        integrate_module.QUARANTINE_INTEGRATION_ERROR,
+                    )
                     print(
                         f"{_ts()}   !! GROUP [{name}] integrate raised: {exc!r} -- quarantined, run continues"
                     )
@@ -3342,7 +3351,8 @@ def _pipeline_scheduler(
                 with iv_lock:
                     quarantined[name] = f"verify exception: {exc!r}"
                 _record_group_fn(
-                    name, "", group_branch.get(name, f"{run_id}/{name}"), "QUARANTINED"
+                    name, "", group_branch.get(name, f"{run_id}/{name}"), "QUARANTINED",
+                    integrate_module.QUARANTINE_INTEGRATION_ERROR,
                 )
                 print(
                     f"{_ts()}   !! GROUP [{name}] verify raised: {exc!r} -- quarantined, run continues"
@@ -3459,10 +3469,15 @@ def _pipeline_scheduler(
             jdict["budget_stopped_at"] = _budget_stopped_at[0]
         progress.atomic_write_text(journal_path, json.dumps(jdict, indent=2, sort_keys=True) + "\n")
 
-    def _record_group_fn(name: str, pr_url: str, head_branch: str, state: str) -> None:
+    def _record_group_fn(
+        name: str, pr_url: str, head_branch: str, state: str, quarantine_reason: str = "",
+    ) -> None:
         """Serialize one group's integrate result under state_lock (AC-015 / TASK-006)."""
         with state_lock:
-            groups_journal[name] = {"pr_url": pr_url, "head_branch": head_branch, "state": state}
+            record = {"pr_url": pr_url, "head_branch": head_branch, "state": state}
+            if quarantine_reason:
+                record["quarantine_reason"] = quarantine_reason
+            groups_journal[name] = record
             _record()
 
     def _ensure_wt(task: dict) -> Path:
@@ -3757,7 +3772,10 @@ def _pipeline_scheduler(
                 with iv_lock:
                     quarantined[gname] = "fan-out incomplete (run budget exceeded)"
                     _group_phase_map.pop(gname, None)
-                _record_group_fn(gname, "", f"{run_id}/{gname}", "QUARANTINED")
+                _record_group_fn(
+                    gname, "", f"{run_id}/{gname}", "QUARANTINED",
+                    integrate_module.QUARANTINE_BUDGET_EXHAUSTED,
+                )
                 group_done_events[gname].set()
                 dispatched_groups.add(gname)
             elif _group_is_terminal(g):
@@ -3772,7 +3790,10 @@ def _pipeline_scheduler(
                 with iv_lock:
                     quarantined[gname] = "fan-out incomplete (run budget or error)"
                     _group_phase_map.pop(gname, None)
-                _record_group_fn(gname, "", f"{run_id}/{gname}", "QUARANTINED")
+                _record_group_fn(
+                    gname, "", f"{run_id}/{gname}", "QUARANTINED",
+                    integrate_module.QUARANTINE_TASK_FAILURE,
+                )
                 group_done_events[gname].set()
                 dispatched_groups.add(gname)
 

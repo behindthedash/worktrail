@@ -352,6 +352,13 @@ class PipelineBudgetStopLeavesTasksPending(unittest.TestCase):
                 any("run budget" in r for r in reasons),
                 f"journal entries must not carry run-budget failure reason; got: {reasons}",
             )
+            # Any group quarantined purely by the budget stop must carry the
+            # structured budget_exhausted reason (safely resumable), not a
+            # generic/failure category -- quarantine_selfcheck.py and the
+            # dashboard rely on this to skip human triage for these groups.
+            for group in data.get("groups", {}).values():
+                if group.get("state") == "QUARANTINED":
+                    self.assertEqual(group.get("quarantine_reason"), "budget_exhausted")
 
 
 class _FakeVerifier:
