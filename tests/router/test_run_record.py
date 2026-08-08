@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests for run_record.py. Run: python3 test_run_record.py"""
 import json
+import subprocess
 import tempfile
 import unittest
 from io import StringIO
@@ -11,6 +12,7 @@ from worktrail.router.run_record import (
     ALLOWED_AGENTS,
     COMPLETION_STATES,
     _extract_path_candidate,
+    _is_stale,
     _load,
     main,
 )
@@ -357,6 +359,55 @@ class TestExtractPathCandidate(unittest.TestCase):
 
     def test_empty_string_returns_empty_string(self):
         self.assertEqual(_extract_path_candidate(""), "")
+
+
+class TestIsStale(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.repo_dir = Path(self.tmp) / "repo"
+        self.repo_dir.mkdir()
+        self._git("init", "-b", "main")
+        self._git("config", "user.email", "test@example.com")
+        self._git("config", "user.name", "Test")
+        (self.repo_dir / "tracked.md").write_text("tracked", encoding="utf-8")
+        self._git("add", "tracked.md")
+        self._git("commit", "-m", "initial")
+        self.worktree = Path(self.tmp) / "worktree-does-not-exist"
+
+    def _git(self, *args):
+        subprocess.run(["git", "-C", str(self.repo_dir), *args], check=True,
+                        capture_output=True)
+
+    def test_worktree_exists_is_live(self):
+        existing_worktree = Path(self.tmp) / "still-here"
+        existing_worktree.mkdir()
+        record = {
+            "worktree": str(existing_worktree),
+            "files_changed": ["tracked.md"],
+        }
+        self.assertFalse(_is_stale(record, self.repo_dir, "main"))
+
+    def test_no_worktree_field_is_live(self):
+        record = {"worktree": None, "files_changed": ["tracked.md"]}
+        self.assertFalse(_is_stale(record, self.repo_dir, "main"))
+
+    def test_worktree_gone_and_all_files_resolve_is_stale(self):
+        record = {
+            "worktree": str(self.worktree),
+            "files_changed": ["tracked.md (data-model, contracts)"],
+        }
+        self.assertTrue(_is_stale(record, self.repo_dir, "main"))
+
+    def test_worktree_gone_and_one_file_does_not_resolve_is_live(self):
+        record = {
+            "worktree": str(self.worktree),
+            "files_changed": ["tracked.md", "never-committed.md"],
+        }
+        self.assertFalse(_is_stale(record, self.repo_dir, "main"))
+
+    def test_worktree_gone_and_empty_files_changed_is_live(self):
+        record = {"worktree": str(self.worktree), "files_changed": []}
+        self.assertFalse(_is_stale(record, self.repo_dir, "main"))
 
 
 def _active_conflicts(tmp, **over):
