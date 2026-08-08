@@ -797,6 +797,33 @@ class ReposScan(unittest.TestCase):
         self.assertIn("transport", out)
         self.assertIn("retry after 2026-07-20T21:00:00+00:00", out)
 
+    def test_render_dashboard_surfaces_postmerge_check_failures(self):
+        out = dashboard.render_dashboard(
+            [], None, [], [], postmerge_check_failures={
+                "repos_flagged": 1,
+                "prs_flagged": 1,
+                "flagged": [
+                    {
+                        "repo": "repo-a",
+                        "url": "https://github.com/org/repo-a/pull/42",
+                        "failing_checks": ["ci/build"],
+                        "merged_at": "2026-08-01T00:00:00Z",
+                    },
+                ],
+            }
+        )
+        self.assertIn("Post-merge check failures", out)
+        self.assertIn("repo-a#42", out)
+
+    def test_render_dashboard_omits_postmerge_line_when_empty(self):
+        out = dashboard.render_dashboard(
+            [], None, [], [],
+            postmerge_check_failures={"repos_flagged": 0, "prs_flagged": 0, "flagged": []},
+        )
+        self.assertNotIn("Post-merge check failures", out)
+        out_none = dashboard.render_dashboard([], None, [], [], postmerge_check_failures=None)
+        self.assertNotIn("Post-merge check failures", out_none)
+
     def test_worktrees_reported_not_overlaid(self):
         # A worktree's docs/specs must NOT resurface a spec as active (overlay
         # removed); the worktree is reported by name for the cleanup action.

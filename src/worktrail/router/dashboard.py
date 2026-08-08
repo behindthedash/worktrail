@@ -717,6 +717,12 @@ def _feature_summary(spec_text: str) -> Optional[str]:
 _PR_NUMBER_RE = re.compile(r"/pull/(\d+)")
 
 
+def _pr_number(pr_url: Optional[str]) -> str:
+    """Extract the `#N` PR number from a GitHub PR URL for compact rendering."""
+    m = _PR_NUMBER_RE.search(pr_url or "")
+    return m.group(1) if m else "?"
+
+
 def _group_merged_on_base(repo: Path, pr_url: str) -> bool:
     """True if a merge commit referencing this PR number already exists in the
     base checkout's history -- i.e. the group actually landed (e.g. a manual or
@@ -1932,6 +1938,7 @@ def render_dashboard(
     clusters: Optional[List[Dict[str, Any]]] = None,
     cluster_precision: Optional[Dict[str, Any]] = None,
     capacity: Optional[Dict[str, Any]] = None,
+    postmerge_check_failures: Optional[Dict[str, Any]] = None,
     recent_runs: Optional[List[Dict[str, Any]]] = None,
     staleness_warnings: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
@@ -1944,7 +1951,9 @@ def render_dashboard(
     (automerge_selfcheck.py) get their own one-line review nudge; go-policy.yaml
     rationale-vs-reality drift signals (policy_drift_selfcheck.py) get theirs;
     QUARANTINED-group signals (quarantine_selfcheck.py) get their own one-line
-    review nudge; when a cluster
+    review nudge; post-merge check-failure signals (audit_postmerge.py's
+    dashboard_snapshot()) get their own one-line review nudge, only emitted
+    when `postmerge_check_failures` carries at least one flagged PR; when a cluster
     section is shown and
     `cluster_precision` (cluster_telemetry.summarize()'s result) has at least
     CLUSTER_PRECISION_MIN_DECIDED decided outcomes, an extra precision line is
@@ -2110,6 +2119,19 @@ def render_dashboard(
                 f"⏳ Headless capacity gates ({len(capacity['gated'])}): {entries}{more}"
                 " → fallback may be available"
             )
+
+    if postmerge_check_failures and postmerge_check_failures.get("flagged"):
+        pmf_flagged = postmerge_check_failures["flagged"]
+        entries = ", ".join(
+            f"{item.get('repo', '?')}#{_pr_number(item.get('url'))}" for item in pmf_flagged[:4]
+        )
+        more = f" … +{len(pmf_flagged) - 4}" if len(pmf_flagged) > 4 else ""
+        lines.append(
+            f"🚨 Post-merge check failures "
+            f"({postmerge_check_failures.get('prs_flagged', len(pmf_flagged))} PR(s) across "
+            f"{postmerge_check_failures.get('repos_flagged', 0)} repo(s)): {entries}{more}"
+            " → review failing checks"
+        )
 
     cl = list(clusters or [])
     if cl:
@@ -2356,6 +2378,7 @@ def main(argv=None) -> int:
         rendered = render_dashboard(
             repo_rows, None, inflight, queue_briefs, clusters=clusters,
             cluster_precision=cluster_precision, capacity=capacity,
+            postmerge_check_failures=postmerge_check_failures,
             staleness_warnings=staleness_warnings,
         )
         if args.json:
@@ -2399,7 +2422,8 @@ def main(argv=None) -> int:
     )
     rendered = render_dashboard(
         None, rows, inflight, queue_briefs, worktrees, con, clusters=clusters,
-        cluster_precision=cluster_precision, capacity=capacity, recent_runs=recent_runs,
+        cluster_precision=cluster_precision, capacity=capacity,
+        postmerge_check_failures=postmerge_check_failures, recent_runs=recent_runs,
         staleness_warnings=staleness_warnings,
     )
     if args.json:
