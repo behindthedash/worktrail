@@ -14,10 +14,12 @@ import pytest
 from worktrail.router.run_record import (
     ALLOWED_AGENTS,
     COMPLETION_STATES,
+    RemoteClaimError,
     _claim_ref,
     _load,
     _load_lock,
     _lock_path,
+    _push_remote_claim,
     main,
 )
 
@@ -675,6 +677,36 @@ class TestRemoteClaim:
         assert lock_b["remote"] is True
         assert lock_b["run_id"] == res_b["run_id"]
         assert _load(Path(res_b["path"]))["specification"] == "spec-remote-stale"
+
+    def test_concurrent_reclaim_of_same_stale_sha_exactly_one_succeeds(self, remote_origin, tmp_path):
+        """Two machines racing a reclaim both read the same stale claim SHA
+        before either pushes, so both compute their `--force-with-lease`
+        check against that identical pre-read SHA. Git's compare-and-swap on
+        the ref means only whichever push lands first can still see that
+        expected SHA remotely; the second's lease check is rejected -- this
+        is what makes `--force-with-lease` sufficient without any additional
+        locking, even for a true concurrent race.
+        """
+        bare_dir, clone_dir = remote_origin
+        ref = _claim_ref("spec-remote-race")
+        stale_sha = _push_remote_claim(clone_dir, ref, "run-stale", ttl_seconds=0)
+
+        winner_sha = _push_remote_claim(
+            clone_dir, ref, "run-winner", ttl_seconds=86400, expect_sha=stale_sha
+        )
+
+        with pytest.raises(RemoteClaimError) as exc_info:
+            _push_remote_claim(
+                clone_dir, ref, "run-loser", ttl_seconds=86400, expect_sha=stale_sha
+            )
+        assert exc_info.value.reason == "push_rejected"
+
+        pushed = subprocess.run(
+            ["git", "-C", str(bare_dir), "rev-parse", "--verify", ref],
+            capture_output=True, text=True,
+        )
+        assert pushed.returncode == 0
+        assert pushed.stdout.strip() == winner_sha
 
 
 def _prune(tmp, **over):
