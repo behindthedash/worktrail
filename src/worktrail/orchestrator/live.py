@@ -3016,6 +3016,73 @@ def full_real(
         _lock.release()
 
 
+def _dispatch_pending_tail(
+    repo: Path,
+    spec_rel: str,
+    journal_path: str,
+    run_id: str,
+    tasks: list,
+    max_workers: int,
+    agent: str,
+    model: str | None,
+    timeout: int,
+    role_models: dict | None,
+    role_agents: dict | None,
+    fallback_agent: str | None,
+    tier_map: dict | None,
+    purpose_tier_map: dict | None,
+    fallback_chain: "list[str] | None",
+    effort: str | None,
+    run_budget: int | None,
+    bootstrap_cmd: str | None = None,
+    notify_cmd: str | None = None,
+    progress_interval: int | None = None,
+    spawn=None,
+) -> dict | None:
+    """Dispatch pending e2e/cleanup tail tasks once the impl-group fan-out is
+    integrated (`full-real`'s two schedulers both reach this point with every
+    non-tail task already terminal). Neither scheduler ever threads
+    `with_tail=True` through to `live_run_real` on its own -- tail-kind tasks
+    are excluded from `runnable_frontier` unconditionally, so without this call
+    they are never dispatched by `full-real`, first run or resume alike (the
+    journal's `pending_tail_tasks`/`pending_tail_reason` fields were bookkeeping
+    with no consumer). A second `live_run_real` call is level-triggered by
+    construction: it reloads task status fresh, and `drive()` no-ops on any
+    task already terminal, so repeat calls (including a resume in a fresh
+    process) are safe and idempotent.
+
+    Returns None when there is no tail work outstanding (no-op); otherwise the
+    dict `live_run_real` returns for its `with_tail=True` pass.
+    """
+    if not coordinator.tail_held_out_task_ids(tasks):
+        return None
+    print(f"{_ts()} === TAIL: dispatching e2e/cleanup task(s) ===")
+    return live_run_real(
+        repo,
+        spec_rel,
+        max_workers=max_workers,
+        out_cassette=journal_path,
+        with_tail=True,
+        agent=agent,
+        model=model,
+        timeout=timeout,
+        resume=True,
+        run_id=run_id,
+        role_models=role_models,
+        role_agents=role_agents,
+        fallback_agent=fallback_agent,
+        tier_map=tier_map,
+        purpose_tier_map=purpose_tier_map,
+        fallback_chain=fallback_chain,
+        effort=effort,
+        run_budget=run_budget,
+        notify_cmd=notify_cmd,
+        progress_interval=progress_interval,
+        bootstrap_cmd=bootstrap_cmd,
+        spawn=spawn,
+    )
+
+
 def _pipeline_scheduler(
     repo: Path,
     spec_rel: str,
@@ -3825,7 +3892,36 @@ def _pipeline_scheduler(
             f"updated base -- human review required, no automatic revert: "
             f"{', '.join(post_merge_regressed)}"
         )
-    integrate_module._mark_integrate_complete_if_terminal(journal_path, groups, tasks)
+    integrate_complete = integrate_module._mark_integrate_complete_if_terminal(
+        journal_path, groups, tasks
+    )
+    if integrate_complete:
+        progress.set_phase(journal_path, "tail")
+        tail_res = _dispatch_pending_tail(
+            repo,
+            spec_rel,
+            journal_path,
+            run_id,
+            tasks,
+            max_workers,
+            agent,
+            model,
+            timeout,
+            role_models,
+            role_agents,
+            fallback_agent,
+            tier_map,
+            purpose_tier_map,
+            fallback_chain,
+            effort,
+            run_budget,
+            bootstrap_cmd=bootstrap_cmd,
+            spawn=spawn_fn,
+        )
+        if tail_res is not None:
+            integrate_module._mark_integrate_complete_if_terminal(
+                journal_path, groups, tail_res["tasks"]
+            )
     progress.set_phase(journal_path, "done")
     _print_usage_report(journal_path)
     print(f"{_ts()} === PIPELINE RUN COMPLETE ===")
@@ -4383,6 +4479,34 @@ def _full_real_inner(
     note = _format_automerge_evidence_note(automerge_evidence)
     if note:
         print(note)
+    if integrate._mark_integrate_complete_if_terminal(journal_path, groups, tasks):
+        progress.set_phase(journal_path, "tail")
+        tail_res = _dispatch_pending_tail(
+            repo,
+            spec_rel,
+            journal_path,
+            run_id,
+            tasks,
+            max_workers,
+            agent,
+            model,
+            timeout,
+            role_models,
+            role_agents,
+            fallback_agent,
+            tier_map,
+            purpose_tier_map,
+            fallback_chain,
+            effort,
+            run_budget,
+            bootstrap_cmd=bootstrap_cmd,
+            notify_cmd=notify_cmd,
+            progress_interval=progress_interval,
+        )
+        if tail_res is not None:
+            integrate._mark_integrate_complete_if_terminal(
+                journal_path, groups, tail_res["tasks"]
+            )
     progress.set_phase(journal_path, "done")
     if notify_cmd:
         done_ct = sum(1 for t in tasks if t.get("status") in coordinator.DONE)

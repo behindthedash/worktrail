@@ -531,6 +531,23 @@ def resume_verify_pending(
     return resumed
 
 
+@dataclass(frozen=True)
+class StageRemediation:
+    """One row of the remediation-sweep table. `finder(repos_root, go_repo)`
+    returns findings for this stage; `action(finding, agent, timeout, spawner,
+    log)` remediates a single finding and returns a result dict, raising on
+    failure so the sweep engine can catch and log per-finding without
+    aborting the rest of the sweep."""
+    key: str
+    label: str
+    finder: Callable[[Path, Optional[str]], List[Dict[str, Any]]]
+    action: Callable[
+        [Dict[str, Any], str, int,
+         Callable[[List[str], int], "SpawnOutcome"], Callable[[str], None]],
+        Dict[str, Any],
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Lockfile
 

@@ -322,6 +322,123 @@ class E2EHappyPathTest(unittest.TestCase):
                               f"'{name}' should have a PR entry; pr_names={pr_names}")
 
 
+def _init_repo_with_tail(root: Path) -> Path:
+    """Extends `_init_repo`'s topology with a tail-kind TASK-004 (kind: e2e)
+    depending on both feature groups -- mirrors the reported bug's TASK-CHG-007
+    (kind: e2e, deps on two impl tasks from separate groups)."""
+    repo = _init_repo(root)
+    spec_dir = repo / "docs" / "specs" / "001-x" / "tasks"
+    (spec_dir / "TASK-004.md").write_text(
+        "---\nid: TASK-004\nstatus: pending\ndependencies: [TASK-002, TASK-003]\n"
+        "files: [src/task-004.txt]\nkind: e2e\nreview: skip\n---\nbody\n"
+    )
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-q", "-m", "add tail task"],
+        check=True, capture_output=True,
+    )
+    return repo
+
+
+# ---------------------------------------------------------------------------
+# E2E Tail Dispatch (level-triggered pending_tail_tasks dispatch)
+# ---------------------------------------------------------------------------
+
+class E2ETailDispatchTest(unittest.TestCase):
+    """`full-real --pipeline` must dispatch kind:e2e/cleanup tail tasks once
+    every impl group has merged. Previously never dispatched at all: tail-kind
+    tasks are excluded from `runnable_frontier` unconditionally, and
+    `_pipeline_scheduler` never threaded `with_tail=True` through to
+    `live_run_real` -- the journal's `pending_tail_tasks`/`pending_tail_reason`
+    fields were bookkeeping with no consumer."""
+
+    def test_tail_task_dispatched_after_all_groups_merged(self):
+        """Fresh run: TASK-004 (kind:e2e) is driven once its deps (TASK-002/003)
+        are done, within the same pipeline invocation."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _init_repo_with_tail(Path(tmp))
+            spawn = FakeSpawn()
+            integrate_one, _ = _make_integrate_one()
+            _run_pipeline(repo, tmp, spawn, integrate_one, FakeVerifier())
+
+            tail_calls = [(tid, role) for tid, role in spawn.calls if tid == "TASK-004"]
+            self.assertTrue(
+                tail_calls,
+                f"tail task TASK-004 was never dispatched; spawn.calls={spawn.calls}",
+            )
+
+    def test_tail_task_dispatched_on_resume_after_prior_process_merged_everything(self):
+        """Reproduces the reported bug: a FRESH process resumes a journal where
+        every impl group already reached MERGED (integrate_complete is True)
+        but the tail task has no journal entries at all -- it must still be
+        dispatched instead of being silently skipped on every future resume."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _init_repo_with_tail(Path(tmp))
+            # Every group is journal-MERGED with no branch materialized here --
+            # commit their declared files so TASK-004's dependency-file guard
+            # (_require_dependency_files) sees them present, matching the same
+            # pre-merged invariant test_completed_tasks_not_respawned_on_resume
+            # sets up for TASK-001.
+            (repo / "src").mkdir(parents=True, exist_ok=True)
+            for tid in ("task-001", "task-002", "task-003"):
+                (repo / "src" / f"{tid}.txt").write_text(f"{tid}\n")
+            subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True)
+            subprocess.run(
+                ["git", "-C", str(repo), "commit", "-q", "-m", "pre-merged for resume test"],
+                check=True, capture_output=True,
+            )
+            journal_path = str(Path(tmp) / "pipeline-journal.json")
+            _write_journal(journal_path, _all_done_entries(), {
+                "base": {
+                    "pr_url": "http://pr/base",
+                    "head_branch": "full-test/base",
+                    "state": "MERGED",
+                },
+                "feature-1": {
+                    "pr_url": "http://pr/feature-1",
+                    "head_branch": "full-test/feature-1",
+                    "state": "MERGED",
+                },
+                "feature-2": {
+                    "pr_url": "http://pr/feature-2",
+                    "head_branch": "full-test/feature-2",
+                    "state": "MERGED",
+                },
+            })
+
+            spawn = FakeSpawn()
+            integrate_one, events = _make_integrate_one()
+            live._pipeline_scheduler(
+                repo=repo,
+                spec_rel="docs/specs/001-x",
+                remote="origin",
+                base="main",
+                model="haiku",
+                max_workers=3,
+                timeout=30,
+                resume=True,
+                only=None,
+                role_models=None,
+                run_budget=None,
+                journal_path=journal_path,
+                run_id="e2e-test",
+                _spawn=spawn,
+                _integrate_one=integrate_one,
+                _make_verifier=lambda: FakeVerifier(),
+            )
+
+            tail_calls = [(tid, role) for tid, role in spawn.calls if tid == "TASK-004"]
+            self.assertTrue(
+                tail_calls,
+                "tail task TASK-004 must be dispatched on a resume where every "
+                f"impl group already merged; spawn.calls={spawn.calls}",
+            )
+            self.assertEqual(
+                events, [],
+                f"already-MERGED impl groups must not be re-integrated; events={events}",
+            )
+
+
 # ---------------------------------------------------------------------------
 # E2E Parity (AC-006)
 # ---------------------------------------------------------------------------
