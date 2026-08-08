@@ -257,3 +257,38 @@ def test_spec_worktree_setup_does_not_number_openspec_change_ids():
         "into SPEC_ID -- `openspec new change` rejects a name that doesn't start "
         "with a letter"
     )
+
+
+def test_orchestrator_invocation_branches_spec_ref_on_detected_format():
+    """`worktrail-live full-real --spec` must resolve to the tree that actually
+    owns $SPEC_ID's tasks. `taskformats.resolve.detect_format()` decides format
+    purely from the path it is handed (docs/specs/** vs openspec/changes/**), so
+    a hardcoded `docs/specs/$SPEC_ID` here always resolves as devkit regardless
+    of the target repo's real format -- reproduced directly: running this exact
+    invocation against an OpenSpec change raised FileNotFoundError ('no task
+    files under .../docs/specs/<id>/tasks') because it silently tried to load
+    the change as devkit. Brief 20260807-194634."""
+    doc = SKILLS_DIR / "worktrail-go" / "references" / "subagent-prompts.md"
+    text = doc.read_text()
+    heading = "## Orchestrator invocation {#orchestrator}"
+    start = text.index(heading)
+    block_start = text.index("```bash", start)
+    block_end = text.index("```", block_start + len("```bash"))
+    block = text[block_start:block_end]
+
+    assert '$SPEC_ROOT/openspec/changes/$SPEC_ID"' in block
+    if_start = block.index('if [ -d "$SPEC_ROOT/openspec/changes/$SPEC_ID" ]; then')
+    fi_end = block.index("\nfi\n", if_start) + len("\nfi\n")
+    format_switch = block[if_start:fi_end]
+    after_switch = block[fi_end:]
+
+    openspec_branch, _, devkit_branch = format_switch.partition("else")
+    assert 'SPEC_REF="openspec/changes/$SPEC_ID"' in openspec_branch
+    assert 'SPEC_REF="docs/specs/$SPEC_ID"' in devkit_branch
+    assert "worktrail-live full-real" in after_switch
+    assert '--spec "$SPEC_REF"' in after_switch, (
+        "the full-real invocation must pass the format-resolved $SPEC_REF, not a "
+        "literal docs/specs/$SPEC_ID -- otherwise every OpenSpec-format repo's "
+        "Route C-continuing-inline-D and Route D dispatch loads the wrong adapter"
+    )
+    assert "--spec docs/specs/$SPEC_ID" not in block
