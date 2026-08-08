@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import re
 import socket
@@ -92,6 +93,8 @@ PHASES = (
 SECRET_PAT = re.compile(
     r"(api[-_ ]?key|secret|token|password|authorization:\s*bearer)\s*[:=]\s*\S+",
     re.IGNORECASE)
+
+logger = logging.getLogger(__name__)
 
 
 def _now() -> str:
@@ -541,6 +544,25 @@ def _read_remote_claim(repo_dir: Path, ref: str) -> Dict[str, Any] | None:
 
     payload["sha"] = sha
     return payload
+
+
+def _delete_remote_claim(repo_dir: Path, ref: str) -> None:
+    """Best-effort release of a cross-machine claim: delete `ref` on `origin`.
+
+    Called from `finish` after the local lock is already released, so a
+    failure here (network down, ref already gone, origin unreachable) must
+    never surface as a `finish` failure -- it only leaves a claim to expire
+    via its own TTL. Failures are logged, not raised.
+    """
+    try:
+        result = _run_remote_git(repo_dir, ["push", "origin", "--delete", ref])
+    except RemoteClaimError as exc:
+        logger.warning("remote claim delete failed for %s: %s", ref, exc)
+        return
+    if result.returncode != 0:
+        logger.warning(
+            "remote claim delete failed for %s: %s", ref, (result.stderr or result.stdout).strip()
+        )
 
 
 def _lock_path(run_path: Path, specification: str) -> Path:
