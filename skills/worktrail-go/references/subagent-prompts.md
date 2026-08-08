@@ -392,12 +392,15 @@ for label in $PR_LABELS; do PR_LABEL_ARGS+=(--pr-label "$label"); done
 # Devkit specs already declare file scope in their task frontmatter and take
 # compile's free seed path (no model call), so this is a no-op there.
 if [ -d "$SPEC_ROOT/openspec/changes/$SPEC_ID" ]; then
+  SPEC_REF="openspec/changes/$SPEC_ID"
   worktrail-compile "$SPEC_ROOT/openspec/changes/$SPEC_ID" || {
     echo "ERROR: worktrail-compile failed for $SPEC_ID — inspect the error above before retrying full-real." >&2
     exit 1
   }
+else
+  SPEC_REF="docs/specs/$SPEC_ID"
 fi
-worktrail-live full-real --repo "$SPEC_ROOT" --spec docs/specs/$SPEC_ID --base "$BASE" --agent "$AGENT_CLI" "${AGENT_MODEL_ARGS[@]}" "${FALLBACK_AGENT_ARGS[@]}" "${ROLE_AGENT_MAP_ARGS[@]}" "${PR_LABEL_ARGS[@]}" --route "$ROUTE" --gates "$GATES"
+worktrail-live full-real --repo "$SPEC_ROOT" --spec "$SPEC_REF" --base "$BASE" --agent "$AGENT_CLI" "${AGENT_MODEL_ARGS[@]}" "${FALLBACK_AGENT_ARGS[@]}" "${ROLE_AGENT_MAP_ARGS[@]}" "${PR_LABEL_ARGS[@]}" --route "$ROUTE" --gates "$GATES"
 ```
 
 `AGENT_CLI` precedence is explicit invocation > repo policy `agent_cli` > machine-wide
