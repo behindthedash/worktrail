@@ -933,6 +933,46 @@ class CumulativePostMergeGate(unittest.TestCase):
         self.assertIn("feature-1", reason)
         self.assertFalse(run2.find("gh", "pr", "merge", "run/feature-2"))
 
+    def test_post_merge_worktree_reused_across_separate_verifier_instances(self):
+        """live.py's pipeline scheduler builds a FRESH Verifier per group, so a
+        second group's post-merge smoke check runs against a NEW instance whose
+        `_post_merge_worktree_path` starts as None -- even though the first
+        group's instance already created (and, on real git, registered) a
+        worktree at the shared `<spec_id>-postmerge` path. Before the fix, the
+        second instance blindly retried `git worktree add` at that same path
+        and failed with "already exists", which then permanently poisons the
+        shared `cumulative_regression` dict for every remaining group in the
+        run. `path.exists()` must short-circuit the second instance's own
+        `git worktree add` attempt entirely."""
+        with tempfile.TemporaryDirectory() as tmp:
+            run1 = FakeRun({"run/feature-1": [view()]})
+            v1 = mk(run1, FakeSpawn(), tmp, post_merge_smoke_cmd="pytest -q")
+            path1 = v1._post_merge_worktree()
+            self.assertIsNotNone(path1)
+            self.assertEqual(len(run1.find("git", "-C", "/repo", "worktree", "add")), 1)
+
+            # Simulate the real `git worktree add` in v1's call above having
+            # actually created the directory on disk (FakeRun never touches
+            # the filesystem) -- exactly as test_verify_worktree_reused_on_second_call
+            # does for `_group_worktree` above.
+            path1.mkdir(parents=True, exist_ok=True)
+
+            # A second group's Verifier: a FRESH instance (its own
+            # _post_merge_worktree_path is None), with a `run` that FAILS any
+            # further "worktree add" -- if the fix regresses, this instance
+            # would call `git worktree add` again at the same path, get this
+            # injected failure, and return None.
+            def run2(cmd):
+                if cmd[:4] == ["git", "-C", "/repo", "worktree"] and "add" in cmd:
+                    return Proc(1, "", f"fatal: '{path1}' already exists")
+                return run1(cmd)
+
+            v2 = mk(run2, FakeSpawn(), tmp, post_merge_smoke_cmd="pytest -q")
+            path2 = v2._post_merge_worktree()
+
+            self.assertEqual(path1, path2)
+            self.assertIsNotNone(path2)
+
 
 class GhRetry(unittest.TestCase):
     """#9: a transient `gh pr view` failure is retried, not read as 'unavailable'."""
