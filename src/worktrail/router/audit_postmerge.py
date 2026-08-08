@@ -34,7 +34,7 @@ __all__ = [
     "DEFAULT_STATE_DIR", "DEFAULT_LOOKBACK_DAYS", "DEFAULT_MAX_PRS",
     "resolve_state_dir", "first_run_lookback", "load_state",
     "read_marker", "write_marker", "effective_since",
-    "list_merged_prs", "sweep_repo",
+    "list_merged_prs", "sweep_repo", "dashboard_snapshot",
 ]
 
 DEFAULT_STATE_DIR = "~/.go/postmerge-audit-state"
@@ -257,3 +257,27 @@ def sweep_repo(repo: Path, state_dir: Path, *, repo_name: Optional[str] = None,
     result["flagged"] = flagged
     _write_sweep_state(name, state_dir, latest_merged_at, flagged, checked_urls)
     return result
+
+
+def dashboard_snapshot(state_dir: Path) -> Dict[str, Any]:
+    """Pure read of every repo's persisted state file under `state_dir` into
+    a summary dict for `dashboard.py` to fold in -- no `gh` calls, no
+    network, no writes, safe to call from a hot dashboard-render path.
+
+    `{"repos_flagged": 0, "prs_flagged": 0, "flagged": []}` when `state_dir`
+    doesn't exist yet (no sweep has ever run) or every persisted state file
+    has an empty/absent `flagged` list (fleet is clean). Reuses `load_state`
+    per file so a corrupt state file degrades to being skipped rather than
+    raising, same as a corrupt marker does for `sweep_repo`.
+    """
+    summary: Dict[str, Any] = {"repos_flagged": 0, "prs_flagged": 0, "flagged": []}
+    if not state_dir.is_dir():
+        return summary
+    for path in sorted(state_dir.glob("*.json")):
+        flagged = load_state(path.stem, state_dir).get("flagged")
+        if not isinstance(flagged, list) or not flagged:
+            continue
+        summary["repos_flagged"] += 1
+        summary["prs_flagged"] += len(flagged)
+        summary["flagged"].extend(flagged)
+    return summary
