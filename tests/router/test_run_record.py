@@ -3,6 +3,7 @@
 import json
 import subprocess
 import tempfile
+import time
 import unittest
 from io import StringIO
 from pathlib import Path
@@ -627,6 +628,53 @@ class TestRemoteClaim:
         lock_path_b = _lock_path(Path(res_b["path"]), "spec-remote-second")
         assert not lock_path_b.exists()
         assert _load(Path(res_b["path"]))["specification"] is None
+
+    def test_second_claim_after_ttl_expiry_succeeds_via_stale_reclaim(self, remote_origin, tmp_path):
+        """First claim publishes with `--remote-ttl-seconds 0`, so it's stale
+        the instant a second reader checks it. A short sleep crosses the
+        claim payload's second-precision `claimed_at` boundary, guaranteeing
+        the freshness check (`age <= ttl_seconds`) sees `age > 0` rather than
+        racing an exact-same-second read that would still count as fresh.
+        """
+        bare_dir, clone_dir = remote_origin
+        run_dir_a = tmp_path / "runs-a"
+        run_dir_a.mkdir()
+        run_dir_b = tmp_path / "runs-b"
+        run_dir_b.mkdir()
+        res_a = _start(str(run_dir_a), repo=str(clone_dir), request="session A remote claim")
+        res_b = _start(str(run_dir_b), repo=str(clone_dir), request="session B remote claim")
+
+        out_a = StringIO()
+        with patch("sys.stdout", out_a):
+            rc_a = main([
+                "claim", res_a["path"], "--specification", "spec-remote-stale", "--remote",
+                "--remote-ttl-seconds", "0",
+            ])
+        result_a = json.loads(out_a.getvalue())
+        assert rc_a == 0
+        assert result_a["status"] == "claimed"
+
+        time.sleep(1.1)
+
+        out_b = StringIO()
+        with patch("sys.stdout", out_b):
+            rc_b = main(["claim", res_b["path"], "--specification", "spec-remote-stale", "--remote"])
+        result_b = json.loads(out_b.getvalue())
+
+        assert rc_b == 0
+        assert result_b["status"] == "claimed"
+
+        ref = _claim_ref("spec-remote-stale")
+        pushed = subprocess.run(
+            ["git", "-C", str(bare_dir), "rev-parse", "--verify", ref],
+            capture_output=True, text=True,
+        )
+        assert pushed.returncode == 0
+
+        lock_b = _load_lock(_lock_path(Path(res_b["path"]), "spec-remote-stale"))
+        assert lock_b["remote"] is True
+        assert lock_b["run_id"] == res_b["run_id"]
+        assert _load(Path(res_b["path"]))["specification"] == "spec-remote-stale"
 
 
 def _prune(tmp, **over):
