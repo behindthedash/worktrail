@@ -536,17 +536,33 @@ class Verifier:
         return path
 
     def _post_merge_worktree(self) -> Optional[Path]:
-        """Lazily create (once per run) a detached worktree tracking `base`,
-        reused for every cumulative post-merge smoke check in this run -- reset
+        """Lazily create a detached worktree tracking `base`, reused for every
+        cumulative post-merge smoke check this Verifier instance runs -- reset
         to the freshly fetched `remote/base` HEAD before each check rather than
         recreated. Safe to reuse because at most one smoke check runs at a time
-        (the caller holds `_merge_lock` for the duration)."""
+        (the caller holds `_merge_lock` for the duration).
+
+        The pipeline scheduler builds a FRESH Verifier per group (see
+        `_merge_lock`/`cumulative_regression`'s injection note above), so a
+        worktree already registered at this path by an earlier group's
+        Verifier -- or left over from a prior interrupted run against this
+        same spec -- is a normal, expected condition here, not a defect.
+        `git worktree add` refuses to create over an existing path; check
+        `path.exists()` first and reuse it, mirroring `_group_worktree`'s
+        same idiom above, instead of failing the whole post-merge gate on
+        every group after the first that reuses this path."""
         if self._post_merge_worktree_path is not None:
             return self._post_merge_worktree_path
         path = self.worktree_base / f"{self.spec_id}-postmerge"
+        if path.exists():
+            self._post_merge_worktree_path = path
+            return path
         with self._git_lock:  # `git worktree add` mutates the shared .git registry
             if self._post_merge_worktree_path is not None:
                 return self._post_merge_worktree_path
+            if path.exists():
+                self._post_merge_worktree_path = path
+                return path
             self.worktree_base.mkdir(parents=True, exist_ok=True)
             fetch = self._git("fetch", "-q", self.remote, self.base)
             if getattr(fetch, "returncode", 1) != 0:
