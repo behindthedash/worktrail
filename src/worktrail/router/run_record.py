@@ -650,6 +650,9 @@ def cmd_claim(args: argparse.Namespace) -> int:
     # push/read error) fails closed: release the local lock and report it
     # indistinguishably from a genuine conflict, extended with
     # `"scope": "remote"` so a caller can tell which layer contended.
+    remote_project_repo_dir: Path | None = None
+    remote_ref: str | None = None
+
     if args.remote:
         project_repo_dir = Path(record.get("repository") or repo_dir)
         ref = _claim_ref(args.specification)
@@ -682,6 +685,12 @@ def cmd_claim(args: argparse.Namespace) -> int:
         except RemoteClaimError as exc:
             return _remote_already_claimed(remote_claim, exc)
 
+        # Pushed successfully but not yet committed to the local lock/record --
+        # release it below if the conflict re-check aborts this claim, so a
+        # failed claim never orphans the remote ref for the full TTL.
+        remote_project_repo_dir = project_repo_dir
+        remote_ref = ref
+
     # Still honor any pre-existing non-terminal record tagged via plain
     # `set` (predates this primitive, or an out-of-band write) -- the lock
     # alone only guards against other `claim` callers, not stale
@@ -690,6 +699,8 @@ def cmd_claim(args: argparse.Namespace) -> int:
     if conflicts:
         os.close(fd)
         lock_path.unlink(missing_ok=True)
+        if remote_project_repo_dir is not None and remote_ref is not None:
+            _delete_remote_claim(remote_project_repo_dir, remote_ref)
         print(json.dumps({"status": "conflict", "conflicts": conflicts}))
         return 1
 
