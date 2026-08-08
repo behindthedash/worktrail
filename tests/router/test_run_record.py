@@ -1,13 +1,22 @@
 #!/usr/bin/env python3
 """Tests for run_record.py. Run: python3 test_run_record.py"""
 import json
+import subprocess
 import tempfile
 import unittest
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-from worktrail.router.run_record import ALLOWED_AGENTS, COMPLETION_STATES, _load, main
+from worktrail.router.run_record import (
+    ALLOWED_AGENTS,
+    COMPLETION_STATES,
+    _active_conflicts as _active_conflicts_impl,
+    _extract_path_candidate,
+    _is_stale,
+    _load,
+    main,
+)
 
 
 def _start(tmp, **over):
@@ -334,6 +343,74 @@ class TestLifecycle(unittest.TestCase):
             main(["scope-review", res["path"], "--item", "smoke", "--status", "complete"])
 
 
+class TestExtractPathCandidate(unittest.TestCase):
+    def test_clean_path_returned_unchanged(self):
+        self.assertEqual(
+            _extract_path_candidate("docs/specs/foo/tasks.md"),
+            "docs/specs/foo/tasks.md",
+        )
+
+    def test_trailing_descriptive_text_is_stripped(self):
+        self.assertEqual(
+            _extract_path_candidate(
+                "docs/specs/foo/tasks.md (data-model, contracts, KG, 28 tasks)"
+            ),
+            "docs/specs/foo/tasks.md",
+        )
+
+    def test_empty_string_returns_empty_string(self):
+        self.assertEqual(_extract_path_candidate(""), "")
+
+
+class TestIsStale(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.repo_dir = Path(self.tmp) / "repo"
+        self.repo_dir.mkdir()
+        self._git("init", "-b", "main")
+        self._git("config", "user.email", "test@example.com")
+        self._git("config", "user.name", "Test")
+        (self.repo_dir / "tracked.md").write_text("tracked", encoding="utf-8")
+        self._git("add", "tracked.md")
+        self._git("commit", "-m", "initial")
+        self.worktree = Path(self.tmp) / "worktree-does-not-exist"
+
+    def _git(self, *args):
+        subprocess.run(["git", "-C", str(self.repo_dir), *args], check=True,
+                        capture_output=True)
+
+    def test_worktree_exists_is_live(self):
+        existing_worktree = Path(self.tmp) / "still-here"
+        existing_worktree.mkdir()
+        record = {
+            "worktree": str(existing_worktree),
+            "files_changed": ["tracked.md"],
+        }
+        self.assertFalse(_is_stale(record, self.repo_dir, "main"))
+
+    def test_no_worktree_field_is_live(self):
+        record = {"worktree": None, "files_changed": ["tracked.md"]}
+        self.assertFalse(_is_stale(record, self.repo_dir, "main"))
+
+    def test_worktree_gone_and_all_files_resolve_is_stale(self):
+        record = {
+            "worktree": str(self.worktree),
+            "files_changed": ["tracked.md (data-model, contracts)"],
+        }
+        self.assertTrue(_is_stale(record, self.repo_dir, "main"))
+
+    def test_worktree_gone_and_one_file_does_not_resolve_is_live(self):
+        record = {
+            "worktree": str(self.worktree),
+            "files_changed": ["tracked.md", "never-committed.md"],
+        }
+        self.assertFalse(_is_stale(record, self.repo_dir, "main"))
+
+    def test_worktree_gone_and_empty_files_changed_is_live(self):
+        record = {"worktree": str(self.worktree), "files_changed": []}
+        self.assertFalse(_is_stale(record, self.repo_dir, "main"))
+
+
 def _active_conflicts(tmp, **over):
     argv = ["active-conflicts",
             "--dir", tmp,
@@ -363,10 +440,11 @@ class TestActiveConflicts(unittest.TestCase):
 
         results = _active_conflicts(self.tmp, specification="spec-a")
 
-        self.assertEqual(len(results), 1)
-        self.assertEqual(results[0]["run_id"], active["run_id"])
+        self.assertEqual(results["stale"], [])
+        self.assertEqual(len(results["live"]), 1)
+        self.assertEqual(results["live"][0]["run_id"], active["run_id"])
         for field in ("run_id", "path", "started_at", "request_summary", "agent"):
-            self.assertIn(field, results[0])
+            self.assertIn(field, results["live"][0])
 
     def test_no_match_for_different_specification(self):
         other = _start(self.tmp, request="unrelated run")
@@ -374,7 +452,7 @@ class TestActiveConflicts(unittest.TestCase):
 
         results = _active_conflicts(self.tmp, specification="spec-a")
 
-        self.assertEqual(results, [])
+        self.assertEqual(results, {"live": [], "stale": []})
 
     def test_exclude_omits_callers_own_record(self):
         mine = _start(self.tmp, request="my run")
@@ -382,7 +460,7 @@ class TestActiveConflicts(unittest.TestCase):
 
         results = _active_conflicts(self.tmp, specification="spec-a", exclude=mine["path"])
 
-        self.assertEqual(results, [])
+        self.assertEqual(results, {"live": [], "stale": []})
 
     def test_missing_run_record_directory_returns_empty_list(self):
         empty_dir = tempfile.mkdtemp()
@@ -390,7 +468,7 @@ class TestActiveConflicts(unittest.TestCase):
         results = _active_conflicts(empty_dir, repo="/tmp/never-seen-repo",
                                      specification="spec-a")
 
-        self.assertEqual(results, [])
+        self.assertEqual(results, {"live": [], "stale": []})
 
     def test_scan_is_read_only(self):
         res = _start(self.tmp, request="untouched run")
@@ -421,8 +499,9 @@ class TestActiveConflicts(unittest.TestCase):
                                     exclude=session_a["path"])
         scan_b = _active_conflicts(self.tmp, specification="spec-race",
                                     exclude=session_b["path"])
-        self.assertEqual(scan_a, [], "session A's scan should see no conflict yet")
-        self.assertEqual(scan_b, [], "session B's scan should see no conflict yet")
+        empty = {"live": [], "stale": []}
+        self.assertEqual(scan_a, empty, "session A's scan should see no conflict yet")
+        self.assertEqual(scan_b, empty, "session B's scan should see no conflict yet")
 
         # Both proceed to tag their own record with the spec_id, believing
         # they're first -- this is the bug: nothing stopped both from reaching
@@ -439,6 +518,173 @@ class TestActiveConflicts(unittest.TestCase):
         # Two distinct non-terminal runs now target the same spec_id -- the
         # duplicate-orchestrator condition. `claim` (added by this change)
         # closes this gap by making the scan-and-tag one atomic step.
+
+
+class TestActiveConflictsPartitioning(unittest.TestCase):
+    """Exercises `_active_conflicts()` directly (not via the `active-conflicts`
+    CLI) so the live/stale partitioning can be checked against a real git repo
+    without depending on the CLI's own arg wiring.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.repo_root = Path(self.tmp) / "target-repo"
+        self.repo_root.mkdir()
+        self._git("init", "-b", "main")
+        self._git("config", "user.email", "test@example.com")
+        self._git("config", "user.name", "Test")
+        (self.repo_root / "tracked.md").write_text("tracked", encoding="utf-8")
+        self._git("add", "tracked.md")
+        self._git("commit", "-m", "initial")
+        self.runs_dir = Path(self.tmp) / "runs"
+        self.repo_dir = self.runs_dir / "fake-repo"
+
+    def _git(self, *args):
+        subprocess.run(["git", "-C", str(self.repo_root), *args], check=True,
+                        capture_output=True)
+
+    def test_partitions_live_stale_and_excludes_non_matching_and_terminal(self):
+        live = _start(str(self.runs_dir), request="live run")
+        main(["set", live["path"], "specification", "spec-a"])
+        main(["set", live["path"], "base_branch", "main"])
+        existing_worktree = Path(self.tmp) / "still-here"
+        existing_worktree.mkdir()
+        main(["set", live["path"], "worktree", str(existing_worktree)])
+        main(["append", live["path"], "files_changed", "tracked.md"])
+
+        stale = _start(str(self.runs_dir), request="stale run")
+        main(["set", stale["path"], "specification", "spec-a"])
+        main(["set", stale["path"], "base_branch", "main"])
+        main(["set", stale["path"], "worktree", str(Path(self.tmp) / "worktree-gone")])
+        main(["append", stale["path"], "files_changed", "tracked.md"])
+
+        non_matching = _start(str(self.runs_dir), request="different specification")
+        main(["set", non_matching["path"], "specification", "spec-b"])
+        main(["set", non_matching["path"], "base_branch", "main"])
+        main(["set", non_matching["path"], "worktree", str(Path(self.tmp) / "worktree-gone-b")])
+        main(["append", non_matching["path"], "files_changed", "tracked.md"])
+
+        terminal = _start(str(self.runs_dir), request="terminal run")
+        main(["set", terminal["path"], "specification", "spec-a"])
+        main(["set", terminal["path"], "base_branch", "main"])
+        out = StringIO()
+        with patch("sys.stdout", out):
+            main(["finish", terminal["path"], "--status", "completed_pr_open"])
+
+        result = _active_conflicts_impl(self.repo_dir, self.repo_root, "spec-a", None)
+
+        self.assertEqual({e["run_id"] for e in result["live"]}, {live["run_id"]})
+        self.assertEqual({e["run_id"] for e in result["stale"]}, {stale["run_id"]})
+        seen_ids = {e["run_id"] for e in result["live"] + result["stale"]}
+        self.assertNotIn(non_matching["run_id"], seen_ids)
+        self.assertNotIn(terminal["run_id"], seen_ids)
+        for field in ("run_id", "path", "started_at", "request_summary", "agent"):
+            self.assertIn(field, result["live"][0])
+            self.assertIn(field, result["stale"][0])
+
+    def test_exclude_omits_the_matching_path_from_either_partition(self):
+        mine = _start(str(self.runs_dir), request="my own run")
+        main(["set", mine["path"], "specification", "spec-a"])
+
+        result = _active_conflicts_impl(
+            self.repo_dir, self.repo_root, "spec-a", Path(mine["path"]).resolve()
+        )
+
+        self.assertEqual(result, {"live": [], "stale": []})
+
+    def test_missing_run_record_directory_returns_empty_partitions(self):
+        result = _active_conflicts_impl(
+            Path(self.tmp) / "never-created", self.repo_root, "spec-a", None
+        )
+
+        self.assertEqual(result, {"live": [], "stale": []})
+
+
+def _reconcile(run_path, **over):
+    argv = ["reconcile", run_path]
+    if "note" in over and over["note"] is not None:
+        argv += ["--note", over["note"]]
+    out = StringIO()
+    with patch("sys.stdout", out):
+        rc = main(argv)
+    return rc, json.loads(out.getvalue())
+
+
+class TestReconcile(unittest.TestCase):
+    """Exercises `cmd_reconcile` directly against a real git repo, mirroring
+    `TestActiveConflictsPartitioning`'s fixture so `_is_stale()` sees a real
+    tracked file resolving on `base_branch`.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.repo_root = Path(self.tmp) / "target-repo"
+        self.repo_root.mkdir()
+        self._git("init", "-b", "main")
+        self._git("config", "user.email", "test@example.com")
+        self._git("config", "user.name", "Test")
+        (self.repo_root / "tracked.md").write_text("tracked", encoding="utf-8")
+        self._git("add", "tracked.md")
+        self._git("commit", "-m", "initial")
+        self.runs_dir = Path(self.tmp) / "runs"
+
+    def _git(self, *args):
+        subprocess.run(["git", "-C", str(self.repo_root), *args], check=True,
+                        capture_output=True)
+
+    def _stale_run(self, request):
+        res = _start(str(self.runs_dir), request=request, repo=str(self.repo_root))
+        main(["set", res["path"], "base_branch", "main"])
+        main(["set", res["path"], "worktree", str(Path(self.tmp) / "worktree-gone")])
+        main(["append", res["path"], "files_changed", "tracked.md"])
+        return res
+
+    def test_stale_at_call_time_closes_record_with_default_merge_result(self):
+        run = self._stale_run("stale run, no note")
+
+        rc, out = _reconcile(run["path"])
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(out["final_status"], "completed_and_merged")
+        rec = _load(Path(run["path"]))
+        self.assertEqual(rec["final_status"], "completed_and_merged")
+        self.assertEqual(rec["status"], "done")
+        self.assertIsNotNone(rec["completed_at"])
+        self.assertIn(run["run_id"], rec["merge_result"])
+        self.assertIn("auto-reconciled", rec["merge_result"])
+
+    def test_stale_at_call_time_closes_record_with_explicit_note(self):
+        run = self._stale_run("stale run, with note")
+
+        rc, out = _reconcile(run["path"], note="auto-reconciled: custom staleness note")
+
+        self.assertEqual(rc, 0)
+        rec = _load(Path(run["path"]))
+        self.assertEqual(rec["final_status"], "completed_and_merged")
+        self.assertEqual(rec["merge_result"], "auto-reconciled: custom staleness note")
+
+    def test_no_longer_stale_leaves_record_unmodified(self):
+        run = _start(str(self.runs_dir), request="live run", repo=str(self.repo_root))
+        main(["set", run["path"], "base_branch", "main"])
+        existing_worktree = Path(self.tmp) / "still-here"
+        existing_worktree.mkdir()
+        main(["set", run["path"], "worktree", str(existing_worktree)])
+        main(["append", run["path"], "files_changed", "tracked.md"])
+        before = Path(run["path"]).read_text(encoding="utf-8")
+
+        rc, out = _reconcile(run["path"])
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(out, {
+            "status": "not_stale",
+            "run_id": run["run_id"],
+            "path": run["path"],
+        })
+        after = Path(run["path"]).read_text(encoding="utf-8")
+        self.assertEqual(before, after)
+        rec = _load(Path(run["path"]))
+        self.assertIsNone(rec["final_status"])
+        self.assertIsNone(rec["completed_at"])
 
 
 def _claim(run, **over):
