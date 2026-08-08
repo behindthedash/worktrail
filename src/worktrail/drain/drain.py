@@ -472,6 +472,31 @@ def build_full_real_resume_command(repo: Path, spec_rel: str, base: str, agent: 
             "--spec", spec_rel, "--base", base, "--agent", agent]
 
 
+def _resume_via_full_real(
+    finding: Dict[str, Any],
+    agent: str,
+    timeout: int,
+    spawner: Callable[[List[str], int], SpawnOutcome],
+    log: Callable[[str], None],
+    *,
+    label: str,
+) -> Dict[str, Any]:
+    """Shared body of the full-real-resume actions: build the resume command
+    for a single finding, spawn it, log before/after, and return the result
+    dict. `label` is the log-line prefix (e.g. "resume-quarantine",
+    "resume-verify-pending") the existing tests assert on."""
+    repo, spec_id = finding["repo"], finding["spec_id"]
+    base = _base_branch_for(repo)
+    cmd = build_full_real_resume_command(repo, finding["spec_rel"], base, agent)
+    log(f"{label}: {finding['repo_name']} {spec_id} -> full-real --base {base}")
+    outcome = spawner(cmd, timeout)
+    log(f"{label} result: {finding['repo_name']} {spec_id} exit={outcome.exit_code}")
+    return {
+        "repo": finding["repo_name"], "spec_id": spec_id,
+        "exit_code": outcome.exit_code,
+    }
+
+
 def resume_quarantined_budget_exhausted(
     repos_root: Path,
     go_repo: Optional[str],
@@ -485,21 +510,11 @@ def resume_quarantined_budget_exhausted(
     or journal has since gone away is silently skipped by
     find_resumable_quarantines, and one spec's resume failing does not stop
     the others."""
-    resumed: List[Dict[str, Any]] = []
-    for finding in find_resumable_quarantines(repos_root, go_repo):
-        repo, spec_id = finding["repo"], finding["spec_id"]
-        base = _base_branch_for(repo)
-        cmd = build_full_real_resume_command(repo, finding["spec_rel"], base, agent)
-        log(f"resume-quarantine: {finding['repo_name']} {spec_id} "
-            f"(QUARANTINED/budget_exhausted) -> full-real --base {base}")
-        outcome = spawner(cmd, timeout)
-        log(f"resume-quarantine result: {finding['repo_name']} {spec_id} "
-            f"exit={outcome.exit_code}")
-        resumed.append({
-            "repo": finding["repo_name"], "spec_id": spec_id,
-            "exit_code": outcome.exit_code,
-        })
-    return resumed
+    return [
+        _resume_via_full_real(finding, agent, timeout, spawner, log,
+                               label="resume-quarantine")
+        for finding in find_resumable_quarantines(repos_root, go_repo)
+    ]
 
 
 def resume_verify_pending(
@@ -514,21 +529,11 @@ def resume_verify_pending(
     full-real re-run. Best-effort: a spec whose repo or journal has since gone
     away is silently skipped by find_verify_pending_specs, and one spec's
     resume failing does not stop the others."""
-    resumed: List[Dict[str, Any]] = []
-    for finding in find_verify_pending_specs(repos_root, go_repo):
-        repo, spec_id = finding["repo"], finding["spec_id"]
-        base = _base_branch_for(repo)
-        cmd = build_full_real_resume_command(repo, finding["spec_rel"], base, agent)
-        log(f"resume-verify-pending: {finding['repo_name']} {spec_id} "
-            f"(verify-pending) -> full-real --base {base}")
-        outcome = spawner(cmd, timeout)
-        log(f"resume-verify-pending result: {finding['repo_name']} {spec_id} "
-            f"exit={outcome.exit_code}")
-        resumed.append({
-            "repo": finding["repo_name"], "spec_id": spec_id,
-            "exit_code": outcome.exit_code,
-        })
-    return resumed
+    return [
+        _resume_via_full_real(finding, agent, timeout, spawner, log,
+                               label="resume-verify-pending")
+        for finding in find_verify_pending_specs(repos_root, go_repo)
+    ]
 
 
 @dataclass(frozen=True)
