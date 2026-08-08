@@ -91,6 +91,7 @@ start (lock held, bad args, missing queue dir).
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import os
 import subprocess
@@ -102,10 +103,12 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from ..orchestrator import agent_capacity
+from ..orchestrator.integrate import _refresh_pr_labels
 from ..router import dashboard, quarantine_selfcheck
 from ..router.policy import load_policy
 from ..router.policy_selfcheck import discover_repo_names
 from ..router.pr_labels import ensure_pr_risk_label
+from ..taskformats.devkit.schema import set_status_completed
 
 PROMPT = "worktrail-go auto"
 
@@ -458,6 +461,42 @@ def find_verify_pending_specs(
     return found
 
 
+def find_stale_bookkeeping_specs(
+    repos_root: Path, go_repo: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """Every (repo, spec) pair currently in the `stale-bookkeeping` stage with
+    at least one stale task id, across every repo under `repos_root` (or just
+    `go_repo` when given). These are invisible to `worktrail-go auto` the same
+    way verify-pending specs are -- auto mode only claims work-queue briefs --
+    so without this sweep they sit until a human notices the dashboard's
+    stage."""
+    names = discover_repo_names(repos_root)
+    if go_repo:
+        names = [n for n in names if n == go_repo]
+    found: List[Dict[str, Any]] = []
+    for name in names:
+        repo_path = repos_root / name
+        rows = dashboard.scan(repo_path / "docs" / "specs")
+        for row in rows:
+            if row.get("stage") != "stale-bookkeeping":
+                continue
+            stale_task_ids = row.get("stale_task_ids") or []
+            if not stale_task_ids:
+                continue
+            spec_id = row.get("id")
+            if not spec_id:
+                continue
+            spec_rel = resolve_spec_rel(repo_path, spec_id)
+            if spec_rel is None:
+                continue
+            found.append({
+                "repo": repo_path, "repo_name": name,
+                "spec_id": spec_id, "spec_rel": spec_rel,
+                "stale_task_ids": stale_task_ids,
+            })
+    return found
+
+
 def _base_branch_for(repo: Path) -> str:
     try:
         return load_policy(repo).get("base_branch") or "dev"
@@ -472,6 +511,31 @@ def build_full_real_resume_command(repo: Path, spec_rel: str, base: str, agent: 
             "--spec", spec_rel, "--base", base, "--agent", agent]
 
 
+def _resume_via_full_real(
+    finding: Dict[str, Any],
+    agent: str,
+    timeout: int,
+    spawner: Callable[[List[str], int], SpawnOutcome],
+    log: Callable[[str], None],
+    *,
+    label: str,
+) -> Dict[str, Any]:
+    """Shared body of the full-real-resume actions: build the resume command
+    for a single finding, spawn it, log before/after, and return the result
+    dict. `label` is the log-line prefix (e.g. "resume-quarantine",
+    "resume-verify-pending") the existing tests assert on."""
+    repo, spec_id = finding["repo"], finding["spec_id"]
+    base = _base_branch_for(repo)
+    cmd = build_full_real_resume_command(repo, finding["spec_rel"], base, agent)
+    log(f"{label}: {finding['repo_name']} {spec_id} -> full-real --base {base}")
+    outcome = spawner(cmd, timeout)
+    log(f"{label} result: {finding['repo_name']} {spec_id} exit={outcome.exit_code}")
+    return {
+        "repo": finding["repo_name"], "spec_id": spec_id,
+        "exit_code": outcome.exit_code,
+    }
+
+
 def resume_quarantined_budget_exhausted(
     repos_root: Path,
     go_repo: Optional[str],
@@ -484,22 +548,12 @@ def resume_quarantined_budget_exhausted(
     `repos_root` with a plain full-real re-run. Best-effort: a spec whose repo
     or journal has since gone away is silently skipped by
     find_resumable_quarantines, and one spec's resume failing does not stop
-    the others."""
-    resumed: List[Dict[str, Any]] = []
-    for finding in find_resumable_quarantines(repos_root, go_repo):
-        repo, spec_id = finding["repo"], finding["spec_id"]
-        base = _base_branch_for(repo)
-        cmd = build_full_real_resume_command(repo, finding["spec_rel"], base, agent)
-        log(f"resume-quarantine: {finding['repo_name']} {spec_id} "
-            f"(QUARANTINED/budget_exhausted) -> full-real --base {base}")
-        outcome = spawner(cmd, timeout)
-        log(f"resume-quarantine result: {finding['repo_name']} {spec_id} "
-            f"exit={outcome.exit_code}")
-        resumed.append({
-            "repo": finding["repo_name"], "spec_id": spec_id,
-            "exit_code": outcome.exit_code,
-        })
-    return resumed
+    the others. Thin wrapper over sweep_remediations, restricted to this
+    row's key."""
+    return sweep_remediations(
+        repos_root, go_repo, agent, timeout, spawner, log,
+        keys=["quarantined_budget_exhausted"],
+    )["quarantined_budget_exhausted"]
 
 
 def resume_verify_pending(
@@ -513,22 +567,288 @@ def resume_verify_pending(
     """Resume every verify-pending spec found under `repos_root` with a plain
     full-real re-run. Best-effort: a spec whose repo or journal has since gone
     away is silently skipped by find_verify_pending_specs, and one spec's
-    resume failing does not stop the others."""
-    resumed: List[Dict[str, Any]] = []
-    for finding in find_verify_pending_specs(repos_root, go_repo):
-        repo, spec_id = finding["repo"], finding["spec_id"]
-        base = _base_branch_for(repo)
-        cmd = build_full_real_resume_command(repo, finding["spec_rel"], base, agent)
-        log(f"resume-verify-pending: {finding['repo_name']} {spec_id} "
-            f"(verify-pending) -> full-real --base {base}")
-        outcome = spawner(cmd, timeout)
-        log(f"resume-verify-pending result: {finding['repo_name']} {spec_id} "
-            f"exit={outcome.exit_code}")
-        resumed.append({
-            "repo": finding["repo_name"], "spec_id": spec_id,
-            "exit_code": outcome.exit_code,
-        })
-    return resumed
+    resume failing does not stop the others. Thin wrapper over
+    sweep_remediations, restricted to this row's key."""
+    return sweep_remediations(
+        repos_root, go_repo, agent, timeout, spawner, log,
+        keys=["verify_pending"],
+    )["verify_pending"]
+
+
+# ---------------------------------------------------------------------------
+# Stale-bookkeeping closeout (status-flip PR, no orchestrator involved)
+
+
+def _resolve_stale_task_path(repo: Path, spec_id: str, task_id: str) -> Optional[Path]:
+    """The TASK-*.md file for `task_id` under this spec's task dirs -- the
+    top-level tasks/ dir plus every changes/<slug>/tasks/ dir, mirroring
+    dashboard._task_dirs. Matched by filename stem, the same id
+    find_stale_bookkeeping_specs' `stale_task_ids` already carries
+    (frontmatter `id:` defaults to the file stem when absent -- see
+    dashboard._load_tasks). None if no matching file exists."""
+    spec_dir = repo / "docs" / "specs" / spec_id
+    task_dirs = [spec_dir / "tasks"]
+    changes_dir = spec_dir / "changes"
+    if changes_dir.is_dir():
+        task_dirs += sorted(d / "tasks" for d in changes_dir.iterdir() if d.is_dir())
+    for tasks_dir in task_dirs:
+        candidate = tasks_dir / f"{task_id}.md"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _run_git(cwd: Path, *args: str, timeout: int) -> None:
+    result = subprocess.run(
+        ["git", *args], capture_output=True, text=True, cwd=str(cwd), timeout=timeout)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"git {' '.join(args)} (in {cwd}) failed: {(result.stderr or result.stdout).strip()}")
+
+
+def _existing_stale_bookkeeping_pr(repo: Path, branch: str, timeout: int) -> Optional[str]:
+    """The URL of an already-open PR for `branch`, or None. Best-effort: a
+    `gh` failure (network, auth) is treated the same as "no open PR" rather
+    than aborting the finding, since the git steps below are the ones that
+    actually need to succeed or raise."""
+    result = subprocess.run(
+        ["gh", "pr", "list", "--head", branch, "--state", "open",
+         "--json", "url", "--jq", ".[0].url"],
+        capture_output=True, text=True, cwd=str(repo), timeout=timeout)
+    if result.returncode != 0:
+        return None
+    url = result.stdout.strip()
+    return url or None
+
+
+def _reset_stale_bookkeeping_worktree(repo: Path, branch: str, wt: Path, timeout: int) -> None:
+    """Best-effort teardown of a previous run's leftover worktree/branch --
+    e.g. one left behind by a `git commit`/`push`/`gh pr create` failure
+    before the `try/finally` below existed -- so `worktree add -b branch`
+    below is safe to retry. Errors are swallowed, including timeouts: the
+    common case (nothing left over from a prior run) exits non-zero on all
+    three calls."""
+    for cmd in (
+        ["git", "worktree", "remove", "--force", str(wt)],
+        ["git", "worktree", "prune"],
+        ["git", "branch", "-D", branch],
+    ):
+        try:
+            subprocess.run(cmd, capture_output=True, text=True, cwd=str(repo), timeout=timeout)
+        except Exception:
+            pass
+
+
+def _open_stale_bookkeeping_pr(
+    repo: Path, wt: Path, repo_name: str, spec_id: str, task_ids: List[str], base: str,
+    branch: str, timeout: int,
+) -> str:
+    """`gh pr create` for the status-flip-only branch. A status-only flip of
+    already-shipped work is inherently low risk -- no code change -- but the
+    label(s) are still sourced from the enforced label-resolution path
+    (`_refresh_pr_labels` -> `pre_pr_gate.py --labels-only`), not
+    hand-rolled, so a future policy change (e.g. a new required label) is
+    never silently missed here the way it was for four prior call sites
+    (see test_pr_creation_callsite_enforcement_coverage.py). Falls back to
+    the seed label only if refresh itself is unavailable (gate script
+    unresolvable). Resolved against `wt`, not `repo`: `wt`'s HEAD is this
+    PR's actual diff (the flip commit off `base`), while `repo` is whatever
+    branch the drain target happens to be checked out to -- diffing that
+    against `base` would stamp labels computed from an unrelated diff.
+    Raises rather than returning a fabricated URL when `gh pr create` fails
+    outright, e.g. an unresolvable --label -- it fails the WHOLE command
+    with a non-zero exit and no PR created (see orchestrator/integrate.py's
+    identical guard)."""
+    labels = _refresh_pr_labels(wt, ["go:risk-low"], base) or ["go:risk-low"]
+    cmd = ["gh", "pr", "create", "--base", base, "--head", branch]
+    for label in labels:
+        cmd += ["--label", label]
+    cmd += [
+        "--title", f"chore({spec_id}): close stale bookkeeping",
+        "--body",
+        f"Flips `status:` to `completed` for already-shipped task(s) "
+        f"{', '.join(task_ids)} in `{spec_id}` -- their `files:` are already merged "
+        f"on `{base}`; no code change.\n\nOpened by drain's stale-bookkeeping sweep.",
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(wt), timeout=timeout)
+    out = ((result.stdout or result.stderr).strip().splitlines()[-1]
+           if (result.stdout or result.stderr) else "(no output)")
+    if result.returncode != 0 or not out.startswith("http"):
+        raise RuntimeError(f"gh pr create failed for {repo_name} {spec_id}: {out}")
+    return out
+
+
+def close_stale_bookkeeping(
+    finding: Dict[str, Any],
+    agent: str,
+    timeout: int,
+    spawner: Callable[[List[str], int], SpawnOutcome],
+    log: Callable[[str], None],
+) -> Dict[str, Any]:
+    """Flip each of the finding's stale task ids' `status:` to `completed`
+    and open a docs-only PR. Not a spec-owned change (no artifact under
+    `openspec/changes/<id>/` or `docs/specs/<id>/changes/<slug>/` is being
+    authored), so it does not fit the `new`/`modify` pipelines' spec-worktree
+    setup -- it uses the same direct fix-branch worktree pattern Route F
+    already uses for unspecced-code fixes (subagent-prompts.md
+    #fix-branch-worktree-setup/#fix-branch-worktree-teardown): a short-lived
+    worktree off the target repo's base branch, commit, push, `gh pr create`,
+    then tear the worktree down once the PR is open -- this does not wait for
+    merge, mirroring how the two full-real-resume actions spawn and record
+    the outcome without blocking on their run finishing either.
+
+    `agent`/`spawner` are unused -- this action never spawns a one-shot --
+    kept only so the signature matches StageRemediation's uniform `action`
+    shape (see design.md D1). `timeout` IS used, as the per-call timeout for
+    every `git`/`gh` subprocess call below -- this is the unattended
+    queue-drainer holding an exclusive lockfile for the run's duration, and
+    `git push`/`gh pr create` are its only network calls.
+
+    Re-entrant across sweeps: an already-open PR for this finding's branch is
+    detected up front and returned as-is rather than re-attempted (a PR that
+    has not yet merged must not read as a remediation *failure* on every
+    sweep between opening and merge), and any worktree/branch left behind by
+    a prior run's mid-flight failure is reset before retrying.
+
+    Raises on `gh pr create` failure (caught by the sweep engine's
+    per-finding try/except, per D2) rather than returning a result dict with
+    no PR.
+
+    If every resolved task file already reads `status: completed` with no
+    unticked checkboxes on `base` (e.g. the flip landed via another route
+    since this finding was computed), `set_status_completed` makes no
+    change to any of them: there is nothing to commit, so no branch/PR is
+    opened and `pr_url` comes back `None` -- a clean no-op rather than a
+    `git commit` "nothing to commit" `RuntimeError` on every sweep."""
+    repo, repo_name, spec_id = finding["repo"], finding["repo_name"], finding["spec_id"]
+    task_ids = finding["stale_task_ids"]
+    task_paths = [_resolve_stale_task_path(repo, spec_id, task_id) for task_id in task_ids]
+    missing = [task_id for task_id, path in zip(task_ids, task_paths) if path is None]
+    if missing:
+        raise RuntimeError(
+            f"no TASK-*.md found for {repo_name} {spec_id}: {', '.join(missing)}")
+
+    base = _base_branch_for(repo)
+    slug = f"close-stale-{spec_id}"
+    branch = f"fix/{slug}"
+    wt = repo.parent / f"{repo.name}-worktrees" / slug
+
+    existing_pr = _existing_stale_bookkeeping_pr(repo, branch, timeout)
+    if existing_pr:
+        log(f"close-stale-bookkeeping: {repo_name} {spec_id} already has an "
+            f"open PR, skipping: {existing_pr}")
+        return {"repo": repo_name, "spec_id": spec_id, "task_ids": task_ids,
+                "pr_url": existing_pr}
+
+    _reset_stale_bookkeeping_worktree(repo, branch, wt, timeout)
+    log(f"close-stale-bookkeeping: {repo_name} {spec_id} -> {', '.join(task_ids)}")
+    _run_git(repo, "worktree", "add", "-b", branch, str(wt), base, timeout=timeout)
+    try:
+        changed_rel = [str(path.relative_to(repo)) for path in task_paths]
+        changed = [set_status_completed(wt / rel) for rel in changed_rel]
+        if not any(changed):
+            log(f"close-stale-bookkeeping: {repo_name} {spec_id} tasks already "
+                f"completed on {base}, nothing to flip")
+            return {"repo": repo_name, "spec_id": spec_id, "task_ids": task_ids,
+                    "pr_url": None}
+        _run_git(wt, "add", *changed_rel, timeout=timeout)
+        _run_git(wt, "commit", "-m",
+                 f"chore({spec_id}): close stale bookkeeping ({', '.join(task_ids)})",
+                 timeout=timeout)
+        # --force: this branch is exclusively owned by this action (the
+        # drain sweep holds an exclusive lockfile for its duration) and is
+        # rebuilt from `base` on every retry, so a remote copy left behind by
+        # a prior run's mid-flight failure (e.g. `gh pr create` rejected, or
+        # a `gh pr list` outage during the open-PR check above) must be
+        # overwritten rather than rejected non-fast-forward -- otherwise the
+        # finding wedges permanently even after the original cause clears.
+        _run_git(wt, "push", "--force", "-u", "origin", branch, timeout=timeout)
+        pr_url = _open_stale_bookkeeping_pr(
+            repo, wt, repo_name, spec_id, task_ids, base, branch, timeout)
+    finally:
+        # Best-effort: on the success path this must not raise past a real
+        # result, and on the failure path it must not mask the real
+        # exception -- either way, a worktree left behind here is cleaned up
+        # by _reset_stale_bookkeeping_worktree on the finding's next sweep.
+        try:
+            subprocess.run(["git", "worktree", "remove", "--force", str(wt)],
+                           capture_output=True, text=True, cwd=str(repo), timeout=timeout)
+        except Exception:
+            pass
+
+    log(f"close-stale-bookkeeping result: {repo_name} {spec_id} -> {pr_url}")
+    return {"repo": repo_name, "spec_id": spec_id, "task_ids": task_ids, "pr_url": pr_url}
+
+
+@dataclass(frozen=True)
+class StageRemediation:
+    """One row of the remediation-sweep table. `finder(repos_root, go_repo)`
+    returns findings for this stage; `action(finding, agent, timeout, spawner,
+    log)` remediates a single finding and returns a result dict, raising on
+    failure so the sweep engine can catch and log per-finding without
+    aborting the rest of the sweep."""
+    key: str
+    label: str
+    finder: Callable[[Path, Optional[str]], List[Dict[str, Any]]]
+    action: Callable[
+        [Dict[str, Any], str, int,
+         Callable[[List[str], int], "SpawnOutcome"], Callable[[str], None]],
+        Dict[str, Any],
+    ]
+
+
+# `orchestrator-stuck` (`fanout_failed`) is intentionally never a table entry:
+# routes.md §E and dashboard.py's detect_stage() both document it as unsafe
+# to silently re-launch -- it stays human-recovery-only.
+REMEDIATION_TABLE: List[StageRemediation] = [
+    StageRemediation(
+        "quarantined_budget_exhausted", "resume-quarantine",
+        find_resumable_quarantines,
+        functools.partial(_resume_via_full_real, label="resume-quarantine")),
+    StageRemediation(
+        "verify_pending", "resume-verify-pending",
+        find_verify_pending_specs,
+        functools.partial(_resume_via_full_real, label="resume-verify-pending")),
+    StageRemediation(
+        "stale_bookkeeping", "close-stale-bookkeeping",
+        find_stale_bookkeeping_specs, close_stale_bookkeeping),
+]
+
+
+def sweep_remediations(
+    repos_root: Path,
+    go_repo: Optional[str],
+    agent: str,
+    timeout: int,
+    spawner: Callable[[List[str], int], SpawnOutcome],
+    log: Callable[[str], None],
+    keys: Optional[Iterable[str]] = None,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Run every `REMEDIATION_TABLE` row's finder + action (or only the rows
+    whose `key` is in `keys`, when given), one result dict per remediated
+    finding, keyed by each row's `key` -- even a row with zero findings gets
+    an empty-list entry, so callers can rely on the key always being present.
+
+    A finding's action raising is caught and logged (`{label} error: ...`)
+    without aborting the rest of that row's findings or the other rows --
+    the same best-effort guarantee `resume_quarantined_budget_exhausted` and
+    `resume_verify_pending` already documented individually."""
+    wanted = None if keys is None else set(keys)
+    selected = (REMEDIATION_TABLE if wanted is None
+                else [row for row in REMEDIATION_TABLE if row.key in wanted])
+    results: Dict[str, List[Dict[str, Any]]] = {}
+    for remediation in selected:
+        applied: List[Dict[str, Any]] = []
+        for finding in remediation.finder(repos_root, go_repo):
+            try:
+                applied.append(remediation.action(
+                    finding, agent, timeout, spawner, log))
+            except Exception as exc:  # noqa: BLE001 — one finding must not
+                                        # block the rest of the sweep
+                log(f"{remediation.label} error: "
+                    f"{finding.get('repo_name')} {finding.get('spec_id')}: {exc}")
+        results[remediation.key] = applied
+    return results
 
 
 @dataclass(frozen=True)
@@ -776,8 +1096,7 @@ def drain(config: DrainConfig,
     )
     iterations: List[Dict[str, object]] = []
     pending_approvals: List[str] = []
-    resumed_quarantines: List[Dict[str, Any]] = []
-    resumed_verify_pending: List[Dict[str, Any]] = []
+    resumed: Dict[str, List[Dict[str, Any]]] = {}
     # Candidates are evaluated in this fixed priority order every iteration
     # (see select_available_agent) -- a fallback is never "sticky": once a
     # higher-priority agent's persisted gate expires, the very next iteration
@@ -786,10 +1105,7 @@ def drain(config: DrainConfig,
     active_agent = config.agent
     try:
         if config.repos_root is not None and not config.dry_run:
-            resumed_quarantines += resume_quarantined_budget_exhausted(
-                config.repos_root, config.go_repo, active_agent,
-                config.iteration_timeout, spawner, log)
-            resumed_verify_pending += resume_verify_pending(
+            resumed = sweep_remediations(
                 config.repos_root, config.go_repo, active_agent,
                 config.iteration_timeout, spawner, log)
         cmd = build_command(active_agent, config.permission_args,
@@ -899,20 +1215,20 @@ def drain(config: DrainConfig,
             # iteration -- an empty queue means nothing could have changed
             # since the pre-loop sweep above, so re-sweeping would just
             # re-invoke full-real for the exact same still-open quarantine.
-            resumed_quarantines += resume_quarantined_budget_exhausted(
+            post = sweep_remediations(
                 config.repos_root, config.go_repo, active_agent,
                 config.iteration_timeout, spawner, log)
-            resumed_verify_pending += resume_verify_pending(
-                config.repos_root, config.go_repo, active_agent,
-                config.iteration_timeout, spawner, log)
+            for key, findings in post.items():
+                resumed.setdefault(key, []).extend(findings)
     finally:
         release_lock(config.lock_file)
     summary: Dict[str, object] = {
         "stopped": decision.reason if not decision.proceed else "dry_run",
         "iterations": iterations,
         "pending_approvals": pending_approvals,
-        "resumed_quarantines": resumed_quarantines,
-        "resumed_verify_pending": resumed_verify_pending,
+        "resumed_quarantines": resumed.get("quarantined_budget_exhausted", []),
+        "resumed_verify_pending": resumed.get("verify_pending", []),
+        "resumed_stale_bookkeeping": resumed.get("stale_bookkeeping", []),
         "elapsed_s": int(clock() - started),
     }
     if pending_approvals:

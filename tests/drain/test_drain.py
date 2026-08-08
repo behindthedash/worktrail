@@ -2,6 +2,7 @@
 
 import json
 import os
+import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -10,20 +11,24 @@ import pytest
 from worktrail.drain import drain
 from worktrail.drain.drain import (
     MAX_TRANSCRIPT_FILES,
+    REMEDIATION_TABLE,
     DrainConfig,
     LoopState,
     Outcome,
     SpawnOutcome,
+    StageRemediation,
     acquire_lock,
     build_command,
     build_full_real_resume_command,
     capacity_gated,
     claimed_brief_ids,
     classify_outcome,
+    close_stale_bookkeeping,
     count_ready_briefs,
     decide,
     ensure_pr_risk_label,
     find_resumable_quarantines,
+    find_stale_bookkeeping_specs,
     find_verify_pending_specs,
     newest_run_record,
     parse_run_record,
@@ -32,6 +37,7 @@ from worktrail.drain.drain import (
     resume_quarantined_budget_exhausted,
     resume_verify_pending,
     select_available_agent,
+    sweep_remediations,
     write_iteration_transcript,
 )
 
@@ -1343,23 +1349,26 @@ def test_drain_after_sweep_catches_quarantine_created_by_this_passs_own_iteratio
 def test_drain_sweeps_verify_pending_at_pre_and_post_loop_points(tmp_path, monkeypatch):
     # Mirrors the quarantine sweep's own pre-loop/post-loop wiring test: one
     # queue iteration (satisfying state.iteration > 0) must produce exactly
-    # two resume_verify_pending calls -- the pre-loop sweep and the post-loop
-    # re-sweep -- under the same repos_root/dry_run guards as the quarantine
-    # sweep.
+    # two sweep_remediations calls -- the pre-loop sweep and the post-loop
+    # re-sweep -- under the same repos_root/dry_run guards the quarantine and
+    # verify-pending sweeps have always shared. drain() now sweeps every
+    # REMEDIATION_TABLE row through one shared engine call per point (see
+    # drain-stage-remediation-table), so this spies on sweep_remediations
+    # itself rather than the single-key resume_verify_pending wrapper.
     fake = FakeQueue([1, 0])
     install_fake_queue(monkeypatch, fake)
     repos_root = tmp_path / "projects"
     _make_repo(repos_root, "repo-a")
     config = make_config(tmp_path, repos_root=repos_root)
 
-    real_resume_verify_pending = drain.resume_verify_pending
+    real_sweep_remediations = drain.sweep_remediations
     sweep_calls = []
 
-    def spy_resume_verify_pending(*args, **kwargs):
+    def spy_sweep_remediations(*args, **kwargs):
         sweep_calls.append(args)
-        return real_resume_verify_pending(*args, **kwargs)
+        return real_sweep_remediations(*args, **kwargs)
 
-    monkeypatch.setattr(drain, "resume_verify_pending", spy_resume_verify_pending)
+    monkeypatch.setattr(drain, "sweep_remediations", spy_sweep_remediations)
 
     def spawner(cmd, timeout):
         if cmd[:2] == ["worktrail-live", "full-real"]:
@@ -1375,3 +1384,266 @@ def test_drain_sweeps_verify_pending_at_pre_and_post_loop_points(tmp_path, monke
         assert call[1] == config.go_repo
     assert "resumed_quarantines" in summary
     assert "resumed_verify_pending" in summary
+    assert "resumed_stale_bookkeeping" in summary
+
+
+# ---------------------------------------------------------------------------
+# sweep_remediations engine
+
+
+def test_sweep_remediations_runs_every_table_row(monkeypatch):
+    calls = []
+
+    def make_row(key):
+        def finder(repos_root, go_repo):
+            return [{"repo_name": key, "spec_id": "spec-a"}]
+
+        def action(finding, agent, timeout, spawner, log):
+            calls.append((key, finding["repo_name"]))
+            return {"repo": finding["repo_name"], "spec_id": finding["spec_id"]}
+
+        return StageRemediation(key, f"label-{key}", finder, action)
+
+    fake_table = [make_row("row-a"), make_row("row-b")]
+    monkeypatch.setattr(drain, "REMEDIATION_TABLE", fake_table)
+
+    results = sweep_remediations(
+        Path("/fake/root"), None, "claude", 60, lambda c, t: SpawnOutcome(0), lambda _l: None)
+
+    assert set(results) == {"row-a", "row-b"}
+    assert results["row-a"] == [{"repo": "row-a", "spec_id": "spec-a"}]
+    assert results["row-b"] == [{"repo": "row-b", "spec_id": "spec-a"}]
+    assert set(calls) == {("row-a", "row-a"), ("row-b", "row-b")}
+
+
+def test_sweep_remediations_isolates_per_finding_failure(monkeypatch):
+    def failing_finder(repos_root, go_repo):
+        return [{"repo_name": "repo-a", "spec_id": "spec-a"},
+                {"repo_name": "repo-b", "spec_id": "spec-b"}]
+
+    def failing_action(finding, agent, timeout, spawner, log):
+        if finding["repo_name"] == "repo-a":
+            raise RuntimeError("boom")
+        return {"repo": finding["repo_name"], "spec_id": finding["spec_id"]}
+
+    def ok_finder(repos_root, go_repo):
+        return [{"repo_name": "repo-c", "spec_id": "spec-c"}]
+
+    def ok_action(finding, agent, timeout, spawner, log):
+        return {"repo": finding["repo_name"], "spec_id": finding["spec_id"]}
+
+    logs = []
+    fake_table = [
+        StageRemediation("flaky", "flaky-label", failing_finder, failing_action),
+        StageRemediation("ok", "ok-label", ok_finder, ok_action),
+    ]
+    monkeypatch.setattr(drain, "REMEDIATION_TABLE", fake_table)
+
+    results = sweep_remediations(
+        Path("/fake/root"), None, "claude", 60, lambda c, t: SpawnOutcome(0), logs.append)
+
+    # repo-a's failure is caught and logged; repo-b (same row) still runs.
+    assert results["flaky"] == [{"repo": "repo-b", "spec_id": "spec-b"}]
+    assert any("flaky-label error" in line and "repo-a" in line for line in logs)
+    # The other row is unaffected by the first row's failure.
+    assert results["ok"] == [{"repo": "repo-c", "spec_id": "spec-c"}]
+
+
+def test_sweep_remediations_keys_filter_restricts_rows(monkeypatch):
+    called_finders = []
+
+    def make_row(key):
+        def finder(repos_root, go_repo):
+            called_finders.append(key)
+            return []
+
+        return StageRemediation(key, f"label-{key}", finder, lambda *a, **k: {})
+
+    fake_table = [make_row("row-a"), make_row("row-b")]
+    monkeypatch.setattr(drain, "REMEDIATION_TABLE", fake_table)
+
+    results = sweep_remediations(
+        Path("/fake/root"), None, "claude", 60, lambda c, t: SpawnOutcome(0), lambda _l: None,
+        keys=["row-b"])
+
+    assert set(results) == {"row-b"}
+    assert called_finders == ["row-b"]  # row-a's finder never ran
+
+
+def test_remediation_table_excludes_orchestrator_stuck():
+    keys = {row.key for row in REMEDIATION_TABLE}
+    assert "orchestrator_stuck" not in keys
+    assert "fanout_failed" not in keys
+    assert keys == {"quarantined_budget_exhausted", "verify_pending", "stale_bookkeeping"}
+
+
+# ---------------------------------------------------------------------------
+# Stale-bookkeeping finder
+
+
+def _write_stale_bookkeeping_spec(repo: Path, spec_id: str, task_id: str = "TASK-001") -> None:
+    """A spec with one pending impl task whose `files:` are already git-tracked
+    on `repo`'s current branch -- the fixture shape dashboard.detect_stage
+    requires to label a spec "stale-bookkeeping" (mirrors
+    tests/router/test_dashboard.py's StaleBookkeeping fixture)."""
+    spec_dir = repo / "docs" / "specs" / spec_id
+    tasks_dir = spec_dir / "tasks"
+    tasks_dir.mkdir(parents=True)
+    (spec_dir / "2026-05-29--feature.md").write_text(
+        f"# Feature Specification: X\n\n**ID**: {spec_id}\n\n## Summary\nstuff\n"
+    )
+    shipped_rel = f"src/{spec_id}/shipped.py"
+    (tasks_dir / f"{task_id}.md").write_text(
+        f"---\nid: {task_id}\nstatus: pending\nkind: impl\n"
+        f"files: [{shipped_rel}]\ndependencies: []\n---\n# {task_id}\n"
+    )
+    shipped = repo / shipped_rel
+    shipped.parent.mkdir(parents=True, exist_ok=True)
+    shipped.write_text("shipped\n")
+    for cmd in (["add", shipped_rel], ["commit", "-qm", "ship"]):
+        subprocess.run(["git", "-C", str(repo), *cmd], check=True)
+
+
+def _init_git_repo(path: Path) -> None:
+    for cmd in (["init", "-q"], ["config", "user.email", "t@t"], ["config", "user.name", "t"]):
+        subprocess.run(["git", "-C", str(path), *cmd], check=True)
+
+
+def test_find_stale_bookkeeping_specs_discovers_across_repos(tmp_path):
+    repo_a = _make_repo(tmp_path, "repo-a")
+    _init_git_repo(repo_a)
+    _write_stale_bookkeeping_spec(repo_a, "spec-a")
+    repo_b = _make_repo(tmp_path, "repo-b")
+    _init_git_repo(repo_b)  # clean repo, no stale-bookkeeping spec
+
+    found = find_stale_bookkeeping_specs(tmp_path)
+
+    assert [f["repo_name"] for f in found] == ["repo-a"]
+    assert found[0]["spec_id"] == "spec-a"
+    assert found[0]["stale_task_ids"] == ["TASK-001"]
+
+
+def test_find_stale_bookkeeping_specs_excludes_non_stale_stage(tmp_path):
+    repo = _make_repo(tmp_path, "repo-a")
+    _init_git_repo(repo)
+    # A verify-pending spec is a different stage entirely -- must not be
+    # picked up by the stale-bookkeeping finder.
+    _write_verify_pending_spec(repo, "spec-a", "https://github.com/test/repo/pull/1")
+
+    assert find_stale_bookkeeping_specs(tmp_path) == []
+
+
+def test_find_stale_bookkeeping_specs_go_repo_filter(tmp_path):
+    repo_a = _make_repo(tmp_path, "repo-a")
+    _init_git_repo(repo_a)
+    _write_stale_bookkeeping_spec(repo_a, "spec-a")
+    repo_b = _make_repo(tmp_path, "repo-b")
+    _init_git_repo(repo_b)
+    _write_stale_bookkeeping_spec(repo_b, "spec-b")
+
+    found = find_stale_bookkeeping_specs(tmp_path, go_repo="repo-b")
+
+    assert [f["repo_name"] for f in found] == ["repo-b"]
+
+
+# ---------------------------------------------------------------------------
+# close_stale_bookkeeping action
+
+
+def _init_repo_with_origin(tmp_path: Path, name: str) -> Path:
+    """A real repo with a real (bare, local-filesystem) `origin` remote on
+    branch `dev`, so `close_stale_bookkeeping`'s `git push` succeeds without
+    any network access -- `_base_branch_for` falls back to "dev" when no
+    go-policy.yaml is present, so the fixture's default branch must match."""
+    bare = tmp_path / f"{name}-origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True)
+    repo = tmp_path / "projects" / name
+    repo.mkdir(parents=True)
+    subprocess.run(["git", "-C", str(repo), "init", "-q", "-b", "dev"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@t"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "t"], check=True)
+    (repo / "README.md").write_text("x\n")
+    subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "init"], check=True)
+    subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", str(bare)], check=True)
+    subprocess.run(["git", "-C", str(repo), "push", "-q", "-u", "origin", "dev"], check=True)
+    return repo
+
+
+def _fake_gh_subprocess_run(pr_url: str):
+    """Real `git`/other commands pass through to the real subprocess.run;
+    the two gh-pr-related calls are faked so the test needs no network or
+    `gh` auth. Mirrors test_pr_creation_callsite_enforcement_coverage.py's
+    drain.py proof fake."""
+    real_run = subprocess.run
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:2] == ["gh", "pr"] and cmd[2] == "list":
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if cmd[:2] == ["gh", "pr"] and cmd[2] == "create":
+            return subprocess.CompletedProcess(cmd, 0, stdout=f"{pr_url}\n", stderr="")
+        return real_run(cmd, **kwargs)
+
+    return fake_run
+
+
+def test_close_stale_bookkeeping_flips_status_and_opens_pr(tmp_path, monkeypatch):
+    repo = _init_repo_with_origin(tmp_path, "repo-a")
+    _write_stale_bookkeeping_spec(repo, "spec-a")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "seed spec"], check=True)
+    subprocess.run(["git", "-C", str(repo), "push", "-q", "origin", "dev"], check=True)
+
+    finding = {"repo": repo, "repo_name": "repo-a", "spec_id": "spec-a",
+               "stale_task_ids": ["TASK-001"]}
+
+    monkeypatch.setattr(drain.subprocess, "run",
+                         _fake_gh_subprocess_run("https://example.invalid/pr/9"))
+
+    result = close_stale_bookkeeping(
+        finding, "claude", 30, lambda c, t: SpawnOutcome(0), lambda _l: None)
+
+    assert result == {"repo": "repo-a", "spec_id": "spec-a",
+                       "task_ids": ["TASK-001"], "pr_url": "https://example.invalid/pr/9"}
+    # The flip lands on the fix branch (pushed, PR opened), not on `repo`'s
+    # own checked-out `dev` -- that branch is never touched by the action.
+    flipped = subprocess.run(
+        ["git", "-C", str(repo), "show", "fix/close-stale-spec-a:docs/specs/spec-a/tasks/TASK-001.md"],
+        capture_output=True, text=True, check=True).stdout
+    assert "status: completed" in flipped
+
+
+def test_close_stale_bookkeeping_missing_task_file_raises(tmp_path):
+    repo = _init_repo_with_origin(tmp_path, "repo-a")
+    finding = {"repo": repo, "repo_name": "repo-a", "spec_id": "spec-a",
+               "stale_task_ids": ["TASK-GHOST"]}
+
+    with pytest.raises(RuntimeError, match="no TASK-\\*.md found"):
+        close_stale_bookkeeping(
+            finding, "claude", 30, lambda c, t: SpawnOutcome(0), lambda _l: None)
+
+
+def test_close_stale_bookkeeping_gh_pr_create_failure_raises(tmp_path, monkeypatch):
+    repo = _init_repo_with_origin(tmp_path, "repo-a")
+    _write_stale_bookkeeping_spec(repo, "spec-a")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "seed spec"], check=True)
+    subprocess.run(["git", "-C", str(repo), "push", "-q", "origin", "dev"], check=True)
+
+    finding = {"repo": repo, "repo_name": "repo-a", "spec_id": "spec-a",
+               "stale_task_ids": ["TASK-001"]}
+
+    real_run = subprocess.run
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:2] == ["gh", "pr"] and cmd[2] == "list":
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if cmd[:2] == ["gh", "pr"] and cmd[2] == "create":
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="label not found")
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(drain.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="gh pr create failed"):
+        close_stale_bookkeeping(
+            finding, "claude", 30, lambda c, t: SpawnOutcome(0), lambda _l: None)
