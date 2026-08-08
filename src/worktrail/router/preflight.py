@@ -42,21 +42,32 @@ indistinguishable from a genuinely label-free PR (see
 docs/specs/research/classify-gate-enforcement-audit.md). `gh pr ready` and
 any command without `--risk`-recorded labels are unaffected.
 
+`worktrail-preflight run` also holds a running-lock file (pid + start time) in
+the worktree's private git dir for the duration of the gate, removed in a
+`finally` block on exit. `worktrail-preflight wait` polls that lock, not a
+process-name match, to answer "is a gate currently running against this
+repo" -- the intended replacement for a hand-rolled `pgrep -f
+"worktrail-preflight run"` poll, which can match its own polling command's
+literal text and never observe completion (see `RUNNING_LOCK_NAME`).
+
 Usage:
   worktrail-preflight check [--repo PATH] [--command "<gh pr create ...>"]
   worktrail-preflight run [--repo PATH] [--risk low|medium|high|critical]
                            [--gates G1,G2] [--target-branch BRANCH]
                            [--run RUN_RECORD]
+  worktrail-preflight wait [--repo PATH] [--timeout SECONDS] [--interval SECONDS]
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
+import os
 import re
 import shlex
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
@@ -64,6 +75,17 @@ from . import pre_pr_gate
 from .policy import load_policy
 
 MARKER_NAME = "preflight-pass.json"
+
+# Written for the duration of `run`'s gate execution and removed in a
+# `finally` block on exit (pass, fail, or exception) -- gives callers a
+# race-free way to ask "is a gate currently running against this repo"
+# without process-name matching. A `pgrep -f "worktrail-preflight run"`
+# poll looks equivalent but is not: the polling shell's own command line
+# (constructed via `eval` inside an agent harness) commonly contains that
+# same literal string, so the pattern matches the poller itself and the
+# loop never observes "not running" -- exactly the failure this lock
+# exists to make impossible. See `is_running()`/`wait` below.
+RUNNING_LOCK_NAME = "preflight-running.json"
 
 # Duplicate-work warning: how much of the smaller branch's word set must
 # overlap the other branch's before we warn. Two words minimum on each side
@@ -367,6 +389,83 @@ def write_marker(
     return path
 
 
+def running_lock_path(repo: Path) -> Optional[Path]:
+    git_dir = _git(repo, "rev-parse", "--absolute-git-dir")
+    if git_dir is None:
+        return None
+    return Path(git_dir.strip()) / RUNNING_LOCK_NAME
+
+
+def write_running_lock(repo: Path) -> Optional[Path]:
+    path = running_lock_path(repo)
+    if path is None:
+        return None
+    path.write_text(
+        json.dumps({"pid": os.getpid(), "started_at": time.time()}) + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def remove_running_lock(repo: Path) -> None:
+    path = running_lock_path(repo)
+    if path is None:
+        return
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def read_running_lock(repo: Path) -> Optional[Dict[str, Any]]:
+    path = running_lock_path(repo)
+    if path is None or not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _pid_alive(pid: int) -> bool:
+    """Best-effort liveness check via `os.kill(pid, 0)` (sends no signal).
+
+    A permission error still means the process exists (owned by another
+    user) -- treated as alive. Any other unexpected OSError also fails
+    closed (alive) rather than declaring a real gate stale by mistake.
+    """
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def is_running(repo: Path) -> bool:
+    """True when a `worktrail-preflight run` gate is currently executing
+    against this repo, per the running-lock file -- not a process-name
+    scan, so it cannot self-match a caller's own polling command line.
+
+    A lock whose recorded pid is no longer alive (the process crashed
+    without reaching the `finally` cleanup, e.g. `kill -9` or a host
+    reboot) is stale: it is removed here and treated as not-running,
+    rather than wedging every future check against this repo forever.
+    """
+    lock = read_running_lock(repo)
+    if lock is None:
+        return False
+    pid = lock.get("pid")
+    if not isinstance(pid, int):
+        remove_running_lock(repo)
+        return False
+    if _pid_alive(pid):
+        return True
+    remove_running_lock(repo)
+    return False
+
+
 def check(repo: Path, command: Optional[str] = None) -> Dict[str, Any]:
     """Marker-aware verdict: {"decision": "allow"|"deny", "reason": str,
     "warning": str (optional), "required_labels": [str] (optional)}.
@@ -460,7 +559,11 @@ def _run(args: argparse.Namespace) -> int:
     if args.run:
         gate_argv += ["--run", args.run]
 
-    exit_code = pre_pr_gate.main(gate_argv)
+    write_running_lock(repo)
+    try:
+        exit_code = pre_pr_gate.main(gate_argv)
+    finally:
+        remove_running_lock(repo)
     if exit_code != 0:
         return exit_code
 
@@ -488,6 +591,24 @@ def _check(args: argparse.Namespace) -> int:
     verdict = check(Path(args.repo).resolve(), command=args.gh_command)
     print(json.dumps(verdict))
     return 0 if verdict["decision"] == "allow" else 1
+
+
+def _wait(args: argparse.Namespace) -> int:
+    """Block until no `run` gate is executing against this repo, per the
+    running-lock file. This is the intended replacement for a hand-rolled
+    `pgrep -f "worktrail-preflight run"` poll: a poller's own command line
+    routinely contains that same literal string (see RUNNING_LOCK_NAME's
+    docstring), which makes such a loop match itself and never terminate.
+    """
+    repo = Path(args.repo).resolve()
+    deadline = time.monotonic() + args.timeout
+    while is_running(repo):
+        if time.monotonic() >= deadline:
+            print(json.dumps({"running": True, "timed_out": True}))
+            return 1
+        time.sleep(args.interval)
+    print(json.dumps({"running": False}))
+    return 0
 
 
 def main(argv=None) -> int:
@@ -528,6 +649,22 @@ def main(argv=None) -> int:
         help="shared go run record; enables mandatory scope completeness review",
     )
     run_p.set_defaults(func=_run)
+
+    wait_p = sub.add_parser(
+        "wait",
+        help="block until no `run` gate is executing against this repo "
+             "(running-lock file, not process-name matching)",
+    )
+    wait_p.add_argument("--repo", default=".", help="worktree root to watch (default: cwd)")
+    wait_p.add_argument(
+        "--timeout", type=float, default=900.0,
+        help="max seconds to wait before giving up (default: 900)",
+    )
+    wait_p.add_argument(
+        "--interval", type=float, default=2.0,
+        help="seconds between liveness checks (default: 2)",
+    )
+    wait_p.set_defaults(func=_wait)
 
     args = p.parse_args(argv)
     return args.func(args)
