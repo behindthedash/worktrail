@@ -708,6 +708,37 @@ class TestRemoteClaim:
         assert pushed.returncode == 0
         assert pushed.stdout.strip() == winner_sha
 
+    def test_finish_on_remote_claim_deletes_the_remote_ref(self, remote_origin, tmp_path):
+        bare_dir, clone_dir = remote_origin
+        run_dir = tmp_path / "runs"
+        run_dir.mkdir()
+        res = _start(str(run_dir), repo=str(clone_dir), request="remote claim session")
+
+        out = StringIO()
+        with patch("sys.stdout", out):
+            rc = main(["claim", res["path"], "--specification", "spec-remote-finish", "--remote"])
+        result = json.loads(out.getvalue())
+        assert rc == 0
+        assert result["status"] == "claimed"
+
+        ref = _claim_ref("spec-remote-finish")
+        pushed = subprocess.run(
+            ["git", "-C", str(bare_dir), "ls-remote", str(bare_dir), ref],
+            capture_output=True, text=True,
+        )
+        assert pushed.stdout.strip() != ""
+
+        out = StringIO()
+        with patch("sys.stdout", out):
+            main(["finish", res["path"], "--status", "completed_pr_open"])
+
+        deleted = subprocess.run(
+            ["git", "-C", str(bare_dir), "ls-remote", str(bare_dir), ref],
+            capture_output=True, text=True,
+        )
+        assert deleted.returncode == 0
+        assert deleted.stdout.strip() == ""
+
 
 def _prune(tmp, **over):
     argv = ["prune", "--dir", tmp]
