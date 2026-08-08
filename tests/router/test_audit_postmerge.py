@@ -307,3 +307,61 @@ def test_sweep_repo_marker_advances_only_past_the_capped_prs_actually_processed(
     # PRs 4 and 5 stay in-window for the next sweep rather than being
     # silently skipped past.
     assert audit.read_marker("repo", state_dir) == "2026-01-03T00:00:00+00:00"
+
+
+# ---------------------------------------------------------------------------
+# dashboard_snapshot()
+
+def test_dashboard_snapshot_empty_state_dir_returns_empty_summary(tmp_path):
+    state_dir = tmp_path / "state"  # never created
+
+    assert audit.dashboard_snapshot(state_dir) == {
+        "repos_flagged": 0,
+        "prs_flagged": 0,
+        "flagged": [],
+    }
+
+
+def test_dashboard_snapshot_with_flagged_prs_returns_them(tmp_path):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(parents=True)
+    (state_dir / "repo-a.json").write_text(json.dumps({
+        "last_swept_at": "2026-01-01T00:00:00+00:00",
+        "flagged": [
+            {"repo": "repo-a", "url": "u1", "failing_checks": ["ci/tests"],
+             "merged_at": "2026-01-01T00:00:00+00:00"},
+        ],
+    }))
+    (state_dir / "repo-b.json").write_text(json.dumps({
+        "last_swept_at": "2026-01-02T00:00:00+00:00",
+        "flagged": [
+            {"repo": "repo-b", "url": "u2", "failing_checks": ["ci/lint"],
+             "merged_at": "2026-01-02T00:00:00+00:00"},
+            {"repo": "repo-b", "url": "u3", "failing_checks": ["ci/build"],
+             "merged_at": "2026-01-02T00:00:00+00:00"},
+        ],
+    }))
+
+    summary = audit.dashboard_snapshot(state_dir)
+
+    assert summary["repos_flagged"] == 2
+    assert summary["prs_flagged"] == 3
+    assert {entry["url"] for entry in summary["flagged"]} == {"u1", "u2", "u3"}
+
+
+def test_dashboard_snapshot_with_only_clean_sweeps_returns_empty(tmp_path):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(parents=True)
+    (state_dir / "repo-a.json").write_text(json.dumps({
+        "last_swept_at": "2026-01-01T00:00:00+00:00",
+        "flagged": [],
+    }))
+    (state_dir / "repo-b.json").write_text(json.dumps({
+        "last_swept_at": "2026-01-02T00:00:00+00:00",
+    }))
+
+    assert audit.dashboard_snapshot(state_dir) == {
+        "repos_flagged": 0,
+        "prs_flagged": 0,
+        "flagged": [],
+    }
