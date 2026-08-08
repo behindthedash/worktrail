@@ -386,6 +386,12 @@ def cmd_finish(args: argparse.Namespace) -> int:
         owner = _load_lock(lock_path)
         if owner.get("run_id") == record.get("run_id"):
             lock_path.unlink(missing_ok=True)
+            if owner.get("remote") is True:
+                # Best-effort: a failure here must never affect `finish`'s
+                # exit code or JSON output, only leave the remote claim to
+                # expire via its own TTL.
+                project_repo_dir = Path(record.get("repository") or path.parent)
+                _delete_remote_claim(project_repo_dir, _claim_ref(specification))
     print(json.dumps({"final_status": args.status, "path": str(path)}))
     return 0
 
