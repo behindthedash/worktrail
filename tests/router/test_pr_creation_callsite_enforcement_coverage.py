@@ -46,10 +46,12 @@ covers call sites Worktrail's own Python code constructs.
 """
 import ast
 import inspect
+import subprocess
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from worktrail.drain import drain
 from worktrail.orchestrator import integrate
 from worktrail.orchestrator import live
 
@@ -135,6 +137,38 @@ def _proves_live_py_full_is_sandbox_only_dev_tooling():
                     "label path")
 
 
+def _proves_drain_py_uses_enforced_labels():
+    """drain.py's stale-bookkeeping `gh pr create` call site
+    (`_open_stale_bookkeeping_pr`) builds its `--label` flags from
+    `_refresh_pr_labels(...)`'s return value (falling back to the seed
+    `["go:risk-low"]` only when refresh itself is unavailable), never an
+    independently hand-rolled label -- this is the 5th call site this
+    codebase has added and the first to get the enforced-label wiring from
+    the start rather than as a follow-up fix. Prove the wiring behaviorally:
+    stub `_refresh_pr_labels` to return a distinctive label set, stub
+    `subprocess.run` to capture the constructed `gh pr create` command
+    instead of executing it, and confirm the captured command carries
+    exactly that refreshed label."""
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return subprocess.CompletedProcess(
+            cmd, 0, stdout="https://example.invalid/pr/1", stderr="")
+
+    with patch.object(drain, "_refresh_pr_labels", return_value=["go:risk-canary"]), \
+            patch.object(drain.subprocess, "run", side_effect=fake_run):
+        drain._open_stale_bookkeeping_pr(
+            Path("/fake/repo"), Path("/fake/wt"), "repo-a", "spec-a",
+            ["TASK-001"], "main", "fix/close-stale-spec-a", 30)
+    if "cmd" not in captured or "--label" not in captured["cmd"] \
+            or "go:risk-canary" not in captured["cmd"]:
+        raise AssertionError(
+            "drain.py's gh pr create call did not carry the refreshed label -- "
+            "its stale-bookkeeping PR may have stopped routing through the "
+            "enforced label-resolution path")
+
+
 # relative-to-src/worktrail path -> callable proving its gh pr create call
 # either routes through the enforced label path, or is a reviewed,
 # policy-exempt sandbox/dev-tooling path. Every file
@@ -142,6 +176,7 @@ def _proves_live_py_full_is_sandbox_only_dev_tooling():
 CALLSITE_CONSUMERS = {
     "orchestrator/integrate.py": _proves_integrate_py_uses_enforced_labels,
     "orchestrator/live.py": _proves_live_py_full_is_sandbox_only_dev_tooling,
+    "drain/drain.py": _proves_drain_py_uses_enforced_labels,
 }
 
 KNOWN_CALLSITES = set(CALLSITE_CONSUMERS)

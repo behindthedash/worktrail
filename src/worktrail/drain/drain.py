@@ -103,6 +103,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from ..orchestrator import agent_capacity
+from ..orchestrator.integrate import _refresh_pr_labels
 from ..router import dashboard, quarantine_selfcheck
 from ..router.policy import load_policy
 from ..router.policy_selfcheck import discover_repo_names
@@ -639,19 +640,26 @@ def _reset_stale_bookkeeping_worktree(repo: Path, branch: str, wt: Path, timeout
 
 
 def _open_stale_bookkeeping_pr(
-    wt: Path, repo_name: str, spec_id: str, task_ids: List[str], base: str, branch: str,
-    timeout: int,
+    repo: Path, wt: Path, repo_name: str, spec_id: str, task_ids: List[str], base: str,
+    branch: str, timeout: int,
 ) -> str:
-    """`gh pr create` for the status-flip-only branch, carrying `go:risk-low`
-    (a status-only flip of already-shipped work is inherently low risk -- no
-    code change). Raises rather than returning a fabricated URL when `gh pr
+    """`gh pr create` for the status-flip-only branch. A status-only flip of
+    already-shipped work is inherently low risk -- no code change -- but the
+    label(s) are still sourced from the enforced label-resolution path
+    (`_refresh_pr_labels` -> `pre_pr_gate.py --labels-only`), not
+    hand-rolled, so a future policy change (e.g. a new required label) is
+    never silently missed here the way it was for four prior call sites
+    (see test_pr_creation_callsite_enforcement_coverage.py). Falls back to
+    the seed label only if refresh itself is unavailable (gate script
+    unresolvable). Raises rather than returning a fabricated URL when `gh pr
     create` fails outright, e.g. an unresolvable --label -- it fails the
     WHOLE command with a non-zero exit and no PR created (see
     orchestrator/integrate.py's identical guard)."""
-    cmd = [
-        "gh", "pr", "create",
-        "--base", base, "--head", branch,
-        "--label", "go:risk-low",
+    labels = _refresh_pr_labels(repo, ["go:risk-low"], base) or ["go:risk-low"]
+    cmd = ["gh", "pr", "create", "--base", base, "--head", branch]
+    for label in labels:
+        cmd += ["--label", label]
+    cmd += [
         "--title", f"chore({spec_id}): close stale bookkeeping",
         "--body",
         f"Flips `status:` to `completed` for already-shipped task(s) "
@@ -741,7 +749,7 @@ def close_stale_bookkeeping(
         # finding wedges permanently even after the original cause clears.
         _run_git(wt, "push", "--force", "-u", "origin", branch, timeout=timeout)
         pr_url = _open_stale_bookkeeping_pr(
-            wt, repo_name, spec_id, task_ids, base, branch, timeout)
+            repo, wt, repo_name, spec_id, task_ids, base, branch, timeout)
     finally:
         # Best-effort: on the success path this must not raise past a real
         # result, and on the failure path it must not mask the real
