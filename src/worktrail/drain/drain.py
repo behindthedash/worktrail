@@ -772,6 +772,9 @@ def drain(config: DrainConfig,
             resumed_quarantines += resume_quarantined_budget_exhausted(
                 config.repos_root, config.go_repo, active_agent,
                 config.iteration_timeout, spawner, log)
+            resumed_verify_pending += resume_verify_pending(
+                config.repos_root, config.go_repo, active_agent,
+                config.iteration_timeout, spawner, log)
         cmd = build_command(active_agent, config.permission_args,
                             config.agent_cmd, config.go_repo)
         while True:
