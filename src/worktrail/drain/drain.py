@@ -797,6 +797,9 @@ class StageRemediation:
     ]
 
 
+# `orchestrator-stuck` (`fanout_failed`) is intentionally never a table entry:
+# routes.md §E and dashboard.py's detect_stage() both document it as unsafe
+# to silently re-launch -- it stays human-recovery-only.
 REMEDIATION_TABLE: List[StageRemediation] = [
     StageRemediation(
         "quarantined_budget_exhausted", "resume-quarantine",
@@ -806,6 +809,9 @@ REMEDIATION_TABLE: List[StageRemediation] = [
         "verify_pending", "resume-verify-pending",
         find_verify_pending_specs,
         functools.partial(_resume_via_full_real, label="resume-verify-pending")),
+    StageRemediation(
+        "stale_bookkeeping", "close-stale-bookkeeping",
+        find_stale_bookkeeping_specs, close_stale_bookkeeping),
 ]
 
 
@@ -1073,8 +1079,7 @@ def drain(config: DrainConfig,
     )
     iterations: List[Dict[str, object]] = []
     pending_approvals: List[str] = []
-    resumed_quarantines: List[Dict[str, Any]] = []
-    resumed_verify_pending: List[Dict[str, Any]] = []
+    resumed: Dict[str, List[Dict[str, Any]]] = {}
     # Candidates are evaluated in this fixed priority order every iteration
     # (see select_available_agent) -- a fallback is never "sticky": once a
     # higher-priority agent's persisted gate expires, the very next iteration
@@ -1083,10 +1088,7 @@ def drain(config: DrainConfig,
     active_agent = config.agent
     try:
         if config.repos_root is not None and not config.dry_run:
-            resumed_quarantines += resume_quarantined_budget_exhausted(
-                config.repos_root, config.go_repo, active_agent,
-                config.iteration_timeout, spawner, log)
-            resumed_verify_pending += resume_verify_pending(
+            resumed = sweep_remediations(
                 config.repos_root, config.go_repo, active_agent,
                 config.iteration_timeout, spawner, log)
         cmd = build_command(active_agent, config.permission_args,
@@ -1196,20 +1198,20 @@ def drain(config: DrainConfig,
             # iteration -- an empty queue means nothing could have changed
             # since the pre-loop sweep above, so re-sweeping would just
             # re-invoke full-real for the exact same still-open quarantine.
-            resumed_quarantines += resume_quarantined_budget_exhausted(
+            post = sweep_remediations(
                 config.repos_root, config.go_repo, active_agent,
                 config.iteration_timeout, spawner, log)
-            resumed_verify_pending += resume_verify_pending(
-                config.repos_root, config.go_repo, active_agent,
-                config.iteration_timeout, spawner, log)
+            for key, findings in post.items():
+                resumed.setdefault(key, []).extend(findings)
     finally:
         release_lock(config.lock_file)
     summary: Dict[str, object] = {
         "stopped": decision.reason if not decision.proceed else "dry_run",
         "iterations": iterations,
         "pending_approvals": pending_approvals,
-        "resumed_quarantines": resumed_quarantines,
-        "resumed_verify_pending": resumed_verify_pending,
+        "resumed_quarantines": resumed.get("quarantined_budget_exhausted", []),
+        "resumed_verify_pending": resumed.get("verify_pending", []),
+        "resumed_stale_bookkeeping": resumed.get("stale_bookkeeping", []),
         "elapsed_s": int(clock() - started),
     }
     if pending_approvals:
