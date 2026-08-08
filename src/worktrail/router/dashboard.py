@@ -2243,6 +2243,12 @@ def main(argv=None) -> int:
         help="provider capacity cache path (default: GO_AGENT_CAPACITY_CACHE or ~/.go/agent-capacity.json)",
     )
     p.add_argument(
+        "--postmerge-audit-state",
+        default=None,
+        help="post-merge audit state dir (default: GO_POSTMERGE_AUDIT_STATE or "
+        "~/.go/postmerge-audit-state)",
+    )
+    p.add_argument(
         "--run-record-dir",
         default=None,
         help="go run-record root for the 'Recent runs' section "
@@ -2329,7 +2335,9 @@ def main(argv=None) -> int:
     postmerge_check_failures = None
     if _postmerge_dashboard_snapshot is not None:
         try:
-            postmerge_check_failures = _postmerge_dashboard_snapshot(_postmerge_resolve_state_dir())
+            postmerge_check_failures = _postmerge_dashboard_snapshot(
+                _postmerge_resolve_state_dir(args.postmerge_audit_state)
+            )
         except Exception:  # noqa: BLE001 — telemetry must never break the dashboard
             postmerge_check_failures = None
 
