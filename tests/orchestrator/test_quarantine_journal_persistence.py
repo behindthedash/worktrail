@@ -23,6 +23,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from worktrail.orchestrator import integrate  # noqa: E402
 from worktrail.orchestrator import live  # noqa: E402
 from worktrail.orchestrator import verify  # noqa: E402
 
@@ -100,6 +101,12 @@ class FromVerifyPersistsQuarantineTest(unittest.TestCase):
 
             journal = json.loads(journal_path.read_text())
             self.assertEqual(journal["groups"]["feature-1"]["state"], "QUARANTINED")
+            self.assertEqual(
+                journal["groups"]["feature-1"].get("quarantine_reason"),
+                integrate.QUARANTINE_INTEGRATION_ERROR,
+                "serial-path quarantine must carry a classified quarantine_reason, "
+                "matching the pipeline path's ordinary-quarantine branch",
+            )
             # Groups verify_and_cleanup did not quarantine keep their existing record.
             self.assertEqual(journal["groups"]["base"]["state"], "OPEN")
             self.assertEqual(journal["groups"]["feature-2"]["state"], "OPEN")
@@ -154,6 +161,12 @@ class AllIntegratedFastPathPersistsQuarantineTest(unittest.TestCase):
 
             journal = json.loads(journal_path.read_text())
             self.assertEqual(journal["groups"]["feature-1"]["state"], "QUARANTINED")
+            self.assertEqual(
+                journal["groups"]["feature-1"].get("quarantine_reason"),
+                integrate.QUARANTINE_INTEGRATION_ERROR,
+                "serial-path quarantine must carry a classified quarantine_reason, "
+                "matching the pipeline path's ordinary-quarantine branch",
+            )
             self.assertEqual(journal["groups"]["base"]["state"], "OPEN")
             self.assertEqual(journal["groups"]["feature-2"]["state"], "OPEN")
 
