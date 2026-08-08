@@ -301,6 +301,21 @@ scenario fails **silently** in the authoring step but is caught here.
 `status` reports **artifact** completion (does each file exist), not task completion —
 do not read it as run progress. Task state lives in the run journal during a run.
 
+### NNN-prefix change directories {#openspec-nnn-prefix}
+
+Some repositories layer their own `NNN-slug` numbering convention on top of OpenSpec's
+directory-per-change model, even though OpenSpec itself has no numeric-prefix convention
+(`#spec-worktree-setup` above never sets `SPEC_ID` to an `NNN-`-prefixed value for the
+`openspec` format). Verified against `@fission-ai/openspec`'s `validateChangeName`
+(`change-utils.js`): it hard-rejects any `--change` name starting with a digit, on every
+command (`new`, `status`, `instructions`, `validate`), not only creation. If the target
+repo's convention requires the `NNN-` prefix anyway, do not rename the change directory
+before this point: author every artifact — propose, explore/update, and this
+validate/status step — under the plain kebab-case slug, then
+`mv openspec/changes/<slug> openspec/changes/<NNN>-<slug>` only after `openspec validate`
+passes. The orchestrator's `compile.py`/`live.py` never call the OpenSpec CLI again after
+this point — they operate on the renamed path directly via glob — so renaming here is safe.
+
 ### Syncing specs {#openspec-sync}
 
 ```
@@ -772,7 +787,10 @@ else
   # any name that doesn't start with a letter (verified against 1.6.0: "Error:
   # Change name must start with a letter"), and collision detection is by
   # change-name existence (openspec-propose's own guardrail), not sequence
-  # number. Never prefix $slug with $NNN here.
+  # number. Never prefix $slug with $NNN here. If the target repo's own
+  # convention still requires an NNN- prefix, do not apply it yet — see
+  # #openspec-nnn-prefix; the prefix is added by a post-validate rename, never
+  # at worktree-setup time.
   # SPEC_ID="$slug"  (slug confirmed via AskUserQuestion if unclear)
 fi
 SIBLING_WT_GLOB="$SPEC_ID-spec"
