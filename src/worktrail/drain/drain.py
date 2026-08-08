@@ -502,6 +502,35 @@ def resume_quarantined_budget_exhausted(
     return resumed
 
 
+def resume_verify_pending(
+    repos_root: Path,
+    go_repo: Optional[str],
+    agent: str,
+    timeout: int,
+    spawner: Callable[[List[str], int], SpawnOutcome],
+    log: Callable[[str], None],
+) -> List[Dict[str, Any]]:
+    """Resume every verify-pending spec found under `repos_root` with a plain
+    full-real re-run. Best-effort: a spec whose repo or journal has since gone
+    away is silently skipped by find_verify_pending_specs, and one spec's
+    resume failing does not stop the others."""
+    resumed: List[Dict[str, Any]] = []
+    for finding in find_verify_pending_specs(repos_root, go_repo):
+        repo, spec_id = finding["repo"], finding["spec_id"]
+        base = _base_branch_for(repo)
+        cmd = build_full_real_resume_command(repo, finding["spec_rel"], base, agent)
+        log(f"resume-verify-pending: {finding['repo_name']} {spec_id} "
+            f"(verify-pending) -> full-real --base {base}")
+        outcome = spawner(cmd, timeout)
+        log(f"resume-verify-pending result: {finding['repo_name']} {spec_id} "
+            f"exit={outcome.exit_code}")
+        resumed.append({
+            "repo": finding["repo_name"], "spec_id": spec_id,
+            "exit_code": outcome.exit_code,
+        })
+    return resumed
+
+
 # ---------------------------------------------------------------------------
 # Lockfile
 
