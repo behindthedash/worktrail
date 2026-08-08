@@ -173,12 +173,16 @@ Never develop on the base checkout; all authoring and implementation use worktre
 Run before spec worktree setup in the `new` pipeline. Detects when a feature idea substantially
 overlaps an existing spec so the user can extend rather than duplicate.
 
+Run once per spec root that exists under `$REPO` — `$REPO/docs/specs` and/or `$REPO/openspec` —
+and merge the resulting `specs` arrays before the comparison step:
+
 ```bash
-worktrail-overlap-check --root "$REPO/docs/specs" --json
+[ -d "$REPO/docs/specs" ] && worktrail-overlap-check --root "$REPO/docs/specs" --json
+[ -d "$REPO/openspec" ] && worktrail-overlap-check --root "$REPO/openspec" --json
 ```
 
-Parse the JSON `specs` array. Each entry has `spec_id`, `stage`, `title`, `feature_summary`,
-and `user_request_excerpt`.
+Parse each JSON `specs` array and merge them into one list. Each entry has `spec_id`, `stage`,
+`title`, `feature_summary`, and `user_request_excerpt`.
 
 **Comparison rule:** Compare `$feature_idea` (the user's stated feature) against every
 `feature_summary` (and `user_request_excerpt` as a tiebreaker). An overlap exists when the
@@ -187,7 +191,7 @@ sub-set/extension of an existing spec.
 
 **If overlap is found:** Present `AskUserQuestion` before continuing (see `#overlap-menu`).
 **If no overlap or no existing specs:** Proceed silently to step 0.
-**If `docs/specs/` does not exist:** Skip this step entirely.
+**If neither `docs/specs/` nor `openspec/` exists:** Skip this step entirely.
 
 ---
 
