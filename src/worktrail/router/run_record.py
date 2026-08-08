@@ -545,14 +545,16 @@ def cmd_claim(args: argparse.Namespace) -> int:
     # pre-existing non-terminal record tagged via plain `set` (predates this
     # primitive, or an out-of-band write) -- the lock alone only guards
     # against other `claim` callers, not stale `specification` writes.
-    conflicts = _active_conflicts(repo_dir, args.specification, run_path.resolve())
-    if conflicts:
+    record = _load(run_path)
+    repo_root = Path(record["repository"]) if record.get("repository") else run_path.parent
+    conflicts = _active_conflicts(repo_dir, repo_root, args.specification, run_path.resolve())
+    live_conflicts = conflicts["live"]
+    if live_conflicts:
         os.close(fd)
         lock_path.unlink(missing_ok=True)
-        print(json.dumps({"status": "conflict", "conflicts": conflicts}))
+        print(json.dumps({"status": "conflict", "conflicts": live_conflicts}))
         return 1
 
-    record = _load(run_path)
     with os.fdopen(fd, "w") as f:
         f.write(json.dumps({
             "run_id": record.get("run_id"),
