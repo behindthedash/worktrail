@@ -885,6 +885,9 @@ def drain(config: DrainConfig,
             resumed_quarantines += resume_quarantined_budget_exhausted(
                 config.repos_root, config.go_repo, active_agent,
                 config.iteration_timeout, spawner, log)
+            resumed_verify_pending += resume_verify_pending(
+                config.repos_root, config.go_repo, active_agent,
+                config.iteration_timeout, spawner, log)
     finally:
         release_lock(config.lock_file)
     summary: Dict[str, object] = {
