@@ -28,7 +28,10 @@ finish PATH --status completed_pr_open [--pr URL] [--merge-result ...]
                (--evidence "..." | --reason "...")
   active-conflicts --dir DIR --repo REPO --specification SPEC [--exclude PATH]
          -> read-only scan for other non-terminal runs on the same
-            repo+specification; prints a JSON array (see contracts/active-conflicts-cli.md)
+            repo+specification; prints {"live": [...], "stale": [...]}. A
+            record is "stale" when its worktree is gone and every path in
+            its files_changed already resolves on its own base_branch
+            (see `_is_stale`); otherwise it's "live".
   claim  RUN_PATH --specification SPEC
          -> atomically claim repo+specification for the run at RUN_PATH before
             committing to implement it. Closes the TOCTOU gap in the read-only
@@ -460,11 +463,15 @@ def _active_conflicts(
 
 
 def cmd_active_conflicts(args: argparse.Namespace) -> int:
-    """Read-only scan for other non-terminal runs on the same repo+specification."""
+    """Read-only scan for other non-terminal runs on the same repo+specification.
+
+    Prints the `{"live": [...], "stale": [...]}` partition from
+    `_active_conflicts()`.
+    """
     repo = Path(args.repo).resolve()
     repo_dir = Path(args.dir).expanduser() / repo.name
     exclude = Path(args.exclude).resolve() if args.exclude else None
-    print(json.dumps(_active_conflicts(repo_dir, args.specification, exclude)))
+    print(json.dumps(_active_conflicts(repo_dir, repo, args.specification, exclude)))
     return 0
 
 
