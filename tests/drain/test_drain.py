@@ -1118,6 +1118,26 @@ def test_find_verify_pending_specs_discovers_across_repos(tmp_path):
     assert found[0]["repo"] == repo_a
 
 
+def _write_ready_to_implement_spec(repo: Path, spec_id: str) -> None:
+    """A spec with a pending task and no run journal -- dashboard.detect_stage
+    labels this "ready-to-implement", not "verify-pending"."""
+    spec_dir = repo / "docs" / "specs" / spec_id
+    tasks_dir = spec_dir / "tasks"
+    tasks_dir.mkdir(parents=True)
+    (spec_dir / "2026-05-29--feature.md").write_text(
+        f"# Feature Specification: X\n\n**ID**: {spec_id}\n\n## Summary\nstuff\n"
+    )
+    (tasks_dir / "TASK-001.md").write_text(
+        "---\nid: TASK-001\nstatus: pending\nkind: impl\ndependencies: []\n---\n# TASK-001\n"
+    )
+
+
+def test_find_verify_pending_specs_excludes_non_verify_pending_stages(tmp_path):
+    repo = _make_repo(tmp_path, "repo-a")
+    _write_ready_to_implement_spec(repo, "spec-a")
+    assert find_verify_pending_specs(tmp_path) == []
+
+
 def test_build_full_real_resume_command_has_no_fresh_flag():
     cmd = build_full_real_resume_command(
         Path("/repo"), "docs/specs/some-spec", "dev", "claude")
