@@ -114,6 +114,50 @@ class CleanGreenPath(unittest.TestCase):
         self.assertTrue(run.find("git", "-C", "/repo", "worktree", "prune"))
 
 
+def _empty_rollup_view(**kw):
+    # `view(rollup=[])` can't express a genuinely empty rollup: `view()`'s own
+    # `rollup or GREEN` default treats `[]` as falsy and silently substitutes
+    # GREEN. Build the dict then overwrite the key directly.
+    d = view(**kw)
+    d["statusCheckRollup"] = []
+    return d
+
+
+class RequiredCheckNotYetScheduledPath(unittest.TestCase):
+    """PR #197 incident: a group PR must not be declared CI-green while a
+    required check (per the branch ruleset) has not yet reported into
+    statusCheckRollup -- an empty/partial rollup right after PR creation is
+    "not scheduled yet", not "nothing to wait on"."""
+
+    def test_empty_rollup_polls_again_instead_of_merging_immediately(self):
+        run = FakeRun({"run/feature-1": [
+            _empty_rollup_view(),  # first poll: nothing has reported yet
+            view(rollup=GREEN),    # second poll: the required "build" check landed
+        ]})
+        spawn = FakeSpawn()
+        v = mk(run, spawn, "/tmp/x")
+        res = v.run_all([FEATURE], {"feature-1": "run/feature-1"})
+
+        self.assertEqual(res["merged"], ["feature-1"])
+        self.assertEqual(spawn.prompts, [])
+        # Must have polled `gh pr view` at least twice for this branch before
+        # merging -- proof it did not declare green on the empty first rollup.
+        self.assertGreaterEqual(
+            len(run.find("gh", "pr", "view", "run/feature-1")), 2)
+
+    def test_stays_pending_when_required_check_never_arrives(self):
+        # Every poll returns an empty rollup -- the required "build" check is
+        # never scheduled/reported. Must time out, never merge.
+        run = FakeRun({"run/feature-1": [_empty_rollup_view()] * 10})
+        spawn = FakeSpawn()
+        v = mk(run, spawn, "/tmp/x")
+        res = v.run_all([FEATURE], {"feature-1": "run/feature-1"})
+
+        self.assertEqual(res["merged"], [])
+        self.assertIn("feature-1", res["quarantined"])
+        self.assertFalse(run.find("gh", "pr", "merge", "run/feature-1"))
+
+
 class ConflictResolvePath(unittest.TestCase):
     def test_resolve_worker_then_merge(self):
         run = FakeRun({"run/feature-1": [view(mergeable="CONFLICTING"), view()]})
@@ -272,6 +316,29 @@ class ClassifyChecks(unittest.TestCase):
         self.assertEqual(
             verify.classify_checks([{"context": "legacy", "state": "FAILURE"}]),
             (False, ["legacy"]))
+
+    def test_required_check_missing_from_rollup_is_pending_not_green(self):
+        # PR #197 incident: an empty/null rollup with a required check that
+        # simply hasn't been scheduled/reported yet must not be read as
+        # "no required checks" -> green.
+        self.assertEqual(
+            verify.classify_checks(None, required=["Version bump check"]),
+            (True, []))
+        self.assertEqual(
+            verify.classify_checks([], required=["Version bump check"]),
+            (True, []))
+        # Rollup reports other checks, but the required one hasn't landed yet.
+        self.assertEqual(
+            verify.classify_checks(GREEN, required=["build", "Version bump check"]),
+            (True, []))
+
+    def test_required_check_present_and_green_stays_green(self):
+        self.assertEqual(
+            verify.classify_checks(GREEN, required=["build"]), (False, []))
+
+    def test_no_required_list_preserves_pre_existing_behavior(self):
+        self.assertEqual(verify.classify_checks(None, required=None), (False, []))
+        self.assertEqual(verify.classify_checks(None, required=[]), (False, []))
 
 
 class MergedPRTreatedAsSuccess(unittest.TestCase):
