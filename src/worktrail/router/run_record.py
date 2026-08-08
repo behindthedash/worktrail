@@ -746,6 +746,11 @@ def main(argv=None) -> int:
     s.add_argument("--specification", required=True)
     s.set_defaults(func=cmd_claim)
 
+    s = sub.add_parser("reconcile")
+    s.add_argument("run")
+    s.add_argument("--note", default=None)
+    s.set_defaults(func=cmd_reconcile)
+
     s = sub.add_parser("prune")
     s.add_argument("--dir", default="~/.go/runs")
     s.add_argument("--repo", default=None,
