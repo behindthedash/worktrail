@@ -191,7 +191,15 @@ class ScriptedWorker:
             f.parent.mkdir(parents=True, exist_ok=True)
             f.write_text(f"{tid}\n")
             _git(wt, "add", "-A")
-            _git(wt, "commit", "-q", "-m", f"feat({tid})")
+            # Skip the commit when there is nothing staged: on a kill+resume,
+            # the dead child may have committed this task's content but died
+            # before its journal entry was written, so the resume legitimately
+            # re-runs the task against a worktree that already has the work. A
+            # real worker reports success there; an unconditional `git commit`
+            # exits 1 ("nothing to commit") and wrongly fails the task (flaked
+            # on CI in PR #258's run).
+            if _git(wt, "diff", "--cached", "--quiet", check=False).returncode != 0:
+                _git(wt, "commit", "-q", "-m", f"feat({tid})")
         sha = _git(wt, "rev-parse", "HEAD", check=False).stdout.strip()[:8] or "00000000"
         rs = '"PASSED"' if role == "review" else "null"
         return spawnlib.SpawnResult(
