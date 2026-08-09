@@ -51,6 +51,20 @@ class TaskSource(Protocol):
         """Resolve a `<spec-id>/<task-id>` cross-spec reference."""
         ...
 
+    def validate_dependencies(self, spec_id: str, tasks: List[TaskDict]) -> List[str]:
+        """Check same-spec `deps` and decision-log coverage; return diagnostic strings.
+
+        Unlike `resolve_external_dependency`, which resolves one cross-spec
+        reference on request, this walks the whole task set for a spec up
+        front and reports what it finds rather than raising: an unresolved
+        same-spec dependency, or (where the format supports it) a
+        `decision-refs:` entry missing from or still open in the spec's
+        decision log. Each returned string is one diagnostic, already worded
+        for direct `WARN:` display by a caller such as `orchestrator/live.py`'s
+        `precheck()`. An empty list means nothing to warn about.
+        """
+        ...
+
     def task_brief_ref(self, task_id: str, spec_ref: str) -> tuple[str, str]:
         """Where a cold worker reads this task's brief: `(repo-relative path, anchor)`.
 
