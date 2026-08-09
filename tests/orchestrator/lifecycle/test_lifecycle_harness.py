@@ -117,6 +117,28 @@ def _mk_devkit_repo(tmp: Path) -> Path:
     return repo
 
 
+def _mk_devkit_repo_with_tail(tmp: Path) -> Path:
+    """base(TASK-001) ← feature-1(TASK-002), feature-2(TASK-003) ← e2e(TASK-004).
+
+    Same base/feature topology as `_mk_devkit_repo`, plus a `kind: e2e` tail
+    task depending on BOTH feature tasks -- the incident shape: `plan_groups`
+    puts TASK-001 (2 transitive dependents) in its own BASE group and
+    TASK-002/TASK-003 each in an independent FEATURE group, so by the time
+    `_dispatch_pending_tail` fires for TASK-004, all three groups' PRs have
+    been squash-merged and `verify.cleanup_group` has deleted all three task
+    branches -- `dependency_start_ref` has nothing left to stack TASK-004 on.
+    """
+    repo = _mk_devkit_repo(tmp)
+    spec_dir = repo / "docs" / "specs" / "001-x" / "tasks"
+    (spec_dir / "TASK-004.md").write_text(
+        "---\nid: TASK-004\nstatus: pending\ndependencies: [TASK-002, TASK-003]\n"
+        "files: [src/task-004.txt]\nkind: e2e\nreview: skip\n---\nbody\n"
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "add e2e tail task")
+    return repo
+
+
 OPENSPEC_TASKS_MD = (
     "## 1. Setup\n\n"
     "- [ ] 1.1 First thing\n"
@@ -390,6 +412,62 @@ class KillAndResume(_LifecycleCase):
                 "TASK-001", resumed_implements,
                 "resume re-implemented TASK-001, which the dead run completed",
             )
+
+    def test_sequential(self):
+        self._run(pipeline=False)
+
+    def test_pipeline(self):
+        self._run(pipeline=True)
+
+
+# --------------------------------------------------------------------------- #
+# Squash-merged dependency carry: tail e2e task whose dependencies' groups are
+# squash-merged and cleaned up before tail dispatch (stacked-worktree-conflict-
+# resolution-squash-merged-dependency-carry 1.1)
+# --------------------------------------------------------------------------- #
+
+class SquashMergedDependencyCarryLifecycle(_LifecycleCase):
+    def _run(self, pipeline: bool):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            repo = _mk_devkit_repo_with_tail(tmp)
+            remote = _publish_to_bare_origin(repo, tmp)
+            env = _install_fake_gh(tmp, remote)
+
+            # Before the fix, TASK-004's dispatch (`_dispatch_pending_tail`, fired
+            # only once every group is integrated/verified/merged and cleaned up)
+            # raised `WorktreeMissingDependencyFileError`: TASK-002/TASK-003's
+            # branches are gone by then, so `dependency_start_ref` falls back to
+            # the run-start local base, which predates their squash-merges. This
+            # call must complete without raising it.
+            _run_full_real(repo, DEVKIT_SPEC_REL, env, pipeline=pipeline)
+
+            # The three impl groups (base/feature-1/feature-2) really did merge
+            # into the remote base -- the squash-merge boundary TASK-004's carry
+            # must cross.
+            for tid in ("task-001", "task-002", "task-003"):
+                self.assertIsNotNone(
+                    _remote_file(remote, f"src/{tid}.txt"),
+                    f"src/{tid}.txt missing from remote main",
+                )
+            # TASK-004 itself reached done (a "cleanup" journal entry is only
+            # ever written on the terminal transition, see cleanup_task_in_python).
+            journal = _journal(repo, DEVKIT_SPEC_REL)
+            tail_roles = {
+                e["role"] for e in journal["entries"] if e.get("task") == "TASK-004"
+            }
+            self.assertIn("cleanup", tail_roles, f"TASK-004 never reached cleanup: {tail_roles}")
+            # Its carry actually landed TASK-002/TASK-003's content in its own
+            # worktree (not just skipped the dependency-file check some other
+            # way) -- the direct proof the fix engaged.
+            tail_wt = repo.parent / f"{repo.name}-worktrees" / "001-x-task-004"
+            for tid in ("task-002", "task-003"):
+                self.assertTrue(
+                    (tail_wt / "src" / f"{tid}.txt").exists(),
+                    f"TASK-004 worktree missing carried {tid}.txt",
+                )
 
     def test_sequential(self):
         self._run(pipeline=False)

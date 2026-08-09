@@ -137,10 +137,17 @@ def main(argv) -> int:
         if not sha:
             print(f"head branch {branch} not on remote", file=sys.stderr)
             return 1
-        # REAL merge into base via a scratch clone: sibling group branches
-        # diverge (each stacked on base, not on each other), so a ref fast-
-        # forward would silently drop the earlier sibling's work — the exact
-        # class of shortcut this harness exists to avoid.
+        # REAL squash merge into base via a scratch clone: matches the merge
+        # methods this fake's own `repo view` advertises (squash-only) and the
+        # production repos that hit the incident this harness reproduces --
+        # `git merge --squash` collapses the head branch's commits into a new,
+        # independent commit on base, so a dependent group's task branch (still
+        # carrying the pre-squash commits) is no longer an ancestor of base once
+        # its own branch is deleted (the journaled `head_sha`-ancestry gap).
+        # Sibling group branches also diverge (each stacked on base, not on each
+        # other), so a ref fast-forward would silently drop the earlier
+        # sibling's work — the exact class of shortcut this harness exists to
+        # avoid.
         import tempfile
         with tempfile.TemporaryDirectory() as scratch:
             clone = Path(scratch) / "clone"
@@ -155,13 +162,17 @@ def main(argv) -> int:
             subprocess.run(["git", "-C", str(clone), "checkout", "-q", state["base"]],
                            check=True, capture_output=True)
             m = subprocess.run(
-                ["git", "-C", str(clone), "merge", "--no-ff", "-q",
-                 "-m", f"Merge PR #{pr['number']} ({branch})", sha],
+                ["git", "-C", str(clone), "merge", "--squash", "-q", sha],
                 capture_output=True, text=True,
             )
             if m.returncode != 0:
                 print(f"merge conflict merging {branch}: {m.stderr}", file=sys.stderr)
                 return 1
+            subprocess.run(
+                ["git", "-C", str(clone), "commit", "-q",
+                 "-m", f"Merge PR #{pr['number']} ({branch})"],
+                check=True, capture_output=True,
+            )
             subprocess.run(
                 ["git", "-C", str(clone), "push", "-q", "origin", state["base"]],
                 check=True, capture_output=True,
