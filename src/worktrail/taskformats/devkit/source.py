@@ -377,6 +377,23 @@ class DevkitSpecTaskSource:
     def resolve_external_dependency(self, dep_ref: str) -> Dict[str, Any]:
         return resolve_external_dependency(self.repo_root, dep_ref, spec_root=self._spec_root)
 
+    def validate_dependencies(self, spec_id: str, tasks: List[Dict[str, Any]]) -> List[str]:
+        """Report unresolved same-spec `deps` entries.
+
+        `external-dependencies:` entries are a separate field (see module
+        docstring) resolved through `resolve_external_dependency()`, not this
+        loaded-task-id set, so they are never flagged here.
+        """
+        diagnostics: List[str] = []
+        task_ids = {t["id"] for t in tasks}
+        for task in tasks:
+            for dep in task.get("deps", []):
+                if dep not in task_ids:
+                    diagnostics.append(
+                        f"{task['id']}: unresolved same-spec dependency '{dep}'"
+                    )
+        return diagnostics
+
     def task_brief_ref(self, task_id: str, spec_ref: str) -> tuple:
         """The task's own file is the brief; no anchor needed."""
         return f"{self._spec_root}/{spec_ref}/tasks/{task_id}.md", ""
