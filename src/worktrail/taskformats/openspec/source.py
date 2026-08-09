@@ -111,10 +111,15 @@ class OpenSpecTaskSource:
         becomes one "unresolved same-spec dependency" diagnostic, worded
         `"{task_id} — ..."` so a caller can print it as `f"WARN: {diagnostic}"`
         (matching the existing external-dependency WARN format in
-        `orchestrator/live.py`'s `precheck()`). `decision-refs:` coverage is
-        not evaluated here -- OpenSpec's `tasks.md` carries no per-task
-        metadata to read it from; that unsupported-format diagnostic is a
-        separate concern.
+        `orchestrator/live.py`'s `precheck()`).
+
+        `decision-refs:` is a devkit-frontmatter field; `tasks.md` carries no
+        per-task metadata section to read it from. If a task dict carries one
+        anyway -- the format exposing it some other way is a possibility this
+        method stays open to, not something it assumes -- its decision-log
+        coverage is not validated (there is nowhere to read a decision log
+        from either); instead each such task gets one "decision-refs
+        unsupported for OpenSpec-format tasks" diagnostic.
         """
         task_ids = {t["id"] for t in tasks}
         diagnostics: List[str] = []
@@ -125,6 +130,11 @@ class OpenSpecTaskSource:
                         f"{t['id']} — unresolved same-spec dependency '{dep}' "
                         f"(no task with that id in this change)"
                     )
+            if t.get("decision-refs"):
+                diagnostics.append(
+                    f"{t['id']} — decision-refs unsupported for OpenSpec-format tasks "
+                    f"(no per-task decision-log coverage check is available for this format)"
+                )
         return diagnostics
 
     def resolve_external_dependency(self, dep_ref: str) -> Dict[str, Any]:
