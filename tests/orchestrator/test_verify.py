@@ -189,6 +189,113 @@ class CiFixExhaustionPath(unittest.TestCase):
         self.assertFalse(run.find("git", "-C", "/repo", "worktree", "remove"))
 
 
+def _threads_json(nodes, has_next=False, end_cursor=""):
+    return json.dumps({
+        "data": {"repository": {"pullRequest": {"reviewThreads": {
+            "pageInfo": {"hasNextPage": has_next, "endCursor": end_cursor},
+            "nodes": nodes,
+        }}}}
+    })
+
+
+def _rt_thread(thread_id, path, resolved, created_at="2026-08-01T00:00:00Z"):
+    return {"id": thread_id, "isResolved": resolved, "isOutdated": False,
+            "path": path, "line": 7,
+            "comments": {"nodes": [{"author": {"login": "security-review-llm"},
+                                    "body": "possible finding", "createdAt": created_at}]}}
+
+
+class ReviewThreadsRun(FakeRun):
+    """FakeRun extended with a scriptable review-threads GraphQL response and
+    git-log-since correlation outcome, mirroring test_check_review_threads.py's
+    own fake shapes but routed through this file's `Proc`/`FakeRun` idiom."""
+
+    def __init__(self, *a, threads_json="", commit_touched=False, **kw):
+        super().__init__(*a, **kw)
+        self.threads_json = threads_json
+        self.commit_touched = commit_touched
+
+    def __call__(self, cmd):
+        joined = " ".join(cmd)
+        if cmd[:3] == ["gh", "api", "graphql"] and "reviewThreads" in joined:
+            self.calls.append(cmd)
+            return Proc(0, self.threads_json, "")
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            self.calls.append(cmd)          # reply / resolve mutation
+            return Proc(0, "{}", "")
+        if cmd[:2] == ["git", "-C"] and "log" in cmd:
+            self.calls.append(cmd)
+            return Proc(0, "abc123\n" if self.commit_touched else "", "")
+        return super().__call__(cmd)
+
+
+class ReviewThreadsGate(unittest.TestCase):
+    """resolve_review_threads(): the group-PR analogue of worktrail-go's
+    Phase 8 check_review_threads gate (PR #2133's failure mode)."""
+
+    def test_addressed_thread_auto_resolved_then_merges(self):
+        run = ReviewThreadsRun(
+            {"run/feature-1": [view()]},
+            threads_json=_threads_json([_rt_thread("T_1", "a.py", resolved=False)]),
+            commit_touched=True,
+        )
+        spawn = FakeSpawn()
+        v = mk(run, spawn, "/tmp/x")
+        res = v.run_all([FEATURE], {"feature-1": "run/feature-1"})
+
+        self.assertEqual(res["merged"], ["feature-1"])
+        self.assertEqual(res["quarantined"], {})
+        self.assertTrue(run.find("gh", "pr", "merge", "run/feature-1"))
+        self.assertTrue(any("resolveReviewThread" in " ".join(c) for c in run.calls))
+
+    def test_unaddressed_thread_quarantines_keeps_worktree(self):
+        run = ReviewThreadsRun(
+            {"run/feature-1": [view()]},
+            threads_json=_threads_json([_rt_thread("T_1", "a.py", resolved=False)]),
+            commit_touched=False,
+        )
+        spawn = FakeSpawn()
+        v = mk(run, spawn, "/tmp/x")
+        res = v.run_all([FEATURE], {"feature-1": "run/feature-1"})
+
+        self.assertEqual(res["merged"], [])
+        self.assertIn("feature-1", res["quarantined"])
+        self.assertIn("unresolved review thread", res["quarantined"]["feature-1"])
+        self.assertIn("a.py:7", res["quarantined"]["feature-1"])
+        self.assertFalse(run.find("gh", "pr", "merge", "run/feature-1"))
+        # worktree KEPT for inspection, same as a red-CI quarantine
+        self.assertFalse(run.find("git", "-C", "/repo", "worktree", "remove"))
+        # never resolves a thread it couldn't correlate to a fix
+        self.assertFalse(any("resolveReviewThread" in " ".join(c) for c in run.calls))
+
+    def test_resolved_pr_has_no_effect(self):
+        """A PR with no unresolved threads at all merges exactly as before."""
+        run = ReviewThreadsRun(
+            {"run/feature-1": [view()]},
+            threads_json=_threads_json([_rt_thread("T_1", "a.py", resolved=True)]),
+        )
+        spawn = FakeSpawn()
+        v = mk(run, spawn, "/tmp/x")
+        res = v.run_all([FEATURE], {"feature-1": "run/feature-1"})
+
+        self.assertEqual(res["merged"], ["feature-1"])
+        self.assertFalse(any("resolveReviewThread" in " ".join(c) for c in run.calls))
+
+    def test_unanswerable_review_thread_query_still_merges(self):
+        """`gh api graphql` returning something check_review_threads.py can't
+        parse (no reviewThreads endpoint reachable, transient hiccup, ...) is
+        `checked: false` -- "no signal", never "blocked". Explicit regression
+        coverage alongside the full existing suite (which already exercises
+        this path implicitly via the plain, unscripted FakeRun default)."""
+        run = FakeRun({"run/feature-1": [view()]})
+        spawn = FakeSpawn()
+        v = mk(run, spawn, "/tmp/x")
+        res = v.run_all([FEATURE], {"feature-1": "run/feature-1"})
+
+        self.assertEqual(res["merged"], ["feature-1"])
+        self.assertEqual(res["quarantined"], {})
+
+
 class BaseFailureQuarantinesDependents(unittest.TestCase):
     def test_dependent_skipped_when_base_red(self):
         base = {"name": "base", "tasks": ["TASK-001"], "reqs": [], "depends_on": []}

@@ -19,7 +19,18 @@ group that fails verification quarantines its dependents -- mirroring the
      the failing-run log, spawn a `ci-fix` worker in the group worktree, push,
      re-poll. Bounded by the same 3-strikes budget; still red -> quarantine,
      KEEP the worktree, report the failing check + log tail.
-  3. CLEANUP GATE -- only groups that reach green + mergeable are AUTO-MERGED
+  3. REVIEW THREADS -- GitHub's `required_review_thread_resolution` branch
+     protection blocks the actual merge while any review thread is
+     unresolved, but `auto_merge()` (step 4) treats that block as a
+     successful "queued, GitHub will merge it later" outcome and moves on --
+     nothing then ever resolves a thread a later commit already addressed
+     (PR #2133's failure mode: 9 unresolved `security-review-llm` threads
+     needing a human to notice and resolve by hand, transplanted into the
+     headless path). Auto-reply-and-resolve every thread a commit already
+     addressed (`worktrail.router.check_review_threads`, same pass
+     `worktrail-go`'s Phase 8 runs for the agent-driven single-PR flow);
+     anything left over quarantines the group like a red required check.
+  4. CLEANUP GATE -- only groups that reach green + mergeable are AUTO-MERGED
      (locked policy 2026-05-30: personal/sandbox repos, no human gate) and then
      have their task worktrees + branches removed. Quarantined / escalated groups
      keep everything for inspection.
@@ -82,6 +93,25 @@ class _LazyAutomergePreflight:
 
 
 automerge_preflight = _LazyAutomergePreflight()
+
+
+class _LazyCheckReviewThreads:
+    """Same lazy-proxy convention as `_LazyAutomergePreflight` above, for
+    `worktrail.router.check_review_threads` (see `resolve_review_threads()`).
+    """
+
+    def __getattr__(self, name):
+        try:
+            from ..router import check_review_threads as _mod
+        except ImportError as exc:
+            raise ImportError(
+                "worktrail.router.check_review_threads is not installed "
+                "(part of the router extraction sub-phase)"
+            ) from exc
+        return getattr(_mod, name)
+
+
+check_review_threads = _LazyCheckReviewThreads()
 
 # Check classification (GraphQL statusCheckRollup). CheckRun carries status +
 # conclusion; legacy StatusContext carries state.
@@ -839,6 +869,66 @@ class Verifier:
             self.sleep(min(self.poll_interval_max, self.poll_interval * (1.4 ** poll)))
         return False, None                               # budget exhausted
 
+    def _review_threads_runner(self, cmd: List[str], **_ignored: Any):
+        """Adapts `self.run(cmd)`'s single-arg convention to the `runner(cmd,
+        capture_output=, text=, timeout=)` shape `check_review_threads.py`
+        calls -- letting the same injected fake `run` used everywhere else in
+        this class (and its tests) drive the review-thread gate too."""
+        return self.run(cmd)
+
+    def resolve_review_threads(self, group: Dict[str, Any], gb: str) -> Tuple[bool, str]:
+        """After CI is green, close the review-thread gap the headless
+        orchestrator path never had.
+
+        GitHub's native `required_review_thread_resolution` branch-protection
+        rule already blocks the actual merge outright while threads are
+        unresolved -- but `auto_merge()` (below) treats a resulting
+        branch-protection block as a successful "queued" outcome and moves on.
+        Nothing then ever resolves a thread a later commit already addressed,
+        so the PR sits armed-and-blocked forever once GitHub itself grows a
+        required review-thread check. That is PR #2133's failure mode (9
+        unresolved `security-review-llm` threads across 4 rounds, needing a
+        human to notice and resolve each by hand) transplanted into the
+        headless group-PR path -- `check_review_threads.py` already fixed
+        this for the agent-driven single-PR flow (`worktrail-go`'s Phase 8),
+        but nothing wired the same fix into the orchestrator's own merge loop.
+
+        Runs the identical correlate-and-resolve pass: a thread is safe to
+        auto-reply-and-resolve when a commit already touched the same file
+        after the thread was opened; anything left over blocks this group the
+        same way a red required check does (`wait_and_fix_ci`), which also
+        keeps its worktree for inspection instead of silently arming a merge
+        nothing will ever unblock.
+        """
+        st = self.pr_status(gb)
+        pr_number = st.get("number") if st else None
+        if pr_number is None or not self.gh_repo:
+            # No PR / no resolvable owner-repo yet -- not a review-thread
+            # problem; the existing mergeability/CI handling already covers
+            # a missing PR.
+            return True, ""
+        owner, _, name = self.gh_repo.partition("/")
+        result = check_review_threads.check(
+            self.repo, int(pr_number), owner=owner, name=name,
+            runner=self._review_threads_runner,
+        )
+        if not result["checked"]:
+            # Same fail-open posture as check_review_threads.py's own module
+            # contract: an unanswerable question ("gh" hiccup, bad GraphQL
+            # response) is "no signal", never "blocked".
+            if result.get("warning"):
+                self.log(f"    [{group['name']}] review-thread check unavailable: "
+                         f"{result['warning']}")
+            return True, ""
+        if result["resolved_now"]:
+            self.log(f"    [{group['name']}] auto-resolved "
+                     f"{len(result['resolved_now'])} addressed review thread(s)")
+        if result["blocking"]:
+            spots = ", ".join(f"{t.get('path')}:{t.get('line')}"
+                              for t in result["unaddressed"])
+            return False, f"unresolved review thread(s) not yet addressed: {spots}"
+        return True, ""
+
     def retarget_to_base(self, group: Dict[str, Any], gb: str) -> None:
         """Re-point a dependent group's PR at the real base branch.
 
@@ -1194,9 +1284,9 @@ class Verifier:
                    armed: Optional[Dict[str, str]] = None,
                    post_merge_regressed: Optional[Dict[str, str]] = None) -> None:
         """Verify exactly one group's PR: retarget (if dependent) →
-        ensure_mergeable → wait_and_fix_ci → auto_merge (cumulative-gated) →
-        gated cleanup (delivered tasks only). Quarantines and keeps worktrees
-        on failure.
+        ensure_mergeable → wait_and_fix_ci → resolve_review_threads →
+        auto_merge (cumulative-gated) → gated cleanup (delivered tasks only).
+        Quarantines and keeps worktrees on failure.
 
         `merged`/`quarantined` are caller-owned accumulators mutated under
         `lock`, safe for concurrent calls within a wave. Consumed by run_all
@@ -1254,6 +1344,8 @@ class Verifier:
         ok, reason = self.ensure_mergeable(group, group_branch)
         if ok:
             ok, reason = self.wait_and_fix_ci(group, group_branch)
+        if ok:
+            ok, reason = self.resolve_review_threads(group, group_branch)
         if ok:
             ok, reason = self._merge_with_cumulative_gate(group, group_branch)
         if not ok:
