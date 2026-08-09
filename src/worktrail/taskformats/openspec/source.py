@@ -103,6 +103,30 @@ class OpenSpecTaskSource:
             )
         return spec_ref, out
 
+    def validate_dependencies(self, spec_id: str, tasks: List[Dict[str, Any]]) -> List[str]:
+        """Report `deps` entries that name no task id in this change.
+
+        Same-spec `deps` behaves identically to the devkit adapter: every
+        `deps` entry is checked against the loaded task-id set, and each miss
+        becomes one "unresolved same-spec dependency" diagnostic, worded
+        `"{task_id} — ..."` so a caller can print it as `f"WARN: {diagnostic}"`
+        (matching the existing external-dependency WARN format in
+        `orchestrator/live.py`'s `precheck()`). `decision-refs:` coverage is
+        not evaluated here -- OpenSpec's `tasks.md` carries no per-task
+        metadata to read it from; that unsupported-format diagnostic is a
+        separate concern.
+        """
+        task_ids = {t["id"] for t in tasks}
+        diagnostics: List[str] = []
+        for t in tasks:
+            for dep in t.get("deps") or []:
+                if dep not in task_ids:
+                    diagnostics.append(
+                        f"{t['id']} — unresolved same-spec dependency '{dep}' "
+                        f"(no task with that id in this change)"
+                    )
+        return diagnostics
+
     def resolve_external_dependency(self, dep_ref: str) -> Dict[str, Any]:
         """Resolve a `<change-id>/<task-id>` cross-change reference."""
         unresolved = {
