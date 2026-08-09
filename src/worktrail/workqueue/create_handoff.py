@@ -105,6 +105,7 @@ def create_handoff(
     implementation_intent: Optional[str] = None,
     change_kind: Optional[str] = None,
     target_spec: Optional[str] = None,
+    triage: Optional[str] = None,
     blocked_by: Optional[Iterable[str]] = None,
     watch: Optional[Iterable[str]] = None,
 ) -> dict[str, Any]:
@@ -116,6 +117,8 @@ def create_handoff(
         raise ValueError("implementation-intent must be requested, planning-only, or unknown")
     if change_kind and change_kind not in {"new", "delta", "bugfix"}:
         raise ValueError("change-kind must be new, delta, or bugfix")
+    if triage and triage not in work_queue.VALID_TRIAGE:
+        raise ValueError("triage must be blocker or deferred")
 
     base = Path(queue_base or work_queue.base_dir()).expanduser()
     queue = base / "queue"
@@ -147,6 +150,7 @@ def create_handoff(
         ("implementation-intent", implementation_intent),
         ("change-kind", change_kind),
         ("target-spec", target_spec),
+        ("triage", triage),
     ):
         if value:
             frontmatter[key] = value
@@ -204,6 +208,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--implementation-intent", choices=("requested", "planning-only", "unknown"))
     parser.add_argument("--change-kind", choices=("new", "delta", "bugfix"))
     parser.add_argument("--target-spec")
+    parser.add_argument(
+        "--triage",
+        choices=("blocker", "deferred"),
+        help="release scoping: blocker = must land before the current release gate; "
+        "deferred = explicitly scoped to a later release",
+    )
     parser.add_argument("--blocked-by", action="append", default=[])
     parser.add_argument("--watch", action="append", default=[])
     parser.add_argument("--json", action="store_true", help="emit JSON")
@@ -224,6 +234,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             implementation_intent=args.implementation_intent,
             change_kind=args.change_kind,
             target_spec=args.target_spec,
+            triage=args.triage,
             blocked_by=args.blocked_by,
             watch=args.watch,
         )

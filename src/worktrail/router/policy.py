@@ -151,6 +151,14 @@ DEFAULTS: Dict[str, Any] = {
     # paces the sequential integrate path and --pipeline alike (in pipeline
     # mode only the integrate+PR-open step is serialized; verify overlaps).
     "pr_pacing_wait_s": 0,
+    # Optional release focus for this repo (e.g. "v1.0"). When set, the repo is
+    # in a release freeze: /go auto's queue pick skips this repo's briefs unless
+    # their `triage:` frontmatter is `blocker` (dashboard.auto_pick_brief), so
+    # newly-mined ideas default to captured-but-not-scheduled instead of
+    # crowding out the release burn-down. None = no freeze, no behavior change.
+    # Interactive selection is never blocked -- an operator can still pick a
+    # deferred brief by hand; the gate only governs unattended auto-pick.
+    "release_gate": None,
     # Optional subscription-aware routing table (defaults/roles/tiers/fallback).
     # None = no repo-local routing configured; see load_policy()'s machine-wide
     # file fallback and resolve_routing() below. Purely additive (DEC-001): the
