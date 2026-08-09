@@ -2184,6 +2184,22 @@ def _require_task_file(wt: Path, spec_rel: str, task_id: str) -> None:
         )
 
 
+def _dependency_file_declared_path_exists(wt: Path, declared: str) -> bool:
+    """True if `declared` resolves under `wt` -- either literally, or, for a
+    glob-style entry (e.g. `api/tests/**`, legitimate shorthand for many
+    files), if the pattern matches at least one path. A literal
+    `Path.exists()` check can never match a wildcard entry -- no file is
+    literally named `**` -- so glob metacharacters route through
+    `Path.glob()` instead.
+    """
+    if any(ch in declared for ch in "*?["):
+        try:
+            return any(wt.glob(declared))
+        except ValueError:
+            return False
+    return (wt / declared).exists()
+
+
 def _require_dependency_files(wt: Path, task: dict, by_id: dict) -> "list[dict]":
     """Fail loud at dispatch time if a dependency's declared files are missing
     from the stacked worktree after the dependency's branch was merged in.
@@ -2206,6 +2222,18 @@ def _require_dependency_files(wt: Path, task: dict, by_id: dict) -> "list[dict]"
     land even though a declared path didn't, so this downgrades to a WARN
     naming both paths instead of crashing the dispatch.
 
+    A `--fresh` run has no journal, so a dependency the run did not itself
+    drive never gets a `head_sha` populated (frontmatter carries no commit
+    SHAs) and the ancestor check above could never engage. But a dependency
+    already in a DONE-like status (`coordinator.DONE`) was, by construction,
+    merged before this run started -- `dependency_start_ref` falls back to
+    bare HEAD for it precisely because no branch exists to stack -- so the
+    stacked worktree's HEAD already IS whatever that dependency actually
+    shipped. A still-missing declared file for such a dependency downgrades to
+    the same WARN, keyed off its DONE status instead of an unavailable
+    `head_sha`. A dependency this run is actively driving (no DONE-like status
+    yet) carries no such guarantee, so the guard stays strict for it.
+
     Returns the structured `dependency_file_drift` events fired (empty when no
     drift occurred) so callers can journal them for cross-run aggregation
     (`safety_net_report.py`) -- the print above is only visible in a single
@@ -2217,7 +2245,7 @@ def _require_dependency_files(wt: Path, task: dict, by_id: dict) -> "list[dict]"
         if not dep:
             continue
         for f in dep.get("files", []) or []:
-            if (wt / f).exists():
+            if _dependency_file_declared_path_exists(wt, f):
                 continue
             dep_head = dep.get("head_sha")
             if (
@@ -2242,6 +2270,28 @@ def _require_dependency_files(wt: Path, task: dict, by_id: dict) -> "list[dict]"
                         "dep_id": dep_id,
                         "declared_path": f,
                         "dep_head_sha": dep_head,
+                        "at": round(time.time(), 3),
+                    }
+                )
+                continue
+            if not dep_head and dep.get("status") in coordinator.DONE:
+                print(
+                    f"{_ts()} WARN: task {task['id']} worktree {wt} is missing "
+                    f"{dep_id}'s declared file {f!r}, and no head_sha is "
+                    f"available to verify (fresh run, no journal) -- but "
+                    f"{dep_id} is already {dep.get('status')!r}, which means "
+                    "it was merged before this run started, so this is "
+                    f"treated as declared-vs-actual drift. Correct {dep_id}'s "
+                    "task frontmatter `files:` to match what it actually "
+                    "committed."
+                )
+                events.append(
+                    {
+                        "event": "dependency_file_drift",
+                        "task": task["id"],
+                        "dep_id": dep_id,
+                        "declared_path": f,
+                        "dep_head_sha": None,
                         "at": round(time.time(), 3),
                     }
                 )

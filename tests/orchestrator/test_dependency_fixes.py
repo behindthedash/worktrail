@@ -390,6 +390,98 @@ class DependencyStacking(unittest.TestCase):
         with self.assertRaises(live.WorktreeMissingDependencyFileError):
             live._require_dependency_files(wt2, by_id["TASK-002"], by_id)
 
+    def test_require_dependency_files_glob_entry_passes_when_files_present(self):
+        """Brief 20260808-132549: a dependency's `files:` legitimately uses a
+        glob as shorthand for many files (e.g. `api/tests/**` for ~56 test
+        files). A literal `Path.exists()` check can never match `**` -- it
+        must expand the pattern against the worktree instead."""
+        by_id = {
+            "TASK-001": {"id": "TASK-001", "deps": [], "files": ["api/tests/**"]},
+            "TASK-002": {"id": "TASK-002", "deps": ["TASK-001"]},
+        }
+        wt1 = Path(self.tmp) / "wt1"
+        live.add_stacked_worktree(self.repo, self.spec, by_id["TASK-001"], by_id, wt1)
+        (wt1 / "api" / "tests").mkdir(parents=True)
+        (wt1 / "api" / "tests" / "test_foo.py").write_text("def test_foo(): pass\n")
+        _git(wt1, "add", "-A")
+        _git(wt1, "commit", "-q", "-m", "TASK-001 tests")
+
+        wt2 = Path(self.tmp) / "wt2"
+        live.add_stacked_worktree(self.repo, self.spec, by_id["TASK-002"], by_id, wt2)
+        live._require_dependency_files(wt2, by_id["TASK-002"], by_id)  # must not raise
+
+    def test_require_dependency_files_glob_entry_raises_when_nothing_matches(self):
+        """A glob entry is a real check, not a bypass: if nothing under the
+        pattern exists, it must still raise."""
+        by_id = {
+            "TASK-001": {"id": "TASK-001", "deps": [], "files": ["api/tests/**"]},
+            "TASK-002": {"id": "TASK-002", "deps": ["TASK-001"]},
+        }
+        wt1 = Path(self.tmp) / "wt1"
+        live.add_stacked_worktree(self.repo, self.spec, by_id["TASK-001"], by_id, wt1)
+        wt2 = Path(self.tmp) / "wt2"
+        live.add_stacked_worktree(self.repo, self.spec, by_id["TASK-002"], by_id, wt2)
+        with self.assertRaises(live.WorktreeMissingDependencyFileError):
+            live._require_dependency_files(wt2, by_id["TASK-002"], by_id)
+
+    def test_require_dependency_files_fresh_run_no_head_sha_warns_for_completed_dep(self):
+        """Brief 20260808-132549: on a `--fresh` run (no journal), a
+        pre-completed dependency never gets a `head_sha` populated (frontmatter
+        carries no commit SHAs), so the ancestor-check WARN fallback could never
+        engage. A dependency already in a DONE-like status was, by definition,
+        merged before this run started (`dependency_start_ref` falls back to
+        bare HEAD for it -- no branch to stack), so a still-missing declared
+        file downgrades to WARN instead of hard-failing the dispatch."""
+        by_id = {
+            "TASK-001": {
+                "id": "TASK-001",
+                "deps": [],
+                "files": ["helper.py", "missing_file.py"],
+                "status": "completed",
+            },
+            "TASK-002": {"id": "TASK-002", "deps": ["TASK-001"]},
+        }
+        wt1 = Path(self.tmp) / "wt1"
+        live.add_stacked_worktree(self.repo, self.spec, by_id["TASK-001"], by_id, wt1)
+        (wt1 / "helper.py").write_text("def helper():\n    return 42\n")
+        _git(wt1, "add", "-A")
+        _git(wt1, "commit", "-q", "-m", "TASK-001 helper")
+
+        wt2 = Path(self.tmp) / "wt2"
+        live.add_stacked_worktree(self.repo, self.spec, by_id["TASK-002"], by_id, wt2)
+        events = live._require_dependency_files(wt2, by_id["TASK-002"], by_id)  # must not raise
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertEqual(event["event"], "dependency_file_drift")
+        self.assertEqual(event["dep_id"], "TASK-001")
+        self.assertEqual(event["declared_path"], "missing_file.py")
+        self.assertIsNone(event["dep_head_sha"])
+
+    def test_require_dependency_files_fresh_run_no_head_sha_still_raises_for_in_run_dep(self):
+        """The WARN downgrade for a missing `head_sha` must stay scoped to
+        already-completed dependencies. A dependency this run is actively
+        driving (no DONE-like status yet) has no trusted "merged before this
+        run" guarantee, so a missing file with no `head_sha` must still raise."""
+        by_id = {
+            "TASK-001": {
+                "id": "TASK-001",
+                "deps": [],
+                "files": ["helper.py", "missing_file.py"],
+                "status": "fixing",
+            },
+            "TASK-002": {"id": "TASK-002", "deps": ["TASK-001"]},
+        }
+        wt1 = Path(self.tmp) / "wt1"
+        live.add_stacked_worktree(self.repo, self.spec, by_id["TASK-001"], by_id, wt1)
+        (wt1 / "helper.py").write_text("def helper():\n    return 42\n")
+        _git(wt1, "add", "-A")
+        _git(wt1, "commit", "-q", "-m", "TASK-001 helper")
+
+        wt2 = Path(self.tmp) / "wt2"
+        live.add_stacked_worktree(self.repo, self.spec, by_id["TASK-002"], by_id, wt2)
+        with self.assertRaises(live.WorktreeMissingDependencyFileError):
+            live._require_dependency_files(wt2, by_id["TASK-002"], by_id)
+
 
 # --------------------------------------------------------------------------- #
 # Defect C -- cleanup prompt is config-gated, no bare global formatter
