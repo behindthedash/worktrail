@@ -176,7 +176,32 @@ launching the orchestrator — never launch with uncommitted output sitting in `
 
 **Stage results:** `../../worktrail-go/references/subagent-prompts.md#stage-result-handling`.
 
-3. **Pre-launch uncommitted-output guard (mandatory)** — mirrors the `new`
+3. **scope-check** — run `worktrail-compile` against the change directory *before*
+   the pre-launch uncommitted-output guard below, mirroring `#new-pipeline` step 3.
+   `#orchestrator` (invoked in step 6 below) runs the same command again immediately
+   before `full-real` — a no-op cache hit there, per `compile.py`'s content-fingerprint
+   cache — but running it here first, while the change directory is still open for a
+   commit, is what gets the resulting `.compile-ok` marker committed at all. Run only
+   here, the marker is always written *after* the change directory's last commit (the
+   guard below already passed by the time `#orchestrator` reaches its own compile
+   call), so every group PR is missing it deterministically — reproduced directly on
+   worktrail PR #260 (run go-20260809-021940): `CI: Scope check`
+   (`worktrail-check-compile-markers`) failed and the marker had to be hand-committed
+   onto the group branch as a `ci_repair` intervention.
+
+   ```bash
+   worktrail-compile "$CHANGE_DIR" || {
+     echo "ERROR: worktrail-compile found scope gaps in $CHANGE_ID -- fix tasks.md in $WT (add explicit files: scope, a tail kind for investigation/verification-only steps, or a deps edge for an unordered file collision) and re-run before continuing." >&2
+     exit 1
+   }
+   ```
+
+   A passing compile writes `.compile-ok` into `$CHANGE_DIR`, uncommitted — the
+   pre-launch uncommitted-output guard immediately below catches it as part of its
+   normal `openspec/` diff check and requires it to be committed with the rest of the
+   change, closing the loop without any new guard logic.
+
+4. **Pre-launch uncommitted-output guard (mandatory)** — mirrors the `new`
    pipeline's base-checkout diff detection (`#new-pipeline` step 5b), but checks
    the change-spec worktree itself rather than `$REPO`. (Verified: unlike `new`,
    this pipeline has no intermediate docs-only-PR-push-and-merge stage before
@@ -187,18 +212,18 @@ launching the orchestrator — never launch with uncommitted output sitting in `
 ```bash
 CHG_DIFF=$(git -C "$WT" status --porcelain -- openspec/ 2>&1)
 if [ -n "$CHG_DIFF" ]; then
-  echo "ERROR: $WT has uncommitted openspec/ output (proposal/specs/design/tasks). Commit it on chg/$CHANGE_ID before launching the orchestrator — an uncommitted file here will be silently absent from every task worktree the orchestrator forks from \$WT." >&2
+  echo "ERROR: $WT has uncommitted openspec/ output (proposal/specs/design/tasks, or a freshly-written .compile-ok from step 3). Commit it on chg/$CHANGE_ID before launching the orchestrator — an uncommitted file here will be silently absent from every task worktree the orchestrator forks from \$WT." >&2
   exit 1
 fi
 ```
 
-4. Run `../../worktrail-go/references/subagent-prompts.md#stale-spec-check` → `../../worktrail-go/references/subagent-prompts.md#precheck-gate`
+5. Run `../../worktrail-go/references/subagent-prompts.md#stale-spec-check` → `../../worktrail-go/references/subagent-prompts.md#precheck-gate`
    (`SPEC_ROOT=$WT`, pointed at `$CHANGE_DIR`).
-5. **orchestrator** — invoke per `../../worktrail-go/references/subagent-prompts.md#orchestrator` with
+6. **orchestrator** — invoke per `../../worktrail-go/references/subagent-prompts.md#orchestrator` with
    `SPEC_ROOT=$WT`, `run_in_background: true`. Cutting task worktrees from `$WT`
    (not `$REPO`) is what guarantees the just-committed change-spec and task files
    are present in every forked task worktree.
-6. **sync** (mandatory, BEFORE any teardown) — `../../worktrail-go/references/subagent-prompts.md#sync-before-teardown`.
+7. **sync** (mandatory, BEFORE any teardown) — `../../worktrail-go/references/subagent-prompts.md#sync-before-teardown`.
 
 Re-run the dashboard; teardown per `../../worktrail-go/references/subagent-prompts.md#worktree-lifecycle` (change-spec
 worktree only after sync completes).
