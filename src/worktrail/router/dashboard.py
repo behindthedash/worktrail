@@ -103,6 +103,10 @@ from .policy_drift_selfcheck import check_repo as _policy_drift_check_repo
 # quarantine_selfcheck is a sibling module (spec quarantined-group-visibility).
 from .quarantine_selfcheck import check_repo as _quarantine_check_repo
 
+# journal_selfcheck is a sibling module (brief 20260808-210929): stranded-run
+# invariants (integrate_complete with undispatched tail; malformed journals).
+from .journal_selfcheck import check_repo as _journal_check_repo
+
 from ..orchestrator.agent_capacity import gate_snapshot as _capacity_gate_snapshot
 
 # audit_postmerge is a sibling module (spec post-merge-reconciliation-audit):
@@ -1199,10 +1203,34 @@ def auto_pick_brief(
     absent (_repo_busy_reason), or it doesn't match repo_filter. repo_filter
     matches the brief's repo by full path or basename.
 
+    Release scoping (feat/release-triage): briefs are ranked blocker-first
+    (`triage: blocker` < untriaged < `triage: deferred`), FIFO within each
+    tier. When a brief's repo policy sets `release_gate` (the repo is in a
+    release freeze), a non-blocker brief for that repo is skipped entirely with
+    reason `release-gate:<name>` — capture stays open during a freeze, but
+    unattended scheduling is blockers-only. Interactive selection is unaffected.
+
     Returns {"pick": {...}|None, "skipped": [{"id", "reason"}, ...]}.
     """
     skipped: List[Dict[str, str]] = []
-    for b in sorted(queue_briefs, key=lambda x: x.get("filename") or ""):
+    _TRIAGE_RANK = {"blocker": 0, None: 1, "deferred": 2}
+    policy_cache: Dict[str, Optional[Dict[str, Any]]] = {}
+
+    def _release_gate_for(repo: Any) -> Optional[str]:
+        r = str(repo or "").strip()
+        if not r or not Path(r).expanduser().is_dir():
+            return None
+        if r not in policy_cache:
+            policy_cache[r] = _load_dashboard_policy(r)
+        pol = policy_cache[r]
+        gate = (pol or {}).get("release_gate")
+        return str(gate) if gate else None
+
+    def _rank_key(x: Dict[str, Any]):
+        triage = x.get("triage") if x.get("triage") in ("blocker", "deferred") else None
+        return (_TRIAGE_RANK[triage], x.get("filename") or "")
+
+    for b in sorted(queue_briefs, key=_rank_key):
         stem = (b.get("filename") or "").replace(".md", "")
         if b.get("blocked"):
             skipped.append({"id": stem, "reason": "blocked"})
@@ -1222,6 +1250,10 @@ def auto_pick_brief(
             if r != rf and Path(r).name != Path(rf).name:
                 skipped.append({"id": stem, "reason": "repo-filter"})
                 continue
+        gate = _release_gate_for(repo)
+        if gate and b.get("triage") != "blocker":
+            skipped.append({"id": stem, "reason": f"release-gate:{gate}"})
+            continue
         busy = _repo_busy_reason(repo)
         if busy:
             skipped.append({"id": stem, "reason": busy})
@@ -1576,6 +1608,9 @@ def scan_repos(parent: Path) -> List[Dict[str, Any]]:
             _qr = _quarantine_check_repo(repo)
             quarantine_findings = _qr["findings"]
             quarantine_resumable = _qr["resumable"]
+        journal_findings: List[Dict[str, Any]] = []
+        if _journal_check_repo is not None:
+            journal_findings = _journal_check_repo(repo)["findings"]
         repo_info[repo_key] = {
             "name": repo.name,
             "path": str(repo),
@@ -1586,6 +1621,7 @@ def scan_repos(parent: Path) -> List[Dict[str, Any]]:
             "drift_findings": drift_findings,
             "quarantine_findings": quarantine_findings,
             "quarantine_resumable": quarantine_resumable,
+            "journal_findings": journal_findings,
         }
         if specs_root.is_dir():
             for d in sorted(specs_root.iterdir()):
@@ -1986,6 +2022,7 @@ def render_dashboard(
     drift_flags: List[str] = []
     quarantine_flags: List[str] = []
     quarantine_resumable_flags: List[str] = []
+    stranded_flags: List[str] = []
     runs: List[Dict[str, Any]] = []
     if repo_rows is not None:
         for r in repo_rows:
@@ -2003,6 +2040,10 @@ def render_dashboard(
             quarantine_resumable_flags.extend(
                 f"{r['repo']} ({f['spec_id']}/{f['group']}, {f['age_days']:.0f}d)"
                 for f in r.get("quarantine_resumable", [])
+            )
+            stranded_flags.extend(
+                f"{r['repo']} ({f['spec_id']}: {f['kind']})"
+                for f in r.get("journal_findings", [])
             )
             for run in r.get("recent_runs", []) or []:
                 runs.append({"who": r["repo"], **run})
@@ -2061,11 +2102,14 @@ def render_dashboard(
         # set can't silently disagree.
         ordered_q = sorted(
             queue_briefs,
-            key=lambda b: bool(
-                b.get("blocked") or b.get("not_yet_due") or b.get("recently_released")
+            key=lambda b: (
+                bool(b.get("blocked") or b.get("not_yet_due") or b.get("recently_released")),
+                {"blocker": 0, "deferred": 2}.get(str(b.get("triage") or ""), 1),
             ),
         )
-        lines.append(f"📥 Queued handoffs ({len(ordered_q)})")
+        n_blockers = sum(1 for b in queue_briefs if b.get("triage") == "blocker")
+        blocker_note = f", {n_blockers} blocker" + ("s" if n_blockers != 1 else "") if n_blockers else ""
+        lines.append(f"📥 Queued handoffs ({len(ordered_q)}{blocker_note})")
         for b in ordered_q[:3]:
             label = _clip(b.get("focus") or b["filename"].replace(".md", ""))
             if b.get("blocked"):
@@ -2075,6 +2119,10 @@ def render_dashboard(
             elif b.get("recently_released"):
                 by = f" by {b['recently_released_by']}" if b.get("recently_released_by") else ""
                 tag = f" [recently released{by}]"
+            elif b.get("triage") == "blocker":
+                tag = " [blocker]"
+            elif b.get("triage") == "deferred":
+                tag = " [deferred]"
             else:
                 tag = ""
             lines.append(f"    • {label}{tag}")
@@ -2111,6 +2159,14 @@ def render_dashboard(
         lines.append(
             f"🚩 Policy drift ({len(drift_flags)}): {head}{more} "
             "→ go-policy.yaml no longer matches repo reality"
+        )
+
+    if stranded_flags:
+        head = ", ".join(stranded_flags[:4])
+        more = f" … +{len(stranded_flags) - 4}" if len(stranded_flags) > 4 else ""
+        lines.append(
+            f"🚩 Stranded runs ({len(stranded_flags)}): {head}{more} "
+            "→ resume the run (stranded-tail) or inspect the journal (malformed-journal)"
         )
 
     if quarantine_flags:

@@ -2956,3 +2956,91 @@ class DashboardRepoRootResolution(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class AutoPickReleaseTriage(unittest.TestCase):
+    """feat/release-triage: blocker-first ranking + release_gate policy skip."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.queue = self.root / "queue"
+        self.queue.mkdir()
+        self.repo = self.root / "projects" / "myapp"
+        self.repo.mkdir(parents=True)
+        (self.root / "projects" / "myapp-worktrees").mkdir()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _brief(self, filename: str, triage: "str | None" = None) -> dict:
+        path = self.queue / filename
+        triage_line = f"triage: {triage}\n" if triage else ""
+        path.write_text(
+            f"---\nid: {filename.replace('.md', '')}\nrepo: {self.repo}\n{triage_line}"
+            "status: queued\n---\n\n## Focus\n\nwork\n"
+        )
+        return {
+            "filename": filename,
+            "path": str(path),
+            "focus": "work",
+            "blocked": False,
+            "not_yet_due": False,
+            "recently_released": False,
+            "related": [],
+            "triage": triage,
+        }
+
+    def _set_release_gate(self, gate: str) -> None:
+        policy_file = self.repo / "docs" / "specs" / "go-policy.yaml"
+        policy_file.parent.mkdir(parents=True, exist_ok=True)
+        policy_file.write_text(f"release_gate: {gate}\n")
+
+    def test_blocker_outranks_older_untriaged(self):
+        briefs = [
+            self._brief("20260701-000000-older-untriaged.md"),
+            self._brief("20260710-000000-newer-blocker.md", triage="blocker"),
+        ]
+        result = dashboard.auto_pick_brief(briefs)
+        self.assertEqual(result["pick"]["id"], "20260710-000000-newer-blocker")
+
+    def test_deferred_ranks_after_untriaged(self):
+        briefs = [
+            self._brief("20260701-000000-older-deferred.md", triage="deferred"),
+            self._brief("20260710-000000-newer-untriaged.md"),
+        ]
+        result = dashboard.auto_pick_brief(briefs)
+        self.assertEqual(result["pick"]["id"], "20260710-000000-newer-untriaged")
+
+    def test_fifo_preserved_within_a_tier(self):
+        briefs = [
+            self._brief("20260710-000000-newer-blocker.md", triage="blocker"),
+            self._brief("20260701-000000-older-blocker.md", triage="blocker"),
+        ]
+        result = dashboard.auto_pick_brief(briefs)
+        self.assertEqual(result["pick"]["id"], "20260701-000000-older-blocker")
+
+    def test_release_gate_repo_still_picks_its_blocker(self):
+        self._set_release_gate("v1.0")
+        briefs = [
+            self._brief("20260701-000000-untriaged.md"),
+            self._brief("20260702-000000-deferred.md", triage="deferred"),
+            self._brief("20260710-000000-blocker.md", triage="blocker"),
+        ]
+        result = dashboard.auto_pick_brief(briefs)
+        self.assertEqual(result["pick"]["id"], "20260710-000000-blocker")
+        # The blocker ranks FIRST, so the gated briefs are never visited —
+        # skipped only records briefs examined ahead of the pick.
+        self.assertEqual(result["skipped"], [])
+
+    def test_release_gate_with_no_blockers_picks_nothing(self):
+        self._set_release_gate("v1.0")
+        briefs = [self._brief("20260701-000000-untriaged.md")]
+        result = dashboard.auto_pick_brief(briefs)
+        self.assertIsNone(result["pick"])
+        self.assertEqual(result["skipped"][0]["reason"], "release-gate:v1.0")
+
+    def test_no_gate_still_picks_untriaged(self):
+        briefs = [self._brief("20260701-000000-untriaged.md")]
+        result = dashboard.auto_pick_brief(briefs)
+        self.assertEqual(result["pick"]["id"], "20260701-000000-untriaged")

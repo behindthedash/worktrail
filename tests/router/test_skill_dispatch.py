@@ -1,8 +1,9 @@
 import json
 import os
+import tempfile
 import unittest
 from unittest.mock import patch
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 
@@ -80,6 +81,113 @@ class SkillDispatchTests(unittest.TestCase):
     def test_invalid_skill_name_is_rejected(self):
         with self.assertRaises(ValueError):
             skill_dispatch.build_command("codex", "../../not-a-skill")
+
+
+class CodexHomePreflightTests(unittest.TestCase):
+    def test_resolve_codex_home_prefers_explicit_override(self):
+        self.assertEqual(skill_dispatch.resolve_codex_home("/tmp/explicit"), "/tmp/explicit")
+
+    @patch.dict(os.environ, {"CODEX_HOME": "/tmp/inherited"}, clear=False)
+    def test_resolve_codex_home_falls_back_to_inherited_env(self):
+        self.assertEqual(skill_dispatch.resolve_codex_home(None), "/tmp/inherited")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_resolve_codex_home_defaults_to_dot_codex_under_home(self):
+        self.assertEqual(
+            skill_dispatch.resolve_codex_home(None),
+            os.path.join(os.path.expanduser("~"), ".codex"),
+        )
+
+    def test_write_remediation_is_none_for_a_writable_existing_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(skill_dispatch.codex_home_write_remediation(tmp))
+
+    def test_write_remediation_is_none_for_a_writable_nonexistent_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = os.path.join(tmp, "not-yet-created", "codex-home")
+            self.assertIsNone(skill_dispatch.codex_home_write_remediation(target))
+
+    def test_write_remediation_flags_a_read_only_ancestor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.chmod(tmp, 0o555)
+            try:
+                target = os.path.join(tmp, "nested", "codex-home")
+                message = skill_dispatch.codex_home_write_remediation(target)
+                self.assertIsNotNone(message)
+                self.assertIn(target, message)
+                self.assertIn("WORKTRAIL_CODEX_HOME", message)
+                self.assertIn("--codex-home", message)
+            finally:
+                os.chmod(tmp, 0o755)
+
+    def test_write_remediation_never_opens_files_under_the_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            secret = Path(tmp) / "auth.json"
+            secret.write_text('{"token": "should-never-be-read"}')
+            with patch("builtins.open", side_effect=AssertionError("must not open files")):
+                self.assertIsNone(skill_dispatch.codex_home_write_remediation(tmp))
+
+    @patch("worktrail.router.skill_dispatch.subprocess.run")
+    def test_preflight_blocks_launch_when_codex_home_not_writable(self, run):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.chmod(tmp, 0o555)
+            try:
+                target = os.path.join(tmp, "nested", "codex-home")
+                stderr = StringIO()
+                with redirect_stderr(stderr):
+                    result = skill_dispatch.main([
+                        "--agent", "codex", "--skill", "x:y", "--codex-home", target,
+                    ])
+                self.assertEqual(result, 1)
+                self.assertIn(target, stderr.getvalue())
+                run.assert_not_called()
+            finally:
+                os.chmod(tmp, 0o755)
+
+    @patch("worktrail.router.skill_dispatch.subprocess.run")
+    def test_preflight_allows_launch_when_codex_home_writable(self, run):
+        run.return_value.returncode = 0
+        with tempfile.TemporaryDirectory() as tmp:
+            target = os.path.join(tmp, "codex-home")
+            self.assertEqual(
+                skill_dispatch.main([
+                    "--agent", "codex", "--skill", "x:y", "--codex-home", target,
+                ]),
+                0,
+            )
+            run.assert_called_once()
+
+    @patch("worktrail.router.skill_dispatch.subprocess.run")
+    def test_preflight_does_not_run_for_dry_run(self, run):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.chmod(tmp, 0o555)
+            try:
+                target = os.path.join(tmp, "nested", "codex-home")
+                output = StringIO()
+                with redirect_stdout(output):
+                    result = skill_dispatch.main([
+                        "--agent", "codex", "--skill", "x:y", "--codex-home", target,
+                        "--dry-run",
+                    ])
+                self.assertEqual(result, 0)
+                run.assert_not_called()
+            finally:
+                os.chmod(tmp, 0o755)
+
+    @patch("worktrail.router.skill_dispatch.subprocess.run")
+    def test_preflight_does_not_run_for_non_codex_agents(self, run):
+        run.return_value.returncode = 0
+        with tempfile.TemporaryDirectory() as tmp:
+            os.chmod(tmp, 0o555)
+            try:
+                with patch.dict(os.environ, {"CODEX_HOME": os.path.join(tmp, "nested")}, clear=False):
+                    self.assertEqual(
+                        skill_dispatch.main(["--agent", "opencode", "--skill", "x:y"]),
+                        0,
+                    )
+                run.assert_called_once()
+            finally:
+                os.chmod(tmp, 0o755)
 
 
 if __name__ == "__main__":

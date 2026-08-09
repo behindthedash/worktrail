@@ -138,35 +138,65 @@ def _render(record: Dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+# A run record is written ONLY by this module's line-based renderer. Any key
+# that doesn't look like a canonical field name is proof the file was rewritten
+# by something else (observed live 2026-08-08: a worker hand-edited a record
+# with a generic YAML writer, whose nested `- category: x` lines this parser
+# reads as garbage keys like "- category" — parse "succeeds", then the next
+# _save re-renders the garbage and the corruption compounds silently).
+_FIELD_KEY_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+
+_HAND_EDIT_HINT = (
+    "is not in run_record.py's line-based format — it was probably rewritten "
+    "by hand or with a generic YAML writer. Never edit run records directly; "
+    "every mutation has a subcommand (set/append/intervention/scope-review/"
+    "capacity-gate/finish). Recover by starting a fresh record with "
+    "`worktrail-run-record start` and continuing there; leave the damaged "
+    "file in place as an audit artifact."
+)
+
+
+class RunRecordFormatError(ValueError):
+    """The on-disk record was mutated outside run_record.py's own renderer."""
+
+
 def _load(path: Path) -> Dict[str, Any]:
     record: Dict[str, Any] = {}
     current: str | None = None
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        if line.startswith("  - ") and current:
-            item = line[4:].strip()
-            record[current].append(json.loads(item) if item.startswith('"') else item)
-            continue
-        key, _, value = line.partition(":")
-        key, value = key.strip(), value.strip()
-        if value == "":
-            record[key] = []
-            current = key
-        else:
-            current = None
-            if value == "null":
-                record[key] = None
-            elif value.startswith('"'):
-                parsed = json.loads(value)
-                if isinstance(parsed, str) and parsed.lstrip().startswith("{"):
-                    try:
-                        parsed = json.loads(parsed)
-                    except json.JSONDecodeError:
-                        pass
-                record[key] = parsed
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            if line.startswith("  - ") and current:
+                item = line[4:].strip()
+                record[current].append(json.loads(item) if item.startswith('"') else item)
+                continue
+            key, _, value = line.partition(":")
+            key, value = key.strip(), value.strip()
+            if value == "":
+                record[key] = []
+                current = key
             else:
-                record[key] = value
+                current = None
+                if value == "null":
+                    record[key] = None
+                elif value.startswith('"'):
+                    parsed = json.loads(value)
+                    if isinstance(parsed, str) and parsed.lstrip().startswith("{"):
+                        try:
+                            parsed = json.loads(parsed)
+                        except json.JSONDecodeError:
+                            pass
+                    record[key] = parsed
+                else:
+                    record[key] = value
+    except (json.JSONDecodeError, AttributeError) as exc:
+        raise RunRecordFormatError(f"{path} {_HAND_EDIT_HINT} (parse error: {exc})") from exc
+    bad_keys = [k for k in record if not _FIELD_KEY_RE.match(k)]
+    if bad_keys:
+        raise RunRecordFormatError(
+            f"{path} {_HAND_EDIT_HINT} (unrecognized keys: {', '.join(sorted(bad_keys)[:5])})"
+        )
     return record
 
 
@@ -1008,7 +1038,13 @@ def main(argv=None) -> int:
     s.set_defaults(func=cmd_prune)
 
     args = p.parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    except RunRecordFormatError as exc:
+        # Fail loud with the recovery hint, not a traceback — the audience is
+        # a headless agent that needs the next command, not a stack.
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

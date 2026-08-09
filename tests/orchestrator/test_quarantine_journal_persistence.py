@@ -107,9 +107,12 @@ class FromVerifyPersistsQuarantineTest(unittest.TestCase):
                 "serial-path quarantine must carry a classified quarantine_reason, "
                 "matching the pipeline path's ordinary-quarantine branch",
             )
-            # Groups verify_and_cleanup did not quarantine keep their existing record.
-            self.assertEqual(journal["groups"]["base"]["state"], "OPEN")
-            self.assertEqual(journal["groups"]["feature-2"]["state"], "OPEN")
+            # Groups verify_and_cleanup reported merged are stamped MERGED
+            # (sequential-path parity with the pipeline scheduler's
+            # _record_group_fn — before _record_verify_outcomes they stayed
+            # OPEN forever, lying to every resume/dashboard reader).
+            self.assertEqual(journal["groups"]["base"]["state"], "MERGED")
+            self.assertEqual(journal["groups"]["feature-2"]["state"], "MERGED")
 
 
 class AllIntegratedFastPathPersistsQuarantineTest(unittest.TestCase):
@@ -167,8 +170,8 @@ class AllIntegratedFastPathPersistsQuarantineTest(unittest.TestCase):
                 "serial-path quarantine must carry a classified quarantine_reason, "
                 "matching the pipeline path's ordinary-quarantine branch",
             )
-            self.assertEqual(journal["groups"]["base"]["state"], "OPEN")
-            self.assertEqual(journal["groups"]["feature-2"]["state"], "OPEN")
+            self.assertEqual(journal["groups"]["base"]["state"], "MERGED")
+            self.assertEqual(journal["groups"]["feature-2"]["state"], "MERGED")
 
 
 if __name__ == "__main__":

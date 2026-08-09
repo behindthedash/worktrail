@@ -2197,6 +2197,22 @@ def _require_task_file(wt: Path, spec_rel: str, task_id: str) -> None:
         )
 
 
+def _dependency_file_declared_path_exists(wt: Path, declared: str) -> bool:
+    """True if `declared` resolves under `wt` -- either literally, or, for a
+    glob-style entry (e.g. `api/tests/**`, legitimate shorthand for many
+    files), if the pattern matches at least one path. A literal
+    `Path.exists()` check can never match a wildcard entry -- no file is
+    literally named `**` -- so glob metacharacters route through
+    `Path.glob()` instead.
+    """
+    if any(ch in declared for ch in "*?["):
+        try:
+            return any(wt.glob(declared))
+        except ValueError:
+            return False
+    return (wt / declared).exists()
+
+
 def _require_dependency_files(wt: Path, task: dict, by_id: dict) -> "list[dict]":
     """Fail loud at dispatch time if a dependency's declared files are missing
     from the stacked worktree after the dependency's branch was merged in.
@@ -2219,6 +2235,18 @@ def _require_dependency_files(wt: Path, task: dict, by_id: dict) -> "list[dict]"
     land even though a declared path didn't, so this downgrades to a WARN
     naming both paths instead of crashing the dispatch.
 
+    A `--fresh` run has no journal, so a dependency the run did not itself
+    drive never gets a `head_sha` populated (frontmatter carries no commit
+    SHAs) and the ancestor check above could never engage. But a dependency
+    already in a DONE-like status (`coordinator.DONE`) was, by construction,
+    merged before this run started -- `dependency_start_ref` falls back to
+    bare HEAD for it precisely because no branch exists to stack -- so the
+    stacked worktree's HEAD already IS whatever that dependency actually
+    shipped. A still-missing declared file for such a dependency downgrades to
+    the same WARN, keyed off its DONE status instead of an unavailable
+    `head_sha`. A dependency this run is actively driving (no DONE-like status
+    yet) carries no such guarantee, so the guard stays strict for it.
+
     Returns the structured `dependency_file_drift` events fired (empty when no
     drift occurred) so callers can journal them for cross-run aggregation
     (`safety_net_report.py`) -- the print above is only visible in a single
@@ -2230,7 +2258,7 @@ def _require_dependency_files(wt: Path, task: dict, by_id: dict) -> "list[dict]"
         if not dep:
             continue
         for f in dep.get("files", []) or []:
-            if (wt / f).exists():
+            if _dependency_file_declared_path_exists(wt, f):
                 continue
             dep_head = dep.get("head_sha")
             if (
@@ -2255,6 +2283,28 @@ def _require_dependency_files(wt: Path, task: dict, by_id: dict) -> "list[dict]"
                         "dep_id": dep_id,
                         "declared_path": f,
                         "dep_head_sha": dep_head,
+                        "at": round(time.time(), 3),
+                    }
+                )
+                continue
+            if not dep_head and dep.get("status") in coordinator.DONE:
+                print(
+                    f"{_ts()} WARN: task {task['id']} worktree {wt} is missing "
+                    f"{dep_id}'s declared file {f!r}, and no head_sha is "
+                    f"available to verify (fresh run, no journal) -- but "
+                    f"{dep_id} is already {dep.get('status')!r}, which means "
+                    "it was merged before this run started, so this is "
+                    f"treated as declared-vs-actual drift. Correct {dep_id}'s "
+                    "task frontmatter `files:` to match what it actually "
+                    "committed."
+                )
+                events.append(
+                    {
+                        "event": "dependency_file_drift",
+                        "task": task["id"],
+                        "dep_id": dep_id,
+                        "declared_path": f,
+                        "dep_head_sha": None,
                         "at": round(time.time(), 3),
                     }
                 )
@@ -3947,6 +3997,44 @@ def _pipeline_scheduler(
     }
 
 
+def _record_verify_outcomes(
+    journal_path: str, vres: dict, group_branch: dict, run_id: str
+) -> None:
+    """Persist verify's merge outcomes into the journal on the SEQUENTIAL path.
+
+    The pipeline scheduler already stamps MERGED / AUTOMERGE_ARMED per group
+    right after verify (see _integrate_verify_group); the sequential path
+    called verify_and_cleanup and then never wrote the outcome back, so a
+    fully-merged sequential run's journal permanently claimed every group was
+    still OPEN — found by the lifecycle harness's first real-verify run, and
+    the same serial/pipeline divergence class as PR #221/#223. Same confirmed-
+    merge semantics as the pipeline path: only vres["merged"] gets MERGED;
+    a group only queued for auto-merge gets AUTOMERGE_ARMED (non-terminal, so
+    a resume re-verifies it).
+    """
+    from . import integrate
+
+    try:
+        groups_j = json.loads(Path(journal_path).read_text()).get("groups", {})
+    except (OSError, json.JSONDecodeError):
+        groups_j = {}
+
+    def _stamp(name: str, state: str) -> None:
+        rec = groups_j.get(name, {})
+        integrate._write_group_journal(
+            journal_path,
+            name,
+            rec.get("pr_url", ""),
+            group_branch.get(name) or rec.get("head_branch", f"{run_id}/{name}"),
+            state,
+        )
+
+    for name in vres.get("merged", []):
+        _stamp(name, "MERGED")
+    for name in vres.get("automerge_armed", []):
+        _stamp(name, "AUTOMERGE_ARMED")
+
+
 def _full_real_inner(
     repo_path: str,
     spec_rel: str,
@@ -4140,6 +4228,9 @@ def _full_real_inner(
         )
         quarantined = {**from_verify_quarantined, **vres.get("quarantined", {})}
         _persist_newly_quarantined(vres.get("quarantined", {}), journal.get("run_id", "unknown"))
+        _record_verify_outcomes(
+            journal_path, vres, group_branch, journal.get("run_id", "unknown")
+        )
         self_merged = vres.get("self_merged", {})
         post_merge_regressed = vres.get("post_merge_regressed", {})
         automerge_evidence = vres.get("automerge_evidence", {})
@@ -4464,6 +4555,7 @@ def _full_real_inner(
     # Covers both the all_integrated fast path (skipped integrate, journal_groups
     # reconstructed above) and the finish_real path (fresh integrate just ran).
     _persist_newly_quarantined(vres["quarantined"], run_id)
+    _record_verify_outcomes(journal_path, vres, group_branch, run_id)
     self_merged = vres.get("self_merged", {})
     post_merge_regressed = vres.get("post_merge_regressed", {})
     automerge_evidence = vres.get("automerge_evidence", {})

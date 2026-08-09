@@ -1117,3 +1117,66 @@ class TestRelatedAndLink(QueueTestBase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)
+
+
+class TriageSubcommand(unittest.TestCase):
+    """feat/release-triage: `work_queue triage <id> blocker|deferred|clear`."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        (self.base / "queue").mkdir()
+        (self.base / "picked").mkdir()
+        os.environ["WORK_QUEUE_DIR"] = str(self.base)
+        self.brief = self.base / "queue" / "20260801-000000-triage-me.md"
+        self.brief.write_text(
+            "---\nid: 20260801-000000-triage-me\nstatus: queued\n---\n\n## Focus\n\nwork\n"
+        )
+
+    def tearDown(self):
+        os.environ.pop("WORK_QUEUE_DIR", None)
+        self._tmp.cleanup()
+
+    def test_set_blocker_and_list_reports_it(self):
+        res = q.set_triage("20260801-000000-triage-me", "blocker")
+        self.assertEqual(res["status"], "triaged")
+        self.assertIn("triage: blocker", self.brief.read_text())
+        listed = q.list_queue()["briefs"][0]
+        self.assertEqual(listed["triage"], "blocker")
+
+    def test_reclassify_replaces_in_place(self):
+        q.set_triage("20260801-000000-triage-me", "blocker")
+        q.set_triage("20260801-000000-triage-me", "deferred")
+        text = self.brief.read_text()
+        self.assertIn("triage: deferred", text)
+        self.assertNotIn("triage: blocker", text)
+
+    def test_clear_removes_field(self):
+        q.set_triage("20260801-000000-triage-me", "blocker")
+        res = q.set_triage("20260801-000000-triage-me", "clear")
+        self.assertEqual(res["status"], "triaged")
+        self.assertNotIn("triage:", self.brief.read_text())
+        self.assertIsNone(q.list_queue()["briefs"][0]["triage"])
+
+    def test_invalid_value_rejected(self):
+        res = q.set_triage("20260801-000000-triage-me", "urgent")
+        self.assertEqual(res["status"], "error")
+
+    def test_picked_brief_can_be_triaged(self):
+        picked = self.base / "picked" / "20260801-000001-claimed.md"
+        picked.write_text(
+            "---\nid: 20260801-000001-claimed\nstatus: picked\n---\n\n## Focus\n\nwork\n"
+        )
+        res = q.set_triage("20260801-000001-claimed", "deferred")
+        self.assertEqual(res["status"], "triaged")
+        self.assertIn("triage: deferred", picked.read_text())
+
+    def test_unknown_id_reports_none(self):
+        res = q.set_triage("20269999-000000-nope", "blocker")
+        self.assertEqual(res["status"], "none")
+
+    def test_body_untouched_by_triage_write(self):
+        before_body = self.brief.read_text().split("---", 2)[2]
+        q.set_triage("20260801-000000-triage-me", "blocker")
+        after_body = self.brief.read_text().split("---", 2)[2]
+        self.assertEqual(before_body, after_body)

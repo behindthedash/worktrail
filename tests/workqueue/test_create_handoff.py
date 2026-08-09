@@ -92,3 +92,21 @@ def test_cli_emits_json_and_accepts_structured_fields(tmp_path: Path, capsys):
     output = json.loads(capsys.readouterr().out)
     assert output["status"] == "created"
     assert read_frontmatter(Path(output["path"]))["change-kind"] == "new"
+
+
+def test_create_handoff_writes_triage_frontmatter(tmp_path: Path):
+    result = create_handoff("Fix the thing", queue_base=tmp_path, triage="blocker")
+    text = Path(result["path"]).read_text()
+    assert "triage: blocker" in text
+
+
+def test_create_handoff_omits_triage_when_unset(tmp_path: Path):
+    result = create_handoff("Fix the thing", queue_base=tmp_path)
+    assert "triage:" not in Path(result["path"]).read_text()
+
+
+def test_create_handoff_rejects_invalid_triage(tmp_path: Path):
+    import pytest
+
+    with pytest.raises(ValueError):
+        create_handoff("Fix the thing", queue_base=tmp_path, triage="urgent")
