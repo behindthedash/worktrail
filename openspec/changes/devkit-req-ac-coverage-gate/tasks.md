@@ -1,6 +1,6 @@
 ## 1. Coverage check module
 
-- [ ] 1.1 Create `src/worktrail/router/check_req_coverage.py` implementing, per
+- [x] 1.1 Create `src/worktrail/router/check_req_coverage.py` implementing, per
       design D1/D2/D3: declaration-anchored prefix-agnostic identifier discovery
       recognising both the markdown-table-row shape (`| REQ-001 | ... |`) and
       the bullet shape (`- REQ-NR001: ...`) while excluding mid-sentence prose
@@ -28,7 +28,7 @@
 
 ## 3. Tests
 
-- [ ] 3.1 Add `tests/router/test_check_req_coverage.py` covering: table-row and
+- [x] 3.1 Add `tests/router/test_check_req_coverage.py` covering: table-row and
       bullet declaration shapes; a non-`REQ` prefix (e.g. `FR-`, `AUTHZ-`); an
       `NR` sub-namespaced identifier treated as distinct from its plain
       counterpart; a prose-only cross-reference that must NOT be treated as a
