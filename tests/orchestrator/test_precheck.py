@@ -674,17 +674,21 @@ class TestPrecheckFrontmatterTypoWarning(unittest.TestCase):
 
     def test_depends_on_alias_does_not_warn(self):
         """The real incident's exact key (depends_on) is a recognized alias,
-        not a typo -- must stay silent."""
+        not a typo -- must stay silent. TASK-000 is included so the aliased
+        same-spec dependency also resolves, keeping this test isolated to the
+        typo-vs-alias question it's about rather than same-spec dependency
+        resolution (covered by devkit's own validate_dependencies tests)."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_root = Path(tmp)
             tasks = [
+                _make_task("TASK-000", status="completed", kind="impl"),
                 _make_task(
                     "TASK-001",
                     status="pending",
                     kind="impl",
                     files=["a.py"],
                     extra_fm={"depends_on": "[TASK-000]"},
-                )
+                ),
             ]
             _make_spec_dir(tmp_root, tasks, create_files=set())
 
