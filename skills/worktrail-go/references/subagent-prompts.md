@@ -137,10 +137,22 @@ this exact path): `docs/specs/research/orchestrator-review-report-back-diagnosti
 hit the identical classifier denial when a `spawn-one` diagnostic CLI invocation was issued directly
 via the `Bash` tool from an interactive session — consistent with the gate keying on direct top-level
 `Bash` tool calls rather than nested subprocess spawns. Treat this as an open question if it
-resurfaces in a different shape; a narrower `--allowedTools`-scoped permission profile (instead of
-full `bypassPermissions`) was considered as an alternative fix that could restore subprocess
-isolation under Auto Mode, but deliberately deferred — it needs its own authorized live repro before
-being trusted, which is out of scope for this hardening pass.
+resurfaces in a different shape.
+
+**Live-verified 2026-08-09 — the gate does NOT key on `--permission-mode bypassPermissions`.**
+A narrower permission profile was previously floated here as an alternative fix that could restore
+subprocess isolation under Auto Mode. It does not: three consecutive top-level `Bash` tool calls
+issuing `claude -p "/worktrail:opsx:propose …" --setting-sources user,project,local
+--permission-mode acceptEdits` from an interactive session were **allowed, allowed, then denied**
+with the same classifier message — no bypass flag present on any of them. So the trigger is the
+*shape* of the call (a fresh top-level `Bash` tool call spawning a nested agent), not the
+permission flag it carries, and it fires **non-deterministically** on identical call shapes.
+Two consequences: (1) swapping `bypassPermissions` for `acceptEdits`/`--allowedTools` is not a
+workaround and should not be attempted as one; (2) any dispatch path that spawns a nested `claude
+-p` from a top-level `Bash` call must keep a fallback, because the spawn can fail on any given
+attempt regardless of flags. This finding *strengthens* the nesting inference above (the shape,
+not the flag, is what the classifier evaluates) but does **not** verify it — the orchestrator's
+own `subprocess.Popen` spawns still have no live repro either way.
 
 ---
 
@@ -245,23 +257,48 @@ ticks this system wrote.
 
 ### Authoring a change {#openspec-propose}
 
-Run inline in the change worktree — this is a slash command, not an `Agent` dispatch,
-so there is no subagent prompt to template:
+Spawn it headlessly against the change worktree — do **not** relocate the calling
+session into `$WT` to run it:
 
-```
-/opsx:propose "<the request, verbatim from the brief or the user>"
+```bash
+worktrail-skill-dispatch \
+  --agent "$INVOCATION_CONTEXT_AGENT" \
+  --skill "<host-namespaced openspec-propose>" \
+  --args "<the request, verbatim from the brief or the user>" \
+  --cwd "$WT" \
+  --write
 ```
 
-**Claude Code hosts — entering the worktree for this call:** a slash command runs in
-the session's actual working directory, not a `-C`-scoped path, so there is no way to
-target `$WT` for this one call except moving the session there. Use
-`EnterWorktree({path: "$WT"})` immediately before it, then `ExitWorktree({action:
-"keep"})` immediately after — do not run unrelated commands while still inside the
-worktree session. `EnterWorktree`'s own isolation guard blocks a later `git -C
-<other-path>` call (e.g. against `$REPO` or a different worktree) made while the
-session is still pinned inside `$WT`, so lingering there breaks later steps like
-`#sync-before-teardown`. Other hosts invoke the slash command directly with no
-equivalent step.
+`--cwd` targets the worktree without moving the session; `--write` grants the
+child the permissions it needs to author files with no human at the keyboard.
+`worktrail-skill-dispatch` preserves the requested provider, so this one call
+covers Claude Code, Codex, and OpenCode rather than branching per host.
+
+**Why not run it inline.** The former procedure moved the session with
+`EnterWorktree({path: "$WT"})`. That can never run unattended: `EnterWorktree`
+returns `behavior: 'ask'` unconditionally for any path outside
+`<repoRoot>/.claude/worktrees/`, with `classifierApprovable: false` and no rule
+consultation — so no `permissions.allow` entry suppresses it, and the managed
+root is hardcoded with no setting to widen it. Every worktrail `$WT` is
+`$REPO-worktrees/…`, so it always tripped the prompt. Relocating also pinned the
+session: `EnterWorktree`'s isolation guard blocked later `git -C <other-path>`
+calls against `$REPO`, breaking steps like `#sync-before-teardown`.
+
+**Verify the artifacts — a zero exit code is not proof.** Two failure modes
+observed live on 2026-08-09 both **exit 0 and write nothing**: a claude spawn
+carrying the `--setting-sources project,local` default that
+`spawnlib._with_default_setting_sources` injects never loads the worktrail
+plugin, and a non-namespaced command resolves to `Unknown command`. Pass the
+skill name in the form the target host actually resolves, and assert
+`openspec/changes/<change-id>/` exists before continuing — never infer success
+from the return code alone.
+
+**If the spawn is refused, fall back to running it inline** in the calling
+session (accepting the token cost) and say so, per SKILL.md Phase 7. A top-level
+`Bash` tool call that spawns a nested agent can be denied non-deterministically
+by Claude Code's Auto Mode classifier — see `#automode-classifier`, and note that
+the denial is not tied to any particular permission flag, so retrying with a
+narrower one is not a workaround.
 
 It creates `openspec/changes/<change-id>/` containing `proposal.md`, `specs/**/*.md`
 (delta specs using ADDED/MODIFIED/REMOVED headers), `design.md`, and `tasks.md`.
