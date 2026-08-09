@@ -73,6 +73,17 @@ BULLET_RE = re.compile(r"^\s*[-*]\s+(" + _IDENTIFIER + r")\s*:")
 
 COVERAGE_FIELDS = ("reqs", "ac-mapping", "imp-requirements")
 
+# Non-declaring artifacts that live alongside the spec document in the same
+# directory and must never be mistaken for it.
+AUX_SPEC_FILENAMES = {
+    "data-model.md",
+    "decision-log.md",
+    "traceability-matrix.md",
+    "technical-plan.md",
+    "user-request.md",
+    "brainstorming-notes.md",
+}
+
 
 def discover_declared_identifiers(text: str) -> set[str]:
     """Identifiers that anchor a declaring construct (table row or bullet
@@ -104,6 +115,66 @@ def collect_task_references(spec_dir: Path) -> set[str]:
             for value in frontmatter.get(field) or []:
                 references.add(str(value))
     return references
+
+
+def resolve_spec_document(repo: Path, spec_dir: Path) -> Path | None:
+    """The spec document a given `docs/specs/<id>/` directory declares
+    requirements in. The devkit corpus does not name this file `spec.md`
+    consistently (only 13/125 spec dirs across the real corpus do) -- most
+    use a dated filename such as `2026-07-18--automation-health-digest.md`.
+
+    Resolution order:
+    1. The exact pointer already recorded in any task file's required
+       `spec` frontmatter field (D6 does not apply here -- this is a read of
+       an existing schema field, not a new one). This is the only fully
+       deterministic source, since it is written once at task-creation time
+       and never needs inferring.
+    2. If the spec has no tasks yet (nothing to point at it), the single
+       remaining `*.md` file in the directory once known auxiliary
+       artifacts (data-model, decision-log, traceability-matrix,
+       technical-plan, user-request, brainstorming-notes, `--tasks.md`,
+       `--technical-plan.md`) are excluded. Lexicographically-last-wins
+       heuristics are deliberately not used here: on the real corpus that
+       rule picks `user-request.md` over the actual spec document for
+       084-automation-health-digest, since `u` sorts after the date-prefixed
+       spec filename.
+    3. `spec.md`, for the corpora that do use that name.
+    """
+    tasks_dir = spec_dir / "tasks"
+    if tasks_dir.is_dir():
+        resolved_dir = spec_dir.resolve()
+        for task_path in sorted(tasks_dir.iterdir()):
+            if not task_path.is_file() or not is_task_file(str(task_path)):
+                continue
+            frontmatter, error, _body = read_task_file(task_path)
+            if error or not frontmatter:
+                continue
+            spec_field = frontmatter.get("spec")
+            if not spec_field:
+                continue
+            candidate = (repo / str(spec_field)).resolve()
+            try:
+                candidate.relative_to(resolved_dir)
+            except ValueError:
+                continue
+            if candidate.is_file():
+                return candidate
+
+    candidates = [
+        p
+        for p in spec_dir.glob("*.md")
+        if p.name not in AUX_SPEC_FILENAMES
+        and not p.name.endswith("--tasks.md")
+        and not p.name.endswith("--technical-plan.md")
+    ]
+    if len(candidates) == 1:
+        return candidates[0]
+
+    spec_md = spec_dir / "spec.md"
+    if spec_md.is_file():
+        return spec_md
+
+    return None
 
 
 def _git_show(repo: Path, ref: str, relpath: str) -> str | None:
@@ -143,11 +214,18 @@ def check_spec_coverage(repo: Path, spec_relpath: str, base_ref: str) -> list[st
 
 
 def check_changed_specs(repo: Path, changed_paths: list[str], base_ref: str) -> list[str]:
-    """Return failure messages across every changed docs/specs/*/spec.md,
-    enforcing only identifiers newly declared relative to base_ref."""
+    """Return failure messages across every changed spec document under
+    docs/specs/*/, enforcing only identifiers newly declared relative to
+    base_ref. The spec document's filename is resolved per spec directory
+    (see `resolve_spec_document`) rather than assumed to be `spec.md`."""
     failures: list[str] = []
     for relpath in changed_paths:
-        if not re.match(r"^docs/specs/[^/]+/spec\.md$", relpath):
+        match = re.match(r"^docs/specs/([^/]+)/", relpath)
+        if not match:
+            continue
+        spec_dir = repo / "docs" / "specs" / match.group(1)
+        spec_file = resolve_spec_document(repo, spec_dir)
+        if spec_file is None or str(spec_file.relative_to(repo)) != relpath:
             continue
         failures.extend(check_spec_coverage(repo, relpath, base_ref))
     return failures
@@ -162,8 +240,8 @@ def audit_all_specs(repo: Path) -> list[str]:
         return []
     failures: list[str] = []
     for spec_dir in sorted(d for d in specs_root.iterdir() if d.is_dir()):
-        spec_file = spec_dir / "spec.md"
-        if not spec_file.is_file():
+        spec_file = resolve_spec_document(repo, spec_dir)
+        if spec_file is None:
             continue
         declared = discover_declared_identifiers(
             spec_file.read_text(encoding="utf-8", errors="replace")
@@ -177,8 +255,12 @@ def audit_all_specs(repo: Path) -> list[str]:
     return failures
 
 
+def _candidate_base_refs(configured: str | None) -> tuple[str, ...]:
+    return (f"origin/{configured}", configured) if configured else CANDIDATE_BASE_REFS
+
+
 def _resolve_base_ref(repo: Path, configured: str | None) -> str | None:
-    candidates = (f"origin/{configured}", configured) if configured else CANDIDATE_BASE_REFS
+    candidates = _candidate_base_refs(configured)
     for ref in candidates:
         result = subprocess.run(
             ["git", "rev-parse", "--verify", "--quiet", ref],
@@ -233,9 +315,10 @@ def main() -> int:
 
     base_ref = _resolve_base_ref(repo, args.base_branch)
     if base_ref is None:
+        tried = _candidate_base_refs(args.base_branch)
         print(
             "req/AC coverage guard: SKIP — no resolvable base ref (tried "
-            f"{', '.join(CANDIDATE_BASE_REFS)}); cannot determine newly-declared identifiers."
+            f"{', '.join(tried)}); cannot determine newly-declared identifiers."
         )
         return 0
 
