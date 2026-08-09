@@ -3984,6 +3984,44 @@ def _pipeline_scheduler(
     }
 
 
+def _record_verify_outcomes(
+    journal_path: str, vres: dict, group_branch: dict, run_id: str
+) -> None:
+    """Persist verify's merge outcomes into the journal on the SEQUENTIAL path.
+
+    The pipeline scheduler already stamps MERGED / AUTOMERGE_ARMED per group
+    right after verify (see _integrate_verify_group); the sequential path
+    called verify_and_cleanup and then never wrote the outcome back, so a
+    fully-merged sequential run's journal permanently claimed every group was
+    still OPEN — found by the lifecycle harness's first real-verify run, and
+    the same serial/pipeline divergence class as PR #221/#223. Same confirmed-
+    merge semantics as the pipeline path: only vres["merged"] gets MERGED;
+    a group only queued for auto-merge gets AUTOMERGE_ARMED (non-terminal, so
+    a resume re-verifies it).
+    """
+    from . import integrate
+
+    try:
+        groups_j = json.loads(Path(journal_path).read_text()).get("groups", {})
+    except (OSError, json.JSONDecodeError):
+        groups_j = {}
+
+    def _stamp(name: str, state: str) -> None:
+        rec = groups_j.get(name, {})
+        integrate._write_group_journal(
+            journal_path,
+            name,
+            rec.get("pr_url", ""),
+            group_branch.get(name) or rec.get("head_branch", f"{run_id}/{name}"),
+            state,
+        )
+
+    for name in vres.get("merged", []):
+        _stamp(name, "MERGED")
+    for name in vres.get("automerge_armed", []):
+        _stamp(name, "AUTOMERGE_ARMED")
+
+
 def _full_real_inner(
     repo_path: str,
     spec_rel: str,
@@ -4177,6 +4215,9 @@ def _full_real_inner(
         )
         quarantined = {**from_verify_quarantined, **vres.get("quarantined", {})}
         _persist_newly_quarantined(vres.get("quarantined", {}), journal.get("run_id", "unknown"))
+        _record_verify_outcomes(
+            journal_path, vres, group_branch, journal.get("run_id", "unknown")
+        )
         self_merged = vres.get("self_merged", {})
         post_merge_regressed = vres.get("post_merge_regressed", {})
         automerge_evidence = vres.get("automerge_evidence", {})
@@ -4501,6 +4542,7 @@ def _full_real_inner(
     # Covers both the all_integrated fast path (skipped integrate, journal_groups
     # reconstructed above) and the finish_real path (fresh integrate just ran).
     _persist_newly_quarantined(vres["quarantined"], run_id)
+    _record_verify_outcomes(journal_path, vres, group_branch, run_id)
     self_merged = vres.get("self_merged", {})
     post_merge_regressed = vres.get("post_merge_regressed", {})
     automerge_evidence = vres.get("automerge_evidence", {})

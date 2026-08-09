@@ -241,7 +241,14 @@ def _write_group_task_status(
     spec_ref = taskformats.spec_ref_for(spec_path)
     changed = []
     for tid in group.get("tasks", []):
-        if status.get(tid) not in coordinator.ALREADY_INTEGRATED:
+        # DONE ({"done","completed"}), NOT ALREADY_INTEGRATED ({"completed"}):
+        # a task finished in THIS run reaches integrate as "done" — filtering on
+        # ALREADY_INTEGRATED made this write a silent no-op on every fresh run
+        # (both schedulers), which is why merged runs kept needing manual
+        # "sync: mark tasks completed post-orchestrator" doc PRs. Found by the
+        # lifecycle harness; the unit tests passed "completed" directly and
+        # never exercised the caller's real status values.
+        if status.get(tid) not in coordinator.DONE:
             continue
         try:
             if source.mark_status(tid, "completed", spec_ref=spec_ref):
