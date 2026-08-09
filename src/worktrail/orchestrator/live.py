@@ -626,10 +626,10 @@ def precheck(repo: Path, spec_rel: str) -> int:
     Non-impl tasks and tasks with empty files: are silently skipped.
     All tasks completed: silent, exit 0.
 
-    Also runs the loaded `TaskSource`'s `validate_dependencies()` once for the
-    whole task set -- unresolved same-spec `deps` and (where the format
-    supports it) unsettled `decision-refs:` -- and WARNs on each diagnostic
-    it returns.
+    Also runs the loaded `TaskSource`'s `validate_dependencies()` (when the
+    adapter implements it -- e.g. Spec Kit does not) once for the whole task
+    set -- unresolved same-spec `deps` and (where the format supports it)
+    unsettled `decision-refs:` -- and WARNs on each diagnostic it returns.
 
     Returns exit code 1 if any WARN was emitted, else 0.
     """
@@ -654,11 +654,13 @@ def precheck(repo: Path, spec_rel: str) -> int:
     spec_id, tasks = taskformats.load_spec(str(repo / spec_rel))
     warn_count = 0
 
-    for diagnostic in taskformats.task_source_for(repo / spec_rel).validate_dependencies(
-        spec_id, tasks
-    ):
-        print(f"WARN: {diagnostic}")
-        warn_count += 1
+    validate_dependencies = getattr(
+        taskformats.task_source_for(repo / spec_rel), "validate_dependencies", None
+    )
+    if validate_dependencies is not None:
+        for diagnostic in validate_dependencies(spec_id, tasks):
+            print(f"WARN: {diagnostic}")
+            warn_count += 1
 
     for task in tasks:
         task_id = task["id"]
