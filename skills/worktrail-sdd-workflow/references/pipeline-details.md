@@ -108,7 +108,8 @@ fi
 
 6. **orchestrator** — invoke per `../../worktrail-go/references/subagent-prompts.md#orchestrator` with
    `SPEC_ROOT=$WT`, `run_in_background: true`. That anchor owns the exact
-   command and flags (`--agent`, `--pipeline`, `--run-budget`, `--smoke-cmd`) —
+   command and flags (`--agent`, `--run-budget`, `--smoke-cmd`; the pipelined
+   engine is the default) —
    do not re-derive the invocation here.
 
 7. **sync** (mandatory, BEFORE any teardown) — `../../worktrail-go/references/subagent-prompts.md#sync-before-teardown`.

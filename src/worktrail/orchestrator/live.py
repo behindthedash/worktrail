@@ -4992,9 +4992,19 @@ def main(argv=None) -> int:
     fr.add_argument(
         "--pipeline",
         action="store_true",
+        default=True,
+        help="Pipelined run (the DEFAULT since v0.9.1): integrate and verify each group "
+        "as its tasks finish, overlapping with continued fan-out of later groups. "
+        "The flag is kept for compatibility; it is a no-op affirmation.",
+    )
+    fr.add_argument(
+        "--sequential",
+        action="store_true",
         default=False,
-        help="Opt-in pipelined run: integrate and verify each group as its tasks finish, "
-        "overlapping with continued fan-out of later groups (default: sequential).",
+        help="DEPRECATED escape hatch: run the legacy serial scheduler (full fan-out, "
+        "then integrate, then verify). Frozen for removal in v1.1 — it receives no "
+        "new fixes; every state-machine fix lands on the pipelined engine only. "
+        "See openspec/changes/scheduler-consolidation/.",
     )
     fr.add_argument(
         "--re-integrate",
@@ -5257,6 +5267,12 @@ def main(argv=None) -> int:
         post_merge_smoke_cmd = args.post_merge_smoke_cmd
         if post_merge_smoke_cmd is None:
             post_merge_smoke_cmd = _default_post_merge_smoke_cmd(Path(args.repo))
+        if args.sequential:
+            print(
+                f"{_ts()} WARNING: --sequential is DEPRECATED and frozen for removal in "
+                "v1.1. It receives no new fixes; the pipelined engine (the default) is "
+                "the supported scheduler. See openspec/changes/scheduler-consolidation/."
+            )
         full_real(
             args.repo,
             args.spec,
@@ -5277,7 +5293,7 @@ def main(argv=None) -> int:
             fallback_chain=fallback_chain,
             effort=args.effort,
             run_budget=args.run_budget * 60 if args.run_budget else args.run_budget,
-            pipeline=args.pipeline,
+            pipeline=args.pipeline and not args.sequential,
             re_integrate=args.re_integrate,
             smoke_cmd=smoke_cmd,
             post_merge_smoke_cmd=post_merge_smoke_cmd,

@@ -447,9 +447,12 @@ on pipeline and non-pipeline paths alike. `--model-map` entries win for a role's
 a role pinned to a different agent falls back to that agent's own default model.
 
 **Run mechanics (non-negotiable):**
-- Slash `GO` uses the pipelined orchestrator path by default. Include `--pipeline`
-  and a non-zero `--run-budget` in the `full-real` invocation unless the user
-  explicitly asks for sequential debug mode.
+- The pipelined engine is `full-real`'s DEFAULT since v0.9.1 — `--pipeline` is a
+  no-op affirmation and may be omitted. Include a non-zero `--run-budget`. The
+  legacy serial scheduler survives only behind the DEPRECATED `--sequential`
+  escape hatch (frozen, no new fixes, removal in v1.1 — see
+  `openspec/changes/scheduler-consolidation/`); never use it except when a user
+  explicitly asks for serial debug mode.
 - **Run `worktrail-compile` before `full-real` for every OpenSpec change** (see the
   code block above). `full-real` auto-compiles a missing plan inline since PR #56
   (`apply_run_plan()` calls `compile_run_plan()`), so skipping this step no longer

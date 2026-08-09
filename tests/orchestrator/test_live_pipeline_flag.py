@@ -33,7 +33,8 @@ def _build_fr_parser():
     fr.add_argument("--only", default=None)
     fr.add_argument("--model-map", default=None)
     fr.add_argument("--run-budget", type=int, default=0)
-    fr.add_argument("--pipeline", action="store_true", default=False)
+    fr.add_argument("--pipeline", action="store_true", default=True)
+    fr.add_argument("--sequential", action="store_true", default=False)
     return p
 
 
@@ -52,9 +53,17 @@ def _parse_fr(*extra):
 class PipelineFlagParsing(unittest.TestCase):
     """AC-001: --pipeline flag present/absent behavior on the full-real subparser."""
 
-    def test_pipeline_absent_defaults_false(self):
+    def test_pipeline_is_the_default(self):
+        """scheduler-consolidation stage 1: bare full-real runs the pipelined
+        engine; --pipeline is a no-op affirmation."""
         args = _parse_fr()
-        self.assertFalse(args.pipeline)
+        self.assertTrue(args.pipeline)
+        self.assertFalse(args.sequential)
+        self.assertTrue(args.pipeline and not args.sequential)
+
+    def test_sequential_escape_hatch_disables_pipeline(self):
+        args = _parse_fr("--sequential")
+        self.assertFalse(args.pipeline and not args.sequential)
 
     def test_pipeline_present_sets_true(self):
         args = _parse_fr("--pipeline")
