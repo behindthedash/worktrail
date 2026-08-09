@@ -319,6 +319,12 @@ def _is_not_yet_due(path: Path) -> bool:
 
 RECENTLY_RELEASED_MINUTES = 20.0
 
+# Release-scoping triage classes for a brief's `triage:` frontmatter.
+# "blocker" = must land before the target repo's current release gate ships;
+# "deferred" = explicitly scoped to a later release. Absent/None = untriaged
+# (ranked between the two by auto-pick; never silently treated as either).
+VALID_TRIAGE = ("blocker", "deferred")
+
 
 def _recently_released_info(path: Path) -> Dict[str, Any]:
     """`{"recently_released": bool, "released_at": str|None, "released_by": str|None}`.
@@ -371,6 +377,7 @@ def list_queue() -> Dict[str, Any]:
             "recently_released_by": released["released_by"],
             "recently_released_at": released["released_at"],
             "related": related if isinstance(related, list) else [],
+            "triage": fm.get("triage") if fm.get("triage") in VALID_TRIAGE else None,
         }
 
     return {"briefs": [_brief_dict(f) for f in _md_files(queue_dir())]}
@@ -769,6 +776,42 @@ def release(identifier: str, next_check_after: Optional[str] = None) -> Dict[str
     return {"status": "released", "path": str(dst), "candidates": [], "error": None}
 
 
+def set_triage(identifier: str, value: str) -> Dict[str, Any]:
+    """Classify a brief for release scoping: `triage: blocker|deferred`.
+
+    Resolves against queue/ first, then picked/ (a claimed brief can still be
+    re-scoped mid-flight). `clear` removes the field, returning the brief to
+    untriaged. Frontmatter-only edit via _set_fm_fields, so body and key order
+    survive — never hand-edit the file for this.
+    """
+    if value not in VALID_TRIAGE + ("clear",):
+        return {
+            "status": "error",
+            "path": None,
+            "candidates": [],
+            "error": f"triage value must be one of {', '.join(VALID_TRIAGE)} or clear",
+        }
+    res = resolve(identifier, queue_dir())
+    if res["status"] != "match":
+        res = resolve(identifier, picked_dir())
+    if res["status"] != "match":
+        return {
+            "status": res["status"],
+            "path": None,
+            "candidates": res["candidates"],
+            "error": None,
+        }
+    path = Path(res["candidates"][0])
+    try:
+        if value == "clear":
+            _remove_fm_field(path, "triage")
+        else:
+            _set_fm_fields(path, {"triage": value})
+    except (OSError, ValueError) as exc:
+        return {"status": "error", "path": str(path), "candidates": [], "error": str(exc)}
+    return {"status": "triaged", "path": str(path), "candidates": [], "error": None}
+
+
 def link(id_a: str, id_b: str) -> Dict[str, Any]:
     """Link two briefs as related (symmetric, idempotent, never touches blocked-by).
 
@@ -916,6 +959,7 @@ _BACKUP_ON = {
     "done": "done",
     "release": "released",
     "link": "linked",
+    "triage": "triaged",
 }
 
 
@@ -988,6 +1032,12 @@ def main(argv=None) -> int:
     lp.add_argument("id_a")
     lp.add_argument("id_b")
 
+    tp = subs.add_parser(
+        "triage", parents=[common], help="classify a brief for release scoping"
+    )
+    tp.add_argument("identifier")
+    tp.add_argument("value", choices=VALID_TRIAGE + ("clear",))
+
     args = p.parse_args(argv)
 
     if args.cmd == "list":
@@ -1007,6 +1057,8 @@ def main(argv=None) -> int:
         )
     elif args.cmd == "link":
         result = link(args.id_a, args.id_b)
+    elif args.cmd == "triage":
+        result = set_triage(args.identifier, args.value)
     else:
         result = release(args.identifier, next_check_after=args.next_check_after)
 
@@ -1055,7 +1107,7 @@ def _print_human(cmd: str, result: Dict[str, Any]) -> None:
                 print(f"  {b['filename']}  focus: {b['focus']}")
         return
     status = result["status"]
-    if status in ("match", "claimed", "done", "released"):
+    if status in ("match", "claimed", "done", "released", "triaged"):
         print(f"{status}: {result.get('path') or result['candidates'][0]}")
         for comp in result.get("companions") or []:
             print(f"  companion {comp['identifier']}: {comp['status']}" +

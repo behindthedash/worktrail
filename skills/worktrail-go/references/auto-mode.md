@@ -20,9 +20,12 @@ actively working that repo — stale lock files probe as free).
 
 1. Read `$DASHBOARD_JSON.auto_pick`. If `auto_pick.pick` is null, report the queue state
    and every `skipped` entry with its reason (`blocked`, `no-repo`, `repo-missing`,
-   `repo-filter`, `orchestrator-run-active:<lock>`), then STOP. Never invent work and
-   never fall back to resuming an in-flight brief — stalled resumes require judging what
-   a dead session already landed, which stays human-selected.
+   `repo-filter`, `orchestrator-run-active:<lock>`, `release-gate:<name>`), then STOP.
+   Never invent work and never fall back to resuming an in-flight brief — stalled resumes
+   require judging what a dead session already landed, which stays human-selected.
+   Ranking is blocker-first (`triage: blocker` < untriaged < `triage: deferred`), FIFO
+   within each tier; a repo whose policy sets `release_gate` is in a release freeze and
+   only its `triage: blocker` briefs are eligible (`release-gate:<name>` skips the rest).
 
 2. Announce the pick in one line (`Auto-picking <id> — <focus>`), then run the same
    batch detection as an interactive claim (`references/batch-consumption.md` step 1).

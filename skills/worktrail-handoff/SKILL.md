@@ -77,6 +77,12 @@ worktrail-handoff --focus "$FOCUS_TEXT" --queue-dir "$BASE" \
 Use `--recommended-route`, `--implementation-intent`, `--change-kind`, `--target-spec`,
 `--blocked-by`, or `--watch` when the capturing agent has direct evidence. The command omits
 `recommended-route` when classification is low-confidence and ambiguous rather than guessing.
+
+Use `--triage blocker|deferred` to release-scope the brief at capture time. When the target
+repo's policy sets `release_gate` (a release freeze), classify honestly: `blocker` only for
+work that must land before that release ships; everything else `deferred` (or omit — untriaged
+briefs rank between the two but are also skipped by auto-pick during a freeze). Re-scope later
+with `worktrail-work-queue triage <id> blocker|deferred|clear`.
 It returns `auto_linked` IDs and `confirm` candidates. Report automatic links; ask via
 `AskUserQuestion` whether to link any `confirm` candidates, then use
 `worktrail-work-queue link` for selected IDs.
