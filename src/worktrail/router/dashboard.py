@@ -103,6 +103,10 @@ from .policy_drift_selfcheck import check_repo as _policy_drift_check_repo
 # quarantine_selfcheck is a sibling module (spec quarantined-group-visibility).
 from .quarantine_selfcheck import check_repo as _quarantine_check_repo
 
+# journal_selfcheck is a sibling module (brief 20260808-210929): stranded-run
+# invariants (integrate_complete with undispatched tail; malformed journals).
+from .journal_selfcheck import check_repo as _journal_check_repo
+
 from ..orchestrator.agent_capacity import gate_snapshot as _capacity_gate_snapshot
 
 # audit_postmerge is a sibling module (spec post-merge-reconciliation-audit):
@@ -1604,6 +1608,9 @@ def scan_repos(parent: Path) -> List[Dict[str, Any]]:
             _qr = _quarantine_check_repo(repo)
             quarantine_findings = _qr["findings"]
             quarantine_resumable = _qr["resumable"]
+        journal_findings: List[Dict[str, Any]] = []
+        if _journal_check_repo is not None:
+            journal_findings = _journal_check_repo(repo)["findings"]
         repo_info[repo_key] = {
             "name": repo.name,
             "path": str(repo),
@@ -1614,6 +1621,7 @@ def scan_repos(parent: Path) -> List[Dict[str, Any]]:
             "drift_findings": drift_findings,
             "quarantine_findings": quarantine_findings,
             "quarantine_resumable": quarantine_resumable,
+            "journal_findings": journal_findings,
         }
         if specs_root.is_dir():
             for d in sorted(specs_root.iterdir()):
@@ -2014,6 +2022,7 @@ def render_dashboard(
     drift_flags: List[str] = []
     quarantine_flags: List[str] = []
     quarantine_resumable_flags: List[str] = []
+    stranded_flags: List[str] = []
     runs: List[Dict[str, Any]] = []
     if repo_rows is not None:
         for r in repo_rows:
@@ -2031,6 +2040,10 @@ def render_dashboard(
             quarantine_resumable_flags.extend(
                 f"{r['repo']} ({f['spec_id']}/{f['group']}, {f['age_days']:.0f}d)"
                 for f in r.get("quarantine_resumable", [])
+            )
+            stranded_flags.extend(
+                f"{r['repo']} ({f['spec_id']}: {f['kind']})"
+                for f in r.get("journal_findings", [])
             )
             for run in r.get("recent_runs", []) or []:
                 runs.append({"who": r["repo"], **run})
@@ -2146,6 +2159,14 @@ def render_dashboard(
         lines.append(
             f"🚩 Policy drift ({len(drift_flags)}): {head}{more} "
             "→ go-policy.yaml no longer matches repo reality"
+        )
+
+    if stranded_flags:
+        head = ", ".join(stranded_flags[:4])
+        more = f" … +{len(stranded_flags) - 4}" if len(stranded_flags) > 4 else ""
+        lines.append(
+            f"🚩 Stranded runs ({len(stranded_flags)}): {head}{more} "
+            "→ resume the run (stranded-tail) or inspect the journal (malformed-journal)"
         )
 
     if quarantine_flags:
