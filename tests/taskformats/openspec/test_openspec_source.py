@@ -170,6 +170,48 @@ def test_write_back_changes_exactly_one_character(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# validate_dependencies
+# --------------------------------------------------------------------------- #
+def test_validate_dependencies_no_diagnostic_for_a_resolving_dep(tmp_path):
+    src = OpenSpecTaskSource(tmp_path)
+    tasks = [{"id": "1.1", "deps": []}, {"id": "1.2", "deps": ["1.1"]}]
+    assert src.validate_dependencies("add-export", tasks) == []
+
+
+def test_validate_dependencies_flags_unresolved_same_spec_dep(tmp_path):
+    src = OpenSpecTaskSource(tmp_path)
+    tasks = [{"id": "1.1", "deps": []}, {"id": "1.2", "deps": ["1.1", "9.9"]}]
+    diagnostics = src.validate_dependencies("add-export", tasks)
+    assert len(diagnostics) == 1
+    assert "1.2" in diagnostics[0]
+    assert "9.9" in diagnostics[0]
+
+
+def test_validate_dependencies_on_a_loaded_change_has_no_diagnostics(tmp_path):
+    """`load()`'s own sequential-within-group deps must always resolve --
+    round-tripping through the real loader is the case the same-spec check
+    exists to keep clean."""
+    src = OpenSpecTaskSource(_change(tmp_path))
+    _, tasks = src.load("add-export")
+    assert src.validate_dependencies("add-export", tasks) == []
+
+
+def test_validate_dependencies_reports_decision_refs_unsupported(tmp_path):
+    src = OpenSpecTaskSource(tmp_path)
+    tasks = [{"id": "1.1", "deps": [], "decision-refs": ["D1"]}]
+    diagnostics = src.validate_dependencies("add-export", tasks)
+    assert len(diagnostics) == 1
+    assert "1.1" in diagnostics[0]
+    assert "decision-refs unsupported" in diagnostics[0]
+
+
+def test_validate_dependencies_ignores_tasks_without_decision_refs(tmp_path):
+    src = OpenSpecTaskSource(tmp_path)
+    tasks = [{"id": "1.1", "deps": []}]
+    assert src.validate_dependencies("add-export", tasks) == []
+
+
+# --------------------------------------------------------------------------- #
 # external dependencies
 # --------------------------------------------------------------------------- #
 def test_resolve_external_dependency_across_changes(tmp_path):
