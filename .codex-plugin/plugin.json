@@ -1,6 +1,6 @@
 {
   "name": "worktrail",
-  "version": "0.9.0",
+  "version": "1.0.0",
   "description": "Route engineering work, capture and consume handoff briefs, and drain the work queue through the Worktrail package.",
   "author": {
     "name": "Worktrail",
