@@ -42,6 +42,14 @@ frontmatter fails re-verification means its Acceptance Criteria/DoD
 checkboxes were claimed, not independently true. See
 check_dod_verification.py's module docstring for the exact signature.
 
+Immediately after that, the gate runs the requirement/AC-to-task coverage
+check (`check_req_coverage.py`) against changed docs/specs/ spec documents,
+enforcing only identifiers **newly declared in this diff** (its own
+base-ref-relative ratchet — see that module's docstring for why). If the
+base ref cannot be resolved, this check skips itself rather than failing or
+falling back to repo-wide enforcement. OpenSpec-format changes are
+untouched: `check_req_coverage.py` only matches `docs/specs/<id>/` paths.
+
 Exit codes:
   0   command passed, the repo opted out explicitly (`pre_pr_cmd: skip`), or
       the diff was docs-only per `docs_only_paths`
@@ -51,6 +59,7 @@ Exit codes:
       silently)
   3   clarification-integrity drift detected in changed docs/specs/ files
   4   DoD-verification drift detected in changed, completed task file(s)
+  5   req/AC coverage drift: a newly-declared identifier has no task coverage
   N   the gate command's own non-zero exit code
 
 Before running the command, the gate also prints a non-blocking `WARNING` when
@@ -100,6 +109,10 @@ from typing import Any, Dict, List, Optional, Tuple
 from .automerge_preflight import required_checks_gate
 from .check_clarification_integrity import check_changed_specs
 from .check_dod_verification import check_changed_specs as check_dod_failures
+from .check_req_coverage import (
+    _resolve_base_ref as _resolve_req_coverage_base_ref,
+    check_changed_specs as check_req_coverage_failures,
+)
 from .check_spec_sync import check_spec
 from .policy import (
     POLICY_RELPATH, automerge_eligible, automerge_labels, load_policy,
@@ -115,6 +128,7 @@ SPEC_SYNC_DRIFT_EXIT = 1
 SCOPE_COMPLETENESS_EXIT = 1
 CLARIFICATION_INTEGRITY_DRIFT_EXIT = 3
 DOD_VERIFICATION_DRIFT_EXIT = 4
+REQ_AC_COVERAGE_DRIFT_EXIT = 5
 CANDIDATE_BASE_REFS = ("origin/main", "origin/master", "main", "master")
 
 
@@ -387,6 +401,20 @@ def main(argv=None) -> int:
             print("  Run worktrail-check-dod-verification on the affected task(s) to fix.",
                   file=sys.stderr)
             return DOD_VERIFICATION_DRIFT_EXIT
+
+        req_coverage_base_ref = _resolve_req_coverage_base_ref(repo, policy.get("base_branch"))
+        if req_coverage_base_ref is not None:
+            req_coverage_failures = check_req_coverage_failures(
+                repo, changed_paths(repo, policy) or [], req_coverage_base_ref
+            )
+            if req_coverage_failures:
+                print("PRE-PR GATE: FAIL — req/AC coverage issue(s) detected in "
+                      "changed docs/specs/ files:", file=sys.stderr)
+                for failure in req_coverage_failures:
+                    print(f"  - {failure}", file=sys.stderr)
+                print("  Run worktrail-check-req-coverage on the affected spec(s) to fix.",
+                      file=sys.stderr)
+                return REQ_AC_COVERAGE_DRIFT_EXIT
 
     if not args.print_cmd and is_docs_only(repo, policy):
         print("PRE-PR GATE: DOCS-ONLY SKIP — every changed path matched "

@@ -20,7 +20,7 @@
 
 ## 2. Pre-PR gate integration
 
-- [ ] 2.1 Compose the coverage check into `src/worktrail/router/pre_pr_gate.py`
+- [x] 2.1 Compose the coverage check into `src/worktrail/router/pre_pr_gate.py`
       alongside the existing spec-sync, clarification-integrity, and
       DoD-verification checks, using the next free exit code (`5`; `1`–`4` are
       taken) and returning without opening a PR on failure. Enforce only
@@ -40,7 +40,7 @@
       enumerating pre-existing gaps. Include a fixture derived from the real
       `084-automation-health-digest` shape whose expected uncovered set is
       `REQ-023..REQ-028`.
-- [ ] 3.2 Extend `tests/router/test_pre_pr_gate.py` with a real-git-repo case
+- [x] 3.2 Extend `tests/router/test_pre_pr_gate.py` with a real-git-repo case
       asserting the gate returns the coverage exit code when a diff declares an
       uncovered identifier, and `0` when it does not — following the existing
       `TestClarificationIntegrityGate` pattern in that file.
