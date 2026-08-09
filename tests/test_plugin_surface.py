@@ -292,3 +292,32 @@ def test_orchestrator_invocation_branches_spec_ref_on_detected_format():
         "Route C-continuing-inline-D and Route D dispatch loads the wrong adapter"
     )
     assert "--spec docs/specs/$SPEC_ID" not in block
+
+
+def test_modify_pipeline_runs_scope_check_before_uncommitted_output_guard():
+    """The `modify` pipeline's pre-launch uncommitted-output guard only ever
+    catches files present -- and uncommitted -- at the moment it runs. Before
+    this fix, `worktrail-compile` (which writes `.compile-ok`) only ran inside
+    `#orchestrator`, strictly *after* this guard already passed, so the marker
+    was always missing from the committed change and `CI: Scope check`
+    (`worktrail-check-compile-markers`) failed deterministically on every
+    modify-pipeline group PR. Reproduced directly on worktrail PR #260 (run
+    go-20260809-021940): the marker had to be hand-committed onto the group
+    branch as a `ci_repair` intervention. The fix is ordering: a `worktrail-
+    compile` scope-check step must run *before* the guard so the guard itself
+    catches the freshly-written, uncommitted marker."""
+    doc = SKILLS_DIR / "worktrail-sdd-workflow" / "references" / "pipeline-details.md"
+    text = doc.read_text()
+    heading = "## `modify` pipeline {#modify-pipeline}"
+    section = text[text.index(heading):]
+
+    compile_call_pos = section.index('worktrail-compile "$CHANGE_DIR"')
+    guard_heading_pos = section.index("**Pre-launch uncommitted-output guard (mandatory)**")
+    guard_block_pos = section.index('CHG_DIFF=$(git -C "$WT" status --porcelain -- openspec/')
+
+    assert compile_call_pos < guard_heading_pos < guard_block_pos, (
+        "worktrail-compile must run before the pre-launch uncommitted-output "
+        "guard in the modify pipeline -- otherwise .compile-ok is always "
+        "written after the guard's commit checkpoint and every group PR fails "
+        "CI: Scope check"
+    )
