@@ -1325,6 +1325,60 @@ def _stack_resolve_attempt(
     return False
 
 
+def _carry_squash_merged_dependencies(
+    repo: Path, spec_id: str, task: dict, by_id: dict, wt: Path, remote: str, base: str
+) -> None:
+    """Carry a DONE dependency's content into `wt` across a squash-merge boundary.
+
+    `dependency_start_ref` falls back to bare `HEAD` for a dependency whose task
+    branch was already deleted (squash-merged + `verify.cleanup_group`) --
+    deterministic for tail e2e/cleanup tasks, which `_dispatch_pending_tail`
+    only dispatches after every group is integrated/verified/merged. `HEAD` is
+    the run-start local base, which predates those merges, so the stacked
+    worktree can be missing the dependency's declared files even though the
+    dependency is DONE.
+
+    Only engages for a dependency that is both DONE and branch-gone -- one this
+    run stacked onto (branch still present) already carries the content via the
+    normal sibling-merge above. For each such dependency with a missing declared
+    file, fetch the freshest base ref (`<remote>/<base>`, falling back to local
+    `<base>`) and merge it into `wt` with `-X ours` -- the same squash-reconcile
+    strategy `integrate.py` already uses for group branches (byte-identical
+    content; favor the worktree for apparent conflicts). A merge failure aborts
+    and falls through with a WARN: `_require_dependency_files` stays the
+    fail-loud backstop when the content genuinely isn't available.
+    """
+    stale_deps = [
+        dep_id
+        for dep_id in task.get("deps", [])
+        if (dep := by_id.get(dep_id)) is not None
+        and dep.get("status") in coordinator.DONE
+        and not _branch_exists(repo, f"{spec_id}/{dep_id.lower()}")
+        and any(
+            not _dependency_file_declared_path_exists(wt, f) for f in dep.get("files", []) or []
+        )
+    ]
+    if not stale_deps:
+        return
+
+    _git(repo, "fetch", "-q", remote, base, check=False)  # best-effort; offline stays a no-op
+    ref = f"{remote}/{base}" if _branch_exists(repo, f"{remote}/{base}") else base
+    if not _branch_exists(repo, ref):
+        return  # neither ref resolvable; _require_dependency_files raises with forensics
+
+    if _git(wt, "merge-base", "--is-ancestor", ref, "HEAD", check=False).returncode == 0:
+        return  # already carried (e.g. a prior carry, or the worktree started past it)
+
+    m = _git(wt, "merge", "--no-edit", "-X", "ours", ref, check=False)
+    if m.returncode != 0:
+        _git(wt, "merge", "--abort", check=False)
+        print(
+            f"{_ts()} WARN: task {task['id']} worktree {wt} squash-merge carry from "
+            f"{ref} failed for dependenc{'y' if len(stale_deps) == 1 else 'ies'} "
+            f"{', '.join(stale_deps)}: {(m.stderr or '').strip()[:300]}"
+        )
+
+
 def add_stacked_worktree(
     repo: Path,
     spec_id: str,
@@ -1333,6 +1387,8 @@ def add_stacked_worktree(
     wt: Path,
     expected_head_sha: str | None = None,
     assembly_resolve_spawn=None,
+    remote: str | None = None,
+    base: str | None = None,
 ) -> None:
     """Create `wt` on a fresh task branch, stacked on the task's dependencies.
 
@@ -1349,6 +1405,12 @@ def add_stacked_worktree(
     backs it up. If the attempt is exhausted or `assembly_resolve_spawn` is
     not provided, the merge is aborted and `WorktreeStackConflictError` is
     raised as before.
+
+    `remote`/`base`, when both provided, run a post-stack carry
+    (`_carry_squash_merged_dependencies`) for dependencies already squash-merged
+    into base with their task branch deleted. Absent (the default), the carry
+    is skipped entirely -- no behavior change for the cassette/demo path or any
+    caller that doesn't pass them.
     """
     start, extra = dependency_start_ref(repo, spec_id, task, by_id)
     branch = f"{spec_id}/{task['id'].lower()}"
@@ -1395,6 +1457,9 @@ def add_stacked_worktree(
                 f"commits. Resolve the conflict between {start} and {mb} manually, "
                 f"then resume the run."
             )
+
+    if remote and base:
+        _carry_squash_merged_dependencies(repo, spec_id, task, by_id, wt, remote, base)
 
 
 def _add_stacked_worktree_kwargs(target, kwargs: dict) -> dict:
@@ -2392,11 +2457,17 @@ def live_run_real(
     notify_cmd: str | None = None,
     progress_interval: int | None = None,
     bootstrap_cmd: str | None = None,
+    remote: str | None = None,
+    base: str | None = None,
 ) -> dict:
     """Like live_run but operates on a REAL repo — no instantiate/copy.
 
     repo     — absolute path to the existing git repo (already on the base branch).
     spec_rel — spec folder relative to repo root, e.g. 'docs/specs/008-image-route'.
+    remote/base — optional; when both given, threaded to `add_stacked_worktree` so
+               a stacked worktree carries a DONE dependency's content across a
+               squash-merge boundary (dependency's branch deleted). Absent
+               (default) -> no carry, no behavior change.
     Worktrees land under <repo.parent>/<repo.name>-worktrees/<spec_id>-<task_id>.
     resume   — if True and `out_cassette` already exists, replay it to skip tasks
                that already finished and continue mid-flight ones, so an
@@ -2575,6 +2646,8 @@ def live_run_real(
                                 {
                                     "expected_head_sha": expected_head_sha,
                                     "assembly_resolve_spawn": assembly_resolve_spawn_fn,
+                                    "remote": remote,
+                                    "base": base,
                                 },
                             ),
                         )
@@ -2587,7 +2660,11 @@ def live_run_real(
                             wt,
                             **_add_stacked_worktree_kwargs(
                                 add_stacked_worktree,
-                                {"assembly_resolve_spawn": assembly_resolve_spawn_fn},
+                                {
+                                    "assembly_resolve_spawn": assembly_resolve_spawn_fn,
+                                    "remote": remote,
+                                    "base": base,
+                                },
                             ),
                         )
                     drift_events = _require_dependency_files(wt, task, by_id)
@@ -3101,6 +3178,8 @@ def _dispatch_pending_tail(
     notify_cmd: str | None = None,
     progress_interval: int | None = None,
     spawn=None,
+    remote: str | None = None,
+    base: str | None = None,
 ) -> dict | None:
     """Dispatch pending e2e/cleanup tail tasks once the impl-group fan-out is
     integrated (`full-real`'s two schedulers both reach this point with every
@@ -3113,6 +3192,11 @@ def _dispatch_pending_tail(
     construction: it reloads task status fresh, and `drive()` no-ops on any
     task already terminal, so repeat calls (including a resume in a fresh
     process) are safe and idempotent.
+
+    `remote`/`base` pass straight through to `live_run_real` (see its docstring):
+    tail tasks are exactly the deterministic squash-merged-dependency case
+    (`_dispatch_pending_tail` only fires once every group is integrated/verified/
+    merged and cleaned up), so both call sites here supply them.
 
     Returns None when there is no tail work outstanding (no-op); otherwise the
     dict `live_run_real` returns for its `with_tail=True` pass.
@@ -3143,6 +3227,8 @@ def _dispatch_pending_tail(
         progress_interval=progress_interval,
         bootstrap_cmd=bootstrap_cmd,
         spawn=spawn,
+        remote=remote,
+        base=base,
     )
 
 
@@ -3639,6 +3725,8 @@ def _pipeline_scheduler(
                             wt,
                             expected_head_sha=expected_head_sha,
                             assembly_resolve_spawn=assembly_resolve_spawn_fn,
+                            remote=remote,
+                            base=base,
                         )
                     else:
                         add_stacked_worktree(
@@ -3648,6 +3736,8 @@ def _pipeline_scheduler(
                             by_id,
                             wt,
                             assembly_resolve_spawn=assembly_resolve_spawn_fn,
+                            remote=remote,
+                            base=base,
                         )
                     drift_events = _require_dependency_files(wt, task, by_id)
                     if drift_events:
@@ -3980,6 +4070,8 @@ def _pipeline_scheduler(
             run_budget,
             bootstrap_cmd=bootstrap_cmd,
             spawn=spawn_fn,
+            remote=remote,
+            base=base,
         )
         if tail_res is not None:
             integrate_module._mark_integrate_complete_if_terminal(
@@ -4363,6 +4455,8 @@ def _full_real_inner(
         notify_cmd=notify_cmd,
         progress_interval=progress_interval,
         bootstrap_cmd=bootstrap_cmd,
+        remote=remote,
+        base=base,
     )
     spec_id, tasks = res["spec_id"], res["tasks"]
     for t in tasks:
@@ -4607,6 +4701,8 @@ def _full_real_inner(
             bootstrap_cmd=bootstrap_cmd,
             notify_cmd=notify_cmd,
             progress_interval=progress_interval,
+            remote=remote,
+            base=base,
         )
         if tail_res is not None:
             integrate._mark_integrate_complete_if_terminal(
