@@ -674,17 +674,21 @@ class TestPrecheckFrontmatterTypoWarning(unittest.TestCase):
 
     def test_depends_on_alias_does_not_warn(self):
         """The real incident's exact key (depends_on) is a recognized alias,
-        not a typo -- must stay silent."""
+        not a typo -- must stay silent. TASK-000 is included so the aliased
+        same-spec dependency also resolves, keeping this test isolated to the
+        typo-vs-alias question it's about rather than same-spec dependency
+        resolution (covered by devkit's own validate_dependencies tests)."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_root = Path(tmp)
             tasks = [
+                _make_task("TASK-000", status="completed", kind="impl"),
                 _make_task(
                     "TASK-001",
                     status="pending",
                     kind="impl",
                     files=["a.py"],
                     extra_fm={"depends_on": "[TASK-000]"},
-                )
+                ),
             ]
             _make_spec_dir(tmp_root, tasks, create_files=set())
 
@@ -861,6 +865,167 @@ class TestPrecheckExternalDeps(unittest.TestCase):
             self.assertIn("all listed files already exist", output)
             self.assertIn("INFO: TASK-002", output)
             self.assertNotIn("external dependency", output)
+
+
+class TestPrecheckDependencyValidation(unittest.TestCase):
+    """5.4: precheck() surfaces the loaded `TaskSource`'s
+    `validate_dependencies()` diagnostics (unresolved same-spec `deps` and
+    unsettled `decision-refs:`) as WARN lines and folds them into
+    `warn_count`, per the wiring added in live.py (4.1)."""
+
+    @staticmethod
+    def _make_docs_spec_dir(tmp_root, spec_id, tasks, decision_log=None):
+        """Write tasks under docs/specs/<spec_id>/tasks/ -- the layout
+        `taskformats.task_source_for()` needs in order to resolve
+        `DevkitSpecTaskSource.spec_root()` (and therefore decision-log.md)
+        correctly. The plain `specs/<id>` layout `_make_spec_dir` uses
+        elsewhere in this file resolves to the wrong repo_root for that
+        lookup, since task_source_for's path-split assumes a `docs/specs/`
+        prefix."""
+        spec_dir = tmp_root / "docs" / "specs" / spec_id
+        tasks_dir = spec_dir / "tasks"
+        tasks_dir.mkdir(parents=True, exist_ok=True)
+        for task in tasks:
+            task_id = task["id"]
+            frontmatter_lines = [f"id: {task_id}"]
+            if "status" in task:
+                frontmatter_lines.append(f"status: {task['status']}")
+            if "kind" in task:
+                frontmatter_lines.append(f"kind: {task['kind']}")
+            for extra_key, extra_val in (task.get("extra_fm") or {}).items():
+                frontmatter_lines.append(f"{extra_key}: {extra_val}")
+            body = task.get("body") or f"# {task_id}\n"
+            content = f"---\n{chr(10).join(frontmatter_lines)}\n---\n{body}"
+            (tasks_dir / f"{task_id}.md").write_text(content)
+        if decision_log is not None:
+            (spec_dir / "decision-log.md").write_text(decision_log)
+        return spec_dir
+
+    def test_unresolved_same_spec_dependency_warns_and_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_root = Path(tmp)
+            tasks = [
+                _make_task(
+                    "TASK-001",
+                    status="pending",
+                    kind="impl",
+                    extra_fm={"dependencies": '["TASK-999"]'},
+                )
+            ]
+            self._make_docs_spec_dir(tmp_root, "001-test", tasks)
+
+            captured = io.StringIO()
+            with mock.patch("sys.stdout", captured):
+                result = live.precheck(tmp_root, "docs/specs/001-test")
+
+            output = captured.getvalue()
+            self.assertEqual(result, 1)
+            self.assertIn("WARN: TASK-001", output)
+            self.assertIn("unresolved same-spec dependency", output)
+            self.assertIn("TASK-999", output)
+
+    def test_missing_decision_log_diagnostic_warns_and_fails(self):
+        """A task references `decision-refs:` but no decision-log.md exists
+        for the spec at all -- treated as "missing", not silently skipped."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_root = Path(tmp)
+            tasks = [
+                _make_task(
+                    "TASK-001",
+                    status="pending",
+                    kind="impl",
+                    extra_fm={"decision-refs": '["D9"]'},
+                )
+            ]
+            self._make_docs_spec_dir(tmp_root, "001-test", tasks)
+
+            captured = io.StringIO()
+            with mock.patch("sys.stdout", captured):
+                result = live.precheck(tmp_root, "docs/specs/001-test")
+
+            output = captured.getvalue()
+            self.assertEqual(result, 1)
+            self.assertIn("WARN: TASK-001", output)
+            self.assertIn("missing decision", output)
+            self.assertIn("D9", output)
+
+    def test_open_decision_diagnostic_warns_and_fails(self):
+        """A referenced decision exists in the log but is not decided/
+        resolved -- "open decision" WARN, non-zero exit."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_root = Path(tmp)
+            tasks = [
+                _make_task(
+                    "TASK-001",
+                    status="pending",
+                    kind="impl",
+                    extra_fm={"decision-refs": '["D9"]'},
+                )
+            ]
+            self._make_docs_spec_dir(
+                tmp_root,
+                "001-test",
+                tasks,
+                decision_log="## D9: Pick a storage backend\nStatus: proposed\n",
+            )
+
+            captured = io.StringIO()
+            with mock.patch("sys.stdout", captured):
+                result = live.precheck(tmp_root, "docs/specs/001-test")
+
+            output = captured.getvalue()
+            self.assertEqual(result, 1)
+            self.assertIn("WARN: TASK-001", output)
+            self.assertIn("open decision", output)
+            self.assertIn("D9", output)
+            self.assertIn("proposed", output)
+
+    def test_resolved_dependency_and_decided_decision_stay_clean(self):
+        """A `deps` entry that resolves within the spec and a `decision-refs:`
+        entry that is `decided` in the log both produce no diagnostic --
+        exit code 0, same as the pre-existing no-findings contract."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_root = Path(tmp)
+            tasks = [
+                _make_task("TASK-000", status="completed", kind="impl"),
+                _make_task(
+                    "TASK-001",
+                    status="pending",
+                    kind="impl",
+                    extra_fm={
+                        "dependencies": '["TASK-000"]',
+                        "decision-refs": '["D9"]',
+                    },
+                ),
+            ]
+            self._make_docs_spec_dir(
+                tmp_root,
+                "001-test",
+                tasks,
+                decision_log="## D9: Pick a storage backend\nStatus: decided\n",
+            )
+
+            captured = io.StringIO()
+            with mock.patch("sys.stdout", captured):
+                result = live.precheck(tmp_root, "docs/specs/001-test")
+
+            self.assertEqual(result, 0)
+            self.assertEqual(captured.getvalue().strip(), "")
+
+    def test_no_deps_or_decision_refs_stays_clean(self):
+        """No `deps` and no `decision-refs:` declared anywhere -- unchanged
+        from precheck's pre-existing silent/exit-0 behavior."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_root = Path(tmp)
+            tasks = [_make_task("TASK-001", status="pending", kind="impl")]
+            self._make_docs_spec_dir(tmp_root, "001-test", tasks)
+
+            captured = io.StringIO()
+            with mock.patch("sys.stdout", captured):
+                result = live.precheck(tmp_root, "docs/specs/001-test")
+
+            self.assertEqual(result, 0)
+            self.assertEqual(captured.getvalue().strip(), "")
 
 
 if __name__ == "__main__":

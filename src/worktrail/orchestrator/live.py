@@ -626,6 +626,11 @@ def precheck(repo: Path, spec_rel: str) -> int:
     Non-impl tasks and tasks with empty files: are silently skipped.
     All tasks completed: silent, exit 0.
 
+    Also runs the loaded `TaskSource`'s `validate_dependencies()` (when the
+    adapter implements it -- e.g. Spec Kit does not) once for the whole task
+    set -- unresolved same-spec `deps` and (where the format supports it)
+    unsettled `decision-refs:` -- and WARNs on each diagnostic it returns.
+
     Returns exit code 1 if any WARN was emitted, else 0.
     """
     status = _fanout_failed_status(repo.resolve(), spec_rel)
@@ -646,8 +651,16 @@ def precheck(repo: Path, spec_rel: str) -> int:
             print("INFO: blocked tasks recorded in status.json: " + ", ".join(blocked))
         return 1
 
-    _, tasks = taskformats.load_spec(str(repo / spec_rel))
+    spec_id, tasks = taskformats.load_spec(str(repo / spec_rel))
     warn_count = 0
+
+    validate_dependencies = getattr(
+        taskformats.task_source_for(repo / spec_rel), "validate_dependencies", None
+    )
+    if validate_dependencies is not None:
+        for diagnostic in validate_dependencies(spec_id, tasks):
+            print(f"WARN: {diagnostic}")
+            warn_count += 1
 
     for task in tasks:
         task_id = task["id"]

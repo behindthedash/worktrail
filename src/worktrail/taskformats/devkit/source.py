@@ -6,18 +6,23 @@ Reads a real `docs/specs/[id]/tasks/TASK-*.md` tree (the spec-to-tasks output
 format) and projects each task's frontmatter into the dict the coordinator/
 orchestrator consume:
 
-    {"id", "deps", "external_deps", "external_deps_warnings", "files", "kind", "reqs",
-     "status", "timeout", "title", "review", "complexity", "domain", "path",
-     "frontmatter_warnings"}
+    {"id", "deps", "external_deps", "external_deps_warnings", "decision_refs", "files",
+     "kind", "reqs", "status", "timeout", "title", "review", "complexity", "domain",
+     "path", "frontmatter_warnings"}
 
-Frontmatter fields used: id, title, status, dependencies, external-dependencies, files,
-kind, reqs, timeout, review, complexity, domain.
+Frontmatter fields used: id, title, status, dependencies, external-dependencies,
+decision-refs, files, kind, reqs, timeout, review, complexity, domain.
 
 `external-dependencies` is a separate, additive field alongside `dependencies`/
 `depends_on` -- an External Dependency Reference (`<spec-id>/<task-id>`) declaring a
 cross-spec prerequisite. It has no alias and its resolution is out of scope for this
 loader (see `validate_external_dependencies`); malformed entries are kept, not dropped,
 so a downstream unresolved-reference reporter can still name them.
+
+`decision-refs` is a list of decision ids (e.g. `D3`) a task depends on being settled
+before work starts -- resolved against the spec's own `decision-log.md` by
+`DevkitSpecTaskSource.validate_dependencies`, not by this loader (see
+`parse_decision_log`).
 (`files`/`kind`/`reqs`/`complexity`/`domain` are additions our fork can have
 spec-to-tasks emit; the upstream template already carries id/title/status/dependencies.)
 
@@ -64,6 +69,7 @@ KNOWN_TASK_FRONTMATTER_KEYS = {
     "imp-requirements",
     "success-criteria",
     "external-dependencies",
+    "decision-refs",
     "dod-checks",
 }
 
@@ -255,6 +261,7 @@ def load_spec(spec_folder: str) -> Tuple[str, List[Dict[str, Any]]]:
                 "deps": fm.get("dependencies", fm.get("depends_on", [])),
                 "external_deps": _external_deps,
                 "external_deps_warnings": _external_deps_warnings,
+                "decision_refs": fm.get("decision-refs", []),
                 "files": fm.get("files", []),
                 "kind": fm.get("kind", "impl"),
                 "reqs": fm.get("reqs", []),
@@ -278,6 +285,36 @@ def load_spec(spec_folder: str) -> Tuple[str, List[Dict[str, Any]]]:
         )
     tasks.sort(key=lambda t: t["id"])
     return p.name, tasks
+
+
+_DECISION_HEADING_RE = re.compile(r"^##\s*(D\d+)\s*:.*$")
+_DECISION_STATUS_RE = re.compile(r"^\s*Status:\s*(.+?)\s*$", re.IGNORECASE)
+DECIDED_STATUSES = {"decided", "resolved"}
+
+
+def parse_decision_log(text: str) -> Dict[str, str]:
+    """Parse a `decision-log.md`'s `## D<n>: <title>` headings into
+    `{decision_id: status}` (e.g. `{"D1": "decided"}`).
+
+    Only the first `Status:` line found after a heading (and before the next
+    heading) counts; a heading with no `Status:` line before the next one --
+    or before EOF -- has no entry, which callers treat the same as "id not
+    found in the log" (see `DevkitSpecTaskSource.validate_dependencies`).
+    """
+    statuses: Dict[str, str] = {}
+    current_id: Optional[str] = None
+    for raw_line in text.splitlines():
+        heading = _DECISION_HEADING_RE.match(raw_line.strip())
+        if heading:
+            current_id = heading.group(1)
+            continue
+        if current_id is None:
+            continue
+        status_match = _DECISION_STATUS_RE.match(raw_line)
+        if status_match:
+            statuses.setdefault(current_id, status_match.group(1).strip())
+            current_id = None
+    return statuses
 
 
 DEFAULT_SPEC_ROOT = "docs/specs"
@@ -376,6 +413,47 @@ class DevkitSpecTaskSource:
 
     def resolve_external_dependency(self, dep_ref: str) -> Dict[str, Any]:
         return resolve_external_dependency(self.repo_root, dep_ref, spec_root=self._spec_root)
+
+    def validate_dependencies(self, spec_id: str, tasks: List[Dict[str, Any]]) -> List[str]:
+        """Report unresolved same-spec `deps` entries and unsettled `decision-refs:`.
+
+        `external-dependencies:` entries are a separate field (see module
+        docstring) resolved through `resolve_external_dependency()`, not this
+        loaded-task-id set, so they are never flagged here.
+
+        `decision-refs:` entries are checked against `decision-log.md`
+        (alongside the spec's `tasks/` dir, per `parse_decision_log`) only
+        when at least one task declares one -- a spec with no decision-refs
+        at all never needs the log to exist. A referenced id absent from the
+        log, or the log file itself missing while a task still references
+        one, is a "missing decision"; a referenced id present but not
+        `decided`/`resolved` (case-insensitive) is an "open decision".
+        """
+        diagnostics: List[str] = []
+        task_ids = {t["id"] for t in tasks}
+        for task in tasks:
+            for dep in task.get("deps", []):
+                if dep not in task_ids:
+                    diagnostics.append(
+                        f"{task['id']}: unresolved same-spec dependency '{dep}'"
+                    )
+
+        if any(task.get("decision_refs") for task in tasks):
+            log_path = self.spec_root(spec_id) / "decision-log.md"
+            decisions = parse_decision_log(log_path.read_text()) if log_path.is_file() else {}
+            for task in tasks:
+                for decision_id in task.get("decision_refs", []):
+                    status = decisions.get(decision_id)
+                    if status is None:
+                        diagnostics.append(
+                            f"{task['id']}: missing decision '{decision_id}' "
+                            f"(not found in decision-log.md)"
+                        )
+                    elif status.lower() not in DECIDED_STATUSES:
+                        diagnostics.append(
+                            f"{task['id']}: open decision '{decision_id}' (status: {status})"
+                        )
+        return diagnostics
 
     def task_brief_ref(self, task_id: str, spec_ref: str) -> tuple:
         """The task's own file is the brief; no anchor needed."""
