@@ -132,7 +132,7 @@ resolve check now: see Phase 2's **Bare or prefix brief ID** rule for the exact 
 match semantics. A `match` makes this a Brief-ID invocation; `none`/`ambiguous` falls through to
 Phase 1b's picker.
 
-**Auto invocations** (`auto` argument, spec 017): print the `rendered` dashboard as usual, skip BOTH picker levels, and add `--auto` (plus `--auto-repo "$ARG_REPO"` when a repo was named) to the dashboard.py call so `$DASHBOARD_JSON.auto_pick` is populated. Full flow: `references/auto-mode.md`.
+**Auto invocations** (`auto` argument, spec 017): print the `rendered` dashboard as usual, skip BOTH picker levels, and add `--auto` (plus `--auto-repo "$ARG_REPO"` when a repo was named) to the dashboard.py call so `$DASHBOARD_JSON.auto_pick` is populated. Hold `$AUTO_MODE=true` for the rest of the dispatch: Phase 5.5's three collision/staleness branches (`references/spec-collision-check.md`, `references/brief-staleness-check.md`, `references/related-brief-collision-check.md`) branch on it to skip `AskUserQuestion` — that tool is not registered in the headless one-shot processes `worktrail-go drain` spawns (verified 2026-08-10: a direct `claude -p` probe found no such tool available to call, not merely unanswered), so a Phase 5.5 prompt reached from an auto/drain dispatch would fail outright or leave the agent guessing an answer with no human to catch a bad one. Full flow: `references/auto-mode.md`.
 
 **Drain invocations** (`drain [max-items] [repo]`): skip the dashboard and picker, read
 `references/drain.md`, and run the installed `worktrail-drain` console script with the

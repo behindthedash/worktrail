@@ -44,6 +44,24 @@ actively working that repo — stale lock files probe as free).
    mode has no human present to catch a bad one — one run record listing every claimed
    brief id in `handoffs_consumed`, dispatch, CI watch, and per-brief `done`/`release`.
 
+## Phase 5.5 — collision/staleness checks have no ask
+
+`AskUserQuestion` is not a callable tool inside the headless one-shot processes
+`worktrail-go drain` spawns (verified 2026-08-10: a direct `claude -p` probe found the tool
+entirely absent, not merely unanswered). Auto mode's three Phase 5.5 branches
+(`references/spec-collision-check.md` Route F/G, `references/brief-staleness-check.md`,
+`references/related-brief-collision-check.md`) each check `$AUTO_MODE` before their ask and,
+when true, skip it: they open a minimal run record, `finish` it `blocked_product_decision` with
+a summary of what needed a human call, and leave the brief claimed in `picked/` for the existing
+stalled-in-flight resume path — never guessing an answer and never hanging on an unavailable
+tool. (Route C/D's spec-collision ask has no `$AUTO_MODE=true` variant at all: auto mode always
+has a claimed brief in play, per Phase 2 above, and a confirmed C/D match on a brief-sourced
+dispatch auto-closes the brief outright rather than asking — see
+`references/spec-collision-check.md`'s "Dispatch source 1" section — so it never reaches an ask
+in the first place.) `drain.py` already classifies `blocked_product_decision` as a `blocked`
+outcome — see `references/drain.md` and `classify_outcome()` in `drain.py` — so this fits the
+existing stop conditions without any driver-loop change.
+
 ## Draining many items
 
 Auto mode picks and runs ONE brief per invocation. To work through the whole queue

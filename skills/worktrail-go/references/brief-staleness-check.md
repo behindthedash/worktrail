@@ -89,6 +89,25 @@ AskUserQuestion(
 
 Never default-select, never auto-close, and never infer the answer from the match count.
 
+**`$AUTO_MODE=true`: no ask.** There is no human present to answer, and `AskUserQuestion` is not
+even a callable tool inside the headless one-shot `worktrail-go drain` spawns — do not attempt
+the call above. Phase 6 has not run yet for this dispatch, so open a minimal run record now
+(the same fields Phase 6 would use) purely to record the block, then finish it immediately:
+
+```bash
+RUN=$(worktrail-run-record start --repo "$REPO" \
+  --request "${BRIEF_FOCUS:-$ARG_INTENT}" --route "$ROUTE" --risk "${RISK_LEVEL:-medium}" \
+  --agent "$INVOCATION_CONTEXT_AGENT" | python3 -c "import sys, json; print(json.load(sys.stdin)['path'])")
+worktrail-run-record finish "$RUN" --status blocked_product_decision --merge-result \
+  "Auto-mode staleness guard: brief may already be delivered -- $N commit(s)/$M merged PR(s) touched what it names since it was captured ($created). Needs a human to judge whether this closes the brief or is unrelated."
+```
+
+Do not call `work_queue.py done` or `work_queue.py release` — leave the brief claimed in
+`picked/` exactly as an unresolved interactive ask would, so it surfaces through the existing
+stalled-in-flight resume path (dashboard `resume` action) with the run record's
+`blocked_product_decision` note giving the resuming session the evidence already gathered
+instead of a cold restart. Stop; do not continue to Phase 6/7 for this dispatch.
+
 **On "close as already-delivered"** — the queue mutation goes through `work_queue.py`, the single
 owner of brief lifecycle, exactly as every other close does. Cite the evidence in the note:
 
