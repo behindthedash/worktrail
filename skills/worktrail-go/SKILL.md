@@ -287,14 +287,14 @@ instead — this is not a caller decision to make; just log it (Phase 6) for vis
 ### Phase 5.5 — Collision & Staleness Guard
 
 One question — "has this already been done?" — asked three ways, by three branches that share
-no state. Only two of the three are mutually exclusive with each other: a Route C/D dispatch
-checks for **spec collision** (does a shipped spec already cover this request?), while a
-brief-sourced dispatch on any other route checks for a **related-brief collision** (is a brief
+no state. Only two of the three are mutually exclusive with each other: a Route C/D/F/G
+dispatch checks for **spec collision** (does a shipped spec already cover this request?), while
+a brief-sourced dispatch on any other route checks for a **related-brief collision** (is a brief
 this one names as `related:` actively claimed and in flight right now?) — those two never both
 run. The third, **brief staleness** (did the work this brief describes already land while it sat
 in the queue?), is not route-gated at all: it runs on every brief-sourced dispatch, on top of
 whichever of the other two also applies. A free-text dispatch with no claimed brief skips all
-brief-sourced branches; it may still run spec collision on Route C/D.
+brief-sourced branches; it may still run spec collision on Route C/D/F/G.
 
 **Brief-staleness branch (every brief-sourced dispatch).**
 
@@ -324,30 +324,39 @@ whichever of the two route-gated branches below also applies to this dispatch �
 prompt resolving does not skip them. Full procedure — command, how to read the result, the
 prompt shape, and the run-record entries: `references/brief-staleness-check.md`.
 
-**Route C/D branch: spec collision.**
+**Route C/D/F/G branch: spec collision.**
 
-Gated on Phase 5's resolved route (`$ROUTE`) being `C` or `D` only — every other route skips
-this branch. Runs in addition to the brief-staleness branch above when the dispatch is also
-brief-sourced. Before starting Phase 6's run record, check whether an existing,
+Gated on Phase 5's resolved route (`$ROUTE`) being `C`, `D`, `F`, or `G` — every other route
+skips this branch. Runs in addition to the brief-staleness branch above when the dispatch is
+also brief-sourced. Before starting Phase 6's run record, check whether an existing,
 already-`Implemented` spec under `docs/specs/` already covers the request: run
 `check_spec_collision.py --repo "$REPO" --json` for the candidate list, judge each candidate
 against the dispatch's comparison text (a claimed brief's `focus` field, or the free-text
 `$ARG_INTENT`/its classify.py-derived summary when there's no claimed brief) using the same
 actor + capability + primary domain rule as `references/subagent-prompts.md#overlap-check`, and
-run `--verify <spec_id> --json` on any judged match. On a confirmed collision (`verify()`'s
-`confirmed: true`), a brief-sourced dispatch auto-closes the brief via `work_queue.py done ...
---implementation-complete --note "..."` and stops (no fresh dispatch); a brainstorm-sourced
-dispatch (no claimed brief) instead asks the user via `AskUserQuestion` before proceeding. Any
-non-confirmed outcome — `checked: false`, no candidate judged a match, or `confirmed: false` —
-leaves Phase 6/7 unmodified and un-delayed. Full procedure, including both dispatch-source
-branches and exact command syntax: `references/spec-collision-check.md`.
+run `--verify <spec_id> --json` on any judged match.
+
+**Auto-close applies to C/D only.** On a confirmed collision (`verify()`'s `confirmed: true`), a
+brief-sourced Route C/D dispatch auto-closes the brief via `work_queue.py done ...
+--implementation-complete --note "..."` and stops (no fresh dispatch); a brainstorm-sourced C/D
+dispatch (no claimed brief) instead asks the user via `AskUserQuestion` before proceeding. A
+confirmed Route F/G collision is **never auto-closed**, brief-sourced or not — always ask via
+`AskUserQuestion` instead. Reason: C/D targets work that is new or not yet `Implemented`, so a
+confirmed match is always a genuine duplicate of separate prior work. F/G targets an *existing*,
+already-`Implemented` spec's own behavior by design — that spec is the controlling artifact the
+fix or the change is against — so the matched candidate is frequently the very spec the F/G work
+is about, not a separate collision; auto-closing on that self-match would wrongly kill a
+legitimate bugfix or spec-change brief. Any non-confirmed outcome — `checked: false`, no
+candidate judged a match, or `confirmed: false` — leaves Phase 6/7 unmodified and un-delayed for
+every gated route. Full procedure, including both dispatch-source branches, the F/G ask-only
+rule, and exact command syntax: `references/spec-collision-check.md`.
 
 **Related-brief collision branch.**
 
 Gated on the dispatch being brief-sourced (a claimed brief is in play), that brief's `related:`
 frontmatter being non-empty, **and** Phase 5's resolved route being anything other than C, D, E,
-or F — Route C/D is already covered by the branch above, and Route E/F deliberately keeps only
-the staleness signal rather than adding a second prompt surface on top of it. A free-text
+F, or G — Route C/D/F/G is already covered by the branch above, and Route E deliberately keeps
+only the staleness signal rather than adding a second prompt surface on top of it. A free-text
 dispatch has no claimed brief to read `related:` off. Runs in addition to the brief-staleness
 branch above when it applies. Before starting Phase 6's run record, run
 `worktrail-check-related-brief-claims --brief "<claimed-brief-path>" --json` to ask whether any
