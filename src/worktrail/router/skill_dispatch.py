@@ -29,6 +29,7 @@ def _prompt(agent: str, skill: str, args: str) -> str:
 
 def build_command(agent: str, skill: str, args: str = "", *, model: str | None = None,
                   cwd: str | None = None, write: bool = False,
+                  add_dirs: Sequence[str] = (),
                   extra_args: Sequence[str] = ()) -> list[str]:
     """Return an argv list that preserves the requested provider identity.
 
@@ -45,6 +46,10 @@ def build_command(agent: str, skill: str, args: str = "", *, model: str | None =
     nothing extra; `claude` and `opencode` are otherwise unable to write without
     an interactive approval that a headless run has no channel to answer, which
     strands the spawn instead of failing it.
+
+    `add_dirs` grants Codex additional writable roots alongside `cwd`. It is
+    intentionally explicit because these paths may contain run records,
+    sibling worktrees, or other state outside the target checkout.
     """
     if agent not in SUPPORTED_AGENTS:
         raise ValueError(f"unsupported agent: {agent!r}")
@@ -69,6 +74,8 @@ def build_command(agent: str, skill: str, args: str = "", *, model: str | None =
         command = ["codex", "exec", "--json", "-s", "workspace-write"]
         if cwd:
             command += ["-C", cwd]
+        for directory in add_dirs:
+            command += ["--add-dir", directory]
         if model:
             command += ["--model", model]
         command.append(prompt)
@@ -126,6 +133,13 @@ def main(argv: list[str] | None = None) -> int:
         help="grant the child the permissions needed to author files headlessly",
     )
     parser.add_argument(
+        "--add-dir",
+        action="append",
+        default=[],
+        metavar="DIR",
+        help="additional directory Codex may write alongside --cwd (repeatable)",
+    )
+    parser.add_argument(
         "--codex-home",
         help="override CODEX_HOME for a Codex child process (or use WORKTRAIL_CODEX_HOME)",
     )
@@ -134,7 +148,7 @@ def main(argv: list[str] | None = None) -> int:
     parsed = parser.parse_args(argv)
     command = build_command(
         parsed.agent, parsed.skill, parsed.args, model=parsed.model,
-        cwd=parsed.cwd, write=parsed.write,
+        cwd=parsed.cwd, write=parsed.write, add_dirs=parsed.add_dir,
     )
     if parsed.dry_run:
         print(json.dumps(command) if parsed.json else " ".join(command))

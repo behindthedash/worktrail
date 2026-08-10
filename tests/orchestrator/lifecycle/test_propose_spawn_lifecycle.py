@@ -54,12 +54,21 @@ class ProposeSpawnLandsChangeDirTests(unittest.TestCase):
         self._old_change_id = os.environ.get("FAKE_PROPOSE_CHANGE_ID")
         os.environ["FAKE_PROPOSE_CHANGE_ID"] = "probe-change"
         self.addCleanup(self._restore_change_id)
+        self._old_codex_home = os.environ.get("WORKTRAIL_CODEX_HOME")
+        os.environ["WORKTRAIL_CODEX_HOME"] = str(tmp / "codex-home")
+        self.addCleanup(self._restore_codex_home)
 
     def _restore_change_id(self):
         if self._old_change_id is None:
             os.environ.pop("FAKE_PROPOSE_CHANGE_ID", None)
         else:
             os.environ["FAKE_PROPOSE_CHANGE_ID"] = self._old_change_id
+
+    def _restore_codex_home(self):
+        if self._old_codex_home is None:
+            os.environ.pop("WORKTRAIL_CODEX_HOME", None)
+        else:
+            os.environ["WORKTRAIL_CODEX_HOME"] = self._old_codex_home
 
     def _change_dir(self) -> Path:
         return self.wt / "openspec" / "changes" / "probe-change"
