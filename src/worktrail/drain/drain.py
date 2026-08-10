@@ -552,6 +552,50 @@ def build_sync_command(agent: str, repo: Path, spec_id: str) -> List[str]:
             "--cwd", str(repo), "--write"]
 
 
+def _run_sync_pending(
+    finding: Dict[str, Any],
+    agent: str,
+    timeout: int,
+    spawner: Callable[[List[str], int], SpawnOutcome],
+    log: Callable[[str], None],
+) -> Dict[str, Any]:
+    """A sync-pending finding's remediation: spawn the built
+    `worktrail-skill-dispatch --skill opsx:sync` command, log before/after,
+    and return the result dict. Result shape (`repo`, `spec_id`, `exit_code`)
+    matches `_resume_via_full_real`'s, so `resumed_sync_pending` entries are
+    structurally interchangeable with `resumed_verify_pending` ones for any
+    caller that doesn't branch on which row produced them."""
+    repo, spec_id = finding["repo"], finding["spec_id"]
+    cmd = build_sync_command(agent, repo, spec_id)
+    log(f"resume-sync-pending: {finding['repo_name']} {spec_id} -> /opsx:sync")
+    outcome = spawner(cmd, timeout)
+    log(f"resume-sync-pending result: {finding['repo_name']} {spec_id} "
+        f"exit={outcome.exit_code}")
+    return {
+        "repo": finding["repo_name"], "spec_id": spec_id,
+        "exit_code": outcome.exit_code,
+    }
+
+
+def resume_sync_pending(
+    repos_root: Path,
+    go_repo: Optional[str],
+    agent: str,
+    timeout: int,
+    spawner: Callable[[List[str], int], SpawnOutcome],
+    log: Callable[[str], None],
+) -> List[Dict[str, Any]]:
+    """Resume every sync-pending spec found under `repos_root` by spawning
+    `/opsx:sync <spec_id>`. Best-effort: a spec whose repo has since gone
+    away is silently skipped by find_sync_pending_specs, and one spec's sync
+    failing does not stop the others. Thin wrapper over sweep_remediations,
+    restricted to this row's key."""
+    return sweep_remediations(
+        repos_root, go_repo, agent, timeout, spawner, log,
+        keys=["sync_pending"],
+    )["sync_pending"]
+
+
 def _resume_via_full_real(
     finding: Dict[str, Any],
     agent: str,
