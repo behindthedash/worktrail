@@ -542,6 +542,16 @@ def build_full_real_resume_command(repo: Path, spec_rel: str, base: str, agent: 
             "--spec", spec_rel, "--base", base, "--agent", agent]
 
 
+def build_sync_command(agent: str, repo: Path, spec_id: str) -> List[str]:
+    """A sync-pending finding needs `/opsx:sync` re-dispatched against the
+    spec, not a full-real resume -- unlike verify-pending/quarantine, there is
+    no interrupted worker fan-out to continue. `--write` applies the sync
+    rather than just previewing it."""
+    return ["worktrail-skill-dispatch", "--agent", agent,
+            "--skill", "opsx:sync", "--args", spec_id,
+            "--cwd", str(repo), "--write"]
+
+
 def _resume_via_full_real(
     finding: Dict[str, Any],
     agent: str,
