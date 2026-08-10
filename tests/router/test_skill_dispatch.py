@@ -22,6 +22,30 @@ class SkillDispatchTests(unittest.TestCase):
         self.assertIn("Use the installed skill 'worktrail-sdd-workflow'", command[-1])
         self.assertNotIn("claude", command)
 
+    def test_codex_receives_explicit_additional_writable_dirs(self):
+        command = skill_dispatch.build_command(
+            "codex",
+            "worktrail-sdd-workflow",
+            "route:C",
+            cwd="/repo",
+            add_dirs=("/runs", "/repo-worktrees"),
+        )
+        self.assertEqual(
+            command[
+                command.index("--add-dir") : command.index("--model")
+                if "--model" in command else -1
+            ],
+            ["--add-dir", "/runs", "--add-dir", "/repo-worktrees"],
+        )
+
+    def test_additional_writable_dirs_are_not_added_to_other_providers(self):
+        for agent in ("claude", "opencode"):
+            with self.subTest(agent=agent):
+                command = skill_dispatch.build_command(
+                    agent, "worktrail-sdd-workflow", add_dirs=("/runs",)
+                )
+                self.assertNotIn("--add-dir", command)
+
     def test_opencode_preserves_opencode_binary(self):
         command = skill_dispatch.build_command("opencode", "worktrail-sdd-workflow", "route:E")
         self.assertEqual(command[:4], ["opencode", "run", "--format", "json"])
@@ -42,7 +66,10 @@ class SkillDispatchTests(unittest.TestCase):
     def test_default_cli_executes_the_selected_provider(self, run):
         run.return_value.returncode = 0
         self.assertEqual(
-            skill_dispatch.main(["--agent", "codex", "--skill", "x:y", "--args", "route:E"]), 0
+            skill_dispatch.main([
+                "--agent", "codex", "--skill", "x:y", "--args", "route:E",
+                "--codex-home", "/tmp/worktrail-codex-test",
+            ]), 0
         )
         self.assertEqual(run.call_args.args[0][0], "codex")
         self.assertTrue(run.call_args.kwargs["check"] is False)

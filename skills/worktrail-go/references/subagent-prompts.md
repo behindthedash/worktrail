@@ -36,6 +36,10 @@ Codex receives an explicit installed-skill instruction. It never silently switch
 providers. When the nested Codex app-server cannot write its normal state directory,
 set `WORKTRAIL_CODEX_HOME` to a persistent writable directory or pass
 `--codex-home <path>`; the adapter applies that override only to the Codex child.
+For a Codex child running sdd-workflow, also pass repeatable `--add-dir` values
+for the policy's run-record directory and `${REPO}-worktrees`, because
+`workspace-write` otherwise only covers the child `--cwd`. Keep those roots
+narrow; never add the whole home directory.
 
 ### `go_seed.py` CLI contract
 

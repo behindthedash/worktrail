@@ -518,7 +518,12 @@ session), run `worktrail-skill-dispatch` with the resolved `--agent`, `--skill`,
 files (D/F/G/H) — `--write` values. Without `--write`, a headless claude/opencode
 child has no channel to answer the permission prompts sdd-workflow's own file
 edits and commits require and stalls or fails partway through; codex needs
-nothing extra here (`-s workspace-write` is unconditional). It executes that
+no approval flag beyond `-s workspace-write`, but `workspace-write` is scoped to
+the child `--cwd`. For a Codex child, also pass the policy's run-record directory
+and the sibling-worktree directory as repeatable `--add-dir` values, for example:
+`--add-dir "$HOME/.go/runs" --add-dir "${REPO}-worktrees"`. These are the
+minimum additional roots required for sdd-workflow to claim its run and create
+its sibling worktrees; do not grant a broad home-directory root. It executes that
 same provider without shell interpolation and never silently falls back to a
 different provider. **Verify the outcome from the run record, not the return
 code** — same rule as `#openspec-authoring`: assert `$RUN`'s `finish` entry
