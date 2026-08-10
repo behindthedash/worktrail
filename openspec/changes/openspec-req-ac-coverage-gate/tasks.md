@@ -1,6 +1,6 @@
 ## 1. Requirement-coverage module
 
-- [ ] 1.1 Create `src/worktrail/conductor/req_coverage.py` implementing, per
+- [x] 1.1 Create `src/worktrail/conductor/req_coverage.py` implementing, per
       design D1/D3/D4: parsing of `### Requirement: <Name>` headers under
       `## ADDED Requirements` / `## MODIFIED Requirements` (never `## REMOVED
       Requirements`) across a change directory's `specs/**/spec.md` files;
