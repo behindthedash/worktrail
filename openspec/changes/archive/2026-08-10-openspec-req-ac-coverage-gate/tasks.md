@@ -1,6 +1,6 @@
 ## 1. Requirement-coverage module
 
-- [ ] 1.1 Create `src/worktrail/conductor/req_coverage.py` implementing, per
+- [x] 1.1 Create `src/worktrail/conductor/req_coverage.py` implementing, per
       design D1/D3/D4, each on its own line so the name stays intact for the
       gate's own name-presence match:
       - **Declared Requirement Discovery**: parsing of `### Requirement:
