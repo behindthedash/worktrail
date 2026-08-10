@@ -20,6 +20,7 @@ from worktrail.drain.drain import (
     acquire_lock,
     build_command,
     build_full_real_resume_command,
+    build_sync_command,
     capacity_gated,
     claimed_brief_ids,
     classify_outcome,
@@ -29,12 +30,14 @@ from worktrail.drain.drain import (
     ensure_pr_risk_label,
     find_resumable_quarantines,
     find_stale_bookkeeping_specs,
+    find_sync_pending_specs,
     find_verify_pending_specs,
     newest_run_record,
     parse_run_record,
     release_lock,
     resolve_spec_rel,
     resume_quarantined_budget_exhausted,
+    resume_sync_pending,
     resume_verify_pending,
     select_available_agent,
     sweep_remediations,
@@ -1198,6 +1201,113 @@ def test_find_verify_pending_specs_go_repo_filter(tmp_path):
     assert [f["repo_name"] for f in found] == ["repo-b"]
 
 
+# ---------------------------------------------------------------------------
+# Sync-pending sweep
+
+
+def _write_sync_pending_spec(repo: Path, spec_id: str) -> None:
+    """A spec with all tasks completed and no knowledge-graph.json (sync never
+    ran) and no run journal at all -- the fixture shape dashboard.detect_stage
+    requires to label a spec "sync-pending" (mirrors
+    tests/router/test_dashboard.py's test_completed_but_unsynced_is_sync_pending)."""
+    spec_dir = repo / "docs" / "specs" / spec_id
+    tasks_dir = spec_dir / "tasks"
+    tasks_dir.mkdir(parents=True)
+    (spec_dir / "2026-05-29--feature.md").write_text(
+        f"# Feature Specification: X\n\n**ID**: {spec_id}\n\n## Summary\nstuff\n"
+    )
+    (tasks_dir / "TASK-001.md").write_text(
+        "---\nid: TASK-001\nstatus: completed\nkind: impl\ndependencies: []\n---\n# TASK-001\n"
+    )
+
+
+def test_find_sync_pending_specs_discovers_across_repos(tmp_path):
+    repo_a = _make_repo(tmp_path, "repo-a")
+    _write_sync_pending_spec(repo_a, "spec-a")
+    repo_b = _make_repo(tmp_path, "repo-b")  # clean repo, nothing sync-pending
+    found = find_sync_pending_specs(tmp_path)
+    assert [f["repo_name"] for f in found] == ["repo-a"]
+    assert found[0]["spec_id"] == "spec-a"
+    assert found[0]["spec_rel"] == "docs/specs/spec-a"
+    assert found[0]["repo"] == repo_a
+
+
+def test_find_sync_pending_specs_excludes_non_sync_pending_stages(tmp_path):
+    repo = _make_repo(tmp_path, "repo-a")
+    _write_ready_to_implement_spec(repo, "spec-a")
+    assert find_sync_pending_specs(tmp_path) == []
+
+
+def test_find_sync_pending_specs_skips_spec_with_no_resolvable_path(tmp_path, monkeypatch):
+    repo = _make_repo(tmp_path, "repo-a")
+    # dashboard.scan reports a sync-pending row for "spec-a", but no
+    # docs/specs/spec-a or openspec/changes/spec-a folder exists on disk --
+    # e.g. the spec was since deleted/archived after the scan ran.
+    monkeypatch.setattr(
+        drain.dashboard, "scan",
+        lambda specs_root: [{"id": "spec-a", "stage": "sync-pending"}],
+    )
+    assert find_sync_pending_specs(tmp_path) == []
+
+
+def test_find_sync_pending_specs_go_repo_filter(tmp_path):
+    repo_a = _make_repo(tmp_path, "repo-a")
+    _write_sync_pending_spec(repo_a, "spec-a")
+    repo_b = _make_repo(tmp_path, "repo-b")
+    _write_sync_pending_spec(repo_b, "spec-b")
+    found = find_sync_pending_specs(tmp_path, go_repo="repo-b")
+    assert [f["repo_name"] for f in found] == ["repo-b"]
+
+
+def test_resume_sync_pending_invokes_skill_dispatch_once_per_spec(tmp_path):
+    repo = _make_repo(tmp_path, "repo-a")
+    _write_sync_pending_spec(repo, "spec-a")
+    calls = []
+
+    def spawner(cmd, timeout):
+        calls.append(cmd)
+        return SpawnOutcome(0)
+
+    logs = []
+    result = resume_sync_pending(
+        tmp_path, None, "claude", 60, spawner, logs.append)
+    assert len(calls) == 1
+    assert calls[0] == ["worktrail-skill-dispatch", "--agent", "claude",
+                         "--skill", "opsx:sync", "--args", "spec-a",
+                         "--cwd", str(repo), "--write"]
+    assert result == [{"repo": "repo-a", "spec_id": "spec-a", "exit_code": 0}]
+    assert any("resume-sync-pending" in line for line in logs)
+
+
+def test_resume_sync_pending_no_hits_is_noop(tmp_path):
+    _make_repo(tmp_path, "repo-a")  # no sync-pending spec at all
+    calls = []
+    result = resume_sync_pending(
+        tmp_path, None, "claude", 60, lambda c, t: calls.append(c), lambda _l: None)
+    assert calls == []
+    assert result == []
+
+
+def test_resume_sync_pending_one_failure_does_not_block_others(tmp_path):
+    repo_a = _make_repo(tmp_path, "repo-a")
+    _write_sync_pending_spec(repo_a, "spec-a")
+    repo_b = _make_repo(tmp_path, "repo-b")
+    _write_sync_pending_spec(repo_b, "spec-b")
+    calls = []
+
+    def spawner(cmd, timeout):
+        calls.append(cmd)
+        return SpawnOutcome(1 if len(calls) == 1 else 0)
+
+    result = resume_sync_pending(
+        tmp_path, None, "claude", 60, spawner, lambda _l: None)
+    assert len(calls) == 2
+    assert result == [
+        {"repo": "repo-a", "spec_id": "spec-a", "exit_code": 1},
+        {"repo": "repo-b", "spec_id": "spec-b", "exit_code": 0},
+    ]
+
+
 def test_resume_verify_pending_invokes_full_real_once_per_spec(tmp_path):
     repo = _make_repo(tmp_path, "repo-a")
     _write_verify_pending_spec(
@@ -1258,6 +1368,15 @@ def test_build_full_real_resume_command_has_no_fresh_flag():
     assert cmd == ["worktrail-live", "full-real", "--repo", "/repo",
                    "--spec", "docs/specs/some-spec", "--base", "dev", "--agent", "claude"]
     assert "--fresh" not in cmd  # resume=True is full-real's own default
+
+
+def test_build_sync_command_uses_opsx_sync_dispatch():
+    repo = Path("/tmp/repo-a")
+    assert build_sync_command("claude", repo, "spec-a") == [
+        "worktrail-skill-dispatch", "--agent", "claude",
+        "--skill", "opsx:sync", "--args", "spec-a",
+        "--cwd", str(repo), "--write",
+    ]
 
 
 def test_resume_quarantined_budget_exhausted_invokes_full_real_once_per_spec(tmp_path):
@@ -1413,6 +1532,7 @@ def test_drain_sweeps_verify_pending_at_pre_and_post_loop_points(tmp_path, monke
     assert "resumed_quarantines" in summary
     assert "resumed_verify_pending" in summary
     assert "resumed_stale_bookkeeping" in summary
+    assert "resumed_sync_pending" in summary
 
 
 # ---------------------------------------------------------------------------
@@ -1502,7 +1622,10 @@ def test_remediation_table_excludes_orchestrator_stuck():
     keys = {row.key for row in REMEDIATION_TABLE}
     assert "orchestrator_stuck" not in keys
     assert "fanout_failed" not in keys
-    assert keys == {"quarantined_budget_exhausted", "verify_pending", "stale_bookkeeping"}
+    assert keys == {
+        "quarantined_budget_exhausted", "verify_pending",
+        "stale_bookkeeping", "sync_pending",
+    }
 
 
 # ---------------------------------------------------------------------------
