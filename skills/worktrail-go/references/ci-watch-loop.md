@@ -6,6 +6,20 @@
 > the only valid terminal transitions. "Tests passed locally" is not a terminal
 > state — run the loop.
 
+**Intermediate-checkpoint variant.** Some routes open a PR mid-run without
+closing the run record at that point — e.g. Route C's docs-only spec PR when
+the run continues inline into Route D (`routes.md` §C: no new `finish()`
+happens between the spec PR and the implementation phase). Invoked as an
+intermediate checkpoint, run every step below unchanged with one
+substitution confined to case 1 ("All pass"): replace each
+`run_record.py finish ...` action with
+`run_record.py append "$RUN" decisions "<the same outcome text>"`, then
+return control to the calling route instead of stopping. Cases 2–5 are
+unchanged in both modes — a transient-infra or code-defect retry already
+loops locally without finishing, and a product-decision or iteration-ceiling
+failure still ends the run via `finish(...)`, because the calling route
+cannot safely continue past an unresolved intermediate PR either way.
+
 Enter this loop on every PR-owning route before closing the run record. Track
 patch iterations with `PATCH_ITER=0`; ceiling is **5**. Track `$PUSH_SHA` (unset
 until a fixup is pushed) for the stale-head merge guard in case 1.
