@@ -215,32 +215,32 @@ For every PR produced:
    PR #2133 accumulated 9 unresolved `security-review-llm` threads across 4
    rounds of already-addressed findings before a human noticed and
    replied+resolved each one by hand. Record `merge_decision` +
-   `merge_result`, then
-   `run_record.py finish --status <state> [--pr <url>]` and, whenever a PR
-   was produced, immediately run `worktrail-ensure-pr-label --run "$RUN"` --
-   the same post-hoc `go:risk-*` correction drain.py applies after its own
-   spawned one-shots (`router/pr_labels.py`), reusing the risk level and PR
-   URL the run record already carries (no new plumbing). This is what closes
-   the gap for interactive and Codex in-session dispatch, which never spawn a
-   subprocess for go's Phase 7 `poll_run.py` to observe -- headless
-   Claude/OpenCode workers get the identical correction there instead. Then
-   report the completion state + PR link + deferred handoffs as the final
-   line.
+   `merge_result`, then `run_record.py finish --status <state> --pr <url>`.
+   **The `go:risk-*` label correction is code-enforced inside `finish` itself**
+   (`router/pr_labels.py`'s `ensure_pr_risk_label`, called unconditionally
+   whenever the run record carries a `pull_request`, keyed off its own
+   `repository`/`risk_level` fields) -- there is no longer a separate
+   `worktrail-ensure-pr-label` step to remember here or on any other
+   PR-producing route. The standalone `worktrail-ensure-pr-label` CLI still
+   exists for the dispatch surfaces that observe run-record completion from
+   *outside* this process and never call `finish` themselves -- go's own
+   Phase 7 `poll_run.py` poll-exit path and `drain.py`'s queue-drain loop, for
+   headless Claude/OpenCode workers whose `finish` call happens in a spawned
+   subprocess this session doesn't control. Then report the completion state +
+   PR link + deferred handoffs as the final line.
 
 Only routes with non-PR completion states (for example
 `planned_ready_for_implementation` or `investigation_complete`) may stop
-without commit/push/PR creation. **But if a non-PR-completion run produces a
-PR anyway** — e.g. Route I committing its investigation note as a PR per §I —
-`worktrail-ensure-pr-label --run "$RUN"` is still mandatory, run immediately
-after `run_record.py finish --pr <url> ...`, exactly as item 4 above requires
-for PR-producing routes. The correction keys off `$RUN`'s own `pull_request`
-field (a no-op when unset), not the route or completion state, so this is not
-an extra step to remember per route — it is the same step 4 call, made
-unconditional on completion state. Gap observed live: datalena PR #2228
-(Route I, `investigation_complete`) merged a docs-only investigation note
-with no `go:risk-*` label because this instruction was previously reachable
-only from the PR-producing-route branch above, and a human had to apply the
-label by hand before `CI: Auto-merge on open` would arm.
+without commit/push/PR creation. If a non-PR-completion run produces a PR
+anyway — e.g. Route I committing its investigation note as a PR per §I — the
+same `run_record.py finish --pr <url> ...` call above applies the correction
+automatically; it keys off `$RUN`'s own `pull_request` field (a no-op when
+unset), not the route or completion state, so there is nothing extra to do
+here either. Gap observed live before this was code-enforced: datalena PR
+#2228 (Route I, `investigation_complete`) merged a docs-only investigation
+note with no `go:risk-*` label because the correction was then only a prose
+instruction reachable from the PR-producing-route branch above, and a human
+had to apply the label by hand before `CI: Auto-merge on open` would arm.
 
 ### Artifact policy
 
