@@ -88,6 +88,91 @@ class TestMalformedJournal:
         assert "list" in findings[0]["detail"]
 
 
+_CORRUPTED_RECORD_TEXT = (
+    "run_id: go-corrupted\n"
+    "request_summary: fix the thing across a line that\n"
+    "  wraps unexpectedly without quoting\n"
+)
+
+
+class TestMalformedRunRecord:
+    """run_record.py's directory scans (active-conflicts, prune) already skip
+    a malformed record and keep going -- this is the dashboard-visibility half
+    of the same fix: the degraded file should show up in the existing
+    Stranded runs section instead of only ever surfacing in a scan's
+    `warnings` field.
+    """
+
+    def test_malformed_record_is_flagged(self, tmp_path):
+        repo = tmp_path / "projects" / "myapp"
+        repo.mkdir(parents=True)
+        runs_dir = tmp_path / "runs"
+        run_dir = runs_dir / "myapp"
+        run_dir.mkdir(parents=True)
+        (run_dir / "go-corrupted.yaml").write_text(_CORRUPTED_RECORD_TEXT)
+
+        findings = journal_selfcheck.check_repo(repo, run_record_dir=runs_dir)["findings"]
+
+        assert len(findings) == 1
+        assert findings[0]["kind"] == "malformed-run-record"
+        assert findings[0]["spec_id"] == "go-corrupted"
+        assert "go-corrupted.yaml" in findings[0]["journal"]
+
+    def test_canonical_records_are_clean(self, tmp_path):
+        repo = tmp_path / "projects" / "myapp"
+        repo.mkdir(parents=True)
+        runs_dir = tmp_path / "runs"
+        run_dir = runs_dir / "myapp"
+        run_dir.mkdir(parents=True)
+        run_record._save(
+            run_dir / "go-y.yaml",
+            {"run_id": "go-y", "repository": "r", "decisions": [], "final_status": None},
+        )
+
+        assert journal_selfcheck.check_repo(repo, run_record_dir=runs_dir)["findings"] == []
+
+    def test_no_run_record_dir_is_clean(self, tmp_path):
+        repo = tmp_path / "projects" / "myapp"
+        repo.mkdir(parents=True)
+
+        findings = journal_selfcheck.check_repo(
+            repo, run_record_dir=tmp_path / "never-created"
+        )["findings"]
+
+        assert findings == []
+
+    def test_defaults_to_env_override_dir(self, tmp_path, monkeypatch):
+        repo = tmp_path / "projects" / "myapp"
+        repo.mkdir(parents=True)
+        runs_dir = tmp_path / "custom-runs"
+        run_dir = runs_dir / "myapp"
+        run_dir.mkdir(parents=True)
+        (run_dir / "go-corrupted.yaml").write_text(_CORRUPTED_RECORD_TEXT)
+        monkeypatch.setenv("GO_RUN_RECORD_DIR", str(runs_dir))
+
+        findings = journal_selfcheck.check_repo(repo)["findings"]
+
+        assert len(findings) == 1
+        assert findings[0]["kind"] == "malformed-run-record"
+
+    def test_composes_with_journal_findings_for_the_same_repo(self, tmp_path):
+        repo = _repo_with_journal(
+            tmp_path, "008-x",
+            {"integrate_complete": True, "pending_tail_tasks": ["3.1"], "groups": {}},
+        )
+        runs_dir = tmp_path / "runs"
+        run_dir = runs_dir / "myapp"
+        run_dir.mkdir(parents=True)
+        (run_dir / "go-corrupted.yaml").write_text(_CORRUPTED_RECORD_TEXT)
+
+        kinds = {
+            f["kind"]
+            for f in journal_selfcheck.check_repo(repo, run_record_dir=runs_dir)["findings"]
+        }
+
+        assert kinds == {"stranded-tail", "malformed-run-record"}
+
+
 class TestRunRecordHandEditGuard:
     """run_record._load must fail LOUD (with a recovery hint) on a record
     rewritten outside its own renderer, instead of parsing garbage keys and

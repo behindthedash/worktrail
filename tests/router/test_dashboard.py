@@ -931,6 +931,29 @@ class ReposScan(unittest.TestCase):
             self.assertIn("🚩 Quarantined groups (1): repo-a (001-x/group-1", out)
             self.assertIn("→ review", out)
 
+    def test_run_record_dir_threaded_into_journal_findings(self):
+        # scan_repos's own run_record_dir param must reach journal_selfcheck
+        # so a malformed ~/.go/runs/<repo>/*.yaml record shows up in
+        # journal_findings (and hence the "Stranded runs" dashboard section)
+        # without the caller re-deriving the path a second way.
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp)
+            self._repo(parent, "repo-a")
+            run_record_dir = parent / "runs"
+            run_dir = run_record_dir / "repo-a"
+            run_dir.mkdir(parents=True)
+            (run_dir / "go-corrupted.yaml").write_text(
+                "run_id: go-corrupted\n"
+                "request_summary: fix the thing across a line that\n"
+                "  wraps unexpectedly without quoting\n"
+            )
+            rows = dashboard.scan_repos(parent, run_record_dir=run_record_dir)
+            ra = next(r for r in rows if r["repo"] == "repo-a")
+            self.assertEqual(len(ra["journal_findings"]), 1)
+            self.assertEqual(ra["journal_findings"][0]["kind"], "malformed-run-record")
+            out = dashboard.render_dashboard(rows, None, [], [])
+            self.assertIn("🚩 Stranded runs (1): repo-a (go-corrupted: malformed-run-record)", out)
+
     def test_quarantine_flags_line_omitted_when_no_findings(self):
         # No repo has a QUARANTINED group anywhere -- the rendered dashboard
         # must not gain a "Quarantined groups" line at all.

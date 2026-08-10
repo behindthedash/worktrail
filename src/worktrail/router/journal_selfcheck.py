@@ -16,6 +16,14 @@ production incidents that were only caught by an operator noticing manually:
   means something else rewrote it (observed 2026-08-08: a worker hand-edited
   a state file with a generic YAML writer). Skipping it silently would make
   every downstream reader disagree about run state.
+- **malformed-run-record** — a `~/.go/runs/<repo>/*.yaml` run record (a
+  different artifact from the journal above) fails run_record.py's own
+  parser for the same reason: a hand-edit or generic-YAML rewrite. Unlike
+  the journal case, `run_record.py`'s own directory-wide scans (used by the
+  mandatory `#active-conflicts-scan` claim gate) already skip these and keep
+  going rather than aborting -- this finding exists purely so the dashboard
+  surfaces the degraded file instead of an operator only discovering it via
+  a scan's `warnings` field days later.
 
 Passive detector, not a gate: it flags signals for a human/agent to judge,
 matching `quarantine_selfcheck.py`'s posture (which owns QUARANTINED-group
@@ -28,9 +36,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+
+from .run_record import _load_lenient as _load_run_record_lenient
+
+_DEFAULT_RUN_RECORD_DIR = Path.home() / ".go" / "runs"
 
 
 def _runlock_held(lock_path: Path) -> bool:
@@ -60,15 +73,44 @@ def _runlock_held(lock_path: Path) -> bool:
         fh.close()
 
 
-def check_repo(repo: Path) -> Dict[str, Any]:
-    """Scan `<repo>-worktrees/run-*.json` for stranded-run invariant violations.
+def _malformed_run_record_findings(
+    repo: Path, run_record_dir: Optional[Path]
+) -> List[Dict[str, Any]]:
+    """Findings for `run_record_dir/<repo-name>/*.yaml` files that fail
+    run_record.py's own parser. Mirrors `load_recent_runs()`'s dir-resolution
+    (env override, then `~/.go/runs`) so both readers agree on where records
+    live.
+    """
+    if run_record_dir is None:
+        override = os.environ.get("GO_RUN_RECORD_DIR")
+        run_record_dir = Path(override).expanduser() if override else _DEFAULT_RUN_RECORD_DIR
+    run_dir = run_record_dir / repo.resolve().name
+    if not run_dir.is_dir():
+        return []
+    findings: List[Dict[str, Any]] = []
+    for record_file in sorted(run_dir.glob("*.yaml")):
+        _record, warning = _load_run_record_lenient(record_file)
+        if warning is None:
+            continue
+        findings.append({
+            "kind": "malformed-run-record",
+            "spec_id": record_file.stem,
+            "journal": str(record_file),
+            "detail": warning,
+        })
+    return findings
+
+
+def check_repo(repo: Path, run_record_dir: Optional[Path] = None) -> Dict[str, Any]:
+    """Scan `<repo>-worktrees/run-*.json` for stranded-run invariant violations,
+    plus `run_record_dir/<repo-name>/*.yaml` for malformed run records.
 
     Returns {"findings": [{"kind", "spec_id", "journal", "detail"}, ...]}.
     A journal whose RunLock is currently held belongs to a live run and is
     never flagged — "stranded" means nobody is driving it.
     """
     repo = Path(repo)
-    findings: List[Dict[str, Any]] = []
+    findings: List[Dict[str, Any]] = list(_malformed_run_record_findings(repo, run_record_dir))
     wt_base = repo.parent / f"{repo.name}-worktrees"
     if not wt_base.is_dir():
         return {"findings": findings}
@@ -118,9 +160,12 @@ def check_repo(repo: Path) -> Dict[str, Any]:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="run-journal invariant detector")
     parser.add_argument("--repo", required=True)
+    parser.add_argument("--run-record-dir", default=None,
+                         help="defaults to $GO_RUN_RECORD_DIR or ~/.go/runs")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
-    result = check_repo(Path(args.repo))
+    run_record_dir = Path(args.run_record_dir).expanduser() if args.run_record_dir else None
+    result = check_repo(Path(args.repo), run_record_dir=run_record_dir)
     if args.json:
         print(json.dumps(result, indent=2))
     else:
