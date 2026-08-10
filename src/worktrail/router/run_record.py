@@ -160,6 +160,18 @@ class RunRecordFormatError(ValueError):
     """The on-disk record was mutated outside run_record.py's own renderer."""
 
 
+def _load_lenient(path: Path) -> tuple[Dict[str, Any] | None, str | None]:
+    """`_load()` without the raise -- for directory-wide scans where one bad
+    file must never abort every other record's read. Returns `(record, None)`
+    on success or `(None, warning)` on a malformed file; the caller decides
+    whether to skip and surface the warning.
+    """
+    try:
+        return _load(path), None
+    except RunRecordFormatError as exc:
+        return None, str(exc)
+
+
 def _load(path: Path) -> Dict[str, Any]:
     record: Dict[str, Any] = {}
     current: str | None = None
@@ -479,23 +491,34 @@ def _is_stale(record: Dict[str, Any], repo_dir: Path, base_branch: str) -> bool:
 
 def _active_conflicts(
     repo_dir: Path, repo_root: Path, specification: str, exclude: Path | None
-) -> Dict[str, List[Dict[str, Any]]]:
+) -> Dict[str, List[Any]]:
     """Other non-terminal run records under `repo_dir` targeting `specification`,
-    partitioned into `{"live": [...], "stale": [...]}` via `_is_stale()`.
+    partitioned into `{"live": [...], "stale": [...], "warnings": [...]}` via
+    `_is_stale()`.
 
     `repo_root` is the actual git repository (for `_is_stale()`'s `git cat-file`
     check), distinct from `repo_dir` (the run-records directory for this repo).
     Each record's own `base_branch` is used — never a single value shared
     across records, since concurrent runs may target different base branches.
     A record with no `base_branch` is treated as live (can't check staleness).
+
+    A malformed record (hand-edited or written by a generic YAML tool, see
+    `RunRecordFormatError`) is skipped rather than aborting the whole scan --
+    this is the mandatory `#active-conflicts-scan` hard-stop gate, and one bad
+    file must never silently disable it for every other run. Skipped files are
+    reported in `warnings`, never dropped without a trace.
     """
     live: List[Dict[str, Any]] = []
     stale: List[Dict[str, Any]] = []
+    warnings: List[str] = []
     if repo_dir.is_dir():
         for path in sorted(repo_dir.glob("*.yaml")):
             if exclude and path.resolve() == exclude:
                 continue
-            record = _load(path)
+            record, warning = _load_lenient(path)
+            if warning is not None:
+                warnings.append(warning)
+                continue
             if record.get("final_status") is not None:
                 continue
             if record.get("specification") != specification:
@@ -510,7 +533,7 @@ def _active_conflicts(
             base_branch = record.get("base_branch")
             is_stale = bool(base_branch) and _is_stale(record, repo_root, base_branch)
             (stale if is_stale else live).append(entry)
-    return {"live": live, "stale": stale}
+    return {"live": live, "stale": stale, "warnings": warnings}
 
 
 def cmd_active_conflicts(args: argparse.Namespace) -> int:
@@ -847,12 +870,16 @@ def cmd_claim(args: argparse.Namespace) -> int:
     repo_root = Path(record.get("repository") or repo_dir)
     conflicts = _active_conflicts(repo_dir, repo_root, args.specification, run_path.resolve())
     live_conflicts = conflicts.get("live") or []
+    scan_warnings = conflicts.get("warnings") or []
     if live_conflicts:
         os.close(fd)
         lock_path.unlink(missing_ok=True)
         if remote_project_repo_dir is not None and remote_ref is not None:
             _delete_remote_claim(remote_project_repo_dir, remote_ref)
-        print(json.dumps({"status": "conflict", "conflicts": live_conflicts}))
+        print(json.dumps({
+            "status": "conflict", "conflicts": live_conflicts,
+            **({"warnings": scan_warnings} if scan_warnings else {}),
+        }))
         return 1
 
     lock_payload: Dict[str, Any] = {
@@ -866,7 +893,10 @@ def cmd_claim(args: argparse.Namespace) -> int:
         f.write(json.dumps(lock_payload))
     record["specification"] = args.specification
     _save(run_path, record)
-    print(json.dumps({"status": "claimed", "specification": args.specification}))
+    print(json.dumps({
+        "status": "claimed", "specification": args.specification,
+        **({"warnings": scan_warnings} if scan_warnings else {}),
+    }))
     return 0
 
 
@@ -888,8 +918,15 @@ def _prune_repo_dir(
     repo_dir: Path, keep_count: int, keep_days: int, dry_run: bool
 ) -> Dict[str, Any]:
     entries: List[Dict[str, Any]] = []
+    warnings: List[str] = []
     for path in sorted(repo_dir.glob("*.yaml")):
-        record = _load(path)
+        record, warning = _load_lenient(path)
+        if warning is not None:
+            # Skip, never delete: retention math can't be computed without a
+            # parseable record, and the hand-edit hint tells operators to keep
+            # the file as an audit artifact -- pruning it would contradict that.
+            warnings.append(warning)
+            continue
         entries.append({
             "path": path,
             "started_ts": _record_started_ts(record, path),
@@ -910,7 +947,12 @@ def _prune_repo_dir(
         for e in entries:
             if e["path"] not in keep:
                 e["path"].unlink()
-    return {"repo": repo_dir.name, "pruned": pruned, "kept": len(entries) - len(pruned)}
+    return {
+        "repo": repo_dir.name,
+        "pruned": pruned,
+        "kept": len(entries) - len(pruned),
+        "warnings": warnings,
+    }
 
 
 def cmd_prune(args: argparse.Namespace) -> int:

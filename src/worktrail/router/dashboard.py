@@ -1534,7 +1534,7 @@ def _detect_for_repo(args: tuple) -> tuple:
     return (repo_key, _safe_detect_stage(spec_dir))
 
 
-def scan_repos(parent: Path) -> List[Dict[str, Any]]:
+def scan_repos(parent: Path, run_record_dir: Optional[Path] = None) -> List[Dict[str, Any]]:
     """One row per candidate repo under `parent`, repos with active specs first.
 
     Scans each repo's BASE-BRANCH `docs/specs` only -- worktree spec state is
@@ -1574,6 +1574,12 @@ def scan_repos(parent: Path) -> List[Dict[str, Any]]:
     failed, so these are safely resumable with a plain re-run and are kept
     out of `quarantine_findings`' human-triage list.
 
+    `journal_findings` is `journal_selfcheck.check_repo()`'s signals -- run
+    journal invariant violations (stranded-tail, malformed-journal) plus
+    malformed `run_record_dir/<repo>/*.yaml` records (empty = clean).
+    `run_record_dir` is threaded through so both readers agree on where
+    records live (env override, then `~/.go/runs`, same as `load_recent_runs`).
+
     detect_stage calls are parallelised with a flat ThreadPoolExecutor across
     all spec dirs in all repos -- no nested pools, one thread per spec dir.
     """
@@ -1610,7 +1616,7 @@ def scan_repos(parent: Path) -> List[Dict[str, Any]]:
             quarantine_resumable = _qr["resumable"]
         journal_findings: List[Dict[str, Any]] = []
         if _journal_check_repo is not None:
-            journal_findings = _journal_check_repo(repo)["findings"]
+            journal_findings = _journal_check_repo(repo, run_record_dir=run_record_dir)["findings"]
         repo_info[repo_key] = {
             "name": repo.name,
             "path": str(repo),
@@ -1666,6 +1672,7 @@ def scan_repos(parent: Path) -> List[Dict[str, Any]]:
                 "drift_findings": info["drift_findings"],
                 "quarantine_findings": info["quarantine_findings"],
                 "quarantine_resumable": info["quarantine_resumable"],
+                "journal_findings": info["journal_findings"],
                 "backlog": len(backlog_ids),
                 "backlog_ids": backlog_ids,
                 "worktrees": info["worktrees"],
@@ -2457,7 +2464,7 @@ def main(argv=None) -> int:
         log_auto_pick_miss(auto_pick, len(queue_briefs), repo_filter=args.auto_repo)
 
     if args.repos:
-        repo_rows = scan_repos(Path(args.repos))
+        repo_rows = scan_repos(Path(args.repos), run_record_dir=run_record_dir)
         for row in repo_rows:
             row["recent_runs"] = load_recent_runs(Path(row["path"]), runs_dir=run_record_dir)
         backlog_total = sum(r.get("backlog", 0) for r in repo_rows)

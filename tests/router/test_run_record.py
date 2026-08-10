@@ -461,7 +461,7 @@ class TestActiveConflicts(unittest.TestCase):
 
         results = _active_conflicts(self.tmp, specification="spec-a")
 
-        self.assertEqual(results, {"live": [], "stale": []})
+        self.assertEqual(results, {"live": [], "stale": [], "warnings": []})
 
     def test_exclude_omits_callers_own_record(self):
         mine = _start(self.tmp, request="my run")
@@ -469,7 +469,7 @@ class TestActiveConflicts(unittest.TestCase):
 
         results = _active_conflicts(self.tmp, specification="spec-a", exclude=mine["path"])
 
-        self.assertEqual(results, {"live": [], "stale": []})
+        self.assertEqual(results, {"live": [], "stale": [], "warnings": []})
 
     def test_missing_run_record_directory_returns_empty_list(self):
         empty_dir = tempfile.mkdtemp()
@@ -477,7 +477,31 @@ class TestActiveConflicts(unittest.TestCase):
         results = _active_conflicts(empty_dir, repo="/tmp/never-seen-repo",
                                      specification="spec-a")
 
-        self.assertEqual(results, {"live": [], "stale": []})
+        self.assertEqual(results, {"live": [], "stale": [], "warnings": []})
+
+    def test_malformed_sibling_record_is_skipped_not_fatal(self):
+        """Regression for the field incident this fix addresses: a hand-edited
+        run record used to make `_load` raise `RunRecordFormatError`, and
+        since the CLI called `_load` unconditionally on every `*.yaml` file in
+        the directory, the FIRST malformed file aborted the entire
+        `active-conflicts` scan -- silently disabling the mandatory
+        `#active-conflicts-scan` hard stop for every other run in the repo.
+        """
+        active = _start(self.tmp, request="active run")
+        main(["set", active["path"], "specification", "spec-a"])
+        corrupted = Path(self.tmp) / "fake-repo" / "go-corrupted.yaml"
+        corrupted.write_text(
+            "run_id: go-corrupted\n"
+            "request_summary: fix the thing across a line that\n"
+            "  wraps unexpectedly without quoting\n"
+        )
+
+        results = _active_conflicts(self.tmp, specification="spec-a")
+
+        self.assertEqual(len(results["live"]), 1)
+        self.assertEqual(results["live"][0]["run_id"], active["run_id"])
+        self.assertEqual(len(results["warnings"]), 1)
+        self.assertIn(str(corrupted), results["warnings"][0])
 
     def test_scan_is_read_only(self):
         res = _start(self.tmp, request="untouched run")
@@ -508,7 +532,7 @@ class TestActiveConflicts(unittest.TestCase):
                                     exclude=session_a["path"])
         scan_b = _active_conflicts(self.tmp, specification="spec-race",
                                     exclude=session_b["path"])
-        empty = {"live": [], "stale": []}
+        empty = {"live": [], "stale": [], "warnings": []}
         self.assertEqual(scan_a, empty, "session A's scan should see no conflict yet")
         self.assertEqual(scan_b, empty, "session B's scan should see no conflict yet")
 
@@ -599,14 +623,44 @@ class TestActiveConflictsPartitioning(unittest.TestCase):
             self.repo_dir, self.repo_root, "spec-a", Path(mine["path"]).resolve()
         )
 
-        self.assertEqual(result, {"live": [], "stale": []})
+        self.assertEqual(result, {"live": [], "stale": [], "warnings": []})
 
     def test_missing_run_record_directory_returns_empty_partitions(self):
         result = _active_conflicts_impl(
             Path(self.tmp) / "never-created", self.repo_root, "spec-a", None
         )
 
-        self.assertEqual(result, {"live": [], "stale": []})
+        self.assertEqual(result, {"live": [], "stale": [], "warnings": []})
+
+    def test_malformed_record_is_skipped_not_fatal(self):
+        """A hand-edited/generic-YAML record must never abort the scan for
+        every other run in the directory (the #active-conflicts-scan hard
+        stop this backs). It is skipped and reported in `warnings`, and a
+        live conflict on a DIFFERENT valid record is still detected.
+        """
+        live = _start(str(self.runs_dir), request="live run")
+        main(["set", live["path"], "specification", "spec-a"])
+        main(["set", live["path"], "base_branch", "main"])
+        main(["set", live["path"], "worktree", str(Path(self.tmp) / "still-here")])
+        (Path(self.tmp) / "still-here").mkdir()
+        main(["append", live["path"], "files_changed", "tracked.md"])
+
+        corrupted = self.repo_dir / "go-corrupted.yaml"
+        # Mirrors the field incident: an unquoted multi-line value wrapped
+        # across lines. The wrapped continuation has no top-level `key:`
+        # shape, so `_load` treats it as a new field whose name contains
+        # spaces -- rejected by `_FIELD_KEY_RE`, raising RunRecordFormatError.
+        corrupted.write_text(
+            "run_id: go-corrupted\n"
+            "request_summary: fix the thing across a line that\n"
+            "  wraps unexpectedly without quoting\n"
+        )
+
+        result = _active_conflicts_impl(self.repo_dir, self.repo_root, "spec-a", None)
+
+        self.assertEqual({e["run_id"] for e in result["live"]}, {live["run_id"]})
+        self.assertEqual(len(result["warnings"]), 1)
+        self.assertIn(str(corrupted), result["warnings"][0])
 
 
 def _reconcile(run_path, **over):
@@ -816,6 +870,27 @@ class TestClaim(unittest.TestCase):
         self.assertEqual(out["status"], "conflict")
         record_newcomer = _load(Path(newcomer["path"]))
         self.assertIsNone(record_newcomer["specification"])
+
+    def test_claim_succeeds_despite_a_malformed_sibling_record(self):
+        """Regression: a hand-edited/generic-YAML sibling record used to make
+        `claim`'s `_active_conflicts` scan raise and abort the whole call,
+        disabling the mandatory #active-conflicts-scan hard stop for the
+        entire repo until a human found and renamed the offending file.
+        """
+        session_a = _start(self.tmp, request="session A implement")
+        corrupted = Path(self.tmp) / "fake-repo" / "go-corrupted.yaml"
+        corrupted.write_text(
+            "run_id: go-corrupted\n"
+            "request_summary: fix the thing across a line that\n"
+            "  wraps unexpectedly without quoting\n"
+        )
+
+        rc, out = _claim(session_a["path"], specification="spec-a")
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(out["status"], "claimed")
+        self.assertEqual(len(out["warnings"]), 1)
+        self.assertIn(str(corrupted), out["warnings"][0])
 
 
 @pytest.fixture()
@@ -1140,6 +1215,31 @@ class TestPrune(unittest.TestCase):
     def test_rejects_negative_keep_values(self):
         with self.assertRaises(SystemExit):
             main(["prune", "--dir", self.tmp, "--keep-count", "-1"])
+
+    def test_malformed_record_is_skipped_and_never_pruned(self):
+        """A malformed record must not abort the scan (previously: the whole
+        `_load` call raised) and must not be silently deleted either -- it is
+        left in place as an audit artifact, per `_HAND_EDIT_HINT`, and
+        reported in `warnings` so an operator can find and recover it.
+        """
+        paths = [_start(self.tmp, request=f"run {i}")["path"] for i in range(2)]
+        for p in paths:
+            self._age(p, days_ago=90)
+        corrupted = Path(self.tmp) / "fake-repo" / "go-corrupted.yaml"
+        corrupted.write_text(
+            "run_id: go-corrupted\n"
+            "request_summary: fix the thing across a line that\n"
+            "  wraps unexpectedly without quoting\n"
+        )
+
+        result = _prune(self.tmp, keep_count=0, keep_days=0)
+
+        repo = result["repos"][0]
+        self.assertEqual(len(repo["pruned"]), 2)
+        self.assertNotIn(str(corrupted), repo["pruned"])
+        self.assertTrue(corrupted.exists())
+        self.assertEqual(len(repo["warnings"]), 1)
+        self.assertIn(str(corrupted), repo["warnings"][0])
 
 
 if __name__ == "__main__":
