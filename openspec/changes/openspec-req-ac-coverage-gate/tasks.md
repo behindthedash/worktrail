@@ -1,6 +1,6 @@
 ## 1. Requirement-coverage module
 
-- [x] 1.1 Create `src/worktrail/conductor/req_coverage.py` implementing, per
+- [ ] 1.1 Create `src/worktrail/conductor/req_coverage.py` implementing, per
       design D1/D3/D4: parsing of `### Requirement: <Name>` headers under
       `## ADDED Requirements` / `## MODIFIED Requirements` (never `## REMOVED
       Requirements`) across a change directory's `specs/**/spec.md` files;
@@ -10,7 +10,7 @@
       disk (absent entirely for a brand-new capability, so every requirement
       counts as newly declared); and a format guard that is a no-op for a
       devkit-format (`docs/specs/<id>/`) spec directory.
-- [ ] 1.2 Expose a single entry point (for example
+- [x] 1.2 Expose a single entry point (for example
       `find_uncovered_requirements(spec_dir, repo) -> list[str]`) that
       `compile.py` can call directly — no new console script, no
       `[project.scripts]` entry (per design D2, this check is not meant to
@@ -18,16 +18,16 @@
 
 ## 2. Compile-step gate integration
 
-- [ ] 2.1 Compose the new check into `compile.py`'s `main()` alongside the
+- [x] 2.1 Compose the new check into `compile.py`'s `main()` alongside the
       existing `gaps`/`collisions` checks: compute uncovered requirements
       after `merged`/`gaps`/`collisions`, and combine into the same non-zero
       exit-code branch (both the `--json` and human-output paths) without
       touching `compile_run_plan()` itself.
-- [ ] 2.2 Add a `_print_req_coverage_gap_error(uncovered: list[str]) -> None`
+- [x] 2.2 Add a `_print_req_coverage_gap_error(uncovered: list[str]) -> None`
       helper mirroring `_print_scope_gap_error`/`_print_ordering_gap_error`'s
       shape and stderr-only convention, naming the uncovered requirements and
       pointing at `tasks.md`.
-- [ ] 2.3 Ensure the compile-marker write (`write_marker`) is skipped when
+- [x] 2.3 Ensure the compile-marker write (`write_marker`) is skipped when
       uncovered requirements are reported, exactly as it already is skipped
       for `gaps`/`collisions`, so `CI: Scope Check`'s fingerprint backstop
       also catches a requirement-coverage failure that was never actually
@@ -42,7 +42,7 @@
 
 ## 4. Tests
 
-- [ ] 4.1 Add `tests/conductor/test_req_coverage.py` covering: a requirement
+- [x] 4.1 Add `tests/conductor/test_req_coverage.py` covering: a requirement
       declared under `## ADDED Requirements` with zero `tasks.md` reference
       (uncovered); the same requirement referenced by name in `tasks.md`
       (covered); a requirement declared only under `## REMOVED Requirements`
@@ -52,7 +52,7 @@
       (not newly declared, not enforced regardless of `tasks.md` content); a
       change with no `tasks.md` (every declared requirement uncovered); and
       a devkit-format spec directory (no-op, zero uncovered reported).
-- [ ] 4.2 Extend `tests/conductor/test_compile.py` (or add a focused test
+- [x] 4.2 Extend `tests/conductor/test_compile.py` (or add a focused test
       module) asserting `main()` returns non-zero and prints the uncovered
       requirement name when a fixture change directory has an uncovered,
       newly-declared requirement, and `0` when it does not — following the

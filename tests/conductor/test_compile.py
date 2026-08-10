@@ -373,6 +373,107 @@ def test_the_cli_json_mode_also_fails_loudly_when_impl_tasks_stay_scope_less(tmp
 
 
 # --------------------------------------------------------------------------- #
+# CI's requirement-coverage gate (req_coverage.find_uncovered_requirements) --
+# same shape as the scope-gap tests above, for the new `uncovered` term.
+# --------------------------------------------------------------------------- #
+def test_the_cli_fails_loudly_when_a_declared_requirement_has_no_task_coverage(tmp_path, capsys):
+    """The task itself is fully scoped (no scope gap, no collision), so this
+    isolates the requirement-coverage gate: a requirement newly declared under
+    `## ADDED Requirements` but never named in `tasks.md` must still fail the
+    compile, the same way `_print_scope_gap_error` fails one with no `files`."""
+    import subprocess
+    from unittest.mock import patch
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    d = repo / "openspec" / "changes" / "add-thing"
+    d.mkdir(parents=True)
+    (d / "proposal.md").write_text("## Why\nBecause.\n")
+    (d / "tasks.md").write_text("## 1. Core\n\n- [ ] 1.1 Add the parser\n")
+    spec_dir = d / "specs" / "cap-a"
+    spec_dir.mkdir(parents=True)
+    (spec_dir / "spec.md").write_text(
+        "## ADDED Requirements\n\n"
+        "### Requirement: Totally Unmentioned Thing\n"
+        "The thing shall do the thing.\n"
+    )
+
+    reply = _reply(**{"1.1": {"files": ["src/parser.py"], "deps": []}})
+    with patch("worktrail.conductor.compile._default_spawn", return_value=reply):
+        rc = conductor_compile.main([str(d)])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "Totally Unmentioned Thing" in err
+    assert "coverage" in err.lower()
+    assert "tasks.md" in err
+
+
+def test_the_cli_json_mode_also_fails_loudly_when_a_declared_requirement_has_no_task_coverage(
+    tmp_path, capsys
+):
+    """`--json` counterpart: stdout must stay a clean, parseable plan while the
+    non-zero exit code and requirement name still surface on stderr."""
+    import subprocess
+    from unittest.mock import patch
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    d = repo / "openspec" / "changes" / "add-thing"
+    d.mkdir(parents=True)
+    (d / "proposal.md").write_text("## Why\nBecause.\n")
+    (d / "tasks.md").write_text("## 1. Core\n\n- [ ] 1.1 Add the parser\n")
+    spec_dir = d / "specs" / "cap-a"
+    spec_dir.mkdir(parents=True)
+    (spec_dir / "spec.md").write_text(
+        "## ADDED Requirements\n\n"
+        "### Requirement: Totally Unmentioned Thing\n"
+        "The thing shall do the thing.\n"
+    )
+
+    reply = _reply(**{"1.1": {"files": ["src/parser.py"], "deps": []}})
+    with patch("worktrail.conductor.compile._default_spawn", return_value=reply):
+        rc = conductor_compile.main([str(d), "--json"])
+    out, err = capsys.readouterr()
+    assert rc == 1
+    assert "Totally Unmentioned Thing" in err
+    assert "coverage" in err.lower()
+    json.loads(out)
+
+
+def test_the_cli_exits_zero_when_the_declared_requirement_is_covered_in_tasks_md(tmp_path, capsys):
+    """The counterpart: naming the requirement anywhere in `tasks.md` (D1's
+    case-insensitive name-presence match) must not trip the gate."""
+    import subprocess
+    from unittest.mock import patch
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    d = repo / "openspec" / "changes" / "add-thing"
+    d.mkdir(parents=True)
+    (d / "proposal.md").write_text("## Why\nBecause.\n")
+    (d / "tasks.md").write_text(
+        "## 1. Core\n\n- [ ] 1.1 Add the parser, covering Totally Mentioned Thing\n"
+    )
+    spec_dir = d / "specs" / "cap-a"
+    spec_dir.mkdir(parents=True)
+    (spec_dir / "spec.md").write_text(
+        "## ADDED Requirements\n\n"
+        "### Requirement: Totally Mentioned Thing\n"
+        "The thing shall do the thing.\n"
+    )
+
+    reply = _reply(**{"1.1": {"files": ["src/parser.py"], "deps": []}})
+    with patch("worktrail.conductor.compile._default_spawn", return_value=reply):
+        rc = conductor_compile.main([str(d)])
+    err = capsys.readouterr().err
+    assert rc == 0
+    assert "ERROR" not in err
+
+
+# --------------------------------------------------------------------------- #
 # The CLI auto-repairs a plan that leaves same-file tasks unordered instead of
 # failing on it (go-20260805-172326: a real compile left 2.1/2.2 both
 # declaring one file with no dep between them). `runplan.apply_to_tasks()`
@@ -510,6 +611,38 @@ def test_a_failing_cli_run_does_not_write_the_compile_marker(tmp_path, capsys):
     (d / "tasks.md").write_text("## 1. Core\n\n- [ ] 1.1 Add the parser\n- [ ] 1.2 Wire the endpoint\n")
 
     rc = conductor_compile.main([str(d), "--no-llm"])
+    capsys.readouterr()
+    assert rc == 1
+    assert not (d / conductor_compile.COMPILE_MARKER_NAME).exists()
+
+
+def test_an_uncovered_requirement_does_not_write_the_compile_marker(tmp_path, capsys):
+    """Mirrors the case above for the `uncovered` term of the same guard
+    (`compile.py`'s `not (gaps or collisions or uncovered)`). The spawn reply
+    fully scopes the one task so this run fails on requirement coverage
+    alone, not also on scope gaps -- pinning `uncovered` specifically rather
+    than riding along on `gaps`."""
+    import subprocess
+    from unittest.mock import patch
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    d = repo / "openspec" / "changes" / "add-thing"
+    d.mkdir(parents=True)
+    (d / "proposal.md").write_text("## Why\nBecause.\n")
+    (d / "tasks.md").write_text("## 1. Core\n\n- [ ] 1.1 Add the parser\n")
+    spec_dir = d / "specs" / "cap-a"
+    spec_dir.mkdir(parents=True)
+    (spec_dir / "spec.md").write_text(
+        "## ADDED Requirements\n\n"
+        "### Requirement: Totally Unmentioned Thing\n"
+        "The thing shall do the thing.\n"
+    )
+
+    reply = _reply(**{"1.1": {"files": ["src/parser.py"], "deps": []}})
+    with patch("worktrail.conductor.compile._default_spawn", return_value=reply):
+        rc = conductor_compile.main([str(d)])
     capsys.readouterr()
     assert rc == 1
     assert not (d / conductor_compile.COMPILE_MARKER_NAME).exists()
