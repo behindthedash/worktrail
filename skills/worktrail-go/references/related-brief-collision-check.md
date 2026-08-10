@@ -83,6 +83,27 @@ the spec-collision and brief-staleness branches, a match here is never grounds t
 brief — the related work being in flight says nothing about whether *this* brief's own work is
 already done, so `work_queue.py done` is never called from this branch.
 
+**`$AUTO_MODE=true`: no ask.** There is no human present to answer, and `AskUserQuestion` is not
+even a callable tool inside the headless one-shot `worktrail-go drain` spawns — do not attempt
+the call above. Default to the safe side, same as an interactive "Pause and coordinate": do not
+open a worktree and do not start Phase 6/7. Phase 6 has not run yet for this dispatch, so open a
+minimal run record now (the same fields Phase 6 would use) purely to record the block, then
+finish it immediately:
+
+```bash
+RUN=$(worktrail-run-record start --repo "$REPO" \
+  --request "${BRIEF_FOCUS:-$ARG_INTENT}" --route "$ROUTE" --risk "${RISK_LEVEL:-medium}" \
+  --agent "$INVOCATION_CONTEXT_AGENT" | python3 -c "import sys, json; print(json.load(sys.stdin)['path'])")
+worktrail-run-record finish "$RUN" --status blocked_product_decision --merge-result \
+  "Auto-mode related-brief collision: <id list> actively claimed right now, needs a human to judge whether the overlap is acceptable or this dispatch should wait."
+```
+
+Do not call `work_queue.py done` or `work_queue.py release` — leave the brief claimed in
+`picked/` exactly as the interactive "Pause and coordinate" outcome does, so it surfaces through
+the existing stalled-in-flight resume path (dashboard `resume` action) with the run record's
+`blocked_product_decision` note giving the resuming session full context instead of a cold
+restart. Stop; do not continue to Phase 6/7 for this dispatch.
+
 **On "proceed"** — continue to Phase 6/7 unchanged. Once Phase 6 has opened the run record,
 record the evidence and the decision on it, so a later session (including whoever lands the
 related work) does not re-discover the same overlap cold:

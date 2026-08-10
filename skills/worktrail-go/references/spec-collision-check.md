@@ -111,6 +111,25 @@ without dispatching, but the brief itself is **not** auto-closed here either; re
 duplicate to the user and let a human close the brief through the normal completion path if
 warranted.
 
+**`$AUTO_MODE=true`: no ask.** There is no human present to answer, and `AskUserQuestion` is not
+even a callable tool inside the headless one-shot `worktrail-go drain` spawns — do not attempt
+the call above. Phase 6 has not run yet for this dispatch, so open a minimal run record now
+(the same fields Phase 6 would use) purely to record the block, then finish it immediately:
+
+```bash
+RUN=$(worktrail-run-record start --repo "$REPO" \
+  --request "${BRIEF_FOCUS:-$ARG_INTENT}" --route "$ROUTE" --risk "${RISK_LEVEL:-medium}" \
+  --agent "$INVOCATION_CONTEXT_AGENT" | python3 -c "import sys, json; print(json.load(sys.stdin)['path'])")
+worktrail-run-record finish "$RUN" --status blocked_product_decision --merge-result \
+  "Auto-mode spec collision: matches $MATCHED_SPEC_ID ($MATCHED_TITLE, Status: Implemented, files: $VERIFY_FILES all git-tracked on $BASE) -- needs a human to judge whether this is the fix/change's own target spec or a separate duplicate."
+```
+
+Do not call `work_queue.py done` or `work_queue.py release` — leave the brief claimed in
+`picked/` exactly as an interactive "Separate duplicate — stop" or unresolved ask would, so it
+surfaces through the existing stalled-in-flight resume path (dashboard `resume` action) with the
+run record's `blocked_product_decision` note giving the resuming session full context instead of
+a cold restart. Stop; do not continue to Phase 6/7 for this dispatch.
+
 ## Dispatch source 2: brainstorm-sourced (no claimed brief)
 
 ### Route C/D
@@ -137,14 +156,19 @@ AskUserQuestion(
 
 Dispatch proceeds to Phase 6/7 only per the user's explicit choice: "Continue anyway" resumes
 the original Route C/D dispatch unmodified; "Extend existing spec" re-routes to the matched
-spec instead of a new one; "Stop" ends the run with no dispatch.
+spec instead of a new one; "Stop" ends the run with no dispatch. Like the brainstorm-sourced
+Route F/G ask below, this has no `$AUTO_MODE=true` variant — auto mode only ever claims
+work-queue briefs, so a brainstorm-sourced dispatch cannot occur while `$AUTO_MODE=true`.
 
 ### Route F/G
 
 No brief exists to leave open or close, so use the identical two-option ask from the
 brief-sourced Route F/G case above ("This is the target spec" / "Separate duplicate — stop").
 "This is the target spec" resumes the original F/G dispatch unmodified; "Separate duplicate —
-stop" ends the run with no dispatch.
+stop" ends the run with no dispatch. This path has no `$AUTO_MODE=true` variant: auto mode only
+ever claims work-queue briefs (`references/auto-mode.md`), so a brainstorm-sourced dispatch —
+free text with no claimed brief — cannot occur while `$AUTO_MODE=true`; a human is always present
+to answer this ask.
 
 ## Non-file artifact spot-check
 
