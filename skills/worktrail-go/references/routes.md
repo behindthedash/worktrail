@@ -242,6 +242,14 @@ Changes to GO, skills, plugins, agent prompts, orchestration, cassettes —
    Commit, push, open/update the PR, and evaluate the merge gate before using a
    Route J completion state. "Implemented and validated" without a PR is an
    incomplete Route J run.
+7. **Optional advisory, when the change edits `skills/**/*.md` prose:** run
+   `worktrail-skill-prose-scan` and triage any candidates it prints. It is
+   WARN-only (always exits 0, never blocks the merge) — it surfaces
+   mandate-cue + named-action paragraph pairs outside the closed
+   `go:risk-*`/`go:no-automerge` vocabulary `test_skill_prose_enforcement_coverage.py`
+   already hard-gates, for a human to judge whether a new paragraph is
+   quietly relying on an agent to remember a correction with nothing in code
+   enforcing it (see `docs/specs/research/skill-prose-enforcement-coverage-design.md`).
 
 Completion: `completed_pr_open` / `completed_and_merged`.
 

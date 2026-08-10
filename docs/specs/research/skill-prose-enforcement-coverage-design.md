@@ -103,3 +103,27 @@ Bash-tool-issued `gh pr create` calls, for example). This test:
   that every branch of it runs unconditionally the way the prose claims. Each proof docstring below
   states exactly what it does and does not establish, same discipline as
   `test_gate_enforcement_coverage.py`'s `_proves_*` functions.
+
+## Follow-up: a WARN-only advisory scanner for the "brand-new family" gap
+
+Work-queue brief `20260810-111717` closed the escape-hatch gap above with an automated
+alternative to the manual marker-plus-code-review recommendation: `skill_prose_advisory_scan.py`
+(console script `worktrail-skill-prose-scan`) runs Option (b)'s generic mandate-cue
+(`mandatory`/`MUST`/`immediately run`/`never skip`) + backtick-quoted-action pairing from this
+note, but at **WARN severity, never as a CI gate** — it always exits 0 and only prints candidates
+for a human to triage during Route J review. This sidesteps Option (b)'s original disqualifier:
+at WARN severity a spurious pairing (like this note's own confirmed `worktrail-go/SKILL.md`
+Phase-8 false positive) is triage noise, not a blocked PR. Candidates whose paragraph already
+mentions `LABEL_FAMILY_MARKERS` (now shared from `label_family_markers.py`, imported by both this
+test and the scanner) are excluded, since that family is already hard-gated here.
+
+Running it once against the live `skills/**/*.md` corpus (2026-08-10, 25 files scanned) returned
+10 candidates, none a new recurring family — all are either descriptions of code that already
+enforces itself (e.g. "the poll MUST respect a hard 10-minute ceiling," describing `poll_run.py`'s
+own behavior) or generic process instructions with no distinct corrective-action shape. A
+`git log --oneline --all --grep` sweep for `code-enforce`/`no longer ... to remember` commit
+messages (the two markers this note's own intro uses to describe the failure shape) found exactly
+two prior recurring families: the `go:risk-*`/`go:no-automerge` PR-label family this test already
+covers, and `no_implementation_without_approval` (#82) — already covered by
+`test_gate_enforcement_coverage.py`'s `GATE_CONSUMERS`, since it is a classify.py `gates.append(...)`
+string, not SKILL.md prose. No third family currently warrants a new `LABEL_FAMILY_MARKERS` entry.
