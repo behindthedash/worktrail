@@ -44,19 +44,10 @@ from unittest.mock import patch
 from worktrail.router import check_review_threads as check_review_threads_mod
 from worktrail.router import pre_pr_gate as pre_pr_gate_mod
 from worktrail.router import reconcile_pr_labels as reconcile_pr_labels_mod
+from worktrail.router.label_family_markers import LABEL_FAMILY_MARKERS
 from worktrail.router.run_record import main as run_record_main
 
 SKILLS_ROOT = Path(check_review_threads_mod.__file__).resolve().parents[3] / "skills"
-
-# Literal strings that only appear in a skills/**/*.md file when it is discussing
-# the go:risk-*/go:no-automerge PR-label correction specifically -- the exact
-# vocabulary of the recurring failure family (#74/#80/#82/#128/#137/#281).
-LABEL_FAMILY_MARKERS = (
-    "go:risk-",
-    "go:no-automerge",
-    "ensure_pr_risk_label",
-    "ensure_pr_no_automerge_label",
-)
 
 
 def extract_label_correction_mentions() -> set:
