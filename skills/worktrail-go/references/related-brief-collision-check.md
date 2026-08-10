@@ -1,20 +1,22 @@
 # Pre-Dispatch Related-Brief Collision Guard {#related-brief-collision-check}
 
 `/go` Phase 5.5's third branch, alongside `spec-collision-check.md` (Route C/D: does a shipped
-spec already cover this request?) and `brief-staleness-check.md` (brief-sourced Route E/F: did
-this brief's own work already land?). This branch asks a different question again: a brief's
-`related:` frontmatter names other briefs describing adjacent or overlapping work — is one of
-*those* **actively claimed and in flight right now**, by this agent or another one? Nothing
-before dispatch checks this today, so a second agent can start work that collides with a session
-already underway, discovered only when the two land conflicting changes.
+spec already cover this request?) and `brief-staleness-check.md` (every brief-sourced dispatch:
+did this brief's own work already land?). This branch asks a different question again: a
+brief's `related:` frontmatter names other briefs describing adjacent or overlapping work — is
+one of *those* **actively claimed and in flight right now**, by this agent or another one?
+Nothing before dispatch checks this today, so a second agent can start work that collides with a
+session already underway, discovered only when the two land conflicting changes.
 
 **Gate: brief-sourced dispatch, claimed brief has a `related:` field, and the resolved route is
-not C, D, E, or F.** The Route C/D and brief-sourced Route E/F branches already ask their own
-"has this already been done?" question for those routes; this branch covers everything else a
-claimed brief can resolve to (Route A/B/G–J) without re-running work the other two branches
-already do. A brainstorm/free-text dispatch has no claimed brief to read `related:` off, so it
-skips this branch regardless of route. A claimed brief with no `related:` entries skips it too —
-`check()` itself short-circuits on that, but the caller should not invoke it needlessly.
+not C, D, E, or F.** This scope is unchanged by the brief-staleness widening below: routes C/D
+keep their own dedicated spec-collision branch and routes E/F keep the narrowest, cheapest
+signal (staleness alone) without adding a second prompt surface on top of it. Route A/B/G–J is
+where this branch adds a check nothing else runs. It runs alongside the brief-staleness branch
+on every route it fires on, since that branch is not route-gated. A brainstorm/free-text
+dispatch has no claimed brief to read `related:` off, so it skips this branch regardless of
+route. A claimed brief with no `related:` entries skips it too — `check()` itself short-circuits
+on that, but the caller should not invoke it needlessly.
 
 ## Running it
 
@@ -98,7 +100,9 @@ re-attempted later once the related work lands.
 
 ## Relationship to the sibling branches
 
-All three Phase 5.5 branches ask "has this already been done?" from a different angle and are
-mutually exclusive by their own gates — a single dispatch runs at most one of them. This branch
-is the only one that can fire on a claimed brief regardless of route (A/B/G–J), because it is
-checking a *different* brief's status, not the one being dispatched.
+All three Phase 5.5 branches ask "has this already been done?" from a different angle, and their
+gates are no longer mutually exclusive: brief-staleness runs on every brief-sourced dispatch, so
+it co-runs with this branch on Route A/B/G–J and with spec-collision on Route C/D. This branch
+and spec-collision remain mutually exclusive with each other (Route C/D vs. everything else),
+each gated to the one route pair it covers. This branch is the only one of the three that checks
+a *different* brief's status rather than the one being dispatched.

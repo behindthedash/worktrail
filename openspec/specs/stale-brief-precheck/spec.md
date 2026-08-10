@@ -157,14 +157,16 @@ non-null warning. Callers SHALL treat `checked: false` as "no signal" and MUST N
 - **THEN** the result reports `checked: true` with no matches, distinguishing a searched-and-clean
   brief from an unanswerable one
 
-### Requirement: Route Gate Covers Brief-Sourced Code-Fix Dispatches
+### Requirement: Staleness Check Covers Every Brief-Sourced Dispatch
 
-The system SHALL run the staleness check during `/go` Phase 5.5 only when the dispatch is
-brief-sourced **and** the resolved route is `E` or `F`. A free-text dispatch with no claimed
-brief, or a brief-sourced dispatch resolved to any other route, SHALL skip the staleness check
-entirely and SHALL be neither delayed nor otherwise modified by it. The existing route `C`/`D`
-spec-collision branch SHALL continue to run unchanged, and the two branches SHALL be
-independent: neither suppresses, gates, nor alters the other.
+The system SHALL run the staleness check during `/go` Phase 5.5 whenever the dispatch is
+brief-sourced, regardless of the resolved route (`A`-`J`). A free-text dispatch with no claimed
+brief SHALL skip the staleness check entirely, because there is no `created:` timestamp to
+bound the search and no captured prose to extract probes from, and SHALL be neither delayed nor
+otherwise modified by it. The existing route `C`/`D` spec-collision branch and the route-gated
+related-brief-collision branch SHALL continue to run independently of the staleness check: none
+of the three branches suppresses, gates, or alters another, and more than one branch MAY run for
+a single dispatch.
 
 #### Scenario: Brief-sourced Route F dispatch runs the check
 - **WHEN** a claimed brief is dispatched and Phase 5 resolves route `F`
@@ -175,10 +177,15 @@ independent: neither suppresses, gates, nor alters the other.
 - **THEN** the staleness check does not run, because there is no `created:` timestamp to bound
   the search and no captured brief that could have gone stale
 
-#### Scenario: Route C dispatch is unaffected
-- **WHEN** a brief-sourced dispatch resolves to route `C`
-- **THEN** the spec-collision check runs exactly as it does today and the staleness check does
-  not run
+#### Scenario: Brief-sourced Route C dispatch runs both checks
+- **WHEN** a claimed brief is dispatched and Phase 5 resolves route `C`
+- **THEN** the staleness check runs before Phase 6 opens the run record, and the spec-collision
+  check also runs for the same dispatch
+
+#### Scenario: Brief-sourced Route J dispatch runs the check
+- **WHEN** a claimed brief is dispatched and Phase 5 resolves route `J`
+- **THEN** the staleness check runs before Phase 6 opens the run record, even though route `J`
+  is covered by neither the spec-collision nor the related-brief-collision branch
 
 ### Requirement: Evidence Is Surfaced To The Operator, Never Auto-Applied
 
