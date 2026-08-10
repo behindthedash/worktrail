@@ -669,6 +669,94 @@ class ScanFiltering(unittest.TestCase):
             self.assertEqual(rows[0]["stage"], "complete")
 
 
+class OpenSpecSyncPending(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self._tmp.name)
+        self.change = self.repo / "openspec" / "changes" / "update-export"
+        self.delta = self.change / "specs" / "export" / "spec.md"
+        self.canonical = self.repo / "openspec" / "specs" / "export" / "spec.md"
+        self.delta.parent.mkdir(parents=True)
+        self.canonical.parent.mkdir(parents=True)
+        (self.change / "tasks.md").write_text("## 1. Export\n\n- [x] 1.1 Update exporter\n")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_unsynced_structural_deltas_are_sync_pending(self):
+        cases = {
+            "added requirement": (
+                "## ADDED Requirements\n\n### Requirement: New export\n",
+                "# Export\n",
+            ),
+            "added scenario": (
+                "## MODIFIED Requirements\n\n### Requirement: Export\n\n"
+                "#### Scenario: CSV export\n",
+                "### Requirement: Export\n",
+            ),
+            "removed requirement": (
+                "## REMOVED Requirements\n\n### Requirement: Legacy export\n",
+                "### Requirement: Legacy export\n",
+            ),
+            "renamed requirement": (
+                "## RENAMED Requirements\n\n"
+                "- FROM: `### Requirement: Old export`\n"
+                "- TO: `### Requirement: New export`\n",
+                "### Requirement: Old export\n",
+            ),
+        }
+        for label, (delta, canonical) in cases.items():
+            with self.subTest(label=label):
+                self.delta.write_text(delta)
+                self.canonical.write_text(canonical)
+                result = dashboard._safe_detect_openspec(self.change)
+                self.assertEqual(result["stage"], "sync-pending")
+                self.assertEqual(result["next_action"], "sync change")
+
+    def test_reconciled_delta_is_complete(self):
+        self.delta.write_text(
+            "## ADDED Requirements\n\n### Requirement: Added export\n\n"
+            "#### Scenario: Added CSV\n\n"
+            "## MODIFIED Requirements\n\n### Requirement: Existing export\n\n"
+            "#### Scenario: Updated JSON\n\n"
+            "## REMOVED Requirements\n\n### Requirement: Removed export\n\n"
+            "## RENAMED Requirements\n\n"
+            "- FROM: `### Requirement: Old export`\n"
+            "- TO: `### Requirement: New export`\n"
+        )
+        self.canonical.write_text(
+            "### Requirement: Added export\n\n#### Scenario: Added CSV\n\n"
+            "### Requirement: Existing export\n\n#### Scenario: Updated JSON\n\n"
+            "### Requirement: New export\n"
+        )
+
+        result = dashboard._safe_detect_openspec(self.change)
+
+        self.assertEqual(result["stage"], "complete")
+        self.assertEqual(result["next_action"], "archive")
+
+    def test_change_without_delta_specs_is_complete(self):
+        self.delta.unlink(missing_ok=True)
+
+        result = dashboard._safe_detect_openspec(self.change)
+
+        self.assertEqual(result["stage"], "complete")
+
+    def test_verify_pending_precedes_sync_pending(self):
+        self.delta.write_text("## ADDED Requirements\n\n### Requirement: Missing export\n")
+        self.canonical.write_text("# Export\n")
+        journal_dir = self.repo.parent / f"{self.repo.name}-worktrees"
+        journal_dir.mkdir()
+        (journal_dir / "run-update-export.json").write_text(json.dumps({
+            "integrate_complete": True,
+            "groups": {"base": {"pr_url": "https://example.test/1", "state": "OPEN"}},
+        }))
+
+        result = dashboard._safe_detect_openspec(self.change)
+
+        self.assertEqual(result["stage"], "verify-pending")
+
+
 class OpenSpecStaleBookkeeping(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
