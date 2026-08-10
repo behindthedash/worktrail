@@ -611,6 +611,61 @@ class ScanFiltering(unittest.TestCase):
             rows = dashboard.scan(repo / "docs" / "specs")
             assert [row["id"] for row in rows] == ["first-change"]
 
+    def test_openspec_verify_pending_when_all_tasks_checked_but_pr_open(self):
+        # Regression for the drain-sweep blind spot: _safe_detect_openspec used to
+        # only ever emit needs-tasks/ready-to-implement/complete/error, so an
+        # OpenSpec change with an unmerged group PR was misreported "complete"
+        # and find_verify_pending_specs (which filters on stage=="verify-pending")
+        # could never match it.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            change = repo / "openspec" / "changes" / "add-export"
+            change.mkdir(parents=True)
+            (change / "tasks.md").write_text(
+                "## 1. Export\n\n- [x] 1.1 Add exporter\n"
+            )
+            journal_dir = repo.parent / f"{repo.name}-worktrees"
+            journal_dir.mkdir(parents=True, exist_ok=True)
+            (journal_dir / "run-add-export.json").write_text(json.dumps({
+                "run_id": "full-1234567890",
+                "integrate_complete": True,
+                "groups": {
+                    "base": {
+                        "pr_url": "https://github.com/test/repo/pull/1",
+                        "head_branch": "full-1234567890/base",
+                        "state": "OPEN",
+                    },
+                },
+            }))
+            rows = dashboard.scan(repo / "docs" / "specs")
+            self.assertEqual([r["id"] for r in rows], ["add-export"])
+            self.assertEqual(rows[0]["stage"], "verify-pending")
+            self.assertIn("full-real", rows[0]["next_action"])
+
+    def test_openspec_complete_when_all_groups_merged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            change = repo / "openspec" / "changes" / "add-export"
+            change.mkdir(parents=True)
+            (change / "tasks.md").write_text(
+                "## 1. Export\n\n- [x] 1.1 Add exporter\n"
+            )
+            journal_dir = repo.parent / f"{repo.name}-worktrees"
+            journal_dir.mkdir(parents=True, exist_ok=True)
+            (journal_dir / "run-add-export.json").write_text(json.dumps({
+                "run_id": "full-9999999999",
+                "integrate_complete": True,
+                "groups": {
+                    "base": {
+                        "pr_url": "https://github.com/test/repo/pull/10",
+                        "head_branch": "full-9999999999/base",
+                        "state": "MERGED",
+                    },
+                },
+            }))
+            rows = dashboard.scan(repo / "docs" / "specs")
+            self.assertEqual(rows[0]["stage"], "complete")
+
 
 class NonSpecDirsGitignoreSync(unittest.TestCase):
     """artifact-policy.md documents which _NON_SPEC_DIRS entries are gitignored
