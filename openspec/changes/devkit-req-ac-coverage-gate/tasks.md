@@ -14,7 +14,7 @@
       mirroring `check_clarification_integrity.py`'s module shape
       (`check_changed_specs`, `_resolve_base_ref`, `_changed_paths_via_git`,
       `main`).
-- [ ] 1.2 Register `worktrail-check-req-coverage` in `[project.scripts]` in
+- [x] 1.2 Register `worktrail-check-req-coverage` in `[project.scripts]` in
       `pyproject.toml` so `tests/test_plugin_surface.py`'s entry-point lockstep
       check passes.
 
@@ -47,13 +47,13 @@
 
 ## 4. Validation and release hygiene
 
-- [ ] 4.1 [e2e] Run the repo's full gate (`PYTHONPATH=src pytest -q` and `PYTHONPATH=src
+- [x] 4.1 [e2e] Run the repo's full gate (`PYTHONPATH=src pytest -q` and `PYTHONPATH=src
       python3 -m worktrail.orchestrator.orchestrate check`) and confirm both
       pass; additionally run the new CLI's audit mode against a real devkit
       corpus and confirm it reports `REQ-023..REQ-028` for
       `084-automation-health-digest`, proving the check catches the originating
       defect rather than only its synthetic fixture.
-- [ ] 4.2 Decide and record the version-bump handling for this PR per
+- [x] 4.2 Decide and record the version-bump handling for this PR per
       `AGENTS.md` (standalone `chore: bump` commit versus carrying the
       `go:no-version-bump` label for a later batch bump), so `CI: Version Bump
       Check` outcome is deliberate rather than incidental.
