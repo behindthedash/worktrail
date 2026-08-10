@@ -1,9 +1,25 @@
-import { existsSync, mkdirSync, writeFileSync, unlinkSync } from "fs"
-import { join } from "path"
+import { existsSync, mkdirSync, writeFileSync, unlinkSync, readFileSync } from "fs"
+import { join, dirname } from "path"
+import { fileURLToPath } from "url"
 import { homedir } from "os"
 import { execFileSync } from "child_process"
 
+const PLUGIN_DIR = dirname(fileURLToPath(import.meta.url))
+const REPO_ROOT = join(PLUGIN_DIR, "..", "..")
 const STATE_DIR = join(homedir(), ".opencode", "state", "worktrail-suggest-next")
+
+/**
+ * Strip a skill file's YAML frontmatter and return its instruction body, so a
+ * command template can embed the real procedure instead of pointing at a path
+ * the model would otherwise have to glob-search for and read itself.
+ */
+function skillBody(skillName) {
+  const text = readFileSync(join(REPO_ROOT, "skills", skillName, "SKILL.md"), "utf-8")
+  const parts = text.split("\n---\n")
+  return (parts.length > 1 ? parts.slice(1).join("\n---\n") : text).trim()
+}
+
+const OPENSPEC_PROPOSE_INSTRUCTIONS = skillBody("openspec-propose")
 
 const SESSION_END_INSTRUCTION = `SESSION WRAP-UP — proactive next-step suggestion (auto-triggered by the Worktrail session.idle hook).
 
@@ -82,6 +98,10 @@ export const Worktrail = async ({ directory } = {}) => ({
         "Choose OpenSpec by default unless the user explicitly requests DevKit format.",
         "\nRequest: $ARGUMENTS",
       ].join("\n"),
+    }
+    input.command["openspec-propose"] = {
+      description: "Propose a new OpenSpec change with all planning artifacts",
+      template: [OPENSPEC_PROPOSE_INSTRUCTIONS, "\nRequest: $ARGUMENTS"].join("\n"),
     }
   },
 })
