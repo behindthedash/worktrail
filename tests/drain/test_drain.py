@@ -1125,6 +1125,34 @@ def test_find_verify_pending_specs_discovers_across_repos(tmp_path):
     assert found[0]["repo"] == repo_a
 
 
+def _write_verify_pending_openspec_change(repo: Path, change_id: str, pr_url: str) -> None:
+    """OpenSpec-format equivalent of `_write_verify_pending_spec`: all tasks
+    checked, run journal has integrate_complete: true plus a non-MERGED group.
+    Regression fixture for the drain-sweep blind spot where an OpenSpec change
+    could never surface as "verify-pending" (dashboard.py's OpenSpec branch had
+    no equivalent of that stage)."""
+    change_dir = repo / "openspec" / "changes" / change_id
+    change_dir.mkdir(parents=True)
+    (change_dir / "tasks.md").write_text("## 1. Export\n\n- [x] 1.1 Add exporter\n")
+    worktrees_dir = repo.parent / f"{repo.name}-worktrees"
+    worktrees_dir.mkdir(parents=True, exist_ok=True)
+    (worktrees_dir / f"run-{change_id}.json").write_text(json.dumps({
+        "integrate_complete": True,
+        "groups": {"base": {"pr_url": pr_url, "state": "OPEN"}},
+    }))
+
+
+def test_find_verify_pending_specs_discovers_openspec_changes(tmp_path):
+    repo = _make_repo(tmp_path, "repo-a")
+    _write_verify_pending_openspec_change(
+        repo, "add-export", "https://github.com/test/repo/pull/1"
+    )
+    found = find_verify_pending_specs(tmp_path)
+    assert [f["repo_name"] for f in found] == ["repo-a"]
+    assert found[0]["spec_id"] == "add-export"
+    assert found[0]["spec_rel"] == "openspec/changes/add-export"
+
+
 def _write_ready_to_implement_spec(repo: Path, spec_id: str) -> None:
     """A spec with a pending task and no run journal -- dashboard.detect_stage
     labels this "ready-to-implement", not "verify-pending"."""

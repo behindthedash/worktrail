@@ -1023,6 +1023,15 @@ def _safe_detect_openspec(change_dir: Path) -> Dict[str, Any]:
             stage, next_action = "needs-tasks", "create tasks"
         elif pending:
             stage, next_action = "ready-to-implement", "orchestrator"
+        elif _journal_verify_pending(change_dir):
+            # Same run-journal lookup the devkit branch uses (journal_path_for
+            # keys purely on repo root + spec_dir.name, both format-agnostic) --
+            # an OpenSpec change with all tasks checked but an unmerged/OPEN
+            # group PR is still verify-pending, not complete.
+            stage, next_action = (
+                "verify-pending",
+                "resume full-real (verify → merge → cleanup)",
+            )
         else:
             stage, next_action = "complete", "sync/archive"
         return {
