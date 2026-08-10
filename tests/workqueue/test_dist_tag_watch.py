@@ -9,6 +9,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -35,17 +36,38 @@ def _brief(
     return "---\n" + "\n".join(fm) + "\n---\n\n## Focus\n\nsome work\n"
 
 
+_GITHUB_API_RE = re.compile(r"https://api\.github\.com/repos/([^/]+)/([^/]+)/issues/(\d+)")
+
+
 class _FakeFetch:
     """Injectable fetch stub -- returns canned registry JSON keyed by package
-    name, or raises for packages listed in `errors`. Never touches the network."""
+    name, canned GitHub issue-state JSON keyed by "owner/repo#number", or
+    raises for keys listed in `errors`/`github_errors`. Never touches the
+    network."""
 
-    def __init__(self, versions: Optional[Dict[str, str]] = None, errors: Optional[Iterable[str]] = None):
+    def __init__(
+        self,
+        versions: Optional[Dict[str, str]] = None,
+        errors: Optional[Iterable[str]] = None,
+        github_states: Optional[Dict[str, str]] = None,
+        github_errors: Optional[Iterable[str]] = None,
+    ):
         self.versions = dict(versions or {})
         self.errors = set(errors or ())
+        self.github_states = dict(github_states or {})
+        self.github_errors = set(github_errors or ())
         self.calls: List[str] = []
 
     def __call__(self, url: str) -> str:
         self.calls.append(url)
+        gh_match = _GITHUB_API_RE.match(url)
+        if gh_match:
+            key = f"{gh_match.group(1)}/{gh_match.group(2)}#{gh_match.group(3)}"
+            if key in self.github_errors:
+                raise RuntimeError(f"simulated network error for {key}")
+            if key in self.github_states:
+                return json.dumps({"state": self.github_states[key]})
+            raise AssertionError(f"unexpected fetch url with no stub configured: {url}")
         for pkg in self.errors:
             if f"/{pkg}/" in url:
                 raise RuntimeError(f"simulated network error for {pkg}")
@@ -181,6 +203,107 @@ class TestMalformedEntries(WatcherTestBase):
         self.assertIsNotNone(gem_entry["error"])
         self.assertTrue(pypi_entry["changed"])
         self.assertEqual(fetch.calls, [w._REGISTRY_URLS["pypi"].format(package="requests")])
+
+
+class TestGithubIssueEntries(WatcherTestBase):
+    """A `watch:` entry can be a bare GitHub-issue URL instead of a
+    `registry:package@version` entry; its recorded state is "open" unless the
+    URL carries a `#closed` suffix, and a state change clears next-check-after
+    the same as a version bump."""
+
+    URL = "https://github.com/jsx-eslint/eslint-plugin-react/issues/3977"
+
+    def test_open_issue_still_open_is_byte_identical(self):
+        p = self.write("a.md", watch=[self.URL])
+        content_before = p.read_text(encoding="utf-8")
+        mtime_before = p.stat().st_mtime
+
+        fetch = _FakeFetch(github_states={"jsx-eslint/eslint-plugin-react#3977": "open"})
+        result = w.check_brief(p, fetch=fetch)
+
+        self.assertFalse(result["next_check_after_cleared"])
+        self.assertFalse(result["written"])
+        entry = result["entries"][0]
+        self.assertEqual(entry["registry"], "github-issue")
+        self.assertEqual(entry["package"], "jsx-eslint/eslint-plugin-react#3977")
+        self.assertEqual(entry["recorded_version"], "open")
+        self.assertEqual(entry["latest_version"], "open")
+        self.assertFalse(entry["changed"])
+        self.assertEqual(p.read_text(encoding="utf-8"), content_before)
+        self.assertEqual(p.stat().st_mtime, mtime_before)
+
+    def test_issue_closed_clears_next_check_after_and_rewrites_marker(self):
+        p = self.write("a.md", watch=[self.URL], next_check_after="2099-01-01")
+        fetch = _FakeFetch(github_states={"jsx-eslint/eslint-plugin-react#3977": "closed"})
+        result = w.check_brief(p, fetch=fetch)
+
+        self.assertTrue(result["next_check_after_cleared"])
+        self.assertTrue(result["written"])
+        entry = result["entries"][0]
+        self.assertTrue(entry["changed"])
+        self.assertEqual(entry["recorded_version"], "open")
+        self.assertEqual(entry["latest_version"], "closed")
+
+        fm = w.read_frontmatter(p)
+        self.assertNotIn("next-check-after", fm)
+        self.assertEqual(fm["watch"], [f"{self.URL}#closed"])
+
+    def test_reopened_issue_is_detected_as_change(self):
+        p = self.write("a.md", watch=[f"{self.URL}#closed"])
+        fetch = _FakeFetch(github_states={"jsx-eslint/eslint-plugin-react#3977": "open"})
+        result = w.check_brief(p, fetch=fetch)
+
+        entry = result["entries"][0]
+        self.assertEqual(entry["recorded_version"], "closed")
+        self.assertEqual(entry["latest_version"], "open")
+        self.assertTrue(entry["changed"])
+        self.assertTrue(result["next_check_after_cleared"])
+
+        fm = w.read_frontmatter(p)
+        self.assertEqual(fm["watch"], [self.URL])
+
+    def test_second_run_after_closing_reports_no_further_change(self):
+        p = self.write("a.md", watch=[self.URL])
+        fetch = _FakeFetch(github_states={"jsx-eslint/eslint-plugin-react#3977": "closed"})
+
+        first = w.check_brief(p, fetch=fetch)
+        self.assertTrue(first["entries"][0]["changed"])
+
+        second = w.check_brief(p, fetch=fetch)
+        self.assertFalse(second["entries"][0]["changed"])
+        self.assertFalse(second["written"])
+
+    def test_fetch_error_is_isolated_from_sibling_entry(self):
+        p = self.write("a.md", watch=[self.URL, "pypi:requests@2.31.0"])
+        fetch = _FakeFetch(
+            versions={"requests": "2.32.0"},
+            github_errors={"jsx-eslint/eslint-plugin-react#3977"},
+        )
+        result = w.check_brief(p, fetch=fetch)
+
+        gh_entry, pypi_entry = result["entries"]
+        self.assertIsNotNone(gh_entry["error"])
+        self.assertFalse(gh_entry["changed"])
+        self.assertTrue(pypi_entry["changed"])
+        self.assertTrue(result["written"])
+
+        fm = w.read_frontmatter(p)
+        self.assertEqual(fm["watch"], [self.URL, "pypi:requests@2.32.0"])
+
+    def test_missing_state_field_is_unparsable_not_raised(self):
+        p = self.write("a.md", watch=[self.URL])
+
+        def fetch(url: str) -> str:
+            return json.dumps({"not_state": "open"})
+
+        try:
+            result = w.check_brief(p, fetch=fetch)
+        except Exception as exc:  # noqa: BLE001
+            self.fail(f"check_brief raised {exc!r}")
+        entry = result["entries"][0]
+        self.assertIsNotNone(entry["error"])
+        self.assertFalse(entry["changed"])
+        self.assertFalse(result["written"])
 
 
 class TestDryRun(WatcherTestBase):
