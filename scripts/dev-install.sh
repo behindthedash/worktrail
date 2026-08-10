@@ -51,3 +51,8 @@ else
   cat "$install_log" >&2
   exit 1
 fi
+
+# Fail immediately if pip left stale entry-point metadata behind, or if the
+# package and Codex plugin versions were not bumped together. Source tests read
+# pyproject.toml directly; this post-install check owns installed-state freshness.
+python3 scripts/check_packaging_metadata.py --repo "$REPO_ROOT"

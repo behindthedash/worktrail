@@ -9,7 +9,6 @@ them from this repo removes the distance; these tests keep it removed.
 
 from __future__ import annotations
 
-import importlib.metadata as md
 import json
 import re
 import shutil
@@ -17,6 +16,8 @@ import subprocess
 from pathlib import Path
 
 import pytest
+
+from scripts.check_packaging_metadata import checkout_console_scripts
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SKILLS_DIR = REPO_ROOT / "skills"
@@ -38,7 +39,10 @@ PLUGIN_PATH_PATTERNS = (
 
 
 def _console_scripts() -> set[str]:
-    return {ep.name for ep in md.distribution("worktrail").entry_points}
+    # Source validation must be checkout-relative. The active editable install
+    # can legitimately point at the canonical checkout while this test runs in
+    # a task worktree containing a newly declared command.
+    return checkout_console_scripts(REPO_ROOT)
 
 
 def _skill_docs() -> list[Path]:
