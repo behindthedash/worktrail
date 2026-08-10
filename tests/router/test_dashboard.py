@@ -20,6 +20,8 @@ from unittest import mock
 
 from worktrail.router import dashboard
 from worktrail.router.policy import load_policy, resolve_routing
+from worktrail.conductor import compile as runplan_compile
+from worktrail.conductor import runplan
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -665,6 +667,116 @@ class ScanFiltering(unittest.TestCase):
             }))
             rows = dashboard.scan(repo / "docs" / "specs")
             self.assertEqual(rows[0]["stage"], "complete")
+
+
+class OpenSpecStaleBookkeeping(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self._tmp.name)
+        for cmd in (
+            ["init", "-q"],
+            ["config", "user.email", "t@t"],
+            ["config", "user.name", "t"],
+        ):
+            subprocess.run(["git", "-C", str(self.repo), *cmd], check=True)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _change(self, tasks: str = "- [ ] 1.1 Implement exporter\n") -> Path:
+        change = self.repo / "openspec" / "changes" / "add-export"
+        change.mkdir(parents=True)
+        (change / "proposal.md").write_text("# Add exporter\n")
+        (change / "tasks.md").write_text(f"## 1. Export\n\n{tasks}")
+        return change
+
+    def _cache(self, change: Path, files_by_task: dict[str, list[str]]) -> None:
+        spec_id, tasks = dashboard._taskformats.load_spec(change)
+        fp = runplan.fingerprint(change, tasks)
+        plan = runplan.RunPlan(
+            spec_id=spec_id,
+            fingerprint=fp,
+            source=runplan.SOURCE_COMPILED,
+            tasks=tuple(
+                runplan.TaskPlan(id=task_id, files=tuple(files))
+                for task_id, files in files_by_task.items()
+            ),
+        )
+        runplan.store(runplan_compile.default_cache_dir(self.repo), plan)
+
+    def _commit(self, files: list[str]) -> None:
+        for file in files:
+            path = self.repo / file
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("shipped\n")
+        subprocess.run(["git", "-C", str(self.repo), "add", *files], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "commit", "-qm", "ship"], check=True)
+
+    def test_cached_shipped_scope_is_stale_bookkeeping(self):
+        change = self._change()
+        self._cache(change, {"1.1": ["src/export.py"]})
+        self._commit(["src/export.py"])
+
+        result = dashboard._safe_detect_openspec(change)
+
+        self.assertEqual(result["stage"], "stale-bookkeeping")
+        self.assertEqual(result["stale_task_ids"], ["1.1"])
+        self.assertIn("confirm & close", result["next_action"])
+
+    def test_cached_missing_scope_stays_ready_to_implement(self):
+        change = self._change()
+        self._cache(change, {"1.1": ["src/missing.py"]})
+
+        result = dashboard._safe_detect_openspec(change)
+
+        self.assertEqual(result["stage"], "ready-to-implement")
+        self.assertEqual(result["next_action"], "orchestrator")
+        self.assertNotIn("stale_task_ids", result)
+
+    def test_cache_miss_preserves_ready_to_implement_behavior(self):
+        change = self._change()
+        self._commit(["src/export.py"])
+
+        result = dashboard._safe_detect_openspec(change)
+
+        self.assertEqual(result["stage"], "ready-to-implement")
+        self.assertEqual(result["next_action"], "orchestrator")
+
+    def test_drifted_cached_plan_is_rejected(self):
+        change = self._change()
+        spec_id, tasks = dashboard._taskformats.load_spec(change)
+        fp = runplan.fingerprint(change, tasks)
+        plan = runplan.RunPlan(
+            spec_id=spec_id,
+            fingerprint=fp,
+            source=runplan.SOURCE_COMPILED,
+            tasks=(
+                runplan.TaskPlan(id="1.1", files=("src/export.py",)),
+                runplan.TaskPlan(id="1.2", files=("src/extra.py",)),
+            ),
+        )
+        runplan.store(runplan_compile.default_cache_dir(self.repo), plan)
+        self._commit(["src/export.py", "src/extra.py"])
+
+        result = dashboard._safe_detect_openspec(change)
+
+        self.assertEqual(result["stage"], "ready-to-implement")
+        self.assertNotIn("stale_task_ids", result)
+
+    def test_mixed_stale_and_real_pending_tasks_stays_ready(self):
+        change = self._change(
+            "- [ ] 1.1 Implement exporter\n- [ ] 1.2 Add missing integration\n"
+        )
+        self._cache(
+            change,
+            {"1.1": ["src/export.py"], "1.2": ["src/missing.py"]},
+        )
+        self._commit(["src/export.py"])
+
+        result = dashboard._safe_detect_openspec(change)
+
+        self.assertEqual(result["stage"], "ready-to-implement")
+        self.assertEqual(result["stale_task_ids"], ["1.1"])
 
 
 class NonSpecDirsGitignoreSync(unittest.TestCase):
