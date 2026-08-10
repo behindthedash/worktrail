@@ -12,6 +12,8 @@ from __future__ import annotations
 import importlib.metadata as md
 import json
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -230,6 +232,43 @@ def test_opencode_bridge_exposes_session_end_parity():
     assert '"session.idle"' in text
     assert '"session.compacted"' in text
     assert "worktrail-handoff" in text
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not on PATH")
+def test_opencode_bridge_registers_openspec_propose_deterministically():
+    """worktrail-skill-dispatch always sends `--skill openspec-propose`, which
+    skill_dispatch.py's `_prompt` turns into `/openspec-propose <args>` for opencode.
+    Without a matching `input.command["openspec-propose"]` entry, that command name
+    resolves only if the model happens to glob-search for and read
+    skills/openspec-propose/SKILL.md itself — verified live 2026-08-09 (PR #264
+    follow-up) to work only by luck, not by design. The bridge must register the
+    command and embed the skill's real procedure so resolution never depends on
+    model self-discovery."""
+    bridge = REPO_ROOT / ".opencode" / "plugins" / "worktrail.js"
+    text = bridge.read_text()
+    assert '"openspec-propose"' in text
+    assert "readFileSync" in text, "must read the skill body rather than pointing at a path"
+
+    script = f"""
+    import({json.dumps(bridge.as_uri())}).then(async (m) => {{
+      const plugin = await m.Worktrail({{ directory: {json.dumps(str(REPO_ROOT))} }})
+      const input = {{}}
+      await plugin.config(input)
+      const cmd = input.command["openspec-propose"]
+      if (!cmd) {{ console.error("MISSING"); process.exit(1) }}
+      process.stdout.write(cmd.template)
+    }})
+    """
+    result = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        capture_output=True, text=True, timeout=15,
+    )
+    assert result.returncode == 0, result.stderr
+    template = result.stdout
+    # The template must carry the real propose procedure, not a bare pointer.
+    assert "openspec new change" in template
+    assert "openspec instructions" in template
+    assert "$ARGUMENTS" in template
 
 
 def test_spec_worktree_setup_does_not_number_openspec_change_ids():
