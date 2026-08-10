@@ -1317,6 +1317,7 @@ def drain(config: DrainConfig,
         "resumed_quarantines": resumed.get("quarantined_budget_exhausted", []),
         "resumed_verify_pending": resumed.get("verify_pending", []),
         "resumed_stale_bookkeeping": resumed.get("stale_bookkeeping", []),
+        "resumed_sync_pending": resumed.get("sync_pending", []),
         "elapsed_s": int(clock() - started),
     }
     if pending_approvals:

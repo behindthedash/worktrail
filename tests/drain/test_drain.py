@@ -20,6 +20,7 @@ from worktrail.drain.drain import (
     acquire_lock,
     build_command,
     build_full_real_resume_command,
+    build_sync_command,
     capacity_gated,
     claimed_brief_ids,
     classify_outcome,
@@ -1369,6 +1370,15 @@ def test_build_full_real_resume_command_has_no_fresh_flag():
     assert "--fresh" not in cmd  # resume=True is full-real's own default
 
 
+def test_build_sync_command_uses_opsx_sync_dispatch():
+    repo = Path("/tmp/repo-a")
+    assert build_sync_command("claude", repo, "spec-a") == [
+        "worktrail-skill-dispatch", "--agent", "claude",
+        "--skill", "opsx:sync", "--args", "spec-a",
+        "--cwd", str(repo), "--write",
+    ]
+
+
 def test_resume_quarantined_budget_exhausted_invokes_full_real_once_per_spec(tmp_path):
     repo = _make_repo(tmp_path, "repo-a")
     (repo / "docs" / "specs" / "spec-a").mkdir(parents=True)
@@ -1522,6 +1532,7 @@ def test_drain_sweeps_verify_pending_at_pre_and_post_loop_points(tmp_path, monke
     assert "resumed_quarantines" in summary
     assert "resumed_verify_pending" in summary
     assert "resumed_stale_bookkeeping" in summary
+    assert "resumed_sync_pending" in summary
 
 
 # ---------------------------------------------------------------------------
@@ -1611,7 +1622,10 @@ def test_remediation_table_excludes_orchestrator_stuck():
     keys = {row.key for row in REMEDIATION_TABLE}
     assert "orchestrator_stuck" not in keys
     assert "fanout_failed" not in keys
-    assert keys == {"quarantined_budget_exhausted", "verify_pending", "stale_bookkeeping"}
+    assert keys == {
+        "quarantined_budget_exhausted", "verify_pending",
+        "stale_bookkeeping", "sync_pending",
+    }
 
 
 # ---------------------------------------------------------------------------
