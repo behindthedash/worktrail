@@ -33,7 +33,7 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
-from worktrail.conductor import runplan
+from worktrail.conductor import req_coverage, runplan
 from worktrail.orchestrator.coordinator import TAIL_KINDS
 from worktrail.conductor.runplan import (
     COMPILE_MARKER_NAME,
@@ -502,8 +502,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     merged, notes = runplan.apply_to_tasks(tasks, plan)
     gaps = needs_compile(merged)
     collisions = runplan.unordered_file_collisions(merged)
+    uncovered = req_coverage.find_uncovered_requirements(spec_dir, repo)
 
-    if not (gaps or collisions):
+    if not (gaps or collisions or uncovered):
         write_marker(spec_dir, plan.fingerprint)
 
     if a.json:
@@ -512,7 +513,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             _print_scope_gap_error(gaps)
         if collisions:
             _print_ordering_gap_error(collisions)
-        return 1 if (gaps or collisions) else 0
+        if uncovered:
+            _print_req_coverage_gap_error(uncovered)
+        return 1 if (gaps or collisions or uncovered) else 0
 
     print(f"{plan.spec_id}  source={plan.source}  fingerprint={plan.fingerprint[:12]}")
     print(f"  cache: {runplan.cache_path(a.cache_dir or default_cache_dir(repo), spec_id, plan.fingerprint)}")
@@ -525,7 +528,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         _print_scope_gap_error(gaps)
     if collisions:
         _print_ordering_gap_error(collisions)
-    return 1 if (gaps or collisions) else 0
+    if uncovered:
+        _print_req_coverage_gap_error(uncovered)
+    return 1 if (gaps or collisions or uncovered) else 0
 
 
 def _print_scope_gap_error(gaps: List[str]) -> None:
@@ -559,6 +564,22 @@ def _print_ordering_gap_error(collisions: List[tuple]) -> None:
         "nothing in the plan itself asserts it. Add an explicit `deps` edge between "
         "them (either order), or retry compile (--force) with more context so the "
         "model can place one.",
+        file=sys.stderr,
+    )
+
+
+def _print_req_coverage_gap_error(uncovered: List[str]) -> None:
+    """Shared by both `main()` output modes, same shape as `_print_scope_gap_error`."""
+    print(
+        f"ERROR: {len(uncovered)} requirement(s) declared by this change have no "
+        f"task coverage: {', '.join(uncovered)}",
+        file=sys.stderr,
+    )
+    print(
+        "  each was newly added or modified under `specs/**/spec.md` but never "
+        "mentioned in `tasks.md`. Add a task that names it (or references it "
+        "explicitly), or drop the requirement if it is not actually part of this "
+        "change.",
         file=sys.stderr,
     )
 
