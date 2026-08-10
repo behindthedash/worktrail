@@ -29,6 +29,7 @@ from worktrail.drain.drain import (
     ensure_pr_risk_label,
     find_resumable_quarantines,
     find_stale_bookkeeping_specs,
+    find_sync_pending_specs,
     find_verify_pending_specs,
     newest_run_record,
     parse_run_record,
@@ -1195,6 +1196,64 @@ def test_find_verify_pending_specs_go_repo_filter(tmp_path):
         repo_b, "spec-b", "https://github.com/test/repo/pull/2"
     )
     found = find_verify_pending_specs(tmp_path, go_repo="repo-b")
+    assert [f["repo_name"] for f in found] == ["repo-b"]
+
+
+# ---------------------------------------------------------------------------
+# Sync-pending sweep
+
+
+def _write_sync_pending_spec(repo: Path, spec_id: str) -> None:
+    """A spec with all tasks completed and no knowledge-graph.json (sync never
+    ran) and no run journal at all -- the fixture shape dashboard.detect_stage
+    requires to label a spec "sync-pending" (mirrors
+    tests/router/test_dashboard.py's test_completed_but_unsynced_is_sync_pending)."""
+    spec_dir = repo / "docs" / "specs" / spec_id
+    tasks_dir = spec_dir / "tasks"
+    tasks_dir.mkdir(parents=True)
+    (spec_dir / "2026-05-29--feature.md").write_text(
+        f"# Feature Specification: X\n\n**ID**: {spec_id}\n\n## Summary\nstuff\n"
+    )
+    (tasks_dir / "TASK-001.md").write_text(
+        "---\nid: TASK-001\nstatus: completed\nkind: impl\ndependencies: []\n---\n# TASK-001\n"
+    )
+
+
+def test_find_sync_pending_specs_discovers_across_repos(tmp_path):
+    repo_a = _make_repo(tmp_path, "repo-a")
+    _write_sync_pending_spec(repo_a, "spec-a")
+    repo_b = _make_repo(tmp_path, "repo-b")  # clean repo, nothing sync-pending
+    found = find_sync_pending_specs(tmp_path)
+    assert [f["repo_name"] for f in found] == ["repo-a"]
+    assert found[0]["spec_id"] == "spec-a"
+    assert found[0]["spec_rel"] == "docs/specs/spec-a"
+    assert found[0]["repo"] == repo_a
+
+
+def test_find_sync_pending_specs_excludes_non_sync_pending_stages(tmp_path):
+    repo = _make_repo(tmp_path, "repo-a")
+    _write_ready_to_implement_spec(repo, "spec-a")
+    assert find_sync_pending_specs(tmp_path) == []
+
+
+def test_find_sync_pending_specs_skips_spec_with_no_resolvable_path(tmp_path, monkeypatch):
+    repo = _make_repo(tmp_path, "repo-a")
+    # dashboard.scan reports a sync-pending row for "spec-a", but no
+    # docs/specs/spec-a or openspec/changes/spec-a folder exists on disk --
+    # e.g. the spec was since deleted/archived after the scan ran.
+    monkeypatch.setattr(
+        drain.dashboard, "scan",
+        lambda specs_root: [{"id": "spec-a", "stage": "sync-pending"}],
+    )
+    assert find_sync_pending_specs(tmp_path) == []
+
+
+def test_find_sync_pending_specs_go_repo_filter(tmp_path):
+    repo_a = _make_repo(tmp_path, "repo-a")
+    _write_sync_pending_spec(repo_a, "spec-a")
+    repo_b = _make_repo(tmp_path, "repo-b")
+    _write_sync_pending_spec(repo_b, "spec-b")
+    found = find_sync_pending_specs(tmp_path, go_repo="repo-b")
     assert [f["repo_name"] for f in found] == ["repo-b"]
 
 
