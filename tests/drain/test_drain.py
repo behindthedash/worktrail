@@ -1221,6 +1221,21 @@ def _write_sync_pending_spec(repo: Path, spec_id: str) -> None:
     )
 
 
+def _write_openspec_sync_pending_change(repo: Path, change_id: str) -> tuple[Path, Path]:
+    change = repo / "openspec" / "changes" / change_id
+    delta = change / "specs" / "export" / "spec.md"
+    canonical = repo / "openspec" / "specs" / "export" / "spec.md"
+    delta.parent.mkdir(parents=True)
+    canonical.parent.mkdir(parents=True)
+    (change / "tasks.md").write_text("## 1. Export\n\n- [x] 1.1 Add export\n")
+    delta.write_text(
+        "## ADDED Requirements\n\n### Requirement: CSV export\n\n"
+        "#### Scenario: Successful export\n"
+    )
+    canonical.write_text("# Export\n")
+    return delta, canonical
+
+
 def test_find_sync_pending_specs_discovers_across_repos(tmp_path):
     repo_a = _make_repo(tmp_path, "repo-a")
     _write_sync_pending_spec(repo_a, "spec-a")
@@ -1230,6 +1245,22 @@ def test_find_sync_pending_specs_discovers_across_repos(tmp_path):
     assert found[0]["spec_id"] == "spec-a"
     assert found[0]["spec_rel"] == "docs/specs/spec-a"
     assert found[0]["repo"] == repo_a
+
+
+def test_find_sync_pending_specs_discovers_openspec_until_reconciled(tmp_path):
+    repo = _make_repo(tmp_path, "repo-a")
+    _delta, canonical = _write_openspec_sync_pending_change(repo, "add-export")
+
+    found = find_sync_pending_specs(tmp_path)
+
+    assert len(found) == 1
+    assert found[0]["spec_id"] == "add-export"
+    assert found[0]["spec_rel"] == "openspec/changes/add-export"
+
+    canonical.write_text(
+        "### Requirement: CSV export\n\n#### Scenario: Successful export\n"
+    )
+    assert find_sync_pending_specs(tmp_path) == []
 
 
 def test_find_sync_pending_specs_excludes_non_sync_pending_stages(tmp_path):

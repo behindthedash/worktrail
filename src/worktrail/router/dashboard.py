@@ -1060,6 +1060,84 @@ def _safe_detect_stage(spec_dir: Path) -> Dict[str, Any]:
         }
 
 
+_OPENSPEC_DELTA_SECTION = re.compile(
+    r"^## (ADDED|MODIFIED|REMOVED|RENAMED) Requirements\s*$", re.MULTILINE
+)
+_OPENSPEC_REQUIREMENT = re.compile(r"^### Requirement:\s*(.+?)\s*$", re.MULTILINE)
+_OPENSPEC_SCENARIO = re.compile(r"^#### Scenario:\s*(.+?)\s*$", re.MULTILINE)
+_OPENSPEC_RENAME = re.compile(r"^-\s*(FROM|TO):\s*`?(.+?)`?\s*$", re.MULTILINE)
+
+
+def _openspec_headings(text: str) -> tuple[set[str], set[str]]:
+    """Return stable requirement and scenario names from an OpenSpec spec."""
+    return (
+        {match.strip() for match in _OPENSPEC_REQUIREMENT.findall(text)},
+        {match.strip() for match in _OPENSPEC_SCENARIO.findall(text)},
+    )
+
+
+def _rename_requirement_name(value: str) -> str:
+    value = value.strip().strip("`").strip()
+    prefix = "### Requirement:"
+    return value[len(prefix):].strip() if value.startswith(prefix) else value
+
+
+def _openspec_delta_reconciled(change_dir: Path) -> bool:
+    """Whether every structural declaration in an OpenSpec delta is canonical.
+
+    This deliberately compares headings only. It is a read-only workflow signal,
+    not an attempt to decide whether requirement prose is semantically equivalent.
+    """
+    delta_files = sorted((change_dir / "specs").glob("**/spec.md"))
+    if not delta_files:
+        return True
+
+    repo = change_dir.parent.parent.parent
+    for delta_file in delta_files:
+        relative = delta_file.relative_to(change_dir / "specs")
+        canonical_file = repo / "openspec" / "specs" / relative
+        if not canonical_file.is_file():
+            return False
+
+        canonical_requirements, canonical_scenarios = _openspec_headings(
+            canonical_file.read_text(errors="ignore")
+        )
+        delta_text = delta_file.read_text(errors="ignore")
+        sections = list(_OPENSPEC_DELTA_SECTION.finditer(delta_text))
+        if not sections:
+            raise ValueError(f"no recognized delta sections in {delta_file}")
+        for index, section in enumerate(sections):
+            end = (
+                sections[index + 1].start()
+                if index + 1 < len(sections)
+                else len(delta_text)
+            )
+            body = delta_text[section.end():end]
+            kind = section.group(1)
+            requirements, scenarios = _openspec_headings(body)
+            if kind in {"ADDED", "MODIFIED"}:
+                if not requirements.issubset(canonical_requirements):
+                    return False
+                if not scenarios.issubset(canonical_scenarios):
+                    return False
+            elif kind == "REMOVED":
+                if requirements & canonical_requirements:
+                    return False
+            else:
+                rename_values: Dict[str, List[str]] = {"FROM": [], "TO": []}
+                for direction, value in _OPENSPEC_RENAME.findall(body):
+                    rename_values[direction].append(_rename_requirement_name(value))
+                if not rename_values["FROM"] or len(rename_values["FROM"]) != len(
+                    rename_values["TO"]
+                ):
+                    raise ValueError(f"malformed RENAMED Requirements in {delta_file}")
+                if any(name in canonical_requirements for name in rename_values["FROM"]):
+                    return False
+                if any(name not in canonical_requirements for name in rename_values["TO"]):
+                    return False
+    return True
+
+
 def _safe_detect_openspec(change_dir: Path) -> Dict[str, Any]:
     """Project an OpenSpec change into the dashboard's common stage shape."""
     try:
@@ -1092,8 +1170,10 @@ def _safe_detect_openspec(change_dir: Path) -> Dict[str, Any]:
                 "verify-pending",
                 "resume full-real (verify → merge → cleanup)",
             )
+        elif not _openspec_delta_reconciled(change_dir):
+            stage, next_action = "sync-pending", "sync change"
         else:
-            stage, next_action = "complete", "sync/archive"
+            stage, next_action = "complete", "archive"
         info = {
             "id": spec_id,
             "format": "openspec",
