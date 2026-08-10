@@ -1,9 +1,11 @@
 # Pre-Dispatch Brief-Staleness Guard
 
-`/go` Phase 5.5's sibling branch to `spec-collision-check.md`. That one asks "does a shipped spec
-already cover this request?" for a Route C/D dispatch. This one asks a different question for a
-brief-sourced Route E/F dispatch: **did the work this brief describes already land while it sat
-in the queue?**
+`/go` Phase 5.5's branch that runs for every brief-sourced dispatch. It asks: **did the work
+this brief describes already land while it sat in the queue?** Its siblings ask related but
+different questions on a narrower route gate — `spec-collision-check.md` asks "does a shipped
+spec already cover this request?" for a Route C/D dispatch, and `related-brief-collision-check.md`
+asks "is a brief this one names as related actively claimed right now?" for routes A/B/G-J. This
+branch, unlike those two, is not route-gated: it runs alongside whichever sibling also applies.
 
 Incident (2026-08-05): brief `20260731-204048` (`prevent-destructive-commands.py` squash-merge +
 `cd`-prefix verification) was fully delivered by `behindthedash/devops` PR #89, merged
@@ -12,10 +14,18 @@ a session claimed it, classified it, opened a run record, and only then discover
 nothing to do. The verification itself cost about four tool calls; the waste was that it happened
 *after* the dispatch rather than before it.
 
-**Gate: brief-sourced AND route E or F.** Both conditions. A brainstorm/free-text dispatch has no
-`created:` timestamp to bound the search and no captured prose to extract probes from, so it
-skips this branch even on route E/F. A brief-sourced dispatch on any other route skips it too —
-routes C/D run the spec-collision branch instead, and the two never both run.
+A second incident (2026-08-10, discovered while working brief `20260722-152347`) surfaced the
+same waste on a Route J dispatch — a route this branch did not yet cover: the requested work had
+already been delivered by prior PRs #68 and #70, caught only by manual `git log -S`/`gh pr view`
+diligence after Phase 6 had already opened a run record.
+
+**Gate: brief-sourced.** A brainstorm/free-text dispatch has no `created:` timestamp to bound
+the search and no captured prose to extract probes from, so it skips this branch regardless of
+route. A brief-sourced dispatch runs this branch on **every** resolved route (`A`-`J`) — there is
+no route exclusion. On routes C/D it runs in addition to the spec-collision branch; on routes
+A/B/G-J (when the brief carries `related:` entries) it runs in addition to the related-brief-
+collision branch. Running more than one branch for the same dispatch is expected, not a bug:
+each branch answers a different question and none suppresses another.
 
 ## Running it
 

@@ -286,18 +286,49 @@ instead — this is not a caller decision to make; just log it (Phase 6) for vis
 
 ### Phase 5.5 — Collision & Staleness Guard
 
-One question — "has this already been done?" — asked three ways, by three mutually exclusive,
-route-gated branches that share no state. A Route C/D dispatch checks for **spec collision**
-(does a shipped spec already cover this request?); a brief-sourced Route E/F dispatch checks for
-**brief staleness** (did the work this brief describes already land while it sat in the queue?);
-a brief-sourced dispatch on any other route checks for a **related-brief collision** (is a brief
-this one names as `related:` actively claimed and in flight right now?). A free-text dispatch
-with no claimed brief skips both brief-sourced branches.
+One question — "has this already been done?" — asked three ways, by three branches that share
+no state. Only two of the three are mutually exclusive with each other: a Route C/D dispatch
+checks for **spec collision** (does a shipped spec already cover this request?), while a
+brief-sourced dispatch on any other route checks for a **related-brief collision** (is a brief
+this one names as `related:` actively claimed and in flight right now?) — those two never both
+run. The third, **brief staleness** (did the work this brief describes already land while it sat
+in the queue?), is not route-gated at all: it runs on every brief-sourced dispatch, on top of
+whichever of the other two also applies. A free-text dispatch with no claimed brief skips all
+brief-sourced branches; it may still run spec collision on Route C/D.
+
+**Brief-staleness branch (every brief-sourced dispatch).**
+
+Gated on the dispatch being brief-sourced (a claimed brief is in play) — there is no route
+restriction. A free-text dispatch with no claimed brief skips this branch regardless of route —
+the check is built on a brief's `created:` timestamp and captured prose, which free text has no
+equivalent of. Before starting Phase 6's run record, run:
+
+```bash
+worktrail-check-brief-staleness --repo "$REPO" --brief "<claimed-brief-path>" --json
+```
+
+It extracts bounded path/symbol/PR probes from the brief's prose and searches the base branch's
+commit history — plus, best-effort, merged PRs — for anything matching them since the brief was
+captured. Read the result the same way as the sibling branches: `checked: false` means the
+question was unanswerable (not a git checkout, missing/malformed `created:`, no probes, a
+timeout) and Phase 6/7 proceed unmodified; `checked: true` with empty `matches` is a definite
+searched-and-clean negative and also proceeds silently. `gh` being missing, unauthenticated,
+erroring, or slow is **not** a `checked: false` cause — it degrades to an empty `pull_requests`
+list plus a warning while any git-history `matches` are kept.
+
+On `checked: true` with non-empty `matches` (or `pull_requests`), **never auto-close the brief** —
+unlike the spec-collision branch, evidence that a commit touched the named symbols is not proof
+the brief is satisfied, so the operator is always asked via `AskUserQuestion` (close as
+already-delivered, or proceed anyway) before Phase 6/7 continues. On "proceed", still run
+whichever of the two route-gated branches below also applies to this dispatch — the staleness
+prompt resolving does not skip them. Full procedure — command, how to read the result, the
+prompt shape, and the run-record entries: `references/brief-staleness-check.md`.
 
 **Route C/D branch: spec collision.**
 
 Gated on Phase 5's resolved route (`$ROUTE`) being `C` or `D` only — every other route skips
-this branch. Before starting Phase 6's run record, check whether an existing,
+this branch. Runs in addition to the brief-staleness branch above when the dispatch is also
+brief-sourced. Before starting Phase 6's run record, check whether an existing,
 already-`Implemented` spec under `docs/specs/` already covers the request: run
 `check_spec_collision.py --repo "$REPO" --json` for the candidate list, judge each candidate
 against the dispatch's comparison text (a claimed brief's `focus` field, or the free-text
@@ -311,39 +342,14 @@ non-confirmed outcome — `checked: false`, no candidate judged a match, or `con
 leaves Phase 6/7 unmodified and un-delayed. Full procedure, including both dispatch-source
 branches and exact command syntax: `references/spec-collision-check.md`.
 
-**Route E/F branch: brief staleness.**
-
-Gated on the dispatch being brief-sourced (a claimed brief is in play) **and** Phase 5's resolved
-route being `E` or `F`. A free-text dispatch with no claimed brief skips this branch even on
-route E/F — the check is built on a brief's `created:` timestamp and captured prose, which free
-text has no equivalent of. Before starting Phase 6's run record, run:
-
-```bash
-worktrail-check-brief-staleness --repo "$REPO" --brief "<claimed-brief-path>" --json
-```
-
-It extracts bounded path/symbol/PR probes from the brief's prose and searches the base branch's
-commit history — plus, best-effort, merged PRs — for anything matching them since the brief was
-captured. Read the result the same way as the sibling branch: `checked: false` means the question
-was unanswerable (not a git checkout, missing/malformed `created:`, no probes, a timeout) and
-Phase 6/7 proceed unmodified; `checked: true` with empty `matches` is a definite searched-and-clean
-negative and also proceeds silently. `gh` being missing, unauthenticated, erroring, or slow is
-**not** a `checked: false` cause — it degrades to an empty `pull_requests` list plus a warning
-while any git-history `matches` are kept.
-
-On `checked: true` with non-empty `matches` (or `pull_requests`), **never auto-close the brief** —
-unlike the spec-collision branch, evidence that a commit touched the named symbols is not proof
-the brief is satisfied, so the operator is always asked via `AskUserQuestion` (close as
-already-delivered, or proceed anyway) before Phase 6/7 continues. Full procedure — command,
-how to read the result, the prompt shape, and the run-record entries:
-`references/brief-staleness-check.md`.
-
 **Related-brief collision branch.**
 
 Gated on the dispatch being brief-sourced (a claimed brief is in play), that brief's `related:`
 frontmatter being non-empty, **and** Phase 5's resolved route being anything other than C, D, E,
-or F — those four routes are already covered by the two branches above, and a free-text dispatch
-has no claimed brief to read `related:` off. Before starting Phase 6's run record, run
+or F — Route C/D is already covered by the branch above, and Route E/F deliberately keeps only
+the staleness signal rather than adding a second prompt surface on top of it. A free-text
+dispatch has no claimed brief to read `related:` off. Runs in addition to the brief-staleness
+branch above when it applies. Before starting Phase 6's run record, run
 `worktrail-check-related-brief-claims --brief "<claimed-brief-path>" --json` to ask whether any
 brief this one names as `related:` is itself actively claimed and in flight right now. Read the
 result the same way as the sibling branches: `checked: false` means the question was unanswerable
