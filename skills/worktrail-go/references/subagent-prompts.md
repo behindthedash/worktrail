@@ -579,8 +579,14 @@ Perform the post-orchestrator knowledge-graph update inline:
 6. Write the updated `knowledge-graph.json` back to `$SYNC_WT/docs/specs/$SPEC_ID/knowledge-graph.json`.
 
 **Step 4 — commit + PR if sync produced changes, with CI-wait gate:**
+
+`git diff --quiet HEAD` only sees tracked-file changes — it misses a brand-new
+`knowledge-graph.json` written for a spec that had none yet, since an untracked file
+never appears in a diff against `HEAD`. Use `git status --porcelain`, which reports
+untracked files too:
+
 ```bash
-git -C "$SYNC_WT" diff --quiet HEAD -- docs/specs/ || {
+[ -z "$(git -C "$SYNC_WT" status --porcelain -- docs/specs/)" ] || {
   git -C "$SYNC_WT" add docs/specs/
   git -C "$SYNC_WT" commit -m "sync($SPEC_ID): update KG and task statuses post-orchestrator"
   git -C "$SYNC_WT" push -u origin "sync/$SPEC_ID"
