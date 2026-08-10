@@ -1,6 +1,6 @@
 ## 1. Implementation
 
-- [ ] 1.1 Add `find_sync_pending_specs(repos_root, go_repo)` to `drain.py`, mirroring `find_verify_pending_specs` with the stage filter changed to `sync-pending`.
+- [ ] 1.1 Implement the Sync-pending remediation requirement: add `find_sync_pending_specs(repos_root, go_repo)` to `drain.py`, mirroring `find_verify_pending_specs` with the stage filter changed to `sync-pending`.
 - [ ] 1.2 Add `build_sync_command(agent, repo, spec_id)` to `drain.py`, wrapping the installed `worktrail-skill-dispatch` console script (`--agent`, `--skill opsx:sync`, `--args <spec_id>`, `--cwd <repo>`, `--write`) per design.md.
 - [ ] 1.3 Add `_run_sync_pending(finding, agent, timeout, spawner, log)` and the public `resume_sync_pending(repos_root, go_repo, agent, timeout, spawner, log)` wrapper, mirroring `_resume_via_full_real`/`resume_verify_pending`'s shape.
 - [ ] 1.4 Add the `sync_pending` row (`StageRemediation("sync_pending", "resume-sync-pending", find_sync_pending_specs, _run_sync_pending)`) to `REMEDIATION_TABLE`.
@@ -15,5 +15,5 @@
 
 ## 3. Verification
 
-- [ ] 3.1 `PYTHONPATH=src pytest -q` green.
-- [ ] 3.2 `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` green.
+- [ ] 3.1 [cleanup] `PYTHONPATH=src pytest -q` green.
+- [ ] 3.2 [cleanup] `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` green.
