@@ -67,6 +67,6 @@
       the change must pass the gate it introduces. Also run the full gate
       (`PYTHONPATH=src pytest -q` and `PYTHONPATH=src python3 -m
       worktrail.orchestrator.orchestrate check`) and confirm both pass.
-- [ ] 5.2 Decide and record the version-bump handling for this PR per
-      `AGENTS.md` (standalone `chore: bump` commit versus carrying the
+- [ ] 5.2 [cleanup] Decide and record the version-bump handling for this PR
+      per `AGENTS.md` (standalone `chore: bump` commit versus carrying the
       `go:no-version-bump` label for a later batch bump).
