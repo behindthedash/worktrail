@@ -89,7 +89,13 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from ..shared.brief_frontmatter import read_frontmatter, validate_brief
+import yaml
+
+from ..shared.brief_frontmatter import (
+    _find_frontmatter_block,
+    read_frontmatter,
+    validate_brief,
+)
 
 _FM_RE = re.compile(r"^---\r?\n(.*?)\n---\r?\n", re.DOTALL)
 
@@ -157,12 +163,42 @@ def _has_unterminated_fence(content: str) -> bool:
     return first_line == "---"
 
 
+def _yaml_scalar(value: Any) -> str:
+    """Render `value` as a single-line YAML scalar, quoting only when needed.
+
+    Interpolating a raw value into `f"{key}: {value}"` is how a brief's whole
+    frontmatter block gets silently destroyed: a `focus:` containing `": "`
+    makes the block unparsable, `split_frontmatter` leniently degrades it to
+    `{}`, and every gating field a scheduler reads (`next-check-after`,
+    `blocked-by`, `triage`) then reads as absent -- so a brief explicitly
+    deferred to a future date becomes maximally eligible instead. Observed on
+    a real queued brief (`20260623-093000-datalena-deferred-dep-upgrades`),
+    which `/go auto` picked a fortnight before its `next-check-after`.
+
+    `yaml.safe_dump` decides quoting the same way a parser does, so ordinary
+    values (`picked`, a repo path, a URL) stay unquoted and only genuinely
+    ambiguous ones gain quotes. A value whose safe rendering would span lines
+    falls back to `json.dumps`, which is always a valid single-line
+    double-quoted YAML scalar.
+    """
+    dumped = yaml.safe_dump(
+        value, default_flow_style=True, width=10**9, allow_unicode=True
+    )
+    if dumped.endswith("...\n"):  # document-end marker on a plain scalar
+        dumped = dumped[: -len("...\n")]
+    scalar = dumped.strip()
+    if "\n" in scalar:
+        return json.dumps(value if isinstance(value, str) else str(value))
+    return scalar
+
+
 def _set_fm_fields(path: Path, fields: Dict[str, str]) -> None:
     """Set/replace simple scalar fields inside the YAML frontmatter block.
 
     Operates only on the frontmatter region to preserve body formatting and key
     order. A field already present is replaced in place; a new field is inserted
-    just before the closing `---`.
+    just before the closing `---`. Values are rendered via `_yaml_scalar`, and
+    the result is validated before the write is allowed to stand.
     """
     content = path.read_text(encoding="utf-8")
     m = _FM_RE.match(content)
@@ -173,8 +209,10 @@ def _set_fm_fields(path: Path, fields: Dict[str, str]) -> None:
                 "refusing to prepend a new frontmatter block over already-broken content"
             )
         # no frontmatter -> create a minimal block
-        fm_lines = [f"{k}: {v}" for k, v in fields.items()]
-        path.write_text("---\n" + "\n".join(fm_lines) + "\n---\n" + content, encoding="utf-8")
+        fm_lines = [f"{k}: {_yaml_scalar(v)}" for k, v in fields.items()]
+        path.write_text(
+            "---\n" + "\n".join(fm_lines) + "\n---\n" + content, encoding="utf-8"
+        )
         return
 
     block = m.group(1)
@@ -183,9 +221,9 @@ def _set_fm_fields(path: Path, fields: Dict[str, str]) -> None:
     for i, line in enumerate(lines):
         key = line.split(":", 1)[0].strip() if ":" in line else None
         if key in remaining:
-            lines[i] = f"{key}: {remaining.pop(key)}"
+            lines[i] = f"{key}: {_yaml_scalar(remaining.pop(key))}"
     for k, v in remaining.items():  # append any not already present
-        lines.append(f"{k}: {v}")
+        lines.append(f"{k}: {_yaml_scalar(v)}")
     new_block = "\n".join(lines)
     path.write_text(content[: m.start(1)] + new_block + content[m.end(1) :], encoding="utf-8")
 
@@ -221,7 +259,7 @@ def _set_fm_list_field(path: Path, key: str, values: List[str]) -> None:
             )
         if not values:
             return
-        block_text = key + ":\n" + "".join(f"  - {v}\n" for v in values)
+        block_text = key + ":\n" + "".join(f"  - {_yaml_scalar(v)}\n" for v in values)
         path.write_text(f"---\n{block_text}---\n{content}", encoding="utf-8")
         return
 
@@ -242,13 +280,13 @@ def _set_fm_list_field(path: Path, key: str, values: List[str]) -> None:
             skip_continuations = True
             if values:
                 new_lines.append(f"{key}:")
-                new_lines.extend(f"  - {v}" for v in values)
+                new_lines.extend(f"  - {_yaml_scalar(v)}" for v in values)
             continue
         new_lines.append(line)
 
     if not key_found and values:
         new_lines.append(f"{key}:")
-        new_lines.extend(f"  - {v}" for v in values)
+        new_lines.extend(f"  - {_yaml_scalar(v)}" for v in values)
 
     new_block = "\n".join(new_lines)
     path.write_text(content[: m.start(1)] + new_block + content[m.end(1) :], encoding="utf-8")
@@ -356,11 +394,30 @@ def _recently_released_info(path: Path) -> Dict[str, Any]:
     return info
 
 
+def _frontmatter_unparsable(path: Path) -> bool:
+    """True when a brief has a `---` block that does not parse to a mapping.
+
+    Distinct from "has no frontmatter at all": a fenced block that fails YAML
+    parsing is a brief whose fields exist on disk but are invisible to every
+    reader, because `split_frontmatter` is deliberately lenient and degrades
+    it to `{}`. Leniency is right for display, but a scheduler reading `{}`
+    concludes "no `next-check-after`, no `blocked-by`, no `triage`" -- i.e.
+    *maximally* eligible -- which inverts the file's actual meaning.
+    """
+    try:
+        content = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    if _find_frontmatter_block(content) is None:
+        return False  # genuinely no frontmatter -- not a corruption signal
+    return not read_frontmatter(path)
+
+
 def list_queue() -> Dict[str, Any]:
     """Queue briefs newest-first:
 
     {"briefs": [{filename, path, focus, blocked, not_yet_due, recently_released,
-    recently_released_by, recently_released_at, related}, ...]}.
+    recently_released_by, recently_released_at, related, unparsable}, ...]}.
     """
 
     def _brief_dict(f: Path) -> Dict[str, Any]:
@@ -378,6 +435,7 @@ def list_queue() -> Dict[str, Any]:
             "recently_released_at": released["released_at"],
             "related": related if isinstance(related, list) else [],
             "triage": fm.get("triage") if fm.get("triage") in VALID_TRIAGE else None,
+            "unparsable": _frontmatter_unparsable(f),
         }
 
     return {"briefs": [_brief_dict(f) for f in _md_files(queue_dir())]}

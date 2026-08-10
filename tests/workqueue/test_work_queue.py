@@ -624,6 +624,86 @@ class TestUnterminatedFenceFallback(QueueTestBase):
         self.assertEqual(p.read_text(encoding="utf-8"), self._UNTERMINATED_FENCE)
 
 
+class TestUnparsableFrontmatterIsVisible(QueueTestBase):
+    """A brief whose block doesn't parse must not read as an unconstrained one.
+
+    `split_frontmatter` is deliberately lenient (a caller merely listing briefs
+    must not crash on a malformed one), so an unparsable block degrades to `{}`
+    -- and every scheduling gate then reads as absent: no `next-check-after`,
+    no `blocked-by`, no `triage`. That inverts the file's meaning, making a
+    corrupt brief *maximally* eligible. Observed live on
+    `20260623-093000-datalena-deferred-dep-upgrades`, whose `focus:` carried an
+    unquoted `": "`; `/go auto` picked it on 2026-08-10 despite
+    `next-check-after: 2026-08-31`.
+    """
+
+    BROKEN = (
+        "---\n"
+        "focus: eslint 10 blocked by a different root cause: eslint-plugin-react#3977\n"
+        "status: queued\n"
+        "next-check-after: 2099-01-01\n"
+        "---\n\n## Focus\n\nbody\n"
+    )
+
+    def test_unparsable_block_is_flagged(self):
+        p = self.queue / "20260101-000000-broken.md"
+        p.write_text(self.BROKEN, encoding="utf-8")
+
+        briefs = q.list_queue()["briefs"]
+        self.assertTrue(briefs[0]["unparsable"])
+        # the gates really do read as absent -- that is the harm being flagged
+        self.assertFalse(briefs[0]["not_yet_due"])
+
+    def test_wellformed_block_is_not_flagged(self):
+        self.write("20260101-000000-a.md", focus="ordinary work")
+
+        self.assertFalse(q.list_queue()["briefs"][0]["unparsable"])
+
+    def test_brief_with_no_frontmatter_at_all_is_not_flagged(self):
+        """Absent frontmatter is a different (supported) shape, not corruption."""
+        p = self.queue / "20260101-000000-plain.md"
+        p.write_text("just a body, no fences\n", encoding="utf-8")
+
+        self.assertFalse(q.list_queue()["briefs"][0]["unparsable"])
+
+
+class TestFrontmatterScalarQuoting(QueueTestBase):
+    """`_set_fm_fields` must render values as YAML, not interpolate them raw.
+
+    No caller stamps free text today, so this is not the path that corrupted
+    the live brief (every mutation post-validates -- see TestWriteVerification).
+    But the helper is documented as writing "simple scalar fields" and is called
+    from another module, and `f"{key}: {value}"` silently breaks the block for
+    any value a parser would read as structure.
+    """
+
+    def test_value_containing_a_colon_stays_parsable(self):
+        p = self.write("20260101-000000-a.md", focus="placeholder")
+        colon = "blocked by a different root cause: eslint-plugin-react#3977"
+        q._set_fm_fields(p, {"focus": colon})
+
+        fm = q._read_frontmatter(p)
+        self.assertEqual(fm.get("focus"), colon)
+        self.assertEqual(fm.get("status"), "queued")
+
+    def test_ordinary_values_are_not_gratuitously_quoted(self):
+        """Quote only what a parser would otherwise misread -- no churn."""
+        p = self.write("20260101-000000-a.md", focus="ordinary work")
+        q._set_fm_fields(p, {"status": "picked", "claimed-by": "interactive-session"})
+
+        block = p.read_text(encoding="utf-8")
+        self.assertIn("status: picked\n", block)
+        self.assertIn("claimed-by: interactive-session\n", block)
+
+    def test_list_values_round_trip(self):
+        p = self.write("20260101-000000-a.md", focus="ordinary work")
+        q._set_fm_list_field(p, "watch", ["npm:typescript-eslint@8.66.0"])
+
+        self.assertEqual(
+            q._read_frontmatter(p).get("watch"), ["npm:typescript-eslint@8.66.0"]
+        )
+
+
 class TestNotYetDue(QueueTestBase):
     """Tests for the `next-check-after` backoff field (REQ-CHG-001..003, AC-001, AC-005)."""
 

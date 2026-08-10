@@ -1195,7 +1195,10 @@ def auto_pick_brief(
     Ranking is FIFO oldest-first by the YYYYMMDD-HHMMSS filename prefix
     (lexicographic == chronological) — the feature exists to drain backlog, and
     newest-first would starve old briefs forever under steady inflow. A brief is
-    skipped (recorded with a reason) when it is blocked, not yet due for recheck
+    skipped (recorded with a reason) when its frontmatter doesn't parse (every
+    other gate reads frontmatter, so a corrupt brief would otherwise rank as
+    maximally eligible — see work_queue.py's `_frontmatter_unparsable`), it is
+    blocked, not yet due for recheck
     (`next-check-after` hasn't arrived — see work_queue.py's `_is_not_yet_due`),
     was released back to the queue within the last 20 minutes (another live
     session's claim/release race or a considered not-yet-actionable judgment —
@@ -1232,6 +1235,15 @@ def auto_pick_brief(
 
     for b in sorted(queue_briefs, key=_rank_key):
         stem = (b.get("filename") or "").replace(".md", "")
+        if b.get("unparsable"):
+            # Every gate below reads frontmatter. When the block doesn't parse
+            # they all read as absent, so an unparsable brief would rank as
+            # maximally eligible -- the exact inversion that let /go auto pick
+            # a brief carrying `next-check-after: 2026-08-31` on 2026-08-10.
+            # Unattended scheduling fails closed; interactive selection can
+            # still reach it (a human can see and repair the file).
+            skipped.append({"id": stem, "reason": "unparsable-frontmatter"})
+            continue
         if b.get("blocked"):
             skipped.append({"id": stem, "reason": "blocked"})
             continue

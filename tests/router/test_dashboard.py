@@ -1978,6 +1978,27 @@ class AutoPick(unittest.TestCase):
             result["skipped"], [{"id": "20260701-000000-blocked", "reason": "blocked"}]
         )
 
+    def test_unparsable_frontmatter_skipped_with_reason(self):
+        """A brief whose frontmatter doesn't parse must fail closed.
+
+        Every other gate reads frontmatter, so `{}` from the lenient reader
+        looks like "no constraints at all" — an unparsable brief would rank as
+        maximally eligible. This is what let `/go auto` pick
+        `20260623-093000-datalena-deferred-dep-upgrades` on 2026-08-10 despite
+        its `next-check-after: 2026-08-31`.
+        """
+        broken = self._brief("20260701-000000-broken.md", str(self.repo))
+        broken["unparsable"] = True
+        briefs = [broken, self._brief("20260710-000000-free.md", str(self.repo))]
+
+        result = dashboard.auto_pick_brief(briefs)
+
+        self.assertEqual(result["pick"]["id"], "20260710-000000-free")
+        self.assertEqual(
+            result["skipped"],
+            [{"id": "20260701-000000-broken", "reason": "unparsable-frontmatter"}],
+        )
+
     def test_not_yet_due_skipped_with_reason(self):
         """A not-yet-due brief (next-check-after hasn't arrived) is skipped by
         auto-pick with a distinct reason, parallel to `blocked` (AC-002)."""
