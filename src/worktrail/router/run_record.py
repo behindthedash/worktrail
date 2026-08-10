@@ -34,7 +34,14 @@ finish PATH --status completed_pr_open [--pr URL] [--merge-result ...]
             code-enforced here instead of relying on every route/dispatch
             surface to call `worktrail-ensure-pr-label` itself. Same
             best-effort posture: a correction failure never affects `finish`'s
-            exit code or JSON output.
+            exit code or JSON output. Also code-enforces the review-thread
+            gate (`check_review_threads.check`) whenever the record carries a
+            `pull_request` and `--status` is one of the three implementation-
+            completion states -- `blocking: true` raises `SystemExit`
+            (`_enforce_review_thread_gate`), a real block rather than a
+            best-effort correction, since ci-watch-loop.md documents this gate
+            as meant to stop `finish` the same way a failing check does.
+            `checked: false` (gh unavailable/network) still fails open.
   scope-review PATH --item "..." --status complete|out-of-scope|blocked
                (--evidence "..." | --reason "...")
   active-conflicts --dir DIR --repo REPO --specification SPEC [--exclude PATH]
@@ -413,6 +420,48 @@ def cmd_scope_review(args: argparse.Namespace) -> int:
     return 0
 
 
+def _enforce_review_thread_gate(record: Dict[str, Any], path: Path, pr_url: str, status: str) -> None:
+    """Code-enforced backstop for `check_review_threads.py`'s own gate.
+
+    That module documents `blocking: true` as "meant to stop finish() the
+    same way a failing check does" (ci-watch-loop.md case 1), but nothing
+    previously called it from here -- the block existed only as SKILL.md
+    prose an agent could skip. Runs unconditional on route, mirroring the PR
+    label correction below. `checked: false` (gh unavailable, network
+    hiccup, unresolvable owner/repo) is "no signal" and must never block;
+    only a definite `blocking: true` does. A crash reaching this call
+    (missing `gh`, import failure) is likewise never allowed to block --
+    same fail-open posture as the label correction, since ci-watch-loop.md's
+    own prior invocation is the primary gate and this is only the backstop
+    for an agent that skipped it.
+    """
+    from .pr_labels import _owner_repo_number
+    from .check_review_threads import check as check_review_threads
+
+    repo = str(record.get("repository") or path.parent)
+    try:
+        parsed = _owner_repo_number(repo, pr_url)
+        if parsed is None:
+            return
+        owner, name, number = parsed
+        result = check_review_threads(
+            Path(repo), int(number), run_record_path=path, owner=owner, name=name)
+    except Exception as exc:  # noqa: BLE001 - fail-open, see docstring
+        print(f"warning: run_record: review-thread gate check failed for "
+              f"{pr_url}: {exc}", file=sys.stderr)
+        return
+    if result.get("checked") and result.get("blocking"):
+        unaddressed = result.get("unaddressed") or []
+        detail = "; ".join(
+            f"{t.get('path')}:{t.get('line')}" for t in unaddressed) or "see PR"
+        raise SystemExit(
+            f"review_thread_gate: {pr_url} has {len(unaddressed)} unresolved "
+            f"review thread(s) with no corresponding commit or run-record "
+            f"decision ({detail}). Resolve or record a decision "
+            f"(run_record.py append {path} decisions \"...\") before finishing "
+            f"with '{status}'.")
+
+
 def cmd_finish(args: argparse.Namespace) -> int:
     if args.status not in COMPLETION_STATES:
         raise SystemExit(
@@ -430,6 +479,9 @@ def cmd_finish(args: argparse.Namespace) -> int:
             "planned_ready_for_implementation; proceeding to implementation "
             "requires an explicit decision entry first "
             f"(run_record.py append {path} decisions \"...\").")
+    pending_pr_url = args.pr or record.get("pull_request")
+    if pending_pr_url and args.status in IMPLEMENTATION_COMPLETION_STATES:
+        _enforce_review_thread_gate(record, path, pending_pr_url, args.status)
     record["completed_at"] = _now()
     record["status"] = "done"
     record["final_status"] = args.status

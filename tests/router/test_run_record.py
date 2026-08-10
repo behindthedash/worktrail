@@ -281,6 +281,87 @@ class TestLifecycle(unittest.TestCase):
         self.assertEqual(rec["final_status"], "completed_pr_open")
         self.assertIn("pull/5", rec["pull_request"])
 
+    def test_finish_blocks_on_unresolved_review_threads(self):
+        """The review-thread gate (`check_review_threads.py`) documents itself
+        as meant to stop `finish()` the same way a failing check does, but
+        nothing previously called it from here -- an agent that skipped the
+        SKILL.md-prose step could finish with unresolved threads. This proves
+        the code-enforced backstop actually blocks."""
+        res = _start(self.tmp, route="F")
+
+        def blocking(*_a, **_k):
+            return {"checked": True, "blocking": True, "unresolved_count": 1,
+                    "unaddressed": [{"path": "x.py", "line": 1}]}
+
+        with patch("worktrail.router.check_review_threads.check", blocking):
+            with self.assertRaises(SystemExit):
+                main(["finish", res["path"], "--status", "completed_pr_open",
+                      "--pr", "https://github.com/x/y/pull/6"])
+        rec = _load(Path(res["path"]))
+        self.assertIsNone(rec["final_status"])
+        self.assertEqual(rec["status"], "route_selected")
+
+    def test_finish_proceeds_when_review_threads_clean(self):
+        res = _start(self.tmp, route="F")
+
+        def clean(*_a, **_k):
+            return {"checked": True, "blocking": False, "unresolved_count": 0,
+                    "unaddressed": []}
+
+        with patch("worktrail.router.check_review_threads.check", clean):
+            out = StringIO()
+            with patch("sys.stdout", out):
+                rc = main(["finish", res["path"], "--status", "completed_pr_open",
+                           "--pr", "https://github.com/x/y/pull/7"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(_load(Path(res["path"]))["final_status"], "completed_pr_open")
+
+    def test_finish_proceeds_when_review_thread_check_unavailable(self):
+        """`checked: false` (gh unavailable, network hiccup, unresolvable
+        owner/repo) is 'no signal', never treated as 'nothing unresolved' --
+        finish must not block on it."""
+        res = _start(self.tmp, route="F")
+
+        def unavailable(*_a, **_k):
+            return {"checked": False, "blocking": False, "warning": "gh unavailable"}
+
+        with patch("worktrail.router.check_review_threads.check", unavailable):
+            out = StringIO()
+            with patch("sys.stdout", out):
+                rc = main(["finish", res["path"], "--status", "completed_pr_open",
+                           "--pr", "https://github.com/x/y/pull/8"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(_load(Path(res["path"]))["final_status"], "completed_pr_open")
+
+    def test_finish_skips_review_thread_check_when_no_pr(self):
+        res = _start(self.tmp, route="F")
+
+        def unexpected(*_a, **_k):
+            raise AssertionError("must not be called when finish carries no PR")
+
+        with patch("worktrail.router.check_review_threads.check", unexpected):
+            out = StringIO()
+            with patch("sys.stdout", out):
+                main(["finish", res["path"], "--status", "investigation_complete"])
+
+    def test_finish_survives_review_thread_check_crash(self):
+        """A crash inside the check (import error, unexpected exception) must
+        never block `finish` -- same fail-open posture as the label
+        correction; `checked: false` is the intended 'no signal' path, but an
+        outright exception must not escalate into a block either."""
+        res = _start(self.tmp, route="F")
+
+        def boom(*_a, **_k):
+            raise FileNotFoundError(2, "No such file or directory", "gh")
+
+        with patch("worktrail.router.check_review_threads.check", boom):
+            out = StringIO()
+            with patch("sys.stdout", out):
+                rc = main(["finish", res["path"], "--status", "completed_pr_open",
+                           "--pr", "https://github.com/x/y/pull/9"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(_load(Path(res["path"]))["final_status"], "completed_pr_open")
+
     def test_route_a_blocks_implementation_completion_without_decision(self):
         res = _start(self.tmp, route="A")
         for state in ("completed_and_merged", "completed_pr_open",

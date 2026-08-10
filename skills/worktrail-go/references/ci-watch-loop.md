@@ -94,6 +94,13 @@ blocks up to 30 s and returns on a check_run event.)
        repo's own auto-merge automation already reads before arming, so native `gh pr merge
        --auto` (which has no concept of `reviewThreads`) stops racing ahead of this gate on
        any subsequent evaluation once the label lands, not just at this loop's own `finish()`.
+       **The block itself is also code-enforced inside `finish`** (mirroring the `go:risk-*`
+       label correction): `run_record.py finish` re-runs this same check whenever the record
+       carries a `pull_request` and the completion state is one of the three implementation
+       states, and refuses to finish (`SystemExit`) on a `blocking: true` result — so skipping
+       this manual step no longer lets an unresolved thread slip through. This loop-level check
+       stays the primary path (faster feedback, no wasted retry on `finish`); `finish`'s own
+       call is the backstop.
 
      Once the gate clears (`checked: false`, or `checked: true` with `blocking: false`):
      - `autoMergeRequest` is non-null — auto-merge is armed (native GitHub toggle, bot, or
