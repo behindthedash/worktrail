@@ -515,6 +515,38 @@ def test_a_failing_cli_run_does_not_write_the_compile_marker(tmp_path, capsys):
     assert not (d / conductor_compile.COMPILE_MARKER_NAME).exists()
 
 
+def test_an_uncovered_requirement_does_not_write_the_compile_marker(tmp_path, capsys):
+    """Mirrors the case above for the `uncovered` term of the same guard
+    (`compile.py`'s `not (gaps or collisions or uncovered)`). The spawn reply
+    fully scopes the one task so this run fails on requirement coverage
+    alone, not also on scope gaps -- pinning `uncovered` specifically rather
+    than riding along on `gaps`."""
+    import subprocess
+    from unittest.mock import patch
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    d = repo / "openspec" / "changes" / "add-thing"
+    d.mkdir(parents=True)
+    (d / "proposal.md").write_text("## Why\nBecause.\n")
+    (d / "tasks.md").write_text("## 1. Core\n\n- [ ] 1.1 Add the parser\n")
+    spec_dir = d / "specs" / "cap-a"
+    spec_dir.mkdir(parents=True)
+    (spec_dir / "spec.md").write_text(
+        "## ADDED Requirements\n\n"
+        "### Requirement: Totally Unmentioned Thing\n"
+        "The thing shall do the thing.\n"
+    )
+
+    reply = _reply(**{"1.1": {"files": ["src/parser.py"], "deps": []}})
+    with patch("worktrail.conductor.compile._default_spawn", return_value=reply):
+        rc = conductor_compile.main([str(d)])
+    capsys.readouterr()
+    assert rc == 1
+    assert not (d / conductor_compile.COMPILE_MARKER_NAME).exists()
+
+
 def test_a_stale_marker_is_overwritten_by_the_next_passing_compile(tmp_path, capsys):
     import subprocess
     from unittest.mock import patch
