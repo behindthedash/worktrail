@@ -83,6 +83,88 @@ class SkillDispatchTests(unittest.TestCase):
             skill_dispatch.build_command("codex", "../../not-a-skill")
 
 
+class WorkingDirectoryTargetingTests(unittest.TestCase):
+    """`--cwd` targets a worktree without relocating the calling session.
+
+    This replaces the `EnterWorktree`/`ExitWorktree` relocation the propose step
+    used to need, which always prompted for approval and so could not run
+    unattended.
+    """
+
+    def test_codex_receives_its_native_working_root_flag(self):
+        command = skill_dispatch.build_command("codex", "openspec-propose", cwd="/wt")
+        self.assertEqual(command[command.index("-C") + 1], "/wt")
+
+    def test_opencode_receives_its_native_working_root_flag(self):
+        command = skill_dispatch.build_command("opencode", "openspec-propose", cwd="/wt")
+        self.assertEqual(command[command.index("--dir") + 1], "/wt")
+
+    def test_claude_has_no_working_root_flag_so_argv_is_unchanged(self):
+        # claude exposes no equivalent flag; process cwd is the only lever, so
+        # `cwd` must not invent one here.
+        self.assertEqual(
+            skill_dispatch.build_command("claude", "openspec-propose", cwd="/wt"),
+            skill_dispatch.build_command("claude", "openspec-propose"),
+        )
+
+    @patch("worktrail.router.skill_dispatch.subprocess.run")
+    def test_every_agent_is_launched_with_the_target_as_process_cwd(self, run):
+        run.return_value.returncode = 0
+        with tempfile.TemporaryDirectory() as tmp:
+            for agent in skill_dispatch.SUPPORTED_AGENTS:
+                with self.subTest(agent=agent):
+                    skill_dispatch.main(
+                        ["--agent", agent, "--skill", "openspec-propose", "--cwd", tmp]
+                    )
+                    self.assertEqual(run.call_args.kwargs["cwd"], tmp)
+
+    @patch("worktrail.router.skill_dispatch.subprocess.run")
+    def test_a_missing_target_fails_loudly_instead_of_spawning(self, run):
+        stderr = StringIO()
+        with redirect_stderr(stderr):
+            result = skill_dispatch.main(
+                ["--agent", "claude", "--skill", "openspec-propose", "--cwd", "/no/such/wt"]
+            )
+        self.assertEqual(result, 1)
+        self.assertIn("/no/such/wt", stderr.getvalue())
+        run.assert_not_called()
+
+    @patch("worktrail.router.skill_dispatch.subprocess.run")
+    def test_cwd_is_omitted_entirely_when_not_requested(self, run):
+        run.return_value.returncode = 0
+        skill_dispatch.main(["--agent", "claude", "--skill", "openspec-propose"])
+        self.assertNotIn("cwd", run.call_args.kwargs)
+
+
+class HeadlessWritePermissionTests(unittest.TestCase):
+    """`--write` is opt-in so it never silently widens an existing dispatch."""
+
+    def test_claude_gets_a_permission_mode_that_survives_a_headless_run(self):
+        command = skill_dispatch.build_command("claude", "openspec-propose", write=True)
+        self.assertEqual(
+            command[command.index("--permission-mode") + 1], "bypassPermissions"
+        )
+
+    def test_opencode_auto_approves_permissions(self):
+        self.assertIn(
+            "--auto", skill_dispatch.build_command("opencode", "openspec-propose", write=True)
+        )
+
+    def test_codex_needs_nothing_extra_because_it_already_has_workspace_write(self):
+        self.assertEqual(
+            skill_dispatch.build_command("codex", "openspec-propose", write=True),
+            skill_dispatch.build_command("codex", "openspec-propose"),
+        )
+
+    def test_no_agent_gains_write_permission_by_default(self):
+        for agent in skill_dispatch.SUPPORTED_AGENTS:
+            with self.subTest(agent=agent):
+                command = skill_dispatch.build_command(agent, "openspec-propose")
+                self.assertNotIn("--permission-mode", command)
+                self.assertNotIn("--auto", command)
+                self.assertNotIn("bypassPermissions", command)
+
+
 class CodexHomePreflightTests(unittest.TestCase):
     def test_resolve_codex_home_prefers_explicit_override(self):
         self.assertEqual(skill_dispatch.resolve_codex_home("/tmp/explicit"), "/tmp/explicit")

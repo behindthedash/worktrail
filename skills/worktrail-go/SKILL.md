@@ -499,8 +499,19 @@ role.
 **Native Skill capability fallback.** `Skill(...)` is a host capability, not a shell
 command. If the current host does not expose it (for example, an embedded Codex
 session), run `worktrail-skill-dispatch` with the resolved `--agent`, `--skill`,
-and `--args` values. It executes that same provider without shell interpolation
-and never silently falls back to a different provider. Keep native `Skill(...)`
+`--args`, `--cwd "$REPO"`, and — for any route that will author, edit, or commit
+files (D/F/G/H) — `--write` values. Without `--write`, a headless claude/opencode
+child has no channel to answer the permission prompts sdd-workflow's own file
+edits and commits require and stalls or fails partway through; codex needs
+nothing extra here (`-s workspace-write` is unconditional). It executes that
+same provider without shell interpolation and never silently falls back to a
+different provider. **Verify the outcome from the run record, not the return
+code** — same rule as `#openspec-authoring`: assert `$RUN`'s `finish` entry
+before treating the dispatch as done. Skill slash-names (unlike the OpenSpec
+`commands/` bundle) resolve bare — `worktrail-sdd-workflow`, not
+`worktrail:worktrail-sdd-workflow` — because `_prompt` types the frontmatter
+`name:` directly and Claude Code matches an installed Skill by that name with
+no plugin-namespace prefix; live-verified 2026-08-09. Keep native `Skill(...)`
 primary when the host exposes it, and report adapter use in the run status.
 
 **Provider-capacity gate:** a headless dispatch may raise the orchestrator's

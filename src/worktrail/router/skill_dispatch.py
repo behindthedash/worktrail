@@ -28,23 +28,47 @@ def _prompt(agent: str, skill: str, args: str) -> str:
 
 
 def build_command(agent: str, skill: str, args: str = "", *, model: str | None = None,
+                  cwd: str | None = None, write: bool = False,
                   extra_args: Sequence[str] = ()) -> list[str]:
-    """Return an argv list that preserves the requested provider identity."""
+    """Return an argv list that preserves the requested provider identity.
+
+    `cwd` targets a directory (typically a task worktree) without relocating the
+    calling session. Only `codex` and `opencode` expose a working-root flag
+    (`-C` / `--dir`); `claude` has none, so for every agent the caller must also
+    launch the child with that directory as its process cwd (`main` does). The
+    flag is still passed where it exists because codex derives its
+    `workspace-write` sandbox root from the working root, not from process cwd.
+
+    `write` opts into the permissions a skill needs to author files headlessly.
+    It is opt-in because granting them by default would silently widen every
+    existing dispatch. codex already carries `-s workspace-write` and so needs
+    nothing extra; `claude` and `opencode` are otherwise unable to write without
+    an interactive approval that a headless run has no channel to answer, which
+    strands the spawn instead of failing it.
+    """
     if agent not in SUPPORTED_AGENTS:
         raise ValueError(f"unsupported agent: {agent!r}")
     skill = _validate_skill_name(skill)
     prompt = _prompt(agent, skill, args)
     if agent == "claude":
         command = ["claude", "-p", prompt]
+        if write:
+            command += ["--permission-mode", "bypassPermissions"]
         if model:
             command += ["--model", model]
     elif agent == "opencode":
         command = ["opencode", "run", "--format", "json"]
+        if cwd:
+            command += ["--dir", cwd]
+        if write:
+            command.append("--auto")
         if model:
             command += ["--model", model]
         command.append(prompt)
     else:
         command = ["codex", "exec", "--json", "-s", "workspace-write"]
+        if cwd:
+            command += ["-C", cwd]
         if model:
             command += ["--model", model]
         command.append(prompt)
@@ -92,16 +116,34 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--args", default="")
     parser.add_argument("--model")
     parser.add_argument(
+        "--cwd",
+        help="run the skill against this directory (e.g. a task worktree) "
+             "without relocating the calling session",
+    )
+    parser.add_argument(
+        "--write",
+        action="store_true",
+        help="grant the child the permissions needed to author files headlessly",
+    )
+    parser.add_argument(
         "--codex-home",
         help="override CODEX_HOME for a Codex child process (or use WORKTRAIL_CODEX_HOME)",
     )
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parsed = parser.parse_args(argv)
-    command = build_command(parsed.agent, parsed.skill, parsed.args, model=parsed.model)
+    command = build_command(
+        parsed.agent, parsed.skill, parsed.args, model=parsed.model,
+        cwd=parsed.cwd, write=parsed.write,
+    )
     if parsed.dry_run:
         print(json.dumps(command) if parsed.json else " ".join(command))
         return 0
+    if parsed.cwd and not os.path.isdir(parsed.cwd):
+        # Fail loudly: a child launched in the wrong directory authors artifacts
+        # into the wrong tree, which reads as a successful run to the caller.
+        print(f"--cwd '{parsed.cwd}' is not a directory", file=sys.stderr)
+        return 1
     codex_home = parsed.codex_home or os.environ.get("WORKTRAIL_CODEX_HOME")
     child_env = None
     if parsed.agent == "codex" and codex_home:
@@ -115,6 +157,8 @@ def main(argv: list[str] | None = None) -> int:
     run_kwargs = {"check": False}
     if child_env is not None:
         run_kwargs["env"] = child_env
+    if parsed.cwd:
+        run_kwargs["cwd"] = parsed.cwd
     return subprocess.run(command, **run_kwargs).returncode
 
 
