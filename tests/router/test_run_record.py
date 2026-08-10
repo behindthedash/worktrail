@@ -223,6 +223,64 @@ class TestLifecycle(unittest.TestCase):
         self.assertIsNotNone(rec["completed_at"])
         self.assertIn("pull/1", rec["pull_request"])
 
+    def test_finish_applies_risk_label_correction_when_pr_provided(self):
+        res = _start(self.tmp, route="F", risk="high")
+        seen = []
+        with patch("worktrail.router.pr_labels.ensure_pr_risk_label",
+                   lambda repo, pr, risk: seen.append((repo, pr, risk))):
+            out = StringIO()
+            with patch("sys.stdout", out):
+                main(["finish", res["path"], "--status", "completed_pr_open",
+                      "--pr", "https://github.com/x/y/pull/3"])
+        self.assertEqual(seen, [(
+            str(Path("/tmp/fake-repo")), "https://github.com/x/y/pull/3", "high")])
+
+    def test_finish_skips_label_correction_when_no_pr(self):
+        res = _start(self.tmp)
+
+        def unexpected(*_a, **_k):
+            raise AssertionError("must not be called when finish carries no PR")
+
+        with patch("worktrail.router.pr_labels.ensure_pr_risk_label", unexpected):
+            out = StringIO()
+            with patch("sys.stdout", out):
+                main(["finish", res["path"], "--status", "investigation_complete"])
+
+    def test_finish_applies_correction_for_pr_recorded_before_finish(self):
+        """The correction keys off the run record's own `pull_request` field,
+        not just a `--pr` flag passed to this `finish` call -- e.g. Route E
+        resuming a PR opened in an earlier session."""
+        res = _start(self.tmp, route="E", risk="medium")
+        main(["set", res["path"], "pull_request", "https://github.com/x/y/pull/4"])
+        seen = []
+        with patch("worktrail.router.pr_labels.ensure_pr_risk_label",
+                   lambda repo, pr, risk: seen.append((repo, pr, risk))):
+            out = StringIO()
+            with patch("sys.stdout", out):
+                main(["finish", res["path"], "--status", "completed_and_merged"])
+        self.assertEqual(seen, [(
+            str(Path("/tmp/fake-repo")), "https://github.com/x/y/pull/4", "medium")])
+
+    def test_finish_survives_label_correction_failure(self):
+        """A `gh`/network failure in the post-hoc label correction must never
+        crash `finish` or block writing the completion state -- reconcile_pr_
+        labels.py's periodic sweep is the safety net for a correction that
+        fails here."""
+        res = _start(self.tmp)
+
+        def boom(*_a, **_k):
+            raise FileNotFoundError(2, "No such file or directory", "/tmp/fake-repo")
+
+        with patch("worktrail.router.pr_labels.ensure_pr_risk_label", boom):
+            out = StringIO()
+            with patch("sys.stdout", out):
+                rc = main(["finish", res["path"], "--status", "completed_pr_open",
+                           "--pr", "https://github.com/x/y/pull/5"])
+        self.assertEqual(rc, 0)
+        rec = _load(Path(res["path"]))
+        self.assertEqual(rec["final_status"], "completed_pr_open")
+        self.assertIn("pull/5", rec["pull_request"])
+
     def test_route_a_blocks_implementation_completion_without_decision(self):
         res = _start(self.tmp, route="A")
         for state in ("completed_and_merged", "completed_pr_open",

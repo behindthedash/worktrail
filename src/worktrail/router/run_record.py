@@ -28,6 +28,13 @@ finish PATH --status completed_pr_open [--pr URL] [--merge-result ...]
             `claim --remote`, also best-effort deletes the remote claim ref
             on `origin` (failure here never affects `finish`'s exit code or
             JSON output; the claim just expires via its own TTL instead).
+            Also applies the `go:risk-*` PR label correction
+            (`pr_labels.ensure_pr_risk_label`) whenever the record carries a
+            `pull_request`, unconditional on route or completion state --
+            code-enforced here instead of relying on every route/dispatch
+            surface to call `worktrail-ensure-pr-label` itself. Same
+            best-effort posture: a correction failure never affects `finish`'s
+            exit code or JSON output.
   scope-review PATH --item "..." --status complete|out-of-scope|blocked
                (--evidence "..." | --reason "...")
   active-conflicts --dir DIR --repo REPO --specification SPEC [--exclude PATH]
@@ -431,6 +438,24 @@ def cmd_finish(args: argparse.Namespace) -> int:
     if args.merge_result:
         record["merge_result"] = args.merge_result
     _save(path, record)
+    pr_url = record.get("pull_request")
+    if pr_url:
+        # Code-enforced, not agent-narrated: every finish carrying a PR gets
+        # the go:risk-* correction applied here, so no route/dispatch surface
+        # can skip it by omission (6th recurrence of this failure class --
+        # see docs/specs/research/go-dispatch-one-shot-pr-label-gap.md).
+        # Imported locally: pr_labels.py imports `_load` from this module, so
+        # a module-level import here would be circular.
+        from .pr_labels import ensure_pr_risk_label
+        try:
+            ensure_pr_risk_label(record.get("repository"), pr_url, record.get("risk_level"))
+        except (OSError, subprocess.SubprocessError) as exc:
+            # Best-effort, same posture as the remote-claim delete below: a
+            # failure here (missing `gh`, bad cwd, network) must never affect
+            # `finish`'s exit code or JSON output -- reconcile_pr_labels.py's
+            # periodic sweep is the safety net for a correction that fails here.
+            print(f"warning: run_record: pr risk-label correction failed for "
+                  f"{pr_url}: {exc}", file=sys.stderr)
     specification = record.get("specification")
     if specification:
         # Release this run's claim (if any) so a later legitimate claim on
