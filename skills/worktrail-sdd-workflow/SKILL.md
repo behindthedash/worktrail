@@ -229,7 +229,18 @@ For every PR produced:
 
 Only routes with non-PR completion states (for example
 `planned_ready_for_implementation` or `investigation_complete`) may stop
-without commit/push/PR creation.
+without commit/push/PR creation. **But if a non-PR-completion run produces a
+PR anyway** — e.g. Route I committing its investigation note as a PR per §I —
+`worktrail-ensure-pr-label --run "$RUN"` is still mandatory, run immediately
+after `run_record.py finish --pr <url> ...`, exactly as item 4 above requires
+for PR-producing routes. The correction keys off `$RUN`'s own `pull_request`
+field (a no-op when unset), not the route or completion state, so this is not
+an extra step to remember per route — it is the same step 4 call, made
+unconditional on completion state. Gap observed live: datalena PR #2228
+(Route I, `investigation_complete`) merged a docs-only investigation note
+with no `go:risk-*` label because this instruction was previously reachable
+only from the PR-producing-route branch above, and a human had to apply the
+label by hand before `CI: Auto-merge on open` would arm.
 
 ### Artifact policy
 
