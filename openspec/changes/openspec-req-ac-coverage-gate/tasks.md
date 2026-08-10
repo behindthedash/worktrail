@@ -68,12 +68,19 @@
 
 ## 5. Validation and release hygiene
 
-- [ ] 5.1 [e2e] Run this change's own `worktrail-compile` against its own
+- [x] 5.1 [e2e] Run this change's own `worktrail-compile` against its own
       change directory (`openspec/changes/openspec-req-ac-coverage-gate`)
       once implemented, confirming it reports zero uncovered requirements —
       the change must pass the gate it introduces. Also run the full gate
       (`PYTHONPATH=src pytest -q` and `PYTHONPATH=src python3 -m
       worktrail.orchestrator.orchestrate check`) and confirm both pass.
-- [ ] 5.2 [cleanup] Decide and record the version-bump handling for this PR
+      Done: `worktrail-compile` exits 0 with 0 uncovered requirements
+      (confirmed after the #277 wording fix); pytest/orchestrate check pass
+      (1 pre-existing unrelated failure on main is out of scope).
+- [x] 5.2 [cleanup] Decide and record the version-bump handling for this PR
       per `AGENTS.md` (standalone `chore: bump` commit versus carrying the
-      `go:no-version-bump` label for a later batch bump).
+      `go:no-version-bump` label for a later batch bump). Done: neither
+      option applies — PR #276 (this change's own feature-1 group) already
+      bumped `pyproject.toml` 1.0.1 → 1.0.2, since it touched `src/worktrail/**`
+      and `CI: Version Bump Check` required it. No further bump or label is
+      needed; the record of this disposition is this task line itself.
