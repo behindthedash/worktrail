@@ -79,6 +79,13 @@ _HERE = Path(__file__).resolve().parent
 from ..taskformats.devkit.source import parse_frontmatter as _parse_fm
 from ..taskformats import resolve as _taskformats
 
+try:
+    from ..conductor import compile as _compile
+    from ..conductor import runplan as _runplan
+except ImportError:  # pragma: no cover - defensive degradation for partial installs
+    _compile = None
+    _runplan = None
+
 _HAVE_LOADER = True
 
 # resolve_repo is a sibling module; reused so the multi-repo overview
@@ -543,6 +550,45 @@ def _pending_impl_stale(
         if _task_files_are_shipped(repo, files, tracked):
             stale.append(t["id"])
     return stale
+
+
+def _pending_openspec_stale(
+    change_dir: Path, spec_id: str, tasks: List[Dict[str, Any]]
+) -> List[str]:
+    """Ids of pending OpenSpec impl tasks whose cached plan files shipped.
+
+    OpenSpec task artifacts do not carry file scope, so this check only trusts a
+    RunPlan cached for the change's current fingerprint. A cache miss or a
+    rejected plan is deliberately indistinguishable from today's behavior.
+    """
+    if _compile is None or _runplan is None or not tasks:
+        return []
+
+    change_dir = Path(change_dir)
+    repo = change_dir.parent.parent.parent
+    fp = _runplan.fingerprint(change_dir, tasks)
+    plan = _runplan.load_cached(_compile.default_cache_dir(repo), spec_id, fp)
+    if plan is None:
+        return []
+
+    merged, _notes = _runplan.apply_to_tasks(tasks, plan)
+    candidates = [
+        task
+        for task in merged
+        if task.get("status") != "completed"
+        and task.get("kind", "impl") not in _TAIL_KINDS
+        and task.get("files")
+    ]
+    if not candidates:
+        return []
+
+    all_files = sorted({file for task in candidates for file in task["files"]})
+    tracked = _git_tracked(repo, all_files)
+    return [
+        task["id"]
+        for task in candidates
+        if _task_files_are_shipped(repo, task["files"], tracked)
+    ]
 
 
 def _pending_tail_stale(
@@ -1019,10 +1065,24 @@ def _safe_detect_openspec(change_dir: Path) -> Dict[str, Any]:
     try:
         spec_id, tasks = _taskformats.load_spec(change_dir)
         pending = [t for t in tasks if t.get("status") != "completed"]
+        stale_ids: List[str] = []
         if not tasks:
             stage, next_action = "needs-tasks", "create tasks"
         elif pending:
-            stage, next_action = "ready-to-implement", "orchestrator"
+            stale_ids = _pending_openspec_stale(change_dir, spec_id, tasks)
+            pending_impl = [t for t in pending if t.get("kind", "impl") not in _TAIL_KINDS]
+            pending_impl_real = len(pending_impl) - len(
+                set(stale_ids) & {t["id"] for t in pending_impl}
+            )
+            if pending_impl and pending_impl_real == 0:
+                suffix = f" ({', '.join(stale_ids)})" if stale_ids else ""
+                stage, next_action = (
+                    "stale-bookkeeping",
+                    f"confirm & close{suffix} (files already merged on base; "
+                    "flip task status → completed, no orchestrator)",
+                )
+            else:
+                stage, next_action = "ready-to-implement", "orchestrator"
         elif _journal_verify_pending(change_dir):
             # Same run-journal lookup the devkit branch uses (journal_path_for
             # keys purely on repo root + spec_dir.name, both format-agnostic) --
@@ -1034,7 +1094,7 @@ def _safe_detect_openspec(change_dir: Path) -> Dict[str, Any]:
             )
         else:
             stage, next_action = "complete", "sync/archive"
-        return {
+        info = {
             "id": spec_id,
             "format": "openspec",
             "path": str(change_dir),
@@ -1049,6 +1109,9 @@ def _safe_detect_openspec(change_dir: Path) -> Dict[str, Any]:
             "stage": stage,
             "next_action": next_action,
         }
+        if pending and stale_ids:
+            info["stale_task_ids"] = stale_ids
+        return info
     except Exception as e:  # noqa: BLE001 — one malformed change must not kill /go
         return {
             "id": change_dir.name,
