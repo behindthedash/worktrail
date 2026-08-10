@@ -2,9 +2,10 @@
 """
 Dist-tag watcher -- scans every brief in the work-queue for a `watch:`
 frontmatter list, queries each watched package's latest published version
-from npm or PyPI, and, when the observed version differs from the recorded
-one, clears the brief's `next-check-after` field and advances the recorded
-version in place (one atomic write per brief).
+from npm or PyPI (or each watched GitHub issue's open/closed state), and,
+when the observed value differs from the recorded one, clears the brief's
+`next-check-after` field and advances the recorded value in place (one
+atomic write per brief).
 
 `watch:` grammar (see ../../../../../docs/specs/015-universal-go-front-door/
 changes/2026-07-14--dist-tag-watcher/contracts/watch-field.event.md):
@@ -12,10 +13,19 @@ changes/2026-07-14--dist-tag-watcher/contracts/watch-field.event.md):
     watch:
       - npm:left-pad@1.0.0
       - pypi:requests@2.31.0
+      - https://github.com/owner/repo/issues/123
 
-Each entry is independent: a malformed entry or a failed registry lookup is
-reported per-entry and never blocks any other entry, on the same brief or a
-different one. A brief with zero changed entries gets zero writes -- not
+A GitHub-issue entry is a bare issue URL. Its recorded state is "open" unless
+the URL carries a `#closed` suffix; a check that observes a different state
+than recorded (open -> closed, or closed -> reopened) counts as "changed" the
+same as a version bump, clearing `next-check-after` and rewriting the entry
+to record the newly-observed state (appending/dropping the `#closed` suffix).
+Unauthenticated GitHub API requests are rate-limited to 60/hour -- fine for
+the handful of issue entries a brief typically watches.
+
+Each entry is independent: a malformed entry or a failed registry/API lookup
+is reported per-entry and never blocks any other entry, on the same brief or
+a different one. A brief with zero changed entries gets zero writes -- not
 even a no-op rewrite -- so mtime/content are byte-identical across a no-op
 run (this is what AC-002/AC-005 verify).
 
@@ -41,12 +51,19 @@ _FM_RE = re.compile(r"^---\r?\n(.*?)\n---\r?\n", re.DOTALL)
 
 _ENTRY_RE = re.compile(r"^(?P<registry>[^:]+):(?P<package>[^@]+)@(?P<version>.+)$")
 
+_GITHUB_ISSUE_RE = re.compile(
+    r"^https://github\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+)/issues/(?P<number>\d+)"
+    r"(?:#(?P<marker>closed))?$"
+)
+
 _FETCH_TIMEOUT = 10  # seconds -- bounds one hung registry call (see registry-lookup.md)
 
 _REGISTRY_URLS = {
     "npm": "https://registry.npmjs.org/{package}/latest",
     "pypi": "https://pypi.org/pypi/{package}/json",
 }
+
+_GITHUB_ISSUE_API_URL = "https://api.github.com/repos/{owner}/{repo}/issues/{number}"
 
 
 # --------------------------------------------------------------------------- #
@@ -197,6 +214,32 @@ def query_latest_version(
     return str(version), None
 
 
+def query_github_issue_state(
+    owner: str, repo: str, number: str, fetch: Any = _default_fetch
+) -> Tuple[Optional[str], Optional[str]]:
+    """Query the GitHub API for one issue's current state.
+
+    Returns ``("open" | "closed", None)`` on success, or ``(None, error_message)``
+    on any failure (network error, non-200, non-JSON body, missing field) --
+    never raises, mirroring `query_latest_version` (REQ-CHG-008, AC-006).
+    """
+    url = _GITHUB_ISSUE_API_URL.format(owner=owner, repo=repo, number=number)
+    try:
+        body = fetch(url)
+    except Exception as exc:  # noqa: BLE001 -- any fetch failure is a per-entry error, never fatal
+        return None, f"fetch failed for {url}: {exc}"
+
+    try:
+        data = json.loads(body)
+    except (TypeError, ValueError) as exc:
+        return None, f"malformed JSON from {url}: {exc}"
+
+    state = data.get("state") if isinstance(data, dict) else None
+    if state not in ("open", "closed"):
+        return None, f"missing/invalid 'state' field in GitHub response for {owner}/{repo}#{number}"
+    return state, None
+
+
 # --------------------------------------------------------------------------- #
 # Per-brief check
 # --------------------------------------------------------------------------- #
@@ -225,6 +268,47 @@ def check_brief(path: Path, fetch: Any = _default_fetch, dry_run: bool = False) 
 
     for raw in raw_entries:
         raw_str = str(raw)
+
+        gh_match = _GITHUB_ISSUE_RE.match(raw_str.strip())
+        if gh_match:
+            owner, repo, number = gh_match.group("owner", "repo", "number")
+            recorded_state = "closed" if gh_match.group("marker") else "open"
+            latest_state, fetch_err = query_github_issue_state(owner, repo, number, fetch=fetch)
+            if fetch_err is not None:
+                entries.append(
+                    {
+                        "raw": raw_str,
+                        "registry": "github-issue",
+                        "package": f"{owner}/{repo}#{number}",
+                        "recorded_version": recorded_state,
+                        "latest_version": None,
+                        "changed": False,
+                        "error": fetch_err,
+                    }
+                )
+                new_watch_values.append(raw_str)
+                continue
+
+            changed = latest_state != recorded_state
+            entries.append(
+                {
+                    "raw": raw_str,
+                    "registry": "github-issue",
+                    "package": f"{owner}/{repo}#{number}",
+                    "recorded_version": recorded_state,
+                    "latest_version": latest_state,
+                    "changed": changed,
+                    "error": None,
+                }
+            )
+            if changed:
+                any_changed = True
+                base_url = f"https://github.com/{owner}/{repo}/issues/{number}"
+                new_watch_values.append(f"{base_url}#closed" if latest_state == "closed" else base_url)
+            else:
+                new_watch_values.append(raw_str)
+            continue
+
         parsed, parse_err = parse_watch_entry(raw_str)
         if parsed is None:
             entries.append(
