@@ -897,6 +897,9 @@ REMEDIATION_TABLE: List[StageRemediation] = [
     StageRemediation(
         "stale_bookkeeping", "close-stale-bookkeeping",
         find_stale_bookkeeping_specs, close_stale_bookkeeping),
+    StageRemediation(
+        "sync_pending", "resume-sync-pending",
+        find_sync_pending_specs, _run_sync_pending),
 ]
 
 
