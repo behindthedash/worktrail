@@ -36,6 +36,7 @@ from worktrail.drain.drain import (
     release_lock,
     resolve_spec_rel,
     resume_quarantined_budget_exhausted,
+    resume_sync_pending,
     resume_verify_pending,
     select_available_agent,
     sweep_remediations,
@@ -1255,6 +1256,55 @@ def test_find_sync_pending_specs_go_repo_filter(tmp_path):
     _write_sync_pending_spec(repo_b, "spec-b")
     found = find_sync_pending_specs(tmp_path, go_repo="repo-b")
     assert [f["repo_name"] for f in found] == ["repo-b"]
+
+
+def test_resume_sync_pending_invokes_skill_dispatch_once_per_spec(tmp_path):
+    repo = _make_repo(tmp_path, "repo-a")
+    _write_sync_pending_spec(repo, "spec-a")
+    calls = []
+
+    def spawner(cmd, timeout):
+        calls.append(cmd)
+        return SpawnOutcome(0)
+
+    logs = []
+    result = resume_sync_pending(
+        tmp_path, None, "claude", 60, spawner, logs.append)
+    assert len(calls) == 1
+    assert calls[0] == ["worktrail-skill-dispatch", "--agent", "claude",
+                         "--skill", "opsx:sync", "--args", "spec-a",
+                         "--cwd", str(repo), "--write"]
+    assert result == [{"repo": "repo-a", "spec_id": "spec-a", "exit_code": 0}]
+    assert any("resume-sync-pending" in line for line in logs)
+
+
+def test_resume_sync_pending_no_hits_is_noop(tmp_path):
+    _make_repo(tmp_path, "repo-a")  # no sync-pending spec at all
+    calls = []
+    result = resume_sync_pending(
+        tmp_path, None, "claude", 60, lambda c, t: calls.append(c), lambda _l: None)
+    assert calls == []
+    assert result == []
+
+
+def test_resume_sync_pending_one_failure_does_not_block_others(tmp_path):
+    repo_a = _make_repo(tmp_path, "repo-a")
+    _write_sync_pending_spec(repo_a, "spec-a")
+    repo_b = _make_repo(tmp_path, "repo-b")
+    _write_sync_pending_spec(repo_b, "spec-b")
+    calls = []
+
+    def spawner(cmd, timeout):
+        calls.append(cmd)
+        return SpawnOutcome(1 if len(calls) == 1 else 0)
+
+    result = resume_sync_pending(
+        tmp_path, None, "claude", 60, spawner, lambda _l: None)
+    assert len(calls) == 2
+    assert result == [
+        {"repo": "repo-a", "spec_id": "spec-a", "exit_code": 1},
+        {"repo": "repo-b", "spec_id": "spec-b", "exit_code": 0},
+    ]
 
 
 def test_resume_verify_pending_invokes_full_real_once_per_spec(tmp_path):
