@@ -1,15 +1,22 @@
 ## 1. Requirement-coverage module
 
 - [ ] 1.1 Create `src/worktrail/conductor/req_coverage.py` implementing, per
-      design D1/D3/D4: parsing of `### Requirement: <Name>` headers under
-      `## ADDED Requirements` / `## MODIFIED Requirements` (never `## REMOVED
-      Requirements`) across a change directory's `specs/**/spec.md` files;
-      case-insensitive name-presence matching against that change's
-      `tasks.md` text; the non-retroactive ratchet comparing declared names
-      against the existing `openspec/specs/<capability-path>/spec.md` on
-      disk (absent entirely for a brand-new capability, so every requirement
-      counts as newly declared); and a format guard that is a no-op for a
-      devkit-format (`docs/specs/<id>/`) spec directory.
+      design D1/D3/D4, each on its own line so the name stays intact for the
+      gate's own name-presence match:
+      - **Declared Requirement Discovery**: parsing of `### Requirement:
+        <Name>` headers under `## ADDED Requirements` / `## MODIFIED
+        Requirements` (never `## REMOVED Requirements`) across a change
+        directory's `specs/**/spec.md` files.
+      - **Task Reference Matching**: case-insensitive name-presence matching
+        against that change's `tasks.md` text.
+      - **Uncovered Requirement Detection**: reporting every declared name
+        with zero match.
+      - **Non-Retroactive Gate Enforcement**: the ratchet comparing declared
+        names against the existing `openspec/specs/<capability-path>/spec.md`
+        on disk (absent entirely for a brand-new capability, so every
+        requirement counts as newly declared).
+      - A format guard that is a no-op for a devkit-format
+        (`docs/specs/<id>/`) spec directory.
 - [x] 1.2 Expose a single entry point (for example
       `find_uncovered_requirements(spec_dir, repo) -> list[str]`) that
       `compile.py` can call directly — no new console script, no
