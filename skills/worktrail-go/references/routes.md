@@ -76,6 +76,19 @@ durable across sessions. The scope-check
 first — never push the spec PR on a failing compile and rely on catching an
 under-scoped `tasks.md` once the orchestrator launches.
 
+**CI-watch the spec PR now (mandatory, before the question below):** run
+`ci-watch-loop.md`'s intermediate-checkpoint variant against this PR. This
+PR is not the run's terminal artifact — an inline transition to Route D
+continues the *same* run record without ever calling `finish()` at this
+boundary, so Phase 8's "CI watch loop before `finish`" trigger never fires
+for it, and a failing or slow-to-merge spec PR would otherwise go
+unobserved (confirmed 2026-08-10 in a consuming repo: a Route-C spec PR
+merged unwatched via that repo's own auto-merge automation ~14 minutes
+after opening, discovered only when the user asked why it went
+unnoticed). Reach a terminal
+outcome for *this* PR — merged, or `completed_pr_open` with auto-merge
+armed — before asking the implementation-intent question.
+
 **Inline D transition (MARKERS == 0 only):** inspect the brief's
 `implementation-intent:`. `requested` continues as Route D (orchestrator →
 sync) in the same session without a new `/go`; `planning-only` stops with an
