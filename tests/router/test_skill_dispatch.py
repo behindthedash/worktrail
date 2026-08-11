@@ -1,5 +1,7 @@
 import json
 import os
+import stat
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -70,6 +72,7 @@ class SkillDispatchTests(unittest.TestCase):
                 skill_dispatch.main([
                     "--agent", "codex", "--skill", "x:y", "--args", "route:E",
                     "--codex-home", "/tmp/worktrail-codex-test",
+                    "--no-inherit-codex-auth",
                 ]), 0
             )
         self.assertEqual(run.call_args.args[0][0], "codex")
@@ -82,7 +85,10 @@ class SkillDispatchTests(unittest.TestCase):
 
         with patch.object(skill_dispatch, "bootstrap_codex_skills", return_value=True):
             self.assertEqual(
-                skill_dispatch.main(["--agent", "codex", "--skill", "x:y"]), 0
+                skill_dispatch.main([
+                    "--agent", "codex", "--skill", "x:y",
+                    "--no-inherit-codex-auth",
+                ]), 0
             )
 
         self.assertEqual(run.call_args.kwargs["env"]["CODEX_HOME"], "/tmp/worktrail-codex")
@@ -94,7 +100,8 @@ class SkillDispatchTests(unittest.TestCase):
 
         with patch.object(skill_dispatch, "bootstrap_codex_skills", return_value=True):
             skill_dispatch.main([
-                "--agent", "codex", "--skill", "x:y", "--codex-home", "/tmp/explicit"
+                "--agent", "codex", "--skill", "x:y", "--codex-home", "/tmp/explicit",
+                "--no-inherit-codex-auth",
             ])
 
         self.assertEqual(run.call_args.kwargs["env"]["CODEX_HOME"], "/tmp/explicit")
@@ -143,9 +150,12 @@ class WorkingDirectoryTargetingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             for agent in skill_dispatch.SUPPORTED_AGENTS:
                 with self.subTest(agent=agent):
-                    skill_dispatch.main(
-                        ["--agent", agent, "--skill", "openspec-propose", "--cwd", tmp]
-                    )
+                    arguments = [
+                        "--agent", agent, "--skill", "openspec-propose", "--cwd", tmp
+                    ]
+                    if agent == "codex":
+                        arguments.append("--no-inherit-codex-auth")
+                    skill_dispatch.main(arguments)
                     self.assertEqual(run.call_args.kwargs["cwd"], tmp)
 
     @patch("worktrail.router.skill_dispatch.subprocess.run")
@@ -196,6 +206,20 @@ class HeadlessWritePermissionTests(unittest.TestCase):
 
 
 class CodexHomePreflightTests(unittest.TestCase):
+    def test_chatgpt_status_accepts_exact_line_on_stderr_after_warning(self):
+        status = subprocess.CompletedProcess(
+            [], 0, "", "warning without secrets\nLogged in using ChatGPT\n"
+        )
+        self.assertTrue(skill_dispatch._is_chatgpt_login_status(status))
+
+    def test_chatgpt_status_rejects_similar_or_failed_output(self):
+        self.assertFalse(skill_dispatch._is_chatgpt_login_status(
+            subprocess.CompletedProcess([], 0, "Not logged in using ChatGPT\n", "")
+        ))
+        self.assertFalse(skill_dispatch._is_chatgpt_login_status(
+            subprocess.CompletedProcess([], 1, "Logged in using ChatGPT\n", "")
+        ))
+
     def test_resolve_codex_home_prefers_explicit_override(self):
         self.assertEqual(skill_dispatch.resolve_codex_home("/tmp/explicit"), "/tmp/explicit")
 
@@ -266,6 +290,113 @@ class CodexHomePreflightTests(unittest.TestCase):
                 self.assertIsNone(skill_dispatch.codex_home_write_remediation(tmp))
 
     @patch("worktrail.router.skill_dispatch.subprocess.run")
+    def test_auth_inheritance_is_default_and_copies_only_private_allowlist(self, run):
+        run.return_value.returncode = 0
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp) / "parent"
+            child = Path(tmp) / "child"
+            parent.mkdir(mode=0o700)
+            secret = b'{"tokens":{"access_token":"do-not-log"}}'
+            (parent / "auth.json").write_bytes(secret)
+            (parent / "auth.json").chmod(0o600)
+            (parent / "config.toml").write_text('model = "private-model"\n')
+            run.side_effect = [
+                subprocess.CompletedProcess([], 0, "Logged in using ChatGPT\n", ""),
+                subprocess.CompletedProcess([], 0),
+            ]
+            with patch.dict(os.environ, {"CODEX_HOME": str(parent)}, clear=True), \
+                    patch.object(skill_dispatch, "bootstrap_codex_skills", return_value=True):
+                self.assertEqual(skill_dispatch.main([
+                    "--agent", "codex", "--skill", "x:y",
+                    "--codex-home", str(child),
+                ]), 0)
+
+            self.assertEqual((child / "auth.json").read_bytes(), secret)
+            self.assertEqual(
+                (child / "config.toml").read_text(),
+                'cli_auth_credentials_store = "file"\n',
+            )
+            self.assertEqual(stat.S_IMODE(child.stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE((child / "auth.json").stat().st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE((child / "config.toml").stat().st_mode), 0o600)
+            self.assertNotIn("private-model", (child / "config.toml").read_text())
+
+    @patch("worktrail.router.skill_dispatch.subprocess.run")
+    def test_explicit_isolated_mode_does_not_read_or_copy_parent_auth(self, run):
+        run.return_value.returncode = 0
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp) / "parent"
+            child = Path(tmp) / "child"
+            parent.mkdir()
+            (parent / "auth.json").write_text("must-not-be-read")
+            with patch.dict(os.environ, {"CODEX_HOME": str(parent)}, clear=True), \
+                    patch.object(skill_dispatch, "bootstrap_codex_skills", return_value=True):
+                self.assertEqual(skill_dispatch.main([
+                    "--agent", "codex", "--skill", "x:y", "--codex-home", str(child),
+                    "--no-inherit-codex-auth",
+                ]), 0)
+            self.assertFalse((child / "auth.json").exists())
+
+    @patch("worktrail.router.skill_dispatch.subprocess.run")
+    def test_auth_inheritance_rejects_symlink_without_leaking_secret(self, run):
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp) / "parent"
+            child = Path(tmp) / "child"
+            parent.mkdir()
+            target = Path(tmp) / "real-auth"
+            target.write_text("unique-secret-value")
+            target.chmod(0o600)
+            (parent / "auth.json").symlink_to(target)
+            run.return_value = subprocess.CompletedProcess(
+                [], 0, "Logged in using ChatGPT\n", ""
+            )
+            stderr = StringIO()
+            with patch.dict(os.environ, {"CODEX_HOME": str(parent)}, clear=True), \
+                    redirect_stderr(stderr):
+                result = skill_dispatch.main([
+                    "--agent", "codex", "--skill", "x:y",
+                    "--codex-home", str(child),
+                ])
+            self.assertEqual(result, 1)
+            self.assertIn("blocked_external_dependency", stderr.getvalue())
+            self.assertNotIn("unique-secret-value", stderr.getvalue())
+            self.assertFalse((child / "auth.json").exists())
+
+    @patch("worktrail.router.skill_dispatch.subprocess.run")
+    def test_auth_inheritance_requires_chatgpt_login(self, run):
+        run.return_value = subprocess.CompletedProcess([], 0, "Logged in using an API key\n", "")
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp) / "parent"
+            parent.mkdir()
+            stderr = StringIO()
+            with patch.dict(os.environ, {"CODEX_HOME": str(parent)}, clear=True), \
+                    redirect_stderr(stderr):
+                result = skill_dispatch.main([
+                    "--agent", "codex", "--skill", "x:y",
+                    "--codex-home", str(Path(tmp) / "child"),
+                ])
+            self.assertEqual(result, 1)
+            self.assertIn("not authenticated with ChatGPT", stderr.getvalue())
+
+    @patch("worktrail.router.skill_dispatch.subprocess.run")
+    def test_auth_inheritance_rejects_group_readable_auth_file(self, run):
+        run.return_value = subprocess.CompletedProcess([], 0, "Logged in using ChatGPT\n", "")
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp) / "parent"
+            parent.mkdir()
+            (parent / "auth.json").write_text("secret")
+            (parent / "auth.json").chmod(0o640)
+            stderr = StringIO()
+            with patch.dict(os.environ, {"CODEX_HOME": str(parent)}, clear=True), \
+                    redirect_stderr(stderr):
+                result = skill_dispatch.main([
+                    "--agent", "codex", "--skill", "x:y",
+                    "--codex-home", str(Path(tmp) / "child"),
+                ])
+            self.assertEqual(result, 1)
+            self.assertIn("permissions must be 0600", stderr.getvalue())
+
+    @patch("worktrail.router.skill_dispatch.subprocess.run")
     def test_preflight_blocks_launch_when_codex_home_not_writable(self, run):
         with tempfile.TemporaryDirectory() as tmp:
             os.chmod(tmp, 0o555)
@@ -289,7 +420,10 @@ class CodexHomePreflightTests(unittest.TestCase):
             target = os.path.join(tmp, "codex-home")
             with patch.object(skill_dispatch, "bootstrap_codex_skills", return_value=True):
                 self.assertEqual(
-                    skill_dispatch.main(["--agent", "codex", "--skill", "x:y", "--codex-home", target]),
+                    skill_dispatch.main([
+                        "--agent", "codex", "--skill", "x:y", "--codex-home", target,
+                        "--no-inherit-codex-auth",
+                    ]),
                     0,
                 )
             run.assert_called_once()

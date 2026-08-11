@@ -15,8 +15,11 @@ from __future__ import annotations
 
 import os
 import stat
+import subprocess
 import sys
+import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from worktrail.router import skill_dispatch
@@ -76,10 +79,13 @@ class ProposeSpawnLandsChangeDirTests(unittest.TestCase):
     def test_each_agent_lands_the_full_change_dir(self):
         for agent in SUPPORTED_AGENTS:
             with self.subTest(agent=agent):
-                result = skill_dispatch.main([
+                arguments = [
                     "--agent", agent, "--skill", "openspec-propose",
                     "--args", "probe", "--cwd", str(self.wt), "--write",
-                ])
+                ]
+                if agent == "codex":
+                    arguments.append("--no-inherit-codex-auth")
+                result = skill_dispatch.main(arguments)
                 self.assertEqual(result, 0)
                 change_dir = self._change_dir()
                 self.assertTrue((change_dir / "proposal.md").exists())
@@ -104,10 +110,65 @@ class ProposeSpawnLandsChangeDirTests(unittest.TestCase):
     def test_codex_needs_no_write_flag_because_it_always_has_workspace_write(self):
         result = skill_dispatch.main([
             "--agent", "codex", "--skill", "openspec-propose",
-            "--args", "probe", "--cwd", str(self.wt),
+            "--args", "probe", "--cwd", str(self.wt), "--no-inherit-codex-auth",
         ])
         self.assertEqual(result, 0)
         self.assertTrue((self._change_dir() / "proposal.md").exists())
+
+
+@unittest.skipUnless(
+    os.environ.get("WORKTRAIL_REAL_CODEX_AUTH_TEST") == "1",
+    "set WORKTRAIL_REAL_CODEX_AUTH_TEST=1 for the authenticated Codex lifecycle probe",
+)
+class RealAuthenticatedCodexLifecycleTests(unittest.TestCase):
+    def test_inherited_chatgpt_session_writes_scoped_lifecycle_roots(self):
+        parent_home = skill_dispatch.resolve_parent_codex_home()
+        status = subprocess.run(
+            ["codex", "login", "status"],
+            env={**os.environ, "CODEX_HOME": str(parent_home)},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if not skill_dispatch._is_chatgpt_login_status(status):
+            self.skipTest("parent Codex is not authenticated with ChatGPT")
+        if not (parent_home / "auth.json").is_file():
+            self.skipTest("ChatGPT login is not using file-backed auth.json")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cwd = root / "repo"
+            runs = root / "runs"
+            worktrees = root / "repo-worktrees"
+            skills = root / "skills"
+            child_home = root / "child-home"
+            for directory in (cwd, runs, worktrees):
+                directory.mkdir()
+            probe = skills / "authenticated-lifecycle-probe"
+            probe.mkdir(parents=True)
+            (probe / "SKILL.md").write_text(
+                "---\nname: authenticated-lifecycle-probe\n"
+                "description: Write two exact lifecycle proof files.\n---\n"
+                f"Write the exact text `ok` to `{runs / 'run-record-proof'}` and "
+                f"`{worktrees / 'worktree-proof'}` using shell commands, then stop.\n"
+            )
+            with mock.patch.dict(
+                os.environ,
+                {"WORKTRAIL_SKILL_ROOT": str(skills), "CODEX_HOME": str(parent_home)},
+                clear=False,
+            ):
+                result = skill_dispatch.main([
+                    "--agent", "codex",
+                    "--skill", "authenticated-lifecycle-probe",
+                    "--cwd", str(cwd),
+                    "--codex-home", str(child_home),
+                    "--add-dir", str(runs),
+                    "--add-dir", str(worktrees),
+                    "--write",
+                ])
+            self.assertEqual(result, 0)
+            self.assertEqual((runs / "run-record-proof").read_text(), "ok")
+            self.assertEqual((worktrees / "worktree-proof").read_text(), "ok")
 
 
 if __name__ == "__main__":
