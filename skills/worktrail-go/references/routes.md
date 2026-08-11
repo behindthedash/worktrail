@@ -22,6 +22,12 @@ Conventions used by every route:
   artifact → GitNexus graph (callers/blast radius; base-branch only — worktree
   diff wins) → exact files → targeted grep → tests → merged PRs → broad search
   last. Hand subagents pointers, not pasted file bodies.
+- **GitNexus/worktree reconciliation:** a generated Worktrail worktree normally has no
+  GitNexus index. Search, read, edit, and test the worktree as current-branch ground truth;
+  query GitNexus against the canonical repository for base-branch context. If results
+  disagree, treat the graph as stale relative to the branch. Before renaming/deleting
+  shared code or opening a PR, run unfiltered `rg "<name>" .` from the worktree root and
+  pair it with GitNexus query/impact. Never silently index the worktree.
 - **Change authoring:** `/opsx:propose` (see
   `subagent-prompts.md#openspec-propose`). It generates proposal, delta specs,
   design, and tasks in one step, so there is no separate tasks-generation stage
