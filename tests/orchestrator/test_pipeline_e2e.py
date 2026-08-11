@@ -785,18 +785,27 @@ class RegressionTest(unittest.TestCase):
             [str(src_root), child_env.get("PYTHONPATH", "")]
         ).rstrip(os.pathsep)
         for tf in test_files:
-            try:
-                result = subprocess.run(
-                    [sys.executable, str(tf)],
-                    capture_output=True, text=True, cwd=str(_HERE), env=child_env, timeout=120,
+            # Suites exercise provider-capacity handling and may persist a
+            # cooldown. Give each child an isolated cache so one suite's
+            # simulated provider failure cannot poison the next suite.
+            with tempfile.TemporaryDirectory(prefix="worktrail-capacity-suite-") as cache_dir:
+                suite_env = child_env.copy()
+                suite_env["GO_AGENT_CAPACITY_CACHE"] = str(
+                    Path(cache_dir) / "agent-capacity.json"
                 )
-                if result.returncode != 0:
-                    failures.append(
-                        f"{tf.name}: exit {result.returncode}\n"
-                        f"stderr tail: {result.stderr[-300:]}"
+                try:
+                    result = subprocess.run(
+                        [sys.executable, str(tf)],
+                        capture_output=True, text=True, cwd=str(_HERE),
+                        env=suite_env, timeout=120,
                     )
-            except subprocess.TimeoutExpired:
-                failures.append(f"{tf.name}: TIMEOUT (>120s)")
+                    if result.returncode != 0:
+                        failures.append(
+                            f"{tf.name}: exit {result.returncode}\n"
+                            f"stderr tail: {result.stderr[-300:]}"
+                        )
+                except subprocess.TimeoutExpired:
+                    failures.append(f"{tf.name}: TIMEOUT (>120s)")
 
         self.assertEqual(
             failures, [],
