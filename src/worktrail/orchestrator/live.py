@@ -1480,7 +1480,9 @@ def _add_stacked_worktree_kwargs(target, kwargs: dict) -> dict:
     return {k: v for k, v in kwargs.items() if k in params}
 
 
-def bootstrap_worktree(wt: Path, bootstrap_cmd: str | None, log=print) -> bool:
+def bootstrap_worktree(
+    wt: Path, bootstrap_cmd: str | None, log=print, *, required: bool = False,
+) -> bool:
     """Install a freshly-created task worktree's local dependencies before a worker
     is spawned into it.
 
@@ -1496,9 +1498,10 @@ def bootstrap_worktree(wt: Path, bootstrap_cmd: str | None, log=print) -> bool:
     "cd app && npm ci"), sourced from go-policy.yaml's `worktree_bootstrap_cmd`.
     None/empty -> skip entirely, so repos without a wired command are unaffected.
 
-    Non-fatal by design: a failed install is logged loudly and the worker still
-    self-recovers by running its own install, so a flaky registry never quarantines
-    a task. Returns True only when the command ran and exited zero.
+    By default a failed install is logged and the caller may let the worker
+    self-recover. Orchestrated task creation passes ``required=True`` so a
+    configured bootstrap failure stops before an agent is spawned into an
+    incomplete worktree.
 
     MUST be called OUTSIDE the caller's `git_lock`: the shared `.git` registry
     mutation (`git worktree add`) is already done, and a slow `npm ci` must not
@@ -1512,14 +1515,23 @@ def bootstrap_worktree(wt: Path, bootstrap_cmd: str | None, log=print) -> bool:
             bootstrap_cmd, shell=True, cwd=str(wt), capture_output=True, text=True
         )
     except OSError as e:
-        log(f"{_ts()} BOOTSTRAP: !! could not launch ({e}); worker will self-install")
+        log(
+            f"{_ts()} BOOTSTRAP: !! could not launch ({e}); "
+            f"{'stopping before worker spawn' if required else 'worker will self-install'}"
+        )
+        if required:
+            raise WorktreeAddError(f"required worktree bootstrap could not launch in {wt}: {e}") from e
         return False
     if proc.returncode != 0:
         tail = (proc.stderr or proc.stdout or "").strip()[-400:]
         log(
             f"{_ts()} BOOTSTRAP: !! failed (rc={proc.returncode}); "
-            f"worker will self-install. {tail}"
+            f"{'stopping before worker spawn' if required else 'worker will self-install'}. {tail}"
         )
+        if required:
+            raise WorktreeAddError(
+                f"required worktree bootstrap failed in {wt}: {tail or 'exit status ' + str(proc.returncode)}"
+            )
         return False
     return True
 
@@ -2502,6 +2514,9 @@ def live_run_real(
     from . import verify as verify_module
 
     repo = repo.resolve()
+    from ..router.gitnexus_preflight import check as gitnexus_check
+
+    gitnexus_capability = gitnexus_check(repo)
     role_models = _effective_role_models(agent, role_models)
     _ar_agent, _ar_model = _role_agent_model(
         dispatch.ROLE_ASSEMBLY_RESOLVE, agent, model, role_agents, role_models
@@ -2619,7 +2634,11 @@ def live_run_real(
 
     def record() -> None:
         if out_cassette:
-            journal_dict = {"spec_id": spec_id, "entries": entries}
+            journal_dict = {
+                "spec_id": spec_id,
+                "entries": entries,
+                "gitnexus_capability": gitnexus_capability,
+            }
             if run_id is not None:
                 journal_dict["run_id"] = run_id
             if _budget_stopped_at[0] is not None:
@@ -2675,7 +2694,7 @@ def live_run_real(
                     _require_task_file(wt, spec_rel, task["id"])
             # Install deps into the fresh worktree OUTSIDE git_lock so a slow
             # `npm ci` never serializes other tasks' worktree creation.
-            bootstrap_worktree(wt, bootstrap_cmd)
+            bootstrap_worktree(wt, bootstrap_cmd, required=bool(bootstrap_cmd))
         else:
             start, _ = dependency_start_ref(repo, spec_id, task, by_id)
             branch = _git(wt, "rev-parse", "--abbrev-ref", "HEAD", check=False).stdout.strip()
@@ -3298,7 +3317,9 @@ def _pipeline_scheduler(
     model = model or spawnlib.default_model_for_agent(agent)
     from . import integrate as integrate_module
     from . import verify as verify_module
+    from ..router.gitnexus_preflight import check as gitnexus_check
 
+    gitnexus_capability = gitnexus_check(repo)
     role_models = _effective_role_models(agent, role_models)
     spec_id, tasks = taskformats.load_spec(str(repo / spec_rel))
     tasks = apply_run_plan(repo, spec_rel, spec_id, tasks)
@@ -3687,7 +3708,11 @@ def _pipeline_scheduler(
     validate_task_metadata(tasks)
 
     def _record() -> None:
-        jdict: dict = {"spec_id": spec_id, "entries": entries}
+        jdict: dict = {
+            "spec_id": spec_id,
+            "entries": entries,
+            "gitnexus_capability": gitnexus_capability,
+        }
         if run_id:
             jdict["run_id"] = run_id
         if groups_journal:
@@ -3747,7 +3772,7 @@ def _pipeline_scheduler(
                     _require_task_file(wt, spec_rel, task["id"])
             # Install deps into the fresh worktree OUTSIDE git_lock so a slow
             # `npm ci` never serializes other tasks' worktree creation.
-            bootstrap_worktree(wt, bootstrap_cmd)
+            bootstrap_worktree(wt, bootstrap_cmd, required=bool(bootstrap_cmd))
         else:
             start, _ = dependency_start_ref(repo, spec_id, task, by_id)
             branch = _git(wt, "rev-parse", "--abbrev-ref", "HEAD", check=False).stdout.strip()

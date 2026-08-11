@@ -35,7 +35,11 @@ import argparse
 import json
 import re
 import sys
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+from ..router.gitnexus_preflight import check as gitnexus_check
+from ..router.gitnexus_preflight import prompt_note as gitnexus_prompt_note
 
 ROLE_IMPLEMENT = "implement"
 ROLE_REVIEW = "review"
@@ -452,6 +456,10 @@ def build_worker_prompt(
             for p in extra_reads
         )
 
+    gitnexus_capability = ctx.get("gitnexus_capability")
+    if not isinstance(gitnexus_capability, dict):
+        gitnexus_capability = gitnexus_check(Path(ctx["worktree_path"]))
+
     return "\n".join(
         [
             # The title is carried in the prompt, not left to the brief. In a
@@ -479,6 +487,7 @@ def build_worker_prompt(
             "  - Do NOT modify package.json or package-lock.json (toolchain is already installed).",
             "  - Do NOT edit orchestrator state or run git worktree commands.",
             *_WORKTREE_GITNEXUS_RULES,
+            f"  - {gitnexus_prompt_note(gitnexus_capability)}",
             "  - Do NOT hand-roll a background-wait loop (while true / until / sleep) "
             "or poll for a build/test/CI to finish: run commands to completion, then "
             "report back. The orchestrator does the waiting, not you.",
@@ -535,6 +544,9 @@ def build_group_prompt(role: str, group: Dict[str, Any], ctx: Dict[str, Any]) ->
     base = ctx["base_branch"]
     remote = ctx.get("remote", "origin")
     tasks = ", ".join(group.get("tasks", [])) or "(group)"
+    gitnexus_capability = ctx.get("gitnexus_capability")
+    if not isinstance(gitnexus_capability, dict):
+        gitnexus_capability = gitnexus_check(Path(ctx["worktree_path"]))
 
     if role == ROLE_RESOLVE:
         action = [
@@ -621,6 +633,7 @@ def build_group_prompt(role: str, group: Dict[str, Any], ctx: Dict[str, Any]) ->
             "  - Make the smallest change that resolves the problem.",
             f"  - Do NOT modify {_spec_prefix(ctx)}** or orchestrator state.",
             *_WORKTREE_GITNEXUS_RULES,
+            f"  - {gitnexus_prompt_note(gitnexus_capability)}",
             "  - Do NOT run `gh pr merge`, enable auto-merge, or take any merge action "
             "yourself, even if a merge/auto-merge command itself is what's failing — "
             "that is the orchestrator's job, not yours.",
@@ -656,6 +669,7 @@ def build_stack_conflict_prompt(
     sides' intent, `git add` + `git merge --continue`, no push/PR at this stage.
     """
     task_id = task["id"]
+    gitnexus_capability = gitnexus_check(Path(worktree_path))
     return "\n".join(
         [
             f"You are the {ROLE_ASSEMBLY_RESOLVE.upper()} worker for task `{task_id}` of "
@@ -678,6 +692,7 @@ def build_stack_conflict_prompt(
             "  - Make the smallest change that resolves the problem.",
             "  - Operate ONLY in this worktree -- do not touch any other worktree or branch.",
             *_WORKTREE_GITNEXUS_RULES,
+            f"  - {gitnexus_prompt_note(gitnexus_capability)}",
             "  - Do NOT push or open a PR -- this branch is build-only at this stage; "
             "the orchestrator pushes and opens the PR after all tasks are merged.",
             "  - Do NOT wait for CI or hand-roll a background-wait loop (while true / "

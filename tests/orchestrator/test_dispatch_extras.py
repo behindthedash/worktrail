@@ -44,6 +44,7 @@ class BuildWorkerPromptTests(unittest.TestCase):
         self.assertIn("generated worktree normally has no GitNexus index", prompt)
         self.assertIn("the worktree wins", prompt)
         self.assertIn("do not search for or create", prompt)
+        self.assertIn("GitNexus capability preflight: unavailable", prompt)
 
 
 class BuildGroupPromptTests(unittest.TestCase):
@@ -88,6 +89,7 @@ class BuildGroupPromptTests(unittest.TestCase):
             prompt = dispatch.build_group_prompt(role, _group(), _ctx())
             self.assertIn("generated worktree normally has no GitNexus index", prompt)
             self.assertIn("the worktree wins", prompt)
+            self.assertIn("GitNexus capability preflight: unavailable", prompt)
 
     def test_group_prompt_forbids_hand_rolled_wait_loop(self):
         """Both group-level briefs must forbid hand-rolling a background-wait loop.
