@@ -269,6 +269,41 @@ class CodexHomePreflightTests(unittest.TestCase):
             self.assertTrue((child / "skills/worktrail-go").is_symlink())
             self.assertTrue((child / "skills/worktrail-sdd-workflow").is_symlink())
 
+    def test_stale_skill_symlinks_are_refreshed_to_the_current_install(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "current-skills"
+            (source / "worktrail-sdd-workflow").mkdir(parents=True)
+            child = root / "child-home"
+            destination = child / "skills/worktrail-sdd-workflow"
+            destination.parent.mkdir(parents=True)
+            destination.symlink_to(root / "deleted-plugin-cache/worktrail-sdd-workflow")
+
+            with patch.object(skill_dispatch, "_codex_skill_roots", return_value=[source]):
+                self.assertTrue(
+                    skill_dispatch.bootstrap_codex_skills(
+                        str(child), "worktrail-sdd-workflow"
+                    )
+                )
+
+            self.assertEqual(destination.readlink(), source / "worktrail-sdd-workflow")
+
+    def test_real_child_skill_directory_is_preserved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "current-skills"
+            (source / "worktrail-go").mkdir(parents=True)
+            child = root / "child-home"
+            destination = child / "skills/worktrail-go"
+            destination.mkdir(parents=True)
+            marker = destination / "user-owned"
+            marker.write_text("keep")
+
+            with patch.object(skill_dispatch, "_codex_skill_roots", return_value=[source]):
+                self.assertTrue(skill_dispatch.bootstrap_codex_skills(str(child), "worktrail-go"))
+
+            self.assertEqual(marker.read_text(), "keep")
+
     def test_write_remediation_flags_a_read_only_ancestor(self):
         with tempfile.TemporaryDirectory() as tmp:
             os.chmod(tmp, 0o555)
