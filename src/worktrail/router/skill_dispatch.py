@@ -326,15 +326,15 @@ def main(argv: list[str] | None = None) -> int:
         help="override CODEX_HOME for a Codex child process (or use WORKTRAIL_CODEX_HOME)",
     )
     parser.add_argument(
-        "--inherit-codex-auth",
+        "--no-inherit-codex-auth",
         action="store_true",
-        help="opt in to copying a verified file-backed ChatGPT session into the private Codex child home",
+        help="keep the Codex child isolated instead of inheriting the parent's verified ChatGPT session",
     )
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parsed = parser.parse_args(argv)
-    if parsed.inherit_codex_auth and parsed.agent != "codex":
-        parser.error("--inherit-codex-auth is only valid with --agent codex")
+    if parsed.no_inherit_codex_auth and parsed.agent != "codex":
+        parser.error("--no-inherit-codex-auth is only valid with --agent codex")
     command = build_command(
         parsed.agent, parsed.skill, parsed.args, model=parsed.model,
         cwd=parsed.cwd, write=parsed.write, add_dirs=parsed.add_dir,
@@ -357,7 +357,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         try:
             ensure_codex_home(codex_home)
-            if parsed.inherit_codex_auth:
+            if not parsed.no_inherit_codex_auth:
                 inherit_codex_chatgpt_auth(
                     resolve_parent_codex_home(), Path(codex_home).expanduser()
                 )

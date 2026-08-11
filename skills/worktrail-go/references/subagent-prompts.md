@@ -38,12 +38,12 @@ providers. The adapter automatically gives a Codex child a private persistent
 installed Worktrail skill tree into that child home without copying credentials.
 `WORKTRAIL_CODEX_HOME` or `--codex-home <path>` remains available for an explicit
 child-home choice and is fail-closed when that path is not writable.
-Authentication inheritance is separately opt-in: pass `--inherit-codex-auth` only
-for a trusted local child that must reuse the parent's ChatGPT subscription session.
+Authentication inheritance is the default for a trusted local Codex child. Pass
+`--no-inherit-codex-auth` only for an intentionally isolated child.
 The adapter verifies `codex login status`, requires a private regular file-backed
 `auth.json`, copies it atomically with mode `0600`, and generates a minimal child
 `config.toml` that selects file credential storage. It does not copy the parent's
-general configuration, and isolated no-auth mode remains the default. Missing,
+general configuration. Missing,
 non-ChatGPT, symlinked, or insecure authentication fails closed as
 `blocked_external_dependency` without printing credential contents.
 For a Codex child running sdd-workflow, also pass repeatable `--add-dir` values

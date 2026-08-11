@@ -79,10 +79,13 @@ class ProposeSpawnLandsChangeDirTests(unittest.TestCase):
     def test_each_agent_lands_the_full_change_dir(self):
         for agent in SUPPORTED_AGENTS:
             with self.subTest(agent=agent):
-                result = skill_dispatch.main([
+                arguments = [
                     "--agent", agent, "--skill", "openspec-propose",
                     "--args", "probe", "--cwd", str(self.wt), "--write",
-                ])
+                ]
+                if agent == "codex":
+                    arguments.append("--no-inherit-codex-auth")
+                result = skill_dispatch.main(arguments)
                 self.assertEqual(result, 0)
                 change_dir = self._change_dir()
                 self.assertTrue((change_dir / "proposal.md").exists())
@@ -107,7 +110,7 @@ class ProposeSpawnLandsChangeDirTests(unittest.TestCase):
     def test_codex_needs_no_write_flag_because_it_always_has_workspace_write(self):
         result = skill_dispatch.main([
             "--agent", "codex", "--skill", "openspec-propose",
-            "--args", "probe", "--cwd", str(self.wt),
+            "--args", "probe", "--cwd", str(self.wt), "--no-inherit-codex-auth",
         ])
         self.assertEqual(result, 0)
         self.assertTrue((self._change_dir() / "proposal.md").exists())
@@ -159,7 +162,6 @@ class RealAuthenticatedCodexLifecycleTests(unittest.TestCase):
                     "--skill", "authenticated-lifecycle-probe",
                     "--cwd", str(cwd),
                     "--codex-home", str(child_home),
-                    "--inherit-codex-auth",
                     "--add-dir", str(runs),
                     "--add-dir", str(worktrees),
                     "--write",

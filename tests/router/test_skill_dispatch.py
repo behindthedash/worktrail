@@ -72,6 +72,7 @@ class SkillDispatchTests(unittest.TestCase):
                 skill_dispatch.main([
                     "--agent", "codex", "--skill", "x:y", "--args", "route:E",
                     "--codex-home", "/tmp/worktrail-codex-test",
+                    "--no-inherit-codex-auth",
                 ]), 0
             )
         self.assertEqual(run.call_args.args[0][0], "codex")
@@ -84,7 +85,10 @@ class SkillDispatchTests(unittest.TestCase):
 
         with patch.object(skill_dispatch, "bootstrap_codex_skills", return_value=True):
             self.assertEqual(
-                skill_dispatch.main(["--agent", "codex", "--skill", "x:y"]), 0
+                skill_dispatch.main([
+                    "--agent", "codex", "--skill", "x:y",
+                    "--no-inherit-codex-auth",
+                ]), 0
             )
 
         self.assertEqual(run.call_args.kwargs["env"]["CODEX_HOME"], "/tmp/worktrail-codex")
@@ -96,7 +100,8 @@ class SkillDispatchTests(unittest.TestCase):
 
         with patch.object(skill_dispatch, "bootstrap_codex_skills", return_value=True):
             skill_dispatch.main([
-                "--agent", "codex", "--skill", "x:y", "--codex-home", "/tmp/explicit"
+                "--agent", "codex", "--skill", "x:y", "--codex-home", "/tmp/explicit",
+                "--no-inherit-codex-auth",
             ])
 
         self.assertEqual(run.call_args.kwargs["env"]["CODEX_HOME"], "/tmp/explicit")
@@ -145,9 +150,12 @@ class WorkingDirectoryTargetingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             for agent in skill_dispatch.SUPPORTED_AGENTS:
                 with self.subTest(agent=agent):
-                    skill_dispatch.main(
-                        ["--agent", agent, "--skill", "openspec-propose", "--cwd", tmp]
-                    )
+                    arguments = [
+                        "--agent", agent, "--skill", "openspec-propose", "--cwd", tmp
+                    ]
+                    if agent == "codex":
+                        arguments.append("--no-inherit-codex-auth")
+                    skill_dispatch.main(arguments)
                     self.assertEqual(run.call_args.kwargs["cwd"], tmp)
 
     @patch("worktrail.router.skill_dispatch.subprocess.run")
@@ -282,7 +290,7 @@ class CodexHomePreflightTests(unittest.TestCase):
                 self.assertIsNone(skill_dispatch.codex_home_write_remediation(tmp))
 
     @patch("worktrail.router.skill_dispatch.subprocess.run")
-    def test_auth_inheritance_is_explicit_and_copies_only_private_allowlist(self, run):
+    def test_auth_inheritance_is_default_and_copies_only_private_allowlist(self, run):
         run.return_value.returncode = 0
         with tempfile.TemporaryDirectory() as tmp:
             parent = Path(tmp) / "parent"
@@ -300,7 +308,7 @@ class CodexHomePreflightTests(unittest.TestCase):
                     patch.object(skill_dispatch, "bootstrap_codex_skills", return_value=True):
                 self.assertEqual(skill_dispatch.main([
                     "--agent", "codex", "--skill", "x:y",
-                    "--codex-home", str(child), "--inherit-codex-auth",
+                    "--codex-home", str(child),
                 ]), 0)
 
             self.assertEqual((child / "auth.json").read_bytes(), secret)
@@ -314,7 +322,7 @@ class CodexHomePreflightTests(unittest.TestCase):
             self.assertNotIn("private-model", (child / "config.toml").read_text())
 
     @patch("worktrail.router.skill_dispatch.subprocess.run")
-    def test_default_isolated_mode_does_not_read_or_copy_parent_auth(self, run):
+    def test_explicit_isolated_mode_does_not_read_or_copy_parent_auth(self, run):
         run.return_value.returncode = 0
         with tempfile.TemporaryDirectory() as tmp:
             parent = Path(tmp) / "parent"
@@ -325,6 +333,7 @@ class CodexHomePreflightTests(unittest.TestCase):
                     patch.object(skill_dispatch, "bootstrap_codex_skills", return_value=True):
                 self.assertEqual(skill_dispatch.main([
                     "--agent", "codex", "--skill", "x:y", "--codex-home", str(child),
+                    "--no-inherit-codex-auth",
                 ]), 0)
             self.assertFalse((child / "auth.json").exists())
 
@@ -346,7 +355,7 @@ class CodexHomePreflightTests(unittest.TestCase):
                     redirect_stderr(stderr):
                 result = skill_dispatch.main([
                     "--agent", "codex", "--skill", "x:y",
-                    "--codex-home", str(child), "--inherit-codex-auth",
+                    "--codex-home", str(child),
                 ])
             self.assertEqual(result, 1)
             self.assertIn("blocked_external_dependency", stderr.getvalue())
@@ -364,7 +373,7 @@ class CodexHomePreflightTests(unittest.TestCase):
                     redirect_stderr(stderr):
                 result = skill_dispatch.main([
                     "--agent", "codex", "--skill", "x:y",
-                    "--codex-home", str(Path(tmp) / "child"), "--inherit-codex-auth",
+                    "--codex-home", str(Path(tmp) / "child"),
                 ])
             self.assertEqual(result, 1)
             self.assertIn("not authenticated with ChatGPT", stderr.getvalue())
@@ -382,7 +391,7 @@ class CodexHomePreflightTests(unittest.TestCase):
                     redirect_stderr(stderr):
                 result = skill_dispatch.main([
                     "--agent", "codex", "--skill", "x:y",
-                    "--codex-home", str(Path(tmp) / "child"), "--inherit-codex-auth",
+                    "--codex-home", str(Path(tmp) / "child"),
                 ])
             self.assertEqual(result, 1)
             self.assertIn("permissions must be 0600", stderr.getvalue())
@@ -411,7 +420,10 @@ class CodexHomePreflightTests(unittest.TestCase):
             target = os.path.join(tmp, "codex-home")
             with patch.object(skill_dispatch, "bootstrap_codex_skills", return_value=True):
                 self.assertEqual(
-                    skill_dispatch.main(["--agent", "codex", "--skill", "x:y", "--codex-home", target]),
+                    skill_dispatch.main([
+                        "--agent", "codex", "--skill", "x:y", "--codex-home", target,
+                        "--no-inherit-codex-auth",
+                    ]),
                     0,
                 )
             run.assert_called_once()
