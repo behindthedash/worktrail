@@ -3,6 +3,12 @@ name: 'CI: Version Bump Check'
 on:
   pull_request:
     branches: [main]
+    # `labeled`/`unlabeled` so applying or removing the go:no-version-bump
+    # exemption re-evaluates the check without a no-op push (PR #307 needed a
+    # "chore: retrigger CI after version exemption" commit for exactly this).
+    # The check reads live labels each run, so fail-closed is preserved: the
+    # label present passes, the label removed re-fails when a bump is needed.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 
 concurrency:
   group: version-bump-check-${{ github.event.pull_request.number }}
