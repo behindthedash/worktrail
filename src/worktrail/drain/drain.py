@@ -126,7 +126,7 @@ SUPPORTED_AGENTS = ("claude", "codex", "opencode")
 BASE_CMDS: Dict[str, List[str]] = {
     "claude": ["claude", "-p"],
     "opencode": ["opencode", "run"],
-    "codex": ["codex", "exec", "-s", "danger-full-access", "-a", "on-request"],
+    "codex": ["codex", "exec", "-s", "danger-full-access"],
 }
 
 SUCCESS_STATES = frozenset({
@@ -161,7 +161,7 @@ def build_command(agent: str, permission_args: List[str],
         return ["claude", "-p", prompt, *permission_args]
     if agent == "opencode":
         return ["opencode", "run", *permission_args, prompt]
-    return ["codex", "exec", "-s", "danger-full-access", "-a", "on-request", *permission_args, prompt]
+    return ["codex", "exec", "-s", "danger-full-access", *permission_args, prompt]
 
 
 # ---------------------------------------------------------------------------

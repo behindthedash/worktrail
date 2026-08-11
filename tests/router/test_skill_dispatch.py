@@ -21,9 +21,11 @@ class SkillDispatchTests(unittest.TestCase):
     def test_codex_preserves_codex_binary(self):
         command = skill_dispatch.build_command("codex", "worktrail-sdd-workflow", "route:E")
         self.assertEqual(
-            command[:7],
-            ["codex", "exec", "--json", "-s", "danger-full-access", "-a", "on-request"],
+            command[:5],
+            ["codex", "exec", "--json", "-s", "danger-full-access"],
         )
+        self.assertNotIn("-a", command)
+        self.assertNotIn("on-request", command)
         self.assertIn("Use the installed skill 'worktrail-sdd-workflow'", command[-1])
         self.assertNotIn("claude", command)
 

@@ -441,7 +441,7 @@ def build_cmd(
         cmd.append(prompt)
         return cmd
 
-    cmd = ["codex", "exec", "--json", "-s", "danger-full-access", "-a", "on-request"]
+    cmd = ["codex", "exec", "--json", "-s", "danger-full-access"]
     if model:
         cmd += ["--model", model]
     if effort:
