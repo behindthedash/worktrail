@@ -13,3 +13,7 @@ Worktrail understands DevKit task files, OpenSpec changes, and GitHub Spec Kit f
 The Claude plugin also includes a once-per-session Stop hook, with OpenCode `session.idle`
 parity, that asks for an exceptional next-step idea after substantive work and captures it
 through `worktrail-handoff` when appropriate.
+
+Run `worktrail-check-provider-commands` to validate every generated Claude,
+Codex, and OpenCode headless command against the installed CLI parsers without
+authenticating or launching model work.
