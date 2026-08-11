@@ -17,7 +17,7 @@ permission gate each CLI enforces:
   - claude:   `--permission-mode bypassPermissions`
   - opencode: `--auto`
   - codex:    none required -- `skill_dispatch.build_command` always passes
-              `-s danger-full-access -a on-request` unconditionally for codex.
+              `-s danger-full-access` unconditionally for codex.
 
 Missing the gate -> exit 0 and write nothing, which is the exact silent
 no-op PR #264 verified live on 2026-08-09.
@@ -36,7 +36,7 @@ def _write_allowed(agent: str, argv: list[str]) -> bool:
     if agent == "opencode":
         return "--auto" in argv
     if agent == "codex":
-        return "-s" in argv and "danger-full-access" in argv and "-a" in argv and "on-request" in argv
+        return "-s" in argv and "danger-full-access" in argv
     return False
 
 
