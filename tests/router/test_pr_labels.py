@@ -113,6 +113,84 @@ def test_ensure_pr_risk_label_returns_none_when_gh_api_add_fails(monkeypatch, ca
     assert "failed to add label" in capsys.readouterr().err
 
 
+def test_ensure_pr_risk_label_retries_on_transient_tls_then_succeeds(monkeypatch, capsys):
+    """A transient TLS certificate failure (~1-in-8 connections to the GitHub
+    API edge) must be retried with backoff, not treated as a terminal error --
+    verified live 2026-08-11 where the go:risk-* label add flaked once."""
+    gh_api_calls = []
+
+    def fake_run(cmd, capture_output, text, cwd, timeout):
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return _FakeCompleted(0, json.dumps({"labels": []}))
+        gh_api_calls.append(cmd)
+        # fail once with the Go x509 name-mismatch text, succeed on retry
+        if len(gh_api_calls) == 1:
+            return _FakeCompleted(1, "", stderr="tls: failed to verify certificate: "
+                                                "x509: certificate is not valid for any names, "
+                                                "but wanted to match api.github.com")
+        return _FakeCompleted(0, "")
+
+    monkeypatch.setattr(pr_labels.subprocess, "run", fake_run)
+    result = ensure_pr_risk_label("/repo", "https://github.com/o/r/pull/1", "low")
+    assert result == "go:risk-low"
+    assert len(gh_api_calls) == 2
+    assert "transient TLS failure" in capsys.readouterr().err
+
+
+def test_ensure_pr_risk_label_gives_up_after_retry_ceiling(monkeypatch, capsys):
+    """Persistent transient TLS failures must not loop forever -- bounded at
+    the retry ceiling, then the standard fail-open warning is emitted."""
+    gh_api_calls = []
+
+    def fake_run(cmd, capture_output, text, cwd, timeout):
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return _FakeCompleted(0, json.dumps({"labels": []}))
+        gh_api_calls.append(cmd)
+        return _FakeCompleted(1, "", stderr="failed to verify certificate")
+
+    monkeypatch.setattr(pr_labels.subprocess, "run", fake_run)
+    result = ensure_pr_risk_label("/repo", "https://github.com/o/r/pull/1", "low")
+    assert result is None
+    assert len(gh_api_calls) == pr_labels._RETRY_ATTEMPTS
+    assert "failed to add label" in capsys.readouterr().err
+
+
+def test_ensure_pr_risk_label_non_transient_failure_not_retried(monkeypatch):
+    """A real (non-TLS) failure must NOT be retried -- retrying would mask an
+    actual error like GraphQL drift or an auth problem."""
+    gh_api_calls = []
+
+    def fake_run(cmd, capture_output, text, cwd, timeout):
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return _FakeCompleted(0, json.dumps({"labels": []}))
+        gh_api_calls.append(cmd)
+        return _FakeCompleted(1, "", stderr="HTTP 422: invalid payload")
+
+    monkeypatch.setattr(pr_labels.subprocess, "run", fake_run)
+    result = ensure_pr_risk_label("/repo", "https://github.com/o/r/pull/1", "low")
+    assert result is None
+    assert len(gh_api_calls) == 1
+
+
+def test_ensure_pr_risk_label_noop_when_gh_view_transient_tls_then_succeeds(monkeypatch, capsys):
+    """The read path (gh pr view) must also ride the retry, so a transient TLS
+    flake on the initial label read doesn't abort the correction."""
+    view_calls = []
+
+    def fake_run(cmd, capture_output, text, cwd, timeout):
+        if cmd[:3] == ["gh", "pr", "view"]:
+            view_calls.append(cmd)
+            if len(view_calls) == 1:
+                return _FakeCompleted(1, "", stderr="x509: certificate is not valid for any names")
+            return _FakeCompleted(0, json.dumps({"labels": []}))
+        return _FakeCompleted(0, "")
+
+    monkeypatch.setattr(pr_labels.subprocess, "run", fake_run)
+    result = ensure_pr_risk_label("/repo", "https://github.com/o/r/pull/1", "low")
+    assert result == "go:risk-low"
+    assert len(view_calls) == 2
+
+
 def test_ensure_pr_risk_label_returns_none_and_warns_when_owner_repo_unresolvable(monkeypatch, capsys):
     def fake_run(cmd, **kwargs):
         if cmd[:3] == ["gh", "pr", "view"]:

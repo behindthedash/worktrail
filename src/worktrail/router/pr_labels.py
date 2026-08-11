@@ -37,6 +37,7 @@ import json
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
@@ -46,6 +47,47 @@ from .run_record import _load as load_run_record
 Runner = Callable[..., "subprocess.CompletedProcess[str]"]
 
 _PR_URL_RE = re.compile(r"^https://github\.com/([^/]+)/([^/]+)/pull/(\d+)/?$")
+
+# Transient TLS verification failures from `gh`'s Go client -- the GitHub API
+# edge intermittently serves an untrusted/mismatched certificate on a subset
+# of connections (reproduced ~1-in-8 to api.github.com, 2026-08-11; both Go and
+# Python fail identically, github.com/other hosts never do). These are
+# network flakiness, not a config or payload error, so a small bounded retry is
+# safe. Every OTHER failure (422, auth, GraphQL drift, ...) is a real error and
+# must NOT be retried -- a retry loop would mask it, not fix it.
+_TRANSIENT_TLS_MARKERS = (
+    "x509: certificate is not valid for any names",
+    "failed to verify certificate",
+    "certificate verify failed",
+    "tls: failed to verify certificate",
+)
+_RETRY_ATTEMPTS = 3
+_RETRY_BACKOFF_BASE_S = 1.0
+
+
+def _is_transient_tls(stderr: str) -> bool:
+    return any(marker in stderr for marker in _TRANSIENT_TLS_MARKERS)
+
+
+def _run_gh_cmd(cmd, repo, runner=None, timeout=30) -> subprocess.CompletedProcess[str]:
+    """Run a `gh` subprocess, retrying (with backoff) ONLY on transient TLS
+    failures. Non-transient failures and successes run once and return
+    immediately. Returns the last CompletedProcess."""
+    attempt = 0
+    while True:
+        result = (runner or subprocess.run)(
+            cmd, capture_output=True, text=True, cwd=repo, timeout=timeout,
+        )
+        if result.returncode == 0 or not _is_transient_tls(result.stderr):
+            return result
+        attempt += 1
+        if attempt >= _RETRY_ATTEMPTS:
+            return result
+        delay = _RETRY_BACKOFF_BASE_S * attempt
+        print(f"warning: pr_labels: transient TLS failure on {cmd[0]} '...' "
+              f"({result.stderr.strip()}); retrying in {delay:.1f}s "
+              f"({attempt}/{_RETRY_ATTEMPTS})", file=sys.stderr)
+        time.sleep(delay)
 
 
 def _parse_pr_url(pr_url: str) -> Optional[Tuple[str, str, str]]:
@@ -91,10 +133,10 @@ def _add_label(repo: str, pr_url: str, label: str,
               f"PR {pr_url!r}; skipping label add", file=sys.stderr)
         return None
     owner, repo_name, number = parsed
-    result = (runner or subprocess.run)(
+    result = _run_gh_cmd(
         ["gh", "api", f"repos/{owner}/{repo_name}/issues/{number}/labels",
          "-X", "POST", "-f", f"labels[]={label}"],
-        capture_output=True, text=True, cwd=repo, timeout=30,
+        repo, runner,
     )
     if result.returncode != 0:
         print(f"warning: pr_labels: failed to add label {label!r} to "
@@ -111,9 +153,9 @@ def _current_pr_labels(repo: str, pr_url: str, runner: Optional[Runner] = None) 
     a def-time-bound default) so existing callers that monkeypatch
     `subprocess.run` globally keep working unchanged.
     """
-    result = (runner or subprocess.run)(
+    result = _run_gh_cmd(
         ["gh", "pr", "view", pr_url, "--json", "labels"],
-        capture_output=True, text=True, cwd=repo, timeout=30,
+        repo, runner,
     )
     if result.returncode != 0:
         return None
