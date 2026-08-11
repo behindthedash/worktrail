@@ -38,6 +38,13 @@ class BuildWorkerPromptTests(unittest.TestCase):
             dispatch.build_worker_prompt("bad-role", task, _ctx())
         self.assertIn("bad-role", str(cm.exception))
 
+    def test_worker_prompt_explains_gitnexus_worktree_boundary(self):
+        task = {"id": "TASK-001", "files": ["src/a.ts"]}
+        prompt = dispatch.build_worker_prompt(dispatch.ROLE_IMPLEMENT, task, _ctx())
+        self.assertIn("generated worktree normally has no GitNexus index", prompt)
+        self.assertIn("the worktree wins", prompt)
+        self.assertIn("do not search for or create", prompt)
+
 
 class BuildGroupPromptTests(unittest.TestCase):
     def test_unknown_group_role_raises(self):
@@ -75,6 +82,12 @@ class BuildGroupPromptTests(unittest.TestCase):
         for role in (dispatch.ROLE_RESOLVE, dispatch.ROLE_CI_FIX):
             prompt = dispatch.build_group_prompt(role, _group(), _ctx())
             self.assertIn("Hard rules", prompt)
+
+    def test_group_prompts_explain_gitnexus_worktree_boundary(self):
+        for role in (dispatch.ROLE_RESOLVE, dispatch.ROLE_ASSEMBLY_RESOLVE, dispatch.ROLE_CI_FIX):
+            prompt = dispatch.build_group_prompt(role, _group(), _ctx())
+            self.assertIn("generated worktree normally has no GitNexus index", prompt)
+            self.assertIn("the worktree wins", prompt)
 
     def test_group_prompt_forbids_hand_rolled_wait_loop(self):
         """Both group-level briefs must forbid hand-rolling a background-wait loop.
@@ -131,6 +144,11 @@ class BuildStackConflictPromptTests(unittest.TestCase):
         self.assertIn("Do NOT push or open a PR", prompt)
         self.assertNotIn("git push", prompt)
         self.assertNotIn("gh pr create", prompt)
+
+    def test_explains_gitnexus_worktree_boundary(self):
+        prompt = self._prompt()
+        self.assertIn("generated worktree normally has no GitNexus index", prompt)
+        self.assertIn("the worktree wins", prompt)
 
     def test_includes_merge_conflict_resolution_steps(self):
         prompt = self._prompt()

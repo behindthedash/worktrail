@@ -239,6 +239,14 @@ _ROLE_ACTION = {
     ),
 }
 
+_WORKTREE_GITNEXUS_RULES = (
+    "  - This generated worktree normally has no GitNexus index. Use its actual files, "
+    "`rg`, and tests as current-branch ground truth; do not search for or create a "
+    "worktree-local `.gitnexus/` index.",
+    "  - GitNexus describes the canonical repo's base branch. Use it only for broader "
+    "base-branch context; if it disagrees with this worktree, the worktree wins.",
+)
+
 
 def _spec_prefix(ctx: Dict[str, Any]) -> str:
     """Spec-root prefix for this run's task format (see build_worker_prompt)."""
@@ -470,6 +478,7 @@ def build_worker_prompt(
             "stage or commit it.",
             "  - Do NOT modify package.json or package-lock.json (toolchain is already installed).",
             "  - Do NOT edit orchestrator state or run git worktree commands.",
+            *_WORKTREE_GITNEXUS_RULES,
             "  - Do NOT hand-roll a background-wait loop (while true / until / sleep) "
             "or poll for a build/test/CI to finish: run commands to completion, then "
             "report back. The orchestrator does the waiting, not you.",
@@ -611,6 +620,7 @@ def build_group_prompt(role: str, group: Dict[str, Any], ctx: Dict[str, Any]) ->
             "Hard rules:",
             "  - Make the smallest change that resolves the problem.",
             f"  - Do NOT modify {_spec_prefix(ctx)}** or orchestrator state.",
+            *_WORKTREE_GITNEXUS_RULES,
             "  - Do NOT run `gh pr merge`, enable auto-merge, or take any merge action "
             "yourself, even if a merge/auto-merge command itself is what's failing — "
             "that is the orchestrator's job, not yours.",
@@ -667,6 +677,7 @@ def build_stack_conflict_prompt(
             "Hard rules:",
             "  - Make the smallest change that resolves the problem.",
             "  - Operate ONLY in this worktree -- do not touch any other worktree or branch.",
+            *_WORKTREE_GITNEXUS_RULES,
             "  - Do NOT push or open a PR -- this branch is build-only at this stage; "
             "the orchestrator pushes and opens the PR after all tasks are merged.",
             "  - Do NOT wait for CI or hand-roll a background-wait loop (while true / "

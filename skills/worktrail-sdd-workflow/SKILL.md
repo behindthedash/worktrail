@@ -34,6 +34,14 @@ Route playbooks: `../worktrail-go/references/routes.md`.
   tests → merged PRs → broad search last. Load only the selected route playbook.
   Hand subagents pointers, not blobs. The run record is the working memory —
   update it instead of re-reading materials.
+- **GitNexus/worktree boundary:** GitNexus normally indexes the canonical base checkout,
+  not Worktrail's generated task/spec worktrees. In a worktree, use its actual files,
+  `rg`, and tests as ground truth for the current branch; use GitNexus only for
+  base-branch context and broader callers/dependents. If they disagree, assume the graph
+  is stale relative to the branch and let the worktree win. Do not require or create a
+  worktree-local `.gitnexus/` index. Before a rename, deletion, or PR, combine an
+  unfiltered `rg "<name>" .` from the worktree root with GitNexus query/impact against
+  the canonical repository.
 
 **No script resolution needed.** Every command below is a console script installed by the
 `worktrail` package (`worktrail-run-record`, `worktrail-live`, `worktrail-pre-pr-gate`, …), on
