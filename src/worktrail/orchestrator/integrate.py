@@ -717,6 +717,30 @@ def integrate_one(
     """
     name = g["name"]
 
+    def _ensure_pr_ready(pr_data: dict) -> bool:
+        """Convert a reused draft PR before it enters the CI/auto-merge path.
+
+        Worktrail-created PRs are ready by construction (the create command does
+        not pass ``--draft``), but a resumed run can encounter a draft created by
+        another publisher.  Treat that state explicitly: GitHub's auto-merge
+        automation commonly skips draft PRs, so silently recording it as OPEN can
+        strand the run indefinitely.
+        """
+        if not pr_data.get("isDraft"):
+            return True
+        pr_ref = str(pr_data.get("number") or pr_data.get("url") or "")
+        if not pr_ref:
+            print(f"  SKIP [{name:9}] -- draft PR has no resolvable number or URL")
+            return False
+        ready_cmd = ["gh", "pr", "ready", pr_ref]
+        ready = subprocess.run(ready_cmd, capture_output=True, text=True, cwd=str(repo))
+        if ready.returncode != 0:
+            detail = (ready.stderr or ready.stdout or "unable to mark PR ready").strip()
+            print(f"  SKIP [{name:9}] -- could not mark draft PR ready: {detail[:240]}")
+            return False
+        print(f"  READY [{name:9}] draft PR {pr_ref} converted to ready-for-review")
+        return True
+
     def _do_journal(nm: str, pu: str, hb: str, st: str, quarantine_reason: str = "") -> None:
         if _record_group is not None:
             _record_group(nm, pu, hb, st, quarantine_reason)
@@ -793,7 +817,7 @@ def integrate_one(
 
     # Reconcile: MERGED? Skip branch/PR creation and write MERGED record.
     pr_view = subprocess.run(
-        ["gh", "pr", "view", gb, "--json", "number,state,url,headRefName"],
+        ["gh", "pr", "view", gb, "--json", "number,state,url,headRefName,isDraft"],
         capture_output=True,
         text=True,
         cwd=str(repo),
@@ -879,7 +903,7 @@ def integrate_one(
 
     # Reconcile: PR (reuse OPEN, discover operator PR, or create new)
     pr_view = subprocess.run(
-        ["gh", "pr", "view", gb, "--json", "number,state,url,headRefName"],
+        ["gh", "pr", "view", gb, "--json", "number,state,url,headRefName,isDraft"],
         capture_output=True,
         text=True,
         cwd=str(repo),
@@ -891,6 +915,10 @@ def integrate_one(
             pr_data = json.loads(pr_view.stdout)
             pr_state = pr_data.get("state")
             if pr_state == "OPEN":
+                if not _ensure_pr_ready(pr_data):
+                    quarantined[name] = "existing draft PR could not be marked ready"
+                    _do_journal(name, "", gb, "QUARANTINED", QUARANTINE_INTEGRATION_ERROR)
+                    return None
                 pr_url = pr_data.get(
                     "url", f"https://github.com/o/r/pull/{pr_data.get('number', '?')}"
                 )
@@ -908,7 +936,7 @@ def integrate_one(
     search_result = subprocess.run(
         [
             "gh", "pr", "list", "--search", f"{name} {spec_id}",
-            "--json", "number,state,url,headRefName", "--state", "open",
+            "--json", "number,state,url,headRefName,isDraft", "--state", "open",
         ],
         capture_output=True,
         text=True,
@@ -919,6 +947,10 @@ def integrate_one(
             matches = json.loads(search_result.stdout)
             if matches:
                 match = matches[0]
+                if not _ensure_pr_ready(match):
+                    quarantined[name] = "discovered draft PR could not be marked ready"
+                    _do_journal(name, "", gb, "QUARANTINED", QUARANTINE_INTEGRATION_ERROR)
+                    return None
                 pr_url = match.get("url")
                 head_branch = match.get("headRefName", gb)
                 print(f"  PR [{name:9}] base={pr_base:18} -> {pr_url} (discovered operator PR)")

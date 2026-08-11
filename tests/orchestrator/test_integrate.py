@@ -209,6 +209,34 @@ class ReuseExistingOpenPR(unittest.TestCase):
                         len(create_calls), 0, "Should not call gh pr create for existing OPEN PR"
                     )
 
+    def test_reused_draft_pr_is_marked_ready_before_reuse(self):
+        """A resumed run must not leave a draft PR outside auto-merge automation."""
+        pr_view = {
+            "run-draft/base": [
+                {
+                    "number": 43,
+                    "state": "OPEN",
+                    "isDraft": True,
+                    "url": "https://github.com/owner/repo/pull/43",
+                }
+            ]
+        }
+        run = FakeRun(pr_view_responses=pr_view)
+
+        with patch("worktrail.orchestrator.integrate.coordinator.plan_groups") as mock_groups:
+            with patch("worktrail.orchestrator.integrate._git", side_effect=run):
+                with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
+                    mock_groups.return_value = [mock_group("base", ["T001"])]
+                    prs, _, _ = integrate.finish_real(
+                        Path("/repo"), "spec-001", [mock_task("T001")], "origin",
+                        "run-draft", "main", cleanup=False,
+                    )
+
+        self.assertEqual(len(prs), 1)
+        ready_calls = run.find_calls("gh", "pr", "ready")
+        self.assertEqual(len(ready_calls), 1)
+        self.assertEqual(ready_calls[0][3], "43")
+
     def test_open_pr_with_existing_remote_branch(self):
         """Verify existing remote branch + OPEN PR are both reused."""
         pr_view = {
@@ -324,6 +352,10 @@ class NoExistingBranchOrPR(unittest.TestCase):
                     create_calls = run.find_calls("gh", "pr", "create")
                     self.assertEqual(
                         len(create_calls), 1, "Should call gh pr create when no PR exists"
+                    )
+                    self.assertNotIn(
+                        "--draft", create_calls[0],
+                        "orchestrator-created PRs must be ready for auto-merge eligibility",
                     )
 
     def test_closed_pr_creates_new(self):
