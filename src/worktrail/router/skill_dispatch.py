@@ -260,8 +260,10 @@ def bootstrap_codex_skills(codex_home: str, skill: str) -> bool:
     """Expose the installed Worktrail skills in an isolated Codex home.
 
     Codex discovers skills below ``CODEX_HOME/skills``.  A fresh child home
-    therefore needs links to the plugin's skill directories.  Existing child
-    entries are preserved, so this is safe for a user-maintained child home.
+    therefore needs links to the plugin's skill directories.  Worktrail-owned
+    symlinks are refreshed on every dispatch because plugin-cache versions and
+    source worktrees are replaceable.  Real files and directories are
+    preserved, so this remains safe for a user-maintained child home.
     """
     source_root = next((root for root in _codex_skill_roots()
                         if (root / skill).is_dir()), None)
@@ -271,7 +273,11 @@ def bootstrap_codex_skills(codex_home: str, skill: str) -> bool:
     destination_root.mkdir(parents=True, exist_ok=True)
     for source in source_root.iterdir():
         destination = destination_root / source.name
-        if not destination.exists() and not destination.is_symlink():
+        if destination.is_symlink():
+            if destination.readlink() == source:
+                continue
+            destination.unlink()
+        if not destination.exists():
             destination.symlink_to(source, target_is_directory=source.is_dir())
     return (destination_root / skill).exists()
 
