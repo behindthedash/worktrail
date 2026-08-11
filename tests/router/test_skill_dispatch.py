@@ -20,7 +20,10 @@ class SkillDispatchTests(unittest.TestCase):
 
     def test_codex_preserves_codex_binary(self):
         command = skill_dispatch.build_command("codex", "worktrail-sdd-workflow", "route:E")
-        self.assertEqual(command[:5], ["codex", "exec", "--json", "-s", "workspace-write"])
+        self.assertEqual(
+            command[:7],
+            ["codex", "exec", "--json", "-s", "danger-full-access", "-a", "on-request"],
+        )
         self.assertIn("Use the installed skill 'worktrail-sdd-workflow'", command[-1])
         self.assertNotIn("claude", command)
 
@@ -190,7 +193,7 @@ class HeadlessWritePermissionTests(unittest.TestCase):
             "--auto", skill_dispatch.build_command("opencode", "openspec-propose", write=True)
         )
 
-    def test_codex_needs_nothing_extra_because_it_already_has_workspace_write(self):
+    def test_codex_worker_always_uses_socket_enabled_sandbox(self):
         self.assertEqual(
             skill_dispatch.build_command("codex", "openspec-propose", write=True),
             skill_dispatch.build_command("codex", "openspec-propose"),

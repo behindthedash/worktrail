@@ -44,13 +44,15 @@ def build_command(agent: str, skill: str, args: str = "", *, model: str | None =
     calling session. Only `codex` and `opencode` expose a working-root flag
     (`-C` / `--dir`); `claude` has none, so for every agent the caller must also
     launch the child with that directory as its process cwd (`main` does). The
-    flag is still passed where it exists because codex derives its
-    `workspace-write` sandbox root from the working root, not from process cwd.
+    flag is still passed where it exists because codex derives its sandbox root
+    from the working root, not from process cwd.
 
     `write` opts into the permissions a skill needs to author files headlessly.
     It is opt-in because granting them by default would silently widen every
-    existing dispatch. codex already carries `-s workspace-write` and so needs
-    nothing extra; `claude` and `opencode` are otherwise unable to write without
+    existing dispatch. Codex worker dispatches use
+    `-s danger-full-access -a on-request` so local integration tests can bind
+    loopback sockets while approval prompts remain enabled. `claude` and
+    `opencode` are otherwise unable to write without
     an interactive approval that a headless run has no channel to answer, which
     strands the spawn instead of failing it.
 
@@ -78,7 +80,7 @@ def build_command(agent: str, skill: str, args: str = "", *, model: str | None =
             command += ["--model", model]
         command.append(prompt)
     else:
-        command = ["codex", "exec", "--json", "-s", "workspace-write"]
+        command = ["codex", "exec", "--json", "-s", "danger-full-access", "-a", "on-request"]
         if cwd:
             command += ["-C", cwd]
         for directory in add_dirs:
