@@ -107,7 +107,7 @@ class ProposeSpawnLandsChangeDirTests(unittest.TestCase):
                 self.assertEqual(result, 0)
                 self.assertFalse(self._change_dir().exists())
 
-    def test_codex_needs_no_write_flag_because_it_always_has_workspace_write(self):
+    def test_codex_needs_no_write_flag_because_it_always_has_full_access(self):
         result = skill_dispatch.main([
             "--agent", "codex", "--skill", "openspec-propose",
             "--args", "probe", "--cwd", str(self.wt), "--no-inherit-codex-auth",

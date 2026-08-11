@@ -61,7 +61,7 @@ def test_build_command_claude_permission_args_are_explicit_passthrough():
 def test_build_command_opencode_and_codex_shapes():
     assert build_command("opencode", []) == ["opencode", "run", "worktrail-go auto"]
     assert build_command("codex", []) == [
-        "codex", "exec", "-s", "workspace-write", "worktrail-go auto"]
+        "codex", "exec", "-s", "danger-full-access", "-a", "on-request", "worktrail-go auto"]
 
 
 def test_build_command_template_overrides_agent_shape():
