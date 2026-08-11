@@ -100,8 +100,8 @@ DEFAULTS: Dict[str, Any] = {
     # worktrees branch off the base commit and start WITHOUT the base checkout's
     # gitignored node_modules; without this every implement/fix/review worker
     # rediscovers and reinstalls them mid-task. The sdd-workflow conductor threads it to
-    # `live.py full-real` as `--bootstrap-cmd`. Non-fatal (a failed install is logged and
-    # the worker self-recovers); None = skip, so repos with no install step are unaffected.
+    # `live.py full-real` as `--bootstrap-cmd`. A configured command must succeed before
+    # a worker is spawned; None = skip, so repos with no install step are unaffected.
     "worktree_bootstrap_cmd": None,
     # Optional glob patterns (fnmatch, matched against a task's declared `files`)
     # identifying schema-migration files for this repo (e.g. Alembic revisions,

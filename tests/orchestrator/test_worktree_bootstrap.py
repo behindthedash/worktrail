@@ -10,8 +10,8 @@ go-policy.yaml `worktree_bootstrap_cmd` (threaded as `live.py full-real
 --bootstrap-cmd`).
 
 These tests guard three things that must not silently break:
-  1. the helper's contract (skip on None, run-in-worktree on success, non-fatal
-     on failure);
+  1. the helper's contract (skip on None, run-in-worktree on success, and an
+     explicit required-mode failure before worker spawn);
   2. that `--bootstrap-cmd` parses into `args.bootstrap_cmd`; and
   3. that every driver on the fan-out path accepts a `bootstrap_cmd` kwarg, so
      the CLI -> full_real -> _full_real_inner -> scheduler threading can't rot.
@@ -66,6 +66,11 @@ class BootstrapHelperTest(unittest.TestCase):
         result = live.bootstrap_worktree(wt, "exit 7", log=logs.append)
         self.assertFalse(result)
         self.assertTrue(any("failed" in m for m in logs))
+
+    def test_required_failure_stops_before_worker_spawn(self) -> None:
+        wt = self._tmp_wt()
+        with self.assertRaises(live.WorktreeAddError):
+            live.bootstrap_worktree(wt, "exit 7", log=lambda _m: None, required=True)
 
 
 class ThreadingContractTest(unittest.TestCase):
