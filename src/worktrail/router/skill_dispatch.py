@@ -7,14 +7,19 @@ import argparse
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Sequence
 
 SUPPORTED_AGENTS = ("claude", "codex", "opencode")
 _SKILL_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$")
 _DEFAULT_WORKTRAIL_CODEX_HOME = "~/.worktrail/codex-home"
+_CODEX_AUTH_FILE = "auth.json"
+_MAX_CODEX_AUTH_BYTES = 1024 * 1024
+_CHATGPT_LOGIN_STATUS = "Logged in using ChatGPT"
 
 
 def _validate_skill_name(name: str) -> str:
@@ -120,7 +125,109 @@ def select_codex_home(codex_home_override: str | None) -> tuple[str, bool]:
 
 def ensure_codex_home(path: str) -> None:
     """Create the child home with private permissions, without copying state."""
-    Path(path).expanduser().mkdir(parents=True, exist_ok=True, mode=0o700)
+    home = Path(path).expanduser()
+    if home.is_symlink():
+        raise OSError(f"Codex child home '{home}' must not be a symlink")
+    home.mkdir(parents=True, exist_ok=True, mode=0o700)
+    home.chmod(0o700)
+
+
+def resolve_parent_codex_home() -> Path:
+    """Resolve the parent home whose authenticated session may be inherited."""
+    return Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser()
+
+
+def _is_chatgpt_login_status(status: subprocess.CompletedProcess[str]) -> bool:
+    """Recognize the exact status line without relaying captured diagnostics."""
+    if status.returncode != 0:
+        return False
+    lines = [
+        line.strip()
+        for output in (status.stdout, status.stderr)
+        for line in output.splitlines()
+    ]
+    return _CHATGPT_LOGIN_STATUS in lines
+
+
+def _read_private_regular_file(path: Path) -> bytes:
+    """Read a bounded, owner-only regular file without following symlinks."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise OSError(f"required Codex authentication file is unavailable: {path.name}") from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise OSError(f"Codex authentication source must be a regular file: {path.name}")
+        if metadata.st_uid != os.geteuid():
+            raise OSError(f"Codex authentication source is not owned by the current user: {path.name}")
+        if stat.S_IMODE(metadata.st_mode) & 0o077:
+            raise OSError(f"Codex authentication source permissions must be 0600: {path.name}")
+        if metadata.st_size > _MAX_CODEX_AUTH_BYTES:
+            raise OSError(f"Codex authentication source is unexpectedly large: {path.name}")
+        chunks: list[bytes] = []
+        remaining = _MAX_CODEX_AUTH_BYTES + 1
+        while remaining:
+            chunk = os.read(descriptor, min(65536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+        if len(data) > _MAX_CODEX_AUTH_BYTES:
+            raise OSError(f"Codex authentication source is unexpectedly large: {path.name}")
+        return data
+    finally:
+        os.close(descriptor)
+
+
+def _atomic_private_write(path: Path, data: bytes) -> None:
+    """Replace one private child-home file without exposing partial contents."""
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "wb", closefd=True) as stream:
+            descriptor = -1
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        path.chmod(0o600)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+
+
+def inherit_codex_chatgpt_auth(parent_home: Path, child_home: Path) -> None:
+    """Copy a verified file-backed ChatGPT session into a private child home."""
+    if parent_home.is_symlink():
+        raise OSError("parent CODEX_HOME must not be a symlink")
+    if child_home.is_symlink():
+        raise OSError("Codex child home must not be a symlink")
+    status = subprocess.run(
+        ["codex", "login", "status"],
+        cwd=parent_home,
+        env={**os.environ, "CODEX_HOME": str(parent_home)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if not _is_chatgpt_login_status(status):
+        raise OSError(
+            "parent Codex is not authenticated with ChatGPT; run 'codex login' "
+            "or omit --inherit-codex-auth"
+        )
+    auth = _read_private_regular_file(parent_home / _CODEX_AUTH_FILE)
+    _atomic_private_write(child_home / _CODEX_AUTH_FILE, auth)
+    _atomic_private_write(
+        child_home / "config.toml",
+        b'cli_auth_credentials_store = "file"\n',
+    )
 
 
 def _codex_skill_roots() -> list[Path]:
@@ -218,9 +325,16 @@ def main(argv: list[str] | None = None) -> int:
         "--codex-home",
         help="override CODEX_HOME for a Codex child process (or use WORKTRAIL_CODEX_HOME)",
     )
+    parser.add_argument(
+        "--inherit-codex-auth",
+        action="store_true",
+        help="opt in to copying a verified file-backed ChatGPT session into the private Codex child home",
+    )
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parsed = parser.parse_args(argv)
+    if parsed.inherit_codex_auth and parsed.agent != "codex":
+        parser.error("--inherit-codex-auth is only valid with --agent codex")
     command = build_command(
         parsed.agent, parsed.skill, parsed.args, model=parsed.model,
         cwd=parsed.cwd, write=parsed.write, add_dirs=parsed.add_dir,
@@ -243,6 +357,10 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         try:
             ensure_codex_home(codex_home)
+            if parsed.inherit_codex_auth:
+                inherit_codex_chatgpt_auth(
+                    resolve_parent_codex_home(), Path(codex_home).expanduser()
+                )
             if not bootstrap_codex_skills(codex_home, parsed.skill):
                 print(
                     f"Worktrail skill '{parsed.skill}' was not found for the Codex child. "
@@ -251,7 +369,11 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 return 1
         except OSError as exc:
-            print(f"could not prepare Codex child home '{codex_home}': {exc}", file=sys.stderr)
+            print(
+                f"blocked_external_dependency: could not prepare authenticated "
+                f"Codex child home: {exc}",
+                file=sys.stderr,
+            )
             return 1
         child_env = os.environ.copy()
         child_env["CODEX_HOME"] = codex_home

@@ -525,7 +525,10 @@ and the sibling-worktree directory as repeatable `--add-dir` values, for example
 minimum additional roots required for sdd-workflow to claim its run and create
 its sibling worktrees; do not grant a broad home-directory root. It executes that
 same provider without shell interpolation and never silently falls back to a
-different provider. **Verify the outcome from the run record, not the return
+different provider. When a trusted Codex child must reuse the parent's ChatGPT
+subscription session, explicitly add `--inherit-codex-auth`; isolated no-auth
+dispatch remains the default. The opt-in path accepts only a private file-backed
+ChatGPT `auth.json` and never copies general parent configuration. **Verify the outcome from the run record, not the return
 code** — same rule as `#openspec-authoring`: assert `$RUN`'s `finish` entry
 before treating the dispatch as done. Skill slash-names (unlike the OpenSpec
 `commands/` bundle) resolve bare — `worktrail-sdd-workflow`, not
