@@ -65,12 +65,13 @@ class SkillDispatchTests(unittest.TestCase):
     @patch("worktrail.router.skill_dispatch.subprocess.run")
     def test_default_cli_executes_the_selected_provider(self, run):
         run.return_value.returncode = 0
-        self.assertEqual(
-            skill_dispatch.main([
-                "--agent", "codex", "--skill", "x:y", "--args", "route:E",
-                "--codex-home", "/tmp/worktrail-codex-test",
-            ]), 0
-        )
+        with patch.object(skill_dispatch, "bootstrap_codex_skills", return_value=True):
+            self.assertEqual(
+                skill_dispatch.main([
+                    "--agent", "codex", "--skill", "x:y", "--args", "route:E",
+                    "--codex-home", "/tmp/worktrail-codex-test",
+                ]), 0
+            )
         self.assertEqual(run.call_args.args[0][0], "codex")
         self.assertTrue(run.call_args.kwargs["check"] is False)
 
@@ -79,9 +80,10 @@ class SkillDispatchTests(unittest.TestCase):
     def test_codex_home_environment_override_is_passed_to_child(self, run):
         run.return_value.returncode = 0
 
-        self.assertEqual(
-            skill_dispatch.main(["--agent", "codex", "--skill", "x:y"]), 0
-        )
+        with patch.object(skill_dispatch, "bootstrap_codex_skills", return_value=True):
+            self.assertEqual(
+                skill_dispatch.main(["--agent", "codex", "--skill", "x:y"]), 0
+            )
 
         self.assertEqual(run.call_args.kwargs["env"]["CODEX_HOME"], "/tmp/worktrail-codex")
 
@@ -90,9 +92,10 @@ class SkillDispatchTests(unittest.TestCase):
     def test_explicit_codex_home_takes_precedence(self, run):
         run.return_value.returncode = 0
 
-        skill_dispatch.main([
-            "--agent", "codex", "--skill", "x:y", "--codex-home", "/tmp/explicit"
-        ])
+        with patch.object(skill_dispatch, "bootstrap_codex_skills", return_value=True):
+            skill_dispatch.main([
+                "--agent", "codex", "--skill", "x:y", "--codex-home", "/tmp/explicit"
+            ])
 
         self.assertEqual(run.call_args.kwargs["env"]["CODEX_HOME"], "/tmp/explicit")
 
@@ -216,6 +219,32 @@ class CodexHomePreflightTests(unittest.TestCase):
             target = os.path.join(tmp, "not-yet-created", "codex-home")
             self.assertIsNone(skill_dispatch.codex_home_write_remediation(target))
 
+    def test_select_codex_home_falls_back_when_parent_home_is_read_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.chmod(tmp, 0o555)
+            try:
+                inherited = os.path.join(tmp, "codex-home")
+                with patch.dict(os.environ, {"CODEX_HOME": inherited}, clear=True):
+                    with patch.object(skill_dispatch, "default_worktrail_codex_home", return_value="/tmp/worktrail-default"):
+                        self.assertEqual(
+                            skill_dispatch.select_codex_home(None),
+                            ("/tmp/worktrail-default", True),
+                        )
+            finally:
+                os.chmod(tmp, 0o755)
+
+    def test_automatic_home_is_created_and_skills_are_linked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "skills"
+            (source / "worktrail-sdd-workflow").mkdir(parents=True)
+            (source / "worktrail-go").mkdir()
+            child = Path(tmp) / "child-home"
+            with patch.object(skill_dispatch, "_codex_skill_roots", return_value=[source]):
+                skill_dispatch.ensure_codex_home(str(child))
+                self.assertTrue(skill_dispatch.bootstrap_codex_skills(str(child), "worktrail-go"))
+            self.assertTrue((child / "skills/worktrail-go").is_symlink())
+            self.assertTrue((child / "skills/worktrail-sdd-workflow").is_symlink())
+
     def test_write_remediation_flags_a_read_only_ancestor(self):
         with tempfile.TemporaryDirectory() as tmp:
             os.chmod(tmp, 0o555)
@@ -258,12 +287,11 @@ class CodexHomePreflightTests(unittest.TestCase):
         run.return_value.returncode = 0
         with tempfile.TemporaryDirectory() as tmp:
             target = os.path.join(tmp, "codex-home")
-            self.assertEqual(
-                skill_dispatch.main([
-                    "--agent", "codex", "--skill", "x:y", "--codex-home", target,
-                ]),
-                0,
-            )
+            with patch.object(skill_dispatch, "bootstrap_codex_skills", return_value=True):
+                self.assertEqual(
+                    skill_dispatch.main(["--agent", "codex", "--skill", "x:y", "--codex-home", target]),
+                    0,
+                )
             run.assert_called_once()
 
     @patch("worktrail.router.skill_dispatch.subprocess.run")

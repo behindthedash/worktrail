@@ -9,10 +9,12 @@ import os
 import re
 import subprocess
 import sys
+from pathlib import Path
 from typing import Sequence
 
 SUPPORTED_AGENTS = ("claude", "codex", "opencode")
 _SKILL_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$")
+_DEFAULT_WORKTRAIL_CODEX_HOME = "~/.worktrail/codex-home"
 
 
 def _validate_skill_name(name: str) -> str:
@@ -94,6 +96,79 @@ def resolve_codex_home(codex_home_override: str | None) -> str:
     )
 
 
+def default_worktrail_codex_home() -> str:
+    """Return the isolated, persistent home used for an automatic child."""
+    return os.path.expanduser(_DEFAULT_WORKTRAIL_CODEX_HOME)
+
+
+def select_codex_home(codex_home_override: str | None) -> tuple[str, bool]:
+    """Choose a child home without inheriting a read-only parent home.
+
+    Explicit overrides remain fail-closed.  An inherited ``CODEX_HOME`` is
+    retained when writable, but a sandboxed parent commonly exposes a read-only
+    value; in that case Worktrail uses its own persistent home automatically.
+    The boolean identifies an automatic choice for diagnostics and tests.
+    """
+    explicit = codex_home_override or os.environ.get("WORKTRAIL_CODEX_HOME")
+    if explicit:
+        return explicit, False
+    inherited = os.environ.get("CODEX_HOME")
+    if inherited and codex_home_write_remediation(inherited) is None:
+        return inherited, False
+    return default_worktrail_codex_home(), True
+
+
+def ensure_codex_home(path: str) -> None:
+    """Create the child home with private permissions, without copying state."""
+    Path(path).expanduser().mkdir(parents=True, exist_ok=True, mode=0o700)
+
+
+def _codex_skill_roots() -> list[Path]:
+    """Find Worktrail skill trees available to the invoking installation."""
+    roots: list[Path] = []
+    configured = os.environ.get("WORKTRAIL_SKILL_ROOT")
+    if configured:
+        roots.append(Path(configured).expanduser())
+
+    # Editable/source installs have the plugin skills beside this module.
+    source_root = Path(__file__).resolve().parents[3] / "skills"
+    roots.append(source_root)
+
+    # Installed plugins keep the skill tree under the parent Codex home.  Only
+    # skill documentation is linked; auth/config files are never copied.
+    parent_home = os.environ.get("CODEX_HOME")
+    if parent_home:
+        roots.extend(sorted(
+            (Path(parent_home).expanduser() / "plugins/cache/worktrail/worktrail").glob("*/skills"),
+            reverse=True,
+        ))
+    roots.extend(sorted(
+        (Path.home() / ".codex/plugins/cache/worktrail/worktrail").glob("*/skills"),
+        reverse=True,
+    ))
+    return roots
+
+
+def bootstrap_codex_skills(codex_home: str, skill: str) -> bool:
+    """Expose the installed Worktrail skills in an isolated Codex home.
+
+    Codex discovers skills below ``CODEX_HOME/skills``.  A fresh child home
+    therefore needs links to the plugin's skill directories.  Existing child
+    entries are preserved, so this is safe for a user-maintained child home.
+    """
+    source_root = next((root for root in _codex_skill_roots()
+                        if (root / skill).is_dir()), None)
+    if source_root is None:
+        return False
+    destination_root = Path(codex_home).expanduser() / "skills"
+    destination_root.mkdir(parents=True, exist_ok=True)
+    for source in source_root.iterdir():
+        destination = destination_root / source.name
+        if not destination.exists() and not destination.is_symlink():
+            destination.symlink_to(source, target_is_directory=source.is_dir())
+    return (destination_root / skill).exists()
+
+
 def codex_home_write_remediation(path: str) -> str | None:
     """Return a remediation message if the nested Codex app-server would not
     be able to write to `path`, or None if it can. Checks directory
@@ -158,16 +233,30 @@ def main(argv: list[str] | None = None) -> int:
         # into the wrong tree, which reads as a successful run to the caller.
         print(f"--cwd '{parsed.cwd}' is not a directory", file=sys.stderr)
         return 1
-    codex_home = parsed.codex_home or os.environ.get("WORKTRAIL_CODEX_HOME")
+    codex_home = None
     child_env = None
-    if parsed.agent == "codex" and codex_home:
-        child_env = os.environ.copy()
-        child_env["CODEX_HOME"] = codex_home
     if parsed.agent == "codex":
+        codex_home, automatic_home = select_codex_home(parsed.codex_home)
         remediation = codex_home_write_remediation(resolve_codex_home(codex_home))
         if remediation:
             print(remediation, file=sys.stderr)
             return 1
+        try:
+            ensure_codex_home(codex_home)
+            if not bootstrap_codex_skills(codex_home, parsed.skill):
+                print(
+                    f"Worktrail skill '{parsed.skill}' was not found for the Codex child. "
+                    "Set WORKTRAIL_SKILL_ROOT to the installed Worktrail skills directory.",
+                    file=sys.stderr,
+                )
+                return 1
+        except OSError as exc:
+            print(f"could not prepare Codex child home '{codex_home}': {exc}", file=sys.stderr)
+            return 1
+        child_env = os.environ.copy()
+        child_env["CODEX_HOME"] = codex_home
+        if automatic_home:
+            print(f"Using automatic Worktrail Codex home: {codex_home}", file=sys.stderr)
     run_kwargs = {"check": False}
     if child_env is not None:
         run_kwargs["env"] = child_env

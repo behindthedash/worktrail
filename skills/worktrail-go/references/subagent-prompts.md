@@ -33,9 +33,11 @@ When it is absent, `worktrail-skill-dispatch` is the supported adapter. It accep
 the resolved provider, skill name, and argument string, and executes an argv list
 for that same provider. Claude and OpenCode receive their slash-style skill prompt;
 Codex receives an explicit installed-skill instruction. It never silently switches
-providers. When the nested Codex app-server cannot write its normal state directory,
-set `WORKTRAIL_CODEX_HOME` to a persistent writable directory or pass
-`--codex-home <path>`; the adapter applies that override only to the Codex child.
+providers. The adapter automatically gives a Codex child a private persistent
+`~/.worktrail/codex-home` when the parent `CODEX_HOME` is read-only, and links the
+installed Worktrail skill tree into that child home without copying credentials.
+`WORKTRAIL_CODEX_HOME` or `--codex-home <path>` remains available for an explicit
+child-home choice and is fail-closed when that path is not writable.
 For a Codex child running sdd-workflow, also pass repeatable `--add-dir` values
 for the policy's run-record directory and `${REPO}-worktrees`, because
 `workspace-write` otherwise only covers the child `--cwd`. Keep those roots
