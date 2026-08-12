@@ -38,6 +38,9 @@ def test_substantive_work_ignores_read_only_tools(tmp_path):
 
 def test_instruction_is_worktrail_native_and_value_gated():
     assert "worktrail-handoff" in hook.INSTRUCTION
+    assert "complete the current work" in hook.INSTRUCTION
+    assert "Never capture required validation as a handoff" in hook.INSTRUCTION
+    assert "verified blocker" in hook.INSTRUCTION
     assert "Creating a handoff is optional, not the default" in hook.INSTRUCTION
     assert "Do NOT capture routine polish" in hook.INSTRUCTION
     assert "No handoff captured; no exceptional next step identified." in hook.INSTRUCTION
