@@ -1043,12 +1043,12 @@ def decide(state: LoopState, now: float) -> Decision:
         if last.kind == "no_pick":
             return Decision(False, "no_pick: worktrail-go auto claimed nothing "
                                    "(null auto_pick or picks not eligible)")
-        if state.consecutive_failures >= state.failure_threshold:
-            return Decision(False, f"circuit_breaker: {state.consecutive_failures} "
-                                   f"consecutive failed iterations")
         if last.kind == "blocked" and state.agent_capacity_gated:
             return Decision(False, "capacity_gated: provider capacity gate persisted "
                                    "for the configured agent")
+        if state.consecutive_failures >= state.failure_threshold:
+            return Decision(False, f"circuit_breaker: {state.consecutive_failures} "
+                                   f"consecutive failed iterations")
     if state.ready_count <= 0:
         return Decision(False, "queue_empty: no ready briefs")
     if state.max_items and state.iteration >= state.max_items:
