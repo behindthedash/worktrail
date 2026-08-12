@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import os
+import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -38,6 +41,7 @@ class InternalDispatchLifecycleTests(unittest.TestCase):
                     environment = {
                         "PATH": f"{bin_dir}:{os.environ['PATH']}",
                         "FAKE_INTERNAL_DISPATCH_PROOF": str(proof),
+                        "WORKTRAIL_SKILL_DISPATCH_DEPTH": "0",
                         "WORKTRAIL_SKILL_ROOT": str(root / "skills"),
                         "WORKTRAIL_CODEX_HOME": str(root / f"{agent}-home"),
                     }
@@ -54,6 +58,103 @@ class InternalDispatchLifecycleTests(unittest.TestCase):
                         proof.read_text(),
                         f"executed:{agent}:handoff:20260812-083302:route:F\n",
                     )
+
+    def test_installed_seed_and_dispatch_contract_across_providers(self):
+        seed_command = shutil.which("worktrail-go-seed")
+        dispatch_command = shutil.which("worktrail-skill-dispatch")
+        self.assertIsNotNone(seed_command, "worktrail-go-seed is not installed")
+        self.assertIsNotNone(dispatch_command, "worktrail-skill-dispatch is not installed")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            brief = root / "20260812-090245-add-an-install-level-cross.md"
+            brief.write_text("install dispatch contract\n")
+            run = root / "run.yaml"
+            run.write_text("run_id: install-contract\n")
+            skills = root / "skills" / "worktrail-sdd-workflow"
+            skills.mkdir(parents=True)
+            (skills / "SKILL.md").write_text("---\nname: worktrail-sdd-workflow\n---\n")
+            for agent in skill_dispatch.SUPPORTED_AGENTS:
+                shim = bin_dir / agent
+                shim.write_text(
+                    f"#!/bin/sh\nexec {sys.executable} {_FAKE_AGENT} {agent} \"$@\"\n"
+                )
+                shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
+
+            for agent in skill_dispatch.SUPPORTED_AGENTS:
+                with self.subTest(agent=agent):
+                    seed = subprocess.run(
+                        [
+                            seed_command, "--repo", str(root), "--base", "main",
+                            "--route", "F", "--spec", "handoff:20260812-090245",
+                            "--run", str(run), "--brief", str(brief), "--agent", agent,
+                        ],
+                        check=True, capture_output=True, text=True,
+                    ).stdout.strip()
+                    self.assertIn("Route: F", seed)
+                    self.assertIn("Spec: handoff:20260812-090245", seed)
+                    self.assertIn(f"Agent CLI: {agent}", seed)
+                    self.assertIn(f"Brief: {brief}", seed)
+
+                    proof = root / f"installed-{agent}.proof"
+                    argv_proof = root / f"installed-{agent}.argv.json"
+                    environment = {
+                        **os.environ,
+                        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                        "FAKE_INTERNAL_DISPATCH_PROOF": str(proof),
+                        "FAKE_INTERNAL_DISPATCH_ARGV_PROOF": str(argv_proof),
+                        "FAKE_INTERNAL_DISPATCH_EXPECTED": seed,
+                        "WORKTRAIL_SKILL_DISPATCH_DEPTH": "0",
+                        "WORKTRAIL_SKILL_ROOT": str(root / "skills"),
+                        "WORKTRAIL_CODEX_HOME": str(root / f"{agent}-home"),
+                    }
+                    command = [
+                        dispatch_command, "--agent", agent,
+                        "--skill", "worktrail-sdd-workflow", "--args", seed,
+                        "--cwd", str(root), "--write",
+                    ]
+                    if agent == "codex":
+                        command.append("--no-inherit-codex-auth")
+                    result = subprocess.run(command, env=environment, capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(proof.read_text(), f"executed:{agent}:{seed}\n")
+                    provider_argv = json.loads(argv_proof.read_text())
+                    prompt = next(arg for arg in provider_argv if "worktrail-sdd-workflow" in arg)
+                    self.assertIn("[WORKTRAIL INTERNAL DISPATCH]", prompt)
+                    self.assertIn(seed, prompt)
+                    expected_argv = {
+                        "claude": ["-p", prompt, "--permission-mode", "bypassPermissions"],
+                        "codex": [
+                            "exec", "--json", "-s", "danger-full-access",
+                            "-C", str(root), prompt,
+                        ],
+                        "opencode": [
+                            "run", "--format", "json", "--dir", str(root),
+                            "--auto", prompt,
+                        ],
+                    }
+                    self.assertEqual(provider_argv, expected_argv[agent])
+
+                    blocked = subprocess.run(
+                        command,
+                        env={**environment, "WORKTRAIL_SKILL_DISPATCH_DEPTH": "1"},
+                        capture_output=True, text=True,
+                    )
+                    self.assertEqual(blocked.returncode, 2)
+                    self.assertIn("blocked_internal_dispatch_recursion", blocked.stderr)
+
+                    unseeded = subprocess.run(
+                        [*command[:6], "handoff:20260812-090245", *command[7:]],
+                        env={
+                            **environment,
+                            "FAKE_INTERNAL_DISPATCH_EXPECTED": "handoff:20260812-090245",
+                        },
+                        capture_output=True, text=True,
+                    )
+                    self.assertEqual(unseeded.returncode, 6)
+                    self.assertEqual(proof.read_text(), f"unseeded:{agent}\n")
 
 
 if __name__ == "__main__":
