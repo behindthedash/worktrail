@@ -104,6 +104,17 @@ a headless worker cannot surface interactive prompts to the parent session.
 Subprocess dispatch applies to the background routes (D/F/G/H) with the bounded
 poll below.
 
+**Active-run resume (Route E) also stays in-session.** A Route E continue/resume whose run
+is **already active** (run record exists with no `final_status` AND its `worktree` path
+already exists on disk) is owned by the parent already — the front door must hand execution
+back to the active parent by continuing the route in this session via the direct
+`Skill("worktrail-sdd-workflow", args="<repo-path> route:E [spec-folder]")` call, never by
+spawning a nested worker. A nested worker re-entering the same run/worktree/provider would
+self-poll and duplicate or stall execution (Datalena run go-20260811-132806). This is
+distinct from the background routes: their poll applies to a freshly spawned run, whereas an
+active-run resume is not fresh and must not start its own poll loop. Headless
+`drain` one-shots are never an active-run resume and keep spawning normally.
+
 ### Bounded poll contract (background routes D/F/G/H)
 
 After spawning a background subprocess (routes D, F, G, H), go Phase 7 polls the shared run record

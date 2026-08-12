@@ -479,6 +479,18 @@ Dispatch policy is simple:
   for `purpose` at all, identical to today's output.
 - Record the resolved routing decision at dispatch time with `worktrail-run-record start ... --routing-decision "$ROUTING_JSON"` so the audit trail captures the exact route/risk-derived policy.
 - Codex / in-session host: call `Skill("worktrail-sdd-workflow", ...)` directly.
+- **Active-run resume (Route E) stays in-session — never spawn a nested worker.** If the
+  resolved dispatch is a Route E continue/resume (the dashboard/classifier resolved
+  `action: resume`, or the route is E), first check whether the run is **already active**:
+  its run record exists with no `final_status` AND its `worktree` path already exists on
+  disk (this is the same run record `run_record.py`'s staleness logic treats as live). If
+  so, the active parent already owns the run/worktree/provider — hand execution back to it
+  by continuing the route **in this session** via the direct
+  `Skill("worktrail-sdd-workflow", ...)` call (or, where the host blocks that, the seeded
+  in-session path). Do **not** fall through to the Native Skill adapter or the headless
+  subprocess spawn below and do not start a poll loop: a nested worker re-entering the same
+  already-active run/worktree would self-poll and duplicate or stall execution (Datalena run
+  go-20260811-132806).
 - OpenCode parent sessions use the seeded subprocess path with `opencode` when the harness
   supplies the explicit `OPENCODE_PARENT` marker; explicit invocation, repository policy,
   and machine-wide provider overrides still win.
@@ -536,6 +548,11 @@ before treating the dispatch as done. Skill slash-names (unlike the OpenSpec
 `name:` directly and Claude Code matches an installed Skill by that name with
 no plugin-namespace prefix; live-verified 2026-08-09. Keep native `Skill(...)`
 primary when the host exposes it, and report adapter use in the run status.
+**Do not use the adapter for an active-run resume** (see the dispatch policy above):
+it spawns a fresh nested worker, so re-entering a run the active parent already owns
+starts a duplicate/self-polling worker instead of handing execution back. Reserve the
+adapter for fresh background dispatch (routes D/F/G/H); headless `drain` one-shots are
+never active-run resumes and keep spawning.
 
 **Provider-capacity gate:** a headless dispatch may raise the orchestrator's
 `AllProvidersUnavailable` result after the primary and configured fallback have
