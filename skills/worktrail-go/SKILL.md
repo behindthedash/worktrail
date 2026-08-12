@@ -96,53 +96,62 @@ Hold `$INVOCATION_CONTEXT_AGENT` for the entire session. When the policy
 `run_record_dir` is set, pass `--agent "$INVOCATION_CONTEXT_AGENT"` to every
 `worktrail-run-record` call so the run record captures the resolved agent.
 
-### Phase 1 — Orientation Dashboard (Always First)
+### Phase 1 — Classify the Invocation, Then Show the Orientation Dashboard
 
-Detect mode via `resolve_repo.py --start "$PWD" --json`. Then fetch queue JSON first and pass it to dashboard so the picker options are computed by the script, not by Claude:
+**Classify the raw positional argument(s) first — before fetching or printing the dashboard, and before any `AskUserQuestion` call.** This is the single place invocation parsing happens; nothing later in this skill re-derives it. Check in this order:
+
+- **help** — delegate to `Skill("worktrail-help", args="<remaining topic>")` and stop; do not fetch or render the dashboard.
+- **drain** — `drain [max-items] [repo]`: read `references/drain.md` and run the installed `worktrail-drain` console script with the resolved invocation agent; do not fetch or render the dashboard, and do not claim a brief in the interactive process. The console script is an internal executor; users enter drain requests through `worktrail-go` only.
+- **auto** — `auto` argument (spec 017): hold `$AUTO_MODE=true` for the rest of the dispatch (combinable with a repo arg, `/go REPO auto`).
+- **route:X** — explicit route override A-J: hold as `$ROUTE_OVERRIDE`, skip classification later (Phase 5), dispatch directly.
+- **v1 intent keywords** — new, implement, continue, pr, brainstorm: map to routes, skip classification later.
+- **handoff:ID** — explicit brief ID from queue: hold as `$BRIEF_ID`.
+- **Bare integer** — no global numbered list exists; this only resolves within an active Level-2 category picker (Phase 1b). A standalone `/go N` argument, with no picker yet active, is free-text.
+- **Bare or prefix brief ID** — any argument not already matched above (not `help`/`drain`/`auto`/`route:X`/a v1 intent keyword, and not a resolved repo name): resolve it against the queue right now, before doing anything else with the dashboard —
+
+  ```bash
+  worktrail-work-queue resolve "$ARG" --json
+  ```
+
+  A `match` (full filename, stem, unique leading prefix, or `id` frontmatter — the same resolution `claim` uses) makes this a Brief-ID invocation: hold the result as `$BRIEF_ID` and treat it identically to `handoff:ID`. `none` or `ambiguous` means this argument is not a brief ID — it falls through to free-text.
+- **Free-text** — anything left unmatched: unstructured request, classified later by `classify.py` (Phase 5).
+
+Extract from the arguments: `$ARG_REPO` (first positional arg if it looks like a repo path or keyword), `$ARG_INTENT` (free-text request or intent keyword), `$ARG_SPEC` (spec folder name, e.g. `003-payments`, if provided).
+
+**Now fetch the dashboard** (already skipped entirely above for `help`/`drain`). Detect mode via `resolve_repo.py --start "$PWD" --json`. Fetch queue JSON first and pass it to dashboard so the picker options are computed by the script, not by Claude — pass `--auto`/`--auto-repo` here when `$AUTO_MODE=true`, since that changes what the script itself computes:
 
 ```bash
 QUEUE_JSON=$(worktrail-work-queue list --json 2>/dev/null)
+AUTO_FLAGS=()
+if [ "$AUTO_MODE" = "true" ]; then
+  AUTO_FLAGS=(--auto)
+  [ -n "$ARG_REPO" ] && AUTO_FLAGS+=(--auto-repo "$ARG_REPO")
+fi
 if [ "$RESOLVE_MODE" = "in-repo" ]; then
   DASHBOARD_JSON=$(worktrail-dashboard \
     --root "$REPO/docs/specs" --picked-dir "$BASE/picked" \
-    --queue-json "$QUEUE_JSON" --json 2>/dev/null)
+    --queue-json "$QUEUE_JSON" "${AUTO_FLAGS[@]}" --json 2>/dev/null)
 else
   REPOS_DIR="${HOME}/projects"; [ -d "$REPOS_DIR" ] || REPOS_DIR="$PWD"
   DASHBOARD_JSON=$(worktrail-dashboard \
     --repos "$REPOS_DIR" --picked-dir "$BASE/picked" \
-    --queue-json "$QUEUE_JSON" --json 2>/dev/null)
+    --queue-json "$QUEUE_JSON" "${AUTO_FLAGS[@]}" --json 2>/dev/null)
 fi
 ```
 
-`$DASHBOARD_JSON` carries three pre-computed, deterministic fields — hold it for Phases 1b/2: **`rendered`** (the dashboard text), **`category_actions`** (Level-1 picker options), and **`category_items`** (Level-2 items per category, each carrying the dispatch fields its `action` needs — `id` for queue items, `spec_id`/`repo`/`path` for specs). Field contract: `references/dashboard-render.md`.
+`$DASHBOARD_JSON` carries three pre-computed, deterministic fields — hold it for Phases 1b/2: **`rendered`** (the dashboard text), **`category_actions`** (Level-1 picker options), and **`category_items`** (Level-2 items per category, each carrying the dispatch fields its `action` needs — `id` for queue items, `spec_id`/`repo`/`path` for specs). With `auto`, it also carries **`auto_pick`**. Field contract: `references/dashboard-render.md`.
 
 Handle a missing/empty dashboard gracefully (the `rendered` field already prints a "nothing active → brainstorm" line).
 
-**Print `$DASHBOARD_JSON.rendered` verbatim.** Do NOT re-render, reorder, regroup, or summarize it — rendering it yourself reintroduces the non-determinism this field exists to remove.
+**Branch on the classification from above — this decides what gets printed, not the other way around:**
 
-**Help invocations** (`help`): delegate to `worktrail-help` and stop before the dashboard.
-
-**Brief-ID invocations** (`handoff:ID`, `route:X`, or a bare/prefix positional argument that
-resolves to exactly one queued brief): print only a one-line summary (e.g. `Dashboard: N specs,
-M in-flight`) and skip the picker — go straight to Phase 2. **Determine this here, before
-Phase 1b runs** — do not defer the check to Phase 2, which only executes after the picker for
-invocations Phase 1 didn't already classify as Brief-ID. For a positional argument not already
-identified as `help`/`drain`/`auto`/`route:X`/a v1 intent keyword/a resolved repo name, run the
-resolve check now: see Phase 2's **Bare or prefix brief ID** rule for the exact command and
-match semantics. A `match` makes this a Brief-ID invocation; `none`/`ambiguous` falls through to
-Phase 1b's picker.
-
-**Auto invocations** (`auto` argument, spec 017): print the `rendered` dashboard as usual, skip BOTH picker levels, and add `--auto` (plus `--auto-repo "$ARG_REPO"` when a repo was named) to the dashboard.py call so `$DASHBOARD_JSON.auto_pick` is populated. Hold `$AUTO_MODE=true` for the rest of the dispatch: Phase 5.5's three collision/staleness branches (`references/spec-collision-check.md`, `references/brief-staleness-check.md`, `references/related-brief-collision-check.md`) branch on it to skip `AskUserQuestion` — that tool is not registered in the headless one-shot processes `worktrail-go drain` spawns (verified 2026-08-10: a direct `claude -p` probe found no such tool available to call, not merely unanswered), so a Phase 5.5 prompt reached from an auto/drain dispatch would fail outright or leave the agent guessing an answer with no human to catch a bad one. Full flow: `references/auto-mode.md`.
-
-**Drain invocations** (`drain [max-items] [repo]`): skip the dashboard and picker, read
-`references/drain.md`, and run the installed `worktrail-drain` console script with the
-resolved invocation agent. The console script is an internal executor; users enter
-drain requests through `worktrail-go` only.
+- **Brief-ID** (`$BRIEF_ID` held, from `handoff:ID`, `route:X` naming a brief, or the queue-resolve match above): print only a one-line summary (e.g. `Dashboard: N specs, M in-flight`) — never the full `rendered` dashboard — and skip the picker entirely. Go straight to Phase 2.
+- **Auto** (`$AUTO_MODE=true`): print the `rendered` dashboard as usual, skip BOTH picker levels, and use `$DASHBOARD_JSON.auto_pick`. Phase 5.5's three collision/staleness branches (`references/spec-collision-check.md`, `references/brief-staleness-check.md`, `references/related-brief-collision-check.md`) branch on `$AUTO_MODE` to skip `AskUserQuestion` — that tool is not registered in the headless one-shot processes `worktrail-go drain` spawns (verified 2026-08-10: a direct `claude -p` probe found no such tool available to call, not merely unanswered), so a Phase 5.5 prompt reached from an auto/drain dispatch would fail outright or leave the agent guessing an answer with no human to catch a bad one. Full flow: `references/auto-mode.md`.
+- **Everything else** (`route:X` not naming a brief, a v1 intent keyword, a bare integer with no active picker, or free-text): **print `$DASHBOARD_JSON.rendered` verbatim.** Do NOT re-render, reorder, regroup, or summarize it — rendering it yourself reintroduces the non-determinism this field exists to remove. Proceed to Phase 1b.
 
 ### Phase 1b — Two-Level Picker (AskUserQuestion)
 
-For bare `/go` or free-text with no explicit route/brief — i.e. Phase 1's Brief-ID check
-(including the bare/prefix resolve check) found no match — use a **two-level picker**:
+For bare `/go` or free-text with no explicit route/brief — i.e. Phase 1's classification found no Brief-ID/Auto/help/drain match — use a **two-level picker**:
 
 **Level 1 — Category.** Call `AskUserQuestion` with options from `$DASHBOARD_JSON.category_actions` verbatim (header: `What to work on`). Each option is a work category: Ready / in-progress, Needs tasking, Work queue, New work. Only categories with items are present. The tool's automatic **"Other"** covers free-text, a specific spec id, or "see more".
 
@@ -190,23 +199,9 @@ run, mark each brief done individually. Full procedure: `references/batch-consum
 `same-target-spec` companions, `claim-batch`, continue Phases 3–8 as an interactive
 claim. Null pick → report and STOP. Full flow, guards, race handling: `references/auto-mode.md`.
 
-Parse the positional arguments to detect:
-- **help** — delegate to `Skill("worktrail-help", args="<remaining topic>")` and stop; do not render the dashboard or claim work
-- **drain** — run the internal queue-drain procedure from `references/drain.md`; do not claim a brief in the interactive process
-- **auto** — auto mode (spec 017): skip the picker, use `$DASHBOARD_JSON.auto_pick` per the Auto mode flow above; combinable with a repo arg (`/go REPO auto`)
-- **Bare integer** — resolves within the active Level-2 category picker (the level-2 rule above); there is no global numbered list, so a standalone `/go N` argument is treated as free-text (Phase 5)
-- **handoff:ID** — explicit brief ID from queue (delegate to sdd-workflow or direct work)
-- **Bare or prefix brief ID** — an argument not otherwise consumed by the rules above or below (not `help`/`drain`/`auto`/`route:X`/a v1 intent keyword, and not the resolved `$ARG_REPO`): before treating it as free-text, check it against the queue with `worktrail-work-queue resolve "$ARG" --json`. A `match` (full filename, stem, unique leading prefix, or `id` frontmatter — the same resolution `claim` uses) makes it `$BRIEF_ID`, with identical treatment to `handoff:ID`. `none` or `ambiguous` falls through to free-text (Phase 5) as before.
-- **route:X** — explicit route override A-J (skip classification, dispatch directly)
-- **v1 intent keywords** — new, implement, continue, pr, brainstorm (map to routes, skip classification)
-- **Free-text** — unstructured request (run classify.py)
-
-Extract from the arguments:
-- `$ARG_REPO` — first positional arg if it looks like a repo path or keyword
-- `$ARG_INTENT` — free-text request or intent keyword
-- `$ARG_SPEC` — spec folder name (e.g., `003-payments`) if provided
-- `$ROUTE_OVERRIDE` — route:X if provided
-- `$BRIEF_ID` — handoff:ID if provided, or a bare/prefix argument that resolved via `worktrail-work-queue resolve` (see **Bare or prefix brief ID** above)
+Argument classification and extraction (`$ARG_REPO`, `$ARG_INTENT`, `$ARG_SPEC`, `$ROUTE_OVERRIDE`,
+`$BRIEF_ID`) already happened in Phase 1, before the dashboard was fetched — see its "Classify
+the raw positional argument(s) first" step. Nothing here re-derives it.
 
 ### Phase 3 — Resolve Repo
 
