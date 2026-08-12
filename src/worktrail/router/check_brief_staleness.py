@@ -28,10 +28,17 @@ let a git failure silently read as "nothing landed" (the exact failure mode
 
 `extract_probes()` is pure text extraction -- it consults no repository.
 `check()` extracts probes from a brief's focus text and searches the
-resolved base branch's history for changes made at or after the brief's
-`created:` timestamp. Evidence surfaced here is for a human to judge, never
-auto-applied: this module never closes, stamps, or otherwise mutates a
-brief -- see `openspec/changes/stale-brief-precheck/design.md`.
+resolved base branch's history for changes made at or after a search
+boundary set to the brief's `created:` timestamp minus `RACE_GRACE_SECONDS`
+(see that constant). The grace window exists because a delivering commit or
+pull request can land moments before a duplicate brief is captured in the
+same session -- observed directly: PR #325 merged 56 seconds before brief
+`20260812-133233` described the exact scope it had just shipped, and an
+exact-timestamp boundary reported the brief as clean. Evidence surfaced here
+is for a human to judge, never auto-applied: this module never closes,
+stamps, or otherwise mutates a brief -- see
+`openspec/changes/stale-brief-precheck/design.md` and
+`openspec/changes/stale-brief-precheck-staleness-grace-window/design.md`.
 """
 from __future__ import annotations
 
@@ -80,6 +87,18 @@ PR_RESULT_CAP = 20
 # warning; probes already resolved are kept, never discarded.
 GH_PHASE_BUDGET_SECONDS = 20
 
+# How far before a brief's `created:` timestamp the search boundary is
+# widened, to catch a delivering commit or pull request that lands moments
+# before a duplicate brief is captured in the same session (observed: a 56s
+# gap between PR #325 merging and the duplicate brief's capture). Applied
+# identically to the git history search's `--since` and the merged-PR
+# exclusion filter, so a same-session race is not caught by one and missed
+# by the other. The check remains fully advisory -- see the module docstring
+# -- so widening this trades a small chance of surfacing an unrelated older
+# commit for closing a demonstrated false-negative gap; a human judges every
+# match either way.
+RACE_GRACE_SECONDS = 300
+
 _LOG_FORMAT = "%h\x1f%ad\x1f%s"
 
 
@@ -97,6 +116,15 @@ _EXT_RE = re.compile(r"\.[A-Za-z0-9]{1,10}$")
 # unquoted snake_case word in prose is far more likely to be a phrase than an
 # identifier, and a bad symbol probe is an expensive, noisy `git log -S`.
 _SYMBOL_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*$")
+
+# A GNU long-form CLI flag (`--tier-map`, `--json`), admitted as a symbol
+# probe whether backtick-quoted or not -- flags are named in prose as
+# routinely as in backticks, the same reasoning that dropped the backtick
+# requirement for snake_case symbols (see design.md). A flag typically
+# appears as a literal string in an `argparse.add_argument()` call, so it is
+# well suited to both the `-S` occurrence-count search and the `--grep`
+# commit-message search already run for symbol probes.
+_FLAG_RE = re.compile(r"^--[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*$")
 
 # `PR #89`, `PR#89`, `pull #89` (case-insensitive), or `owner/repo#89`.
 _PR_RE = re.compile(
@@ -172,6 +200,10 @@ def _is_unquoted_symbol_token(token: str) -> bool:
     return bool(token) and len(token) >= 6 and bool(_SNAKE_CASE_RE.match(token))
 
 
+def _is_flag_token(token: str) -> bool:
+    return bool(token) and bool(_FLAG_RE.match(token))
+
+
 def _cap(items: List[str], cap: int) -> Tuple[List[str], int]:
     """Keep the `cap`-many longest/most distinctive items, preserving their
     original relative order; report how many were dropped."""
@@ -194,9 +226,11 @@ def extract_probes(text: str) -> Dict[str, Any]:
     Backtick-quoted tokens are the high-confidence source for all three
     kinds, but none of the three requires them. Path probes fall back to
     unquoted path-shaped tokens (a `/` separator or a recognized extension);
-    symbol probes fall back to unquoted *snake_case* tokens only, which is
-    narrow enough to keep ordinary prose out while still working on the
-    unbackticked briefs `worktrail-handoff --focus` actually produces.
+    symbol probes fall back to unquoted *snake_case* tokens, and to GNU
+    long-form CLI-flag tokens (`--tier-map`, `--json`) whether backtick-quoted
+    or not, which is narrow enough to keep ordinary prose out while still
+    working on the unbackticked briefs `worktrail-handoff --focus` actually
+    produces.
 
     The negative rules carry as much weight as the positive ones: task ids
     and versions (`1.1`, `2.1/2.2/2.3`), absolute paths, and parenthesised
@@ -218,7 +252,7 @@ def extract_probes(text: str) -> Dict[str, Any]:
             if token not in seen_paths:
                 seen_paths.add(token)
                 paths.append(token)
-        elif _is_symbol_token(token):
+        elif _is_symbol_token(token) or _is_flag_token(token):
             if token not in seen_symbols:
                 seen_symbols.add(token)
                 symbols.append(token)
@@ -232,7 +266,7 @@ def extract_probes(text: str) -> Dict[str, Any]:
             if token not in seen_paths:
                 seen_paths.add(token)
                 paths.append(token)
-        elif _is_unquoted_symbol_token(token) and token not in seen_symbols:
+        elif (_is_unquoted_symbol_token(token) or _is_flag_token(token)) and token not in seen_symbols:
             seen_symbols.add(token)
             symbols.append(token)
 
@@ -347,6 +381,20 @@ def _to_utc_datetime(value: Any) -> Optional[datetime.datetime]:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=datetime.timezone.utc)
     return dt
+
+
+def _widen_since(since_str: str, grace_seconds: int) -> str:
+    """Return `since_str` shifted `grace_seconds` earlier, as an ISO string.
+
+    Falls back to `since_str` unchanged when it does not parse -- the same
+    fail-open posture as the rest of this module. This is the single
+    computation both the git history search and the merged-PR exclusion
+    filter use, so the two search boundaries cannot drift apart.
+    """
+    since_dt = _to_utc_datetime(since_str)
+    if since_dt is None:
+        return since_str
+    return (since_dt - datetime.timedelta(seconds=grace_seconds)).isoformat()
 
 
 def _parse_log(output: str, probe: str, kind: str) -> List[Dict[str, str]]:
@@ -510,7 +558,9 @@ def _lookup_pull_requests(
     git search applies via `--since` -- so a PR that merged long before the
     brief was even written can't be surfaced as evidence the brief's work
     already landed; a count of excluded entries is warned, never silently
-    dropped. A resolved PR whose merge date can't be parsed is kept rather
+    dropped. `check()` passes an already grace-widened `since` (see
+    `RACE_GRACE_SECONDS`/`_widen_since`), not the brief's raw `created:`
+    timestamp, so this function itself has no grace-window logic of its own. A resolved PR whose merge date can't be parsed is kept rather
     than excluded, since a human should see it rather than have it vanish
     indistinguishably from "nothing found". The combined, deduplicated
     result is then capped at `PR_RESULT_CAP`, keeping the most-recently-
@@ -583,16 +633,17 @@ def check(repo: Path, text: str, since: Any, base: Optional[str] = None) -> Dict
     "pull_requests": [...], "warning": str|None}`. `probes` is
     `extract_probes()`'s output. `matches` is a list of
     `{"sha", "date", "subject", "probe", "kind"}` per matching commit,
-    restricted to commits at or after `since` on the resolved base branch.
+    restricted to commits at or after `since` minus `RACE_GRACE_SECONDS` on
+    the resolved base branch -- the grace window catches a delivering commit
+    that lands moments before the brief was captured, in the same session.
     `pull_requests` is the `gh`-backed lookup: extracted PR-number probes
     resolved via `gh pr view` (kept only if merged) plus merged PRs found by
     searching for path probes via `gh pr list --search`, deduplicated by PR
-    number, restricted to PRs merged at or after `since` (the same "since it
-    was captured" restriction the git search applies), and capped at
-    `PR_RESULT_CAP` (most-recently-merged kept). That lookup is independently
-    degradable -- `gh` missing, unauthenticated, erroring, or timing out
-    yields `pull_requests: []` plus a warning appended alongside any git-side
-    warning, without discarding `matches`.
+    number, restricted to PRs merged at or after the same grace-widened
+    boundary, and capped at `PR_RESULT_CAP` (most-recently-merged kept). That
+    lookup is independently degradable -- `gh` missing, unauthenticated,
+    erroring, or timing out yields `pull_requests: []` plus a warning
+    appended alongside any git-side warning, without discarding `matches`.
 
     Never raises. `checked` is `false` when the question could not be
     answered at all: `repo` is not a git repository, `since` is missing or
@@ -627,6 +678,11 @@ def check(repo: Path, text: str, since: Any, base: Optional[str] = None) -> Dict
         result["warning"] = "no path, symbol, or pull-request probes extracted from brief text"
         return result
 
+    # Both searches below use this grace-widened boundary, not `since_str`
+    # itself, so a same-session race (a delivering commit or PR landing
+    # moments before capture) is caught by both consistently.
+    search_since_str = _widen_since(since_str, RACE_GRACE_SECONDS)
+
     base_ref = resolve_base_ref(repo, base)
 
     matches: List[Dict[str, str]] = []
@@ -640,14 +696,14 @@ def check(repo: Path, text: str, since: Any, base: Optional[str] = None) -> Dict
         # case this probe kind exists for. Under `:(glob)`, `**/` matches zero
         # or more components and both locations are found.
         pathspec = probe if "/" in probe else f":(glob)**/{probe}"
-        out = _search_probe(repo, base_ref, since_str, ["--", pathspec])
+        out = _search_probe(repo, base_ref, search_since_str, ["--", pathspec])
         if out is None:
             warnings.append(f"git log timed out or failed for path probe {probe!r}")
             continue
         matches.extend(_parse_log(out, probe, "path"))
 
     for probe in probes["symbols"]:
-        out = _search_probe(repo, base_ref, since_str, [f"-S{probe}", "--"])
+        out = _search_probe(repo, base_ref, search_since_str, [f"-S{probe}", "--"])
         if out is None:
             warnings.append(f"git log -S timed out or failed for symbol probe {probe!r}")
             continue
@@ -661,7 +717,7 @@ def check(repo: Path, text: str, since: Any, base: Optional[str] = None) -> Dict
     # `-S` hits so a commit found both ways is reported once.
     seen_message_hits = {(m["sha"], m["probe"]) for m in matches}
     for probe in probes["symbols"]:
-        out = _search_probe(repo, base_ref, since_str, [f"--grep={probe}", "--"])
+        out = _search_probe(repo, base_ref, search_since_str, [f"--grep={probe}", "--"])
         if out is None:
             warnings.append(f"git log --grep timed out or failed for symbol probe {probe!r}")
             continue
@@ -675,7 +731,7 @@ def check(repo: Path, text: str, since: Any, base: Optional[str] = None) -> Dict
     if warnings:
         result["warning"] = "; ".join(warnings)
 
-    pull_requests, gh_warning = _lookup_pull_requests(repo, probes, since_str, GH_SUBPROCESS_TIMEOUT_SECONDS)
+    pull_requests, gh_warning = _lookup_pull_requests(repo, probes, search_since_str, GH_SUBPROCESS_TIMEOUT_SECONDS)
     result["pull_requests"] = pull_requests
     if gh_warning:
         result["warning"] = f"{result['warning']}; {gh_warning}" if result["warning"] else gh_warning
