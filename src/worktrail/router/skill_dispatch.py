@@ -20,6 +20,9 @@ _DEFAULT_WORKTRAIL_CODEX_HOME = "~/.worktrail/codex-home"
 _CODEX_AUTH_FILE = "auth.json"
 _MAX_CODEX_AUTH_BYTES = 1024 * 1024
 _CHATGPT_LOGIN_STATUS = "Logged in using ChatGPT"
+_INTERNAL_SKILLS = frozenset({"worktrail-sdd-workflow"})
+_DISPATCH_DEPTH_ENV = "WORKTRAIL_SKILL_DISPATCH_DEPTH"
+_MAX_DISPATCH_DEPTH = 1
 
 
 def _validate_skill_name(name: str) -> str:
@@ -29,6 +32,23 @@ def _validate_skill_name(name: str) -> str:
 
 
 def _prompt(agent: str, skill: str, args: str) -> str:
+    if skill in _INTERNAL_SKILLS:
+        invocation = f"/{skill} {args}".rstrip()
+        authorization = (
+            "[WORKTRAIL INTERNAL DISPATCH]\n"
+            "This invocation was created by worktrail-skill-dispatch after the "
+            "worktrail-go front door selected the executor. Execute the installed "
+            f"skill directly with these arguments: {args}\n"
+            "Do not invoke worktrail-go again. The executor's route:X guard remains "
+            "authoritative; if the arguments are not sufficient, stop with an "
+            "actionable error.\n"
+            f"Invocation: {invocation}"
+        )
+        if agent in {"claude", "opencode"}:
+            # Keep the native slash invocation first so those hosts resolve the
+            # skill before passing the adapter authorization through to it.
+            return f"{invocation}\n\n{authorization}"
+        return authorization
     if agent in {"claude", "opencode"}:
         return f"/{skill} {args}".rstrip()
     return f"Use the installed skill {skill!r}. Execute it with these arguments: {args}".rstrip()
@@ -343,6 +363,20 @@ def main(argv: list[str] | None = None) -> int:
     parsed = parser.parse_args(argv)
     if parsed.no_inherit_codex_auth and parsed.agent != "codex":
         parser.error("--no-inherit-codex-auth is only valid with --agent codex")
+    try:
+        dispatch_depth = int(os.environ.get(_DISPATCH_DEPTH_ENV, "0"))
+    except ValueError:
+        dispatch_depth = _MAX_DISPATCH_DEPTH
+    if parsed.skill in _INTERNAL_SKILLS and dispatch_depth >= _MAX_DISPATCH_DEPTH:
+        print(
+            "blocked_internal_dispatch_recursion: worktrail-skill-dispatch refused "
+            f"to launch {parsed.skill!r} at depth {dispatch_depth}; the internal "
+            "executor appears to have re-entered worktrail-go instead of honoring "
+            "the adapter dispatch. Inspect the child transcript and preserve the "
+            "original handoff:<id> route:<X> arguments.",
+            file=sys.stderr,
+        )
+        return 2
     command = build_command(
         parsed.agent, parsed.skill, parsed.args, model=parsed.model,
         cwd=parsed.cwd, write=parsed.write, add_dirs=parsed.add_dir,
@@ -356,7 +390,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"--cwd '{parsed.cwd}' is not a directory", file=sys.stderr)
         return 1
     codex_home = None
-    child_env = None
+    child_env = os.environ.copy()
+    if parsed.skill in _INTERNAL_SKILLS:
+        child_env[_DISPATCH_DEPTH_ENV] = str(dispatch_depth + 1)
     if parsed.agent == "codex":
         codex_home, automatic_home = select_codex_home(parsed.codex_home)
         remediation = codex_home_write_remediation(resolve_codex_home(codex_home))
@@ -383,12 +419,11 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 1
-        child_env = os.environ.copy()
         child_env["CODEX_HOME"] = codex_home
         if automatic_home:
             print(f"Using automatic Worktrail Codex home: {codex_home}", file=sys.stderr)
     run_kwargs = {"check": False}
-    if child_env is not None:
+    if parsed.skill in _INTERNAL_SKILLS or parsed.agent == "codex":
         run_kwargs["env"] = child_env
     if parsed.cwd:
         run_kwargs["cwd"] = parsed.cwd

@@ -213,6 +213,14 @@ def test_handoff_dispatch_includes_explicit_executor_route():
     assert 'Skill("worktrail-sdd-workflow", args="handoff:<id>")' not in text
 
 
+def test_executor_guard_distinguishes_adapter_entry_from_direct_invocation():
+    text = (SKILLS_DIR / "worktrail-sdd-workflow" / "SKILL.md").read_text()
+    assert "[WORKTRAIL INTERNAL DISPATCH]" in text
+    assert "Do not redirect to `/go`" in text
+    assert "IF no `route:X` positional arg is present" in text
+    assert "sdd-workflow is an internal executor. Use /go for all engineering work." in text
+
+
 def test_active_run_resume_stays_in_session_never_spawns_nested_worker():
     """An interactive parent resuming its own already-active run (no final_status +
     existing worktree, Route E) must hand execution back to the active parent and continue
