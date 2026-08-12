@@ -213,6 +213,36 @@ def test_handoff_dispatch_includes_explicit_executor_route():
     assert 'Skill("worktrail-sdd-workflow", args="handoff:<id>")' not in text
 
 
+def test_active_run_resume_stays_in_session_never_spawns_nested_worker():
+    """An interactive parent resuming its own already-active run (no final_status +
+    existing worktree, Route E) must hand execution back to the active parent and continue
+    in-session — it must NOT spawn a nested worker that polls the same run/worktree/provider
+    (Datalena run go-20260811-132806). Headless drain one-shots are never an active-run
+    resume and keep spawning. This pins the prose guard both in the go front door's Phase 7
+    dispatch and in the subagent-prompts in-session contract."""
+    go_skill = (SKILLS_DIR / "worktrail-go" / "SKILL.md").read_text()
+    subagent = (SKILLS_DIR / "worktrail-go" / "references" / "subagent-prompts.md").read_text()
+
+    # Both docs must state the active-run resume stays in-session / hands back to the parent,
+    # and both must name the run go-20260811-132806 that first surfaced the self-poll loop.
+    for doc_name, text in (("worktrail-go/SKILL.md", go_skill),
+                           ("worktrail-go/references/subagent-prompts.md", subagent)):
+        assert "already active" in text, f"{doc_name} lacks the active-run-resume guard"
+        assert "go-20260811-132806" in text, (
+            f"{doc_name} no longer cites the run that first surfaced the self-poll loop")
+        assert "final_status" in text and "worktree" in text, (
+            f"{doc_name} must define what makes a run 'already active' "
+            "(no final_status + existing worktree)")
+
+    # The go front door must not send an active-run resume through the Native Skill adapter.
+    assert "do not use the adapter for an active-run resume" in go_skill.lower()
+
+    # Headless drain is explicitly preserved: it is never an active-run resume.
+    for doc_name, text in (("worktrail-go/SKILL.md", go_skill),
+                           ("worktrail-go/references/subagent-prompts.md", subagent)):
+        assert "drain" in text, f"{doc_name} must keep stating headless drain still spawns"
+
+
 def test_opsx_apply_is_never_dispatched():
     """worktrail replaces OpenSpec's own sequential executor. Dispatching
     `/opsx:apply` would run the change twice — once sequentially by OpenSpec, once
