@@ -62,6 +62,7 @@ from typing import Callable, Dict, List, NamedTuple, Optional, Sequence
 import yaml
 
 from . import agent_capacity
+from ..router.skill_dispatch import prepare_codex_child_environment
 
 
 class SpawnResult(NamedTuple):
@@ -587,6 +588,17 @@ def spawn_agent(
         resume_session_id=resume_session_id,
         output_last_message=output_file,
     )
+    child_env = {**os.environ, "CC_HEADLESS": "1"}
+    if agent == "codex":
+        child_env, codex_home, automatic_home = prepare_codex_child_environment()
+        child_env["CC_HEADLESS"] = "1"
+        if automatic_home:
+            log(f"    using automatic Worktrail Codex home: {codex_home}")
+    # Keep the environment marker on the prepared Codex environment too.
+    if "WORKTRAIL_SKILL_DISPATCH_DEPTH" in os.environ:
+        child_env["WORKTRAIL_SKILL_DISPATCH_DEPTH"] = os.environ[
+            "WORKTRAIL_SKILL_DISPATCH_DEPTH"
+        ]
     attempts = max(1, retries + 1)
     waits_left = max(0, session_limit_waits)
     last_raw = ""
@@ -601,7 +613,7 @@ def spawn_agent(
                 capture_output=True,
                 text=True,
                 timeout=timeout,
-                env={**os.environ, "CC_HEADLESS": "1"},
+                env=child_env,
             )
         except BaseException:
             cleanup_output_file()
