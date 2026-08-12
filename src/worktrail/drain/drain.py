@@ -264,8 +264,13 @@ def capacity_gated(cache: dict, agent: str) -> bool:
     providers = cache.get("providers") if isinstance(cache.get("providers"), dict) else cache
     if not isinstance(providers, dict):
         return False
+    bare = providers.get(agent)
+    if isinstance(bare, dict):
+        return str(bare.get("status", "")).lower() in (
+            "gated", "unavailable", "blocked",
+        )
     matched = [v for k, v in providers.items()
-               if isinstance(v, dict) and (k == agent or str(k).startswith(agent + ":"))]
+               if isinstance(v, dict) and str(k).startswith(agent + ":")]
     if not matched:
         return False
     return all(str(v.get("status", "")).lower() in ("gated", "unavailable", "blocked")
