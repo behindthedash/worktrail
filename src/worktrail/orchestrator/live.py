@@ -363,6 +363,22 @@ def _format_automerge_evidence_note(evidence: "dict[str, dict[str, str]]") -> "s
     )
 
 
+def _format_unreconciled_tail_note(findings: "list[dict]") -> "str | None":
+    """Human-readable warning for `integrate.detect_unreconciled_tail_evidence`'s
+    findings -- terminal tail-kind (e2e/cleanup) tasks whose own commits never
+    got merged onto base, so the run must not report unqualified success.
+    Returns None for empty findings so callers can `if note:`.
+    """
+    if not findings:
+        return None
+    return (
+        f"!! {len(findings)} tail task(s) completed with unreconciled evidence "
+        f"(commits never merged onto base -- reconcile before worktree cleanup, "
+        f"see journal `unreconciled_tail_evidence`): "
+        + ", ".join(f"{f['task']} (sha {f['head_sha']} @ {f['worktree']})" for f in findings)
+    )
+
+
 def _safety_net_events_from_preflight_fallbacks(fallbacks: "dict[str, dict]") -> "list[dict]":
     """Convert `verify.run_all()`'s `preflight_fallbacks` (group -> detail) into
     `progress.append_safety_net_events` entries, so a required-checks preflight
@@ -4073,6 +4089,7 @@ def _pipeline_scheduler(
     integrate_complete = integrate_module._mark_integrate_complete_if_terminal(
         journal_path, groups, tasks
     )
+    tail_res = None
     if integrate_complete:
         progress.set_phase(journal_path, "tail")
         tail_res = _dispatch_pending_tail(
@@ -4102,6 +4119,13 @@ def _pipeline_scheduler(
             integrate_module._mark_integrate_complete_if_terminal(
                 journal_path, groups, tail_res["tasks"]
             )
+    unreconciled_tail = integrate_module.detect_unreconciled_tail_evidence(
+        repo, remote, base, spec_id, wt_base, (tail_res or {}).get("tasks", tasks)
+    )
+    integrate_module._record_unreconciled_tail_evidence(journal_path, unreconciled_tail)
+    unreconciled_note = _format_unreconciled_tail_note(unreconciled_tail)
+    if unreconciled_note:
+        print(f"{_ts()} {unreconciled_note}")
     progress.set_phase(journal_path, "done")
     _print_usage_report(journal_path)
     print(f"{_ts()} === PIPELINE RUN COMPLETE ===")
@@ -4111,6 +4135,7 @@ def _pipeline_scheduler(
         "quarantined": quarantined,
         "merged": merged,
         "post_merge_regressed": post_merge_regressed,
+        "unreconciled_tail_evidence": unreconciled_tail,
     }
 
 
@@ -4703,6 +4728,7 @@ def _full_real_inner(
     note = _format_automerge_evidence_note(automerge_evidence)
     if note:
         print(note)
+    tail_res = None
     if integrate._mark_integrate_complete_if_terminal(journal_path, groups, tasks):
         progress.set_phase(journal_path, "tail")
         tail_res = _dispatch_pending_tail(
@@ -4733,6 +4759,13 @@ def _full_real_inner(
             integrate._mark_integrate_complete_if_terminal(
                 journal_path, groups, tail_res["tasks"]
             )
+    unreconciled_tail = integrate.detect_unreconciled_tail_evidence(
+        repo, remote, base, spec_id, wt_base, (tail_res or {}).get("tasks", tasks)
+    )
+    integrate._record_unreconciled_tail_evidence(journal_path, unreconciled_tail)
+    unreconciled_note = _format_unreconciled_tail_note(unreconciled_tail)
+    if unreconciled_note:
+        print(unreconciled_note)
     progress.set_phase(journal_path, "done")
     if notify_cmd:
         done_ct = sum(1 for t in tasks if t.get("status") in coordinator.DONE)
@@ -4762,6 +4795,7 @@ def _full_real_inner(
         "self_merged": self_merged,
         "post_merge_regressed": post_merge_regressed,
         "automerge_evidence": automerge_evidence,
+        "unreconciled_tail_evidence": unreconciled_tail,
     }
 
 
