@@ -205,6 +205,14 @@ def test_go_dispatches_worktrail_executor_only():
     assert not offenders, f"worktrail-go retains retired cross-plugin dispatches: {offenders}"
 
 
+def test_handoff_dispatch_includes_explicit_executor_route():
+    """The SDD executor's direct-invocation guard requires route:X even for handoffs."""
+    go_skill = SKILLS_DIR / "worktrail-go" / "SKILL.md"
+    text = go_skill.read_text()
+    assert 'Skill("worktrail-sdd-workflow", args="handoff:<id> route:<X>")' in text
+    assert 'Skill("worktrail-sdd-workflow", args="handoff:<id>")' not in text
+
+
 def test_opsx_apply_is_never_dispatched():
     """worktrail replaces OpenSpec's own sequential executor. Dispatching
     `/opsx:apply` would run the change twice — once sequentially by OpenSpec, once

@@ -49,7 +49,9 @@ Route playbooks: `../worktrail-go/references/routes.md`.
 
 ### Step 0 — Direct-invocation guard
 
-IF no `route:X` positional arg is present, THEN print the redirect message and stop:
+IF no `route:X` positional arg is present, THEN print the redirect message and stop.
+This applies to handoff-seed invocations too: callers must pass both
+`handoff:<id>` and the resolved `route:X`:
 
 ```
 sdd-workflow is an internal executor. Use /go for all engineering work.
