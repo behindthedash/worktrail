@@ -94,6 +94,8 @@ import argparse
 import functools
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 import time
@@ -129,6 +131,12 @@ BASE_CMDS: Dict[str, List[str]] = {
     "codex": ["codex", "exec", "-s", "danger-full-access"],
 }
 
+AGENT_RUNTIME_EXECUTABLES: Dict[str, tuple[str, ...]] = {
+    "claude": ("claude", "node"),
+    "codex": ("codex", "node"),
+    "opencode": ("opencode", "node"),
+}
+
 SUCCESS_STATES = frozenset({
     "completed_and_merged",
     "completed_pr_open",
@@ -162,6 +170,59 @@ def build_command(agent: str, permission_args: List[str],
     if agent == "opencode":
         return ["opencode", "run", *permission_args, prompt]
     return ["codex", "exec", "-s", "danger-full-access", *permission_args, prompt]
+
+
+def _version_key(path: Path) -> tuple[int, ...]:
+    return tuple(int(part) for part in re.findall(r"\d+", path.parent.name))
+
+
+def build_agent_environment(home: Optional[Path] = None) -> Dict[str, str]:
+    """Return the supported environment shared by every unattended provider.
+
+    Cron and service managers commonly supply only ``/usr/bin:/bin``.  Provider
+    CLIs and their plugin runtimes are user installs, so relying on an
+    interactive shell to have initialized PATH makes hooks fail after an
+    otherwise successful run.  Resolve the supported user locations here,
+    once, and pass the exact same environment to the provider subprocess.
+    """
+    home = home or Path.home()
+    nvm_bins = list((home / ".nvm" / "versions" / "node").glob("v*/bin"))
+    newest_nvm_bin = max(nvm_bins, key=_version_key) if nvm_bins else None
+    preferred = [
+        home / ".local" / "bin",
+        home / "bin",
+        home / ".opencode" / "bin",
+    ]
+    if newest_nvm_bin is not None:
+        preferred.append(newest_nvm_bin)
+    inherited = os.environ.get("PATH", os.defpath).split(os.pathsep)
+    entries: List[str] = []
+    for entry in [*(str(path) for path in preferred), *inherited]:
+        if entry and entry not in entries:
+            entries.append(entry)
+    env = os.environ.copy()
+    env["PATH"] = os.pathsep.join(entries)
+    return env
+
+
+def validate_agent_runtime(
+    agent: str,
+    env: Dict[str, str],
+    which: Callable[..., Optional[str]] = shutil.which,
+) -> None:
+    """Fail closed before launch when a provider or hook runtime is absent."""
+    required = AGENT_RUNTIME_EXECUTABLES.get(agent)
+    if required is None:
+        raise ValueError(f"unsupported agent {agent!r}; one of {SUPPORTED_AGENTS}")
+    path = env.get("PATH", "")
+    missing = [name for name in required if which(name, path=path) is None]
+    if missing:
+        raise RuntimeError(
+            f"unattended {agent} runtime preflight failed; required executable(s) "
+            f"unavailable: {', '.join(missing)}; PATH={path}. Install the missing "
+            "runtime in a supported user location (~/.local/bin, ~/bin, "
+            "~/.opencode/bin, or ~/.nvm/versions/node/v*/bin), then retry."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1159,9 +1220,11 @@ class SpawnOutcome:
     stderr: str = ""
 
 
-def run_one_shot(cmd: List[str], timeout: int) -> SpawnOutcome:
+def run_one_shot(cmd: List[str], timeout: int,
+                 env: Optional[Dict[str, str]] = None) -> SpawnOutcome:
     try:
-        proc = subprocess.run(cmd, timeout=timeout, capture_output=True, text=True)
+        proc = subprocess.run(
+            cmd, timeout=timeout, capture_output=True, text=True, env=env)
         return SpawnOutcome(proc.returncode, proc.stdout or "", proc.stderr or "")
     except subprocess.TimeoutExpired as exc:
         stdout = exc.stdout if isinstance(exc.stdout, str) else ""
@@ -1176,7 +1239,9 @@ def drain(config: DrainConfig,
           clock: Callable[[], float] = time.time,
           log: Callable[[str], None] = print) -> Dict[str, object]:
     """Run the drain loop. Returns a summary dict (also the --json payload)."""
-    spawner = spawner or run_one_shot
+    agent_env = build_agent_environment()
+    if spawner is None:
+        spawner = functools.partial(run_one_shot, env=agent_env)
     if not acquire_lock(config.lock_file):
         return {"stopped": "lock_held",
                 "detail": f"another drain owns {config.lock_file}",
@@ -1230,6 +1295,7 @@ def drain(config: DrainConfig,
                 log(f"dry-run: would launch {' '.join(cmd)} "
                     f"({state.ready_count} ready briefs)")
                 break
+            validate_agent_runtime(active_agent, agent_env)
             iter_start = clock()
             ready_before = state.ready_count
             known_records = (set(config.runs_dir.glob("*/*.yaml"))

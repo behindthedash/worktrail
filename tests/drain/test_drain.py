@@ -23,6 +23,7 @@ from worktrail.drain.drain import (
     SpawnOutcome,
     StageRemediation,
     acquire_lock,
+    build_agent_environment,
     build_command,
     build_full_real_resume_command,
     build_sync_command,
@@ -46,6 +47,7 @@ from worktrail.drain.drain import (
     resume_verify_pending,
     select_available_agent,
     sweep_remediations,
+    validate_agent_runtime,
     write_iteration_transcript,
 )
 
@@ -83,6 +85,54 @@ def test_build_command_template_without_prompt_placeholder_rejected():
 def test_build_command_unknown_agent_rejected():
     with pytest.raises(ValueError):
         build_command("gemini", [])
+
+
+def test_build_agent_environment_adds_supported_user_runtime_dirs(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    node_bin = home / ".nvm" / "versions" / "node" / "v24.16.0" / "bin"
+    node_bin.mkdir(parents=True)
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+
+    env = build_agent_environment(home=home)
+
+    assert env["PATH"].split(os.pathsep) == [
+        str(home / ".local" / "bin"),
+        str(home / "bin"),
+        str(home / ".opencode" / "bin"),
+        str(node_bin),
+        "/usr/bin",
+        "/bin",
+    ]
+
+
+def test_build_agent_environment_chooses_newest_nvm_runtime(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    for version in ("v20.9.0", "v24.2.0", "v24.16.0"):
+        (home / ".nvm" / "versions" / "node" / version / "bin").mkdir(parents=True)
+    monkeypatch.setenv("PATH", "/usr/bin")
+
+    path = build_agent_environment(home=home)["PATH"].split(os.pathsep)
+
+    assert str(home / ".nvm" / "versions" / "node" / "v24.16.0" / "bin") in path
+    assert str(home / ".nvm" / "versions" / "node" / "v24.2.0" / "bin") not in path
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex", "opencode"])
+def test_validate_agent_runtime_requires_provider_and_node(agent):
+    env = {"PATH": "/minimal"}
+
+    with pytest.raises(RuntimeError, match=rf"{agent}.*node.*PATH=/minimal"):
+        validate_agent_runtime(agent, env, which=lambda executable, path: None)
+
+
+def test_validate_agent_runtime_reports_only_missing_node():
+    env = {"PATH": "/minimal"}
+
+    def fake_which(executable, path):
+        return f"/minimal/{executable}" if executable == "claude" else None
+
+    with pytest.raises(RuntimeError, match=r"required executable\(s\) unavailable: node"):
+        validate_agent_runtime("claude", env, which=fake_which)
 
 
 # ---------------------------------------------------------------------------
