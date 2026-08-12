@@ -15,7 +15,10 @@ Route playbooks: `../worktrail-go/references/routes.md`.
 
 ## When to Use
 
-**INTERNAL ONLY.** Do not invoke directly — all SDD work must go through `/go`.
+**INTERNAL ONLY.** Users do not invoke this skill directly — all SDD work enters
+through `/go`. A prompt containing `[WORKTRAIL INTERNAL DISPATCH]` is the supported
+adapter form produced after `/go` has selected this executor: honor it, execute
+the supplied arguments directly, and never re-enter `worktrail-go`.
 
 ## Instructions
 
@@ -48,6 +51,12 @@ Route playbooks: `../worktrail-go/references/routes.md`.
 `PATH`. If one is missing, stop and report that `worktrail` is not installed.
 
 ### Step 0 — Direct-invocation guard
+
+If the prompt contains `[WORKTRAIL INTERNAL DISPATCH]`, treat it as an authorized
+adapter-to-executor handoff. Do not redirect to `/go`; apply the same `route:X`
+argument validation below and proceed. `worktrail-skill-dispatch` independently
+bounds this path to one nested dispatch and fails with
+`blocked_internal_dispatch_recursion` if a child re-enters the front door.
 
 IF no `route:X` positional arg is present, THEN print the redirect message and stop.
 This applies to handoff-seed invocations too: callers must pass both

@@ -16,7 +16,9 @@ class SkillDispatchTests(unittest.TestCase):
     def test_claude_uses_native_style_prompt_and_provider(self):
         command = skill_dispatch.build_command("claude", "worktrail-sdd-workflow", "route:E 002-bootstrap")
         self.assertEqual(command[:2], ["claude", "-p"])
-        self.assertEqual(command[2], "/worktrail-sdd-workflow route:E 002-bootstrap")
+        self.assertIn("[WORKTRAIL INTERNAL DISPATCH]", command[2])
+        self.assertIn("Invocation: /worktrail-sdd-workflow route:E 002-bootstrap", command[2])
+        self.assertIn("Do not invoke worktrail-go again", command[2])
 
     def test_codex_preserves_codex_binary(self):
         command = skill_dispatch.build_command("codex", "worktrail-sdd-workflow", "route:E")
@@ -26,7 +28,10 @@ class SkillDispatchTests(unittest.TestCase):
         )
         self.assertNotIn("-a", command)
         self.assertNotIn("on-request", command)
-        self.assertIn("Use the installed skill 'worktrail-sdd-workflow'", command[-1])
+        self.assertIn("[WORKTRAIL INTERNAL DISPATCH]", command[-1])
+        self.assertIn("handoff", skill_dispatch.build_command(
+            "codex", "worktrail-sdd-workflow", "handoff:123 route:F"
+        )[-1])
         self.assertNotIn("claude", command)
 
     def test_codex_receives_explicit_additional_writable_dirs(self):
@@ -56,7 +61,7 @@ class SkillDispatchTests(unittest.TestCase):
     def test_opencode_preserves_opencode_binary(self):
         command = skill_dispatch.build_command("opencode", "worktrail-sdd-workflow", "route:E")
         self.assertEqual(command[:4], ["opencode", "run", "--format", "json"])
-        self.assertEqual(command[-1], "/worktrail-sdd-workflow route:E")
+        self.assertIn("Invocation: /worktrail-sdd-workflow route:E", command[-1])
 
     def test_args_are_one_argument_and_extra_args_are_not_shell_parsed(self):
         command = skill_dispatch.build_command("codex", "worktrail-sdd-workflow", "route:E; do-not-execute", extra_args=("--flag", "value"))
@@ -123,6 +128,38 @@ class SkillDispatchTests(unittest.TestCase):
     def test_invalid_skill_name_is_rejected(self):
         with self.assertRaises(ValueError):
             skill_dispatch.build_command("codex", "../../not-a-skill")
+
+    @patch.dict(os.environ, {"WORKTRAIL_SKILL_DISPATCH_DEPTH": "1"}, clear=False)
+    @patch("worktrail.router.skill_dispatch.subprocess.run")
+    def test_internal_executor_recursion_is_bounded_before_spawn(self, run):
+        stderr = StringIO()
+        with redirect_stderr(stderr):
+            result = skill_dispatch.main([
+                "--agent", "claude", "--skill", "worktrail-sdd-workflow",
+                "--args", "handoff:20260812-083302 route:F",
+            ])
+        self.assertEqual(result, 2)
+        self.assertIn("blocked_internal_dispatch_recursion", stderr.getvalue())
+        self.assertIn("handoff:<id> route:<X>", stderr.getvalue())
+        run.assert_not_called()
+
+    @patch("worktrail.router.skill_dispatch.subprocess.run")
+    def test_internal_executor_child_receives_depth_marker_for_every_provider(self, run):
+        run.return_value.returncode = 0
+        for agent in skill_dispatch.SUPPORTED_AGENTS:
+            with self.subTest(agent=agent):
+                arguments = [
+                    "--agent", agent, "--skill", "worktrail-sdd-workflow",
+                    "--args", "handoff:20260812-083302 route:F",
+                ]
+                if agent == "codex":
+                    arguments += ["--codex-home", "/tmp/worktrail-codex-test",
+                                  "--no-inherit-codex-auth"]
+                with patch.object(skill_dispatch, "bootstrap_codex_skills", return_value=True):
+                    self.assertEqual(skill_dispatch.main(arguments), 0)
+                self.assertEqual(
+                    run.call_args.kwargs["env"]["WORKTRAIL_SKILL_DISPATCH_DEPTH"], "1"
+                )
 
 
 class WorkingDirectoryTargetingTests(unittest.TestCase):

@@ -33,7 +33,12 @@ When it is absent, `worktrail-skill-dispatch` is the supported adapter. It accep
 the resolved provider, skill name, and argument string, and executes an argv list
 for that same provider. Claude and OpenCode receive their slash-style skill prompt;
 Codex receives an explicit installed-skill instruction. It never silently switches
-providers. The adapter automatically gives a Codex child a private persistent
+providers. Internal `worktrail-sdd-workflow` dispatch receives an explicit
+`[WORKTRAIL INTERNAL DISPATCH]` entry marker so the child executes the already-selected
+route instead of re-entering this front door. The adapter also carries a one-hop
+dispatch depth in the child environment and fails with
+`blocked_internal_dispatch_recursion` if that child attempts to dispatch the internal
+executor again. The adapter automatically gives a Codex child a private persistent
 `~/.worktrail/codex-home` when the parent `CODEX_HOME` is read-only, and links the
 installed Worktrail skill tree into that child home without copying credentials.
 `WORKTRAIL_CODEX_HOME` or `--codex-home <path>` remains available for an explicit
