@@ -8,6 +8,7 @@ philosophy.
 """
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import tempfile
@@ -112,6 +113,27 @@ class TestExtractProbesSymbols(unittest.TestCase):
         text = "Fix `compile_run_plan()` so the edges close."
         res = cbs.extract_probes(text)
         self.assertIn("compile_run_plan", res["symbols"])
+
+    def test_backtick_quoted_cli_flag_is_a_symbol_probe(self):
+        text = "Route through the `--tier-map` flag instead."
+        res = cbs.extract_probes(text)
+        self.assertIn("--tier-map", res["symbols"])
+        self.assertEqual(res["paths"], [])
+
+    def test_unquoted_cli_flag_is_a_symbol_probe(self):
+        # Flags are named in prose as routinely as in backticks -- the same
+        # reasoning that dropped the backtick requirement for snake_case
+        # symbols applies here (see design.md).
+        text = "Add the --json flag to the CLI so callers can parse output."
+        res = cbs.extract_probes(text)
+        self.assertIn("--json", res["symbols"])
+
+    def test_hyphenated_prose_is_still_not_a_flag_probe(self):
+        # A single leading hyphen or a hyphenated word must not qualify --
+        # only a GNU long-form `--flag` shape does.
+        text = "We should resolve the base ref and re-check the file-scope soon."
+        res = cbs.extract_probes(text)
+        self.assertEqual(res["symbols"], [])
 
 
 class TestExtractProbesPullRequests(unittest.TestCase):
@@ -230,6 +252,35 @@ class TestCheckHistorySearch(unittest.TestCase):
         self.assertEqual(match["subject"], "Add widget support")
         self.assertEqual(match["kind"], "path")
 
+    def test_commit_moments_before_capture_is_reported_as_evidence(self):
+        # Regression for the same-session race: PR #325 merged 56s before a
+        # duplicate brief was captured, and an exact-timestamp `--since`
+        # boundary reported the brief as clean. RACE_GRACE_SECONDS=300
+        # widens the boundary backward so a commit landing well within that
+        # window still surfaces.
+        repo = _init_repo()
+        _write(repo, "src/widget.py", "print('v2')\n")
+        sha = _commit(repo, "Add widget support", "2026-06-01T00:05:30+00:00")
+
+        res = cbs.check(
+            Path(repo), "This touches src/widget.py directly.", "2026-06-01T00:10:00+00:00",
+        )
+
+        self.assertTrue(res["checked"])
+        self.assertIn(sha, {m["sha"] for m in res["matches"] if m["probe"] == "src/widget.py"})
+
+    def test_commit_before_grace_widened_boundary_is_not_evidence(self):
+        repo = _init_repo()
+        _write(repo, "src/widget.py", "print('v2')\n")
+        _commit(repo, "Add widget support", "2026-06-01T00:00:00+00:00")
+
+        res = cbs.check(
+            Path(repo), "This touches src/widget.py directly.", "2026-06-01T00:10:00+00:00",
+        )
+
+        self.assertTrue(res["checked"])
+        self.assertEqual(res["matches"], [])
+
     def test_commit_before_created_is_not_reported(self):
         repo = _init_repo()
         _write(repo, "src/widget.py", "print('v1')\n")
@@ -267,6 +318,76 @@ class TestCheckHistorySearch(unittest.TestCase):
         self.assertTrue(res["checked"])
         match = next(m for m in res["matches"] if m["probe"] == "src/widget.py")
         self.assertEqual(match["sha"], sha)
+
+
+class TestLookupPullRequestsGraceWindow(unittest.TestCase):
+    """`_lookup_pull_requests()`'s merged-before-search-window exclusion uses
+    the same grace-widened boundary `check()` computes for the git history
+    search (see RACE_GRACE_SECONDS), so the two never disagree about whether
+    a same-session race counts as evidence."""
+
+    def _patch_gh(self, responses):
+        """Patch `shutil.which` (so `gh` looks installed) and `subprocess.run`
+        (so `gh auth status` succeeds and `gh pr view <n>` returns a canned
+        response from `responses`), delegating every other call -- including
+        every real `git` invocation `check()` still needs -- to the real
+        `subprocess.run`. Returns the two originals for restoration."""
+        real_which = cbs.shutil.which
+        real_run = cbs.subprocess.run
+
+        def fake_which(name):
+            return "/usr/bin/gh" if name == "gh" else real_which(name)
+
+        def fake_run(args, **kwargs):
+            if isinstance(args, list) and args[:1] == ["gh"]:
+                if "auth" in args:
+                    return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+                if "view" in args:
+                    num = args[args.index("view") + 1]
+                    if num in responses:
+                        return subprocess.CompletedProcess(
+                            args, 0, stdout=json.dumps(responses[num]), stderr="",
+                        )
+                    return subprocess.CompletedProcess(args, 1, stdout="", stderr="not found")
+            return real_run(args, **kwargs)
+
+        cbs.shutil.which = fake_which
+        cbs.subprocess.run = fake_run
+        return real_which, real_run
+
+    def test_pr_merged_moments_before_capture_is_kept(self):
+        repo = _init_repo()
+        real_which, real_run = self._patch_gh({
+            "42": {
+                "number": 42, "title": "close race", "url": "https://example/42",
+                "state": "MERGED", "mergedAt": "2026-06-01T00:05:30+00:00",
+            },
+        })
+        try:
+            res = cbs.check(Path(repo), "Delivered by PR #42.", "2026-06-01T00:10:00+00:00")
+        finally:
+            cbs.shutil.which = real_which
+            cbs.subprocess.run = real_run
+
+        self.assertTrue(res["checked"])
+        self.assertIn(42, {pr["number"] for pr in res["pull_requests"]})
+
+    def test_pr_merged_well_before_grace_boundary_is_excluded(self):
+        repo = _init_repo()
+        real_which, real_run = self._patch_gh({
+            "43": {
+                "number": 43, "title": "old unrelated work", "url": "https://example/43",
+                "state": "MERGED", "mergedAt": "2026-06-01T00:00:00+00:00",
+            },
+        })
+        try:
+            res = cbs.check(Path(repo), "Delivered by PR #43.", "2026-06-01T00:10:00+00:00")
+        finally:
+            cbs.shutil.which = real_which
+            cbs.subprocess.run = real_run
+
+        self.assertTrue(res["checked"])
+        self.assertNotIn(43, {pr["number"] for pr in res["pull_requests"]})
 
 
 class TestCheckFailsOpen(unittest.TestCase):
