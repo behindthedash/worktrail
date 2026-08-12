@@ -599,10 +599,12 @@ decision → `blocked_product_decision`; ceiling → `failed_recoverable`.
 
 ```
 Skill("worktrail-sdd-workflow", args="<repo-path> route:<X> [spec-folder]")
-Skill("worktrail-sdd-workflow", args="handoff:<id>")
+Skill("worktrail-sdd-workflow", args="handoff:<id> route:<X>")
 ```
 
-sdd-workflow accepts `route:X` to skip its own classification and proceed directly to route execution.
+sdd-workflow requires the resolved `route:X` on every dispatch, including handoff-seed
+dispatches. The full `handoff:<id>` is retained alongside the route so the executor can
+load the claimed brief without losing its context.
 
 ## Related Briefs
 
