@@ -29,3 +29,33 @@ jobs:
         run: python3 -m worktrail.orchestrator.orchestrate check
       - name: Build
         run: pip install build && python3 -m build
+
+  installed-package-drain-smoke:
+    name: "Installed drain smoke (${{ matrix.agent }})"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        agent: [claude, codex, opencode]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - name: Build wheel
+        run: pip install build && python3 -m build --wheel
+      - name: Exercise installed provider launcher
+        run: |
+          wheel=$(find dist -maxdepth 1 -name 'worktrail-*.whl' -print -quit)
+          test -n "$wheel"
+          python3 scripts/ci/installed_package_drain_smoke.py \
+            --agent "${{ matrix.agent }}" \
+            --wheel "$wheel" \
+            --output "artifacts/${{ matrix.agent }}"
+      - name: Publish exact smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: installed-drain-smoke-${{ matrix.agent }}
+          path: artifacts/${{ matrix.agent }}/
+          if-no-files-found: error
