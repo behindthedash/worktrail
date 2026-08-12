@@ -5,16 +5,18 @@ deliberately not indexed.  This check therefore answers only whether the
 canonical repository has a usable base-branch index; it never indexes a
 worktree and never treats an unavailable index as a task failure.
 """
+
 from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
-
 Runner = Callable[..., subprocess.CompletedProcess[str]]
+McpRunner = Callable[..., subprocess.CompletedProcess[str]]
 
 
 def _run_git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -23,6 +25,18 @@ def _run_git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         timeout=10,
+    )
+
+
+def _run_mcp(
+    command: list[str], *, input: str, timeout: float
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        command,
+        input=input,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
     )
 
 
@@ -47,10 +61,63 @@ def _registry_path(registry_path: Optional[Path]) -> Path:
     return raw.expanduser()
 
 
-def check(repo: Path, registry_path: Optional[Path] = None) -> Dict[str, Any]:
+def _mcp_command() -> list[str]:
+    configured = os.environ.get("GITNEXUS_MCP_COMMAND")
+    return shlex.split(configured) if configured else ["gitnexus", "mcp"]
+
+
+def _mcp_probe_payload(repo_name: str) -> str:
+    messages = [
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": {"name": "worktrail-capability-probe", "version": "1"},
+            },
+        },
+        {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "resources/read",
+            "params": {"uri": f"gitnexus://repo/{repo_name}/context"},
+        },
+    ]
+    return "".join(json.dumps(message) + "\n" for message in messages)
+
+
+def _mcp_responded(stdout: str) -> bool:
+    responses: dict[Any, dict[str, Any]] = {}
+    for line in stdout.splitlines():
+        try:
+            response = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(response, dict) and "id" in response:
+            responses[response["id"]] = response
+    initialized = responses.get(1, {}).get("result", {}).get("serverInfo", {})
+    resource = responses.get(2, {}).get("result", {}).get("contents")
+    return (
+        initialized.get("name") == "gitnexus"
+        and isinstance(resource, list)
+        and bool(resource)
+    )
+
+
+def check(
+    repo: Path,
+    registry_path: Optional[Path] = None,
+    *,
+    runner: Runner = _run_git,
+    mcp_runner: McpRunner = _run_mcp,
+    timeout: float = 5.0,
+) -> Dict[str, Any]:
     """Return an explicit ``available`` or ``unavailable`` capability result."""
     repo = Path(repo).resolve()
-    canonical = canonical_repo_root(repo)
+    canonical = canonical_repo_root(repo, runner=runner)
     result: Dict[str, Any] = {
         "capability": "gitnexus",
         "status": "unavailable",
@@ -83,14 +150,50 @@ def check(repo: Path, registry_path: Optional[Path] = None) -> Dict[str, Any]:
         except (OSError, TypeError, ValueError):
             continue
         storage = entry.get("storagePath")
-        if indexed == canonical and (not storage or Path(storage).expanduser().exists()):
-            result.update({
-                "status": "available",
-                "reason": "canonical-base-index-registered",
-                "name": entry.get("name"),
-                "indexed_commit": entry.get("lastCommit"),
-            })
+        if indexed != canonical or (
+            storage and not Path(storage).expanduser().exists()
+        ):
+            continue
+
+        name = entry.get("name")
+        indexed_commit = entry.get("lastCommit")
+        result.update({"name": name, "indexed_commit": indexed_commit})
+        if not isinstance(name, str) or not name:
+            result["reason"] = "registry-invalid"
             return result
+
+        try:
+            head = runner(canonical, "rev-parse", "HEAD")
+        except (OSError, subprocess.SubprocessError):
+            head = None
+        if (
+            indexed_commit
+            and head is not None
+            and head.returncode == 0
+            and indexed_commit != head.stdout.strip()
+        ):
+            result.update(
+                {"reason": "registry-stale", "current_commit": head.stdout.strip()}
+            )
+            return result
+
+        try:
+            probe = mcp_runner(
+                _mcp_command(), input=_mcp_probe_payload(name), timeout=timeout
+            )
+        except subprocess.TimeoutExpired:
+            result["reason"] = "mcp-timeout"
+            return result
+        except (OSError, subprocess.SubprocessError, ValueError):
+            result["reason"] = "mcp-unavailable"
+            return result
+
+        if probe.returncode != 0 or not _mcp_responded(probe.stdout):
+            result["reason"] = "mcp-unavailable"
+            return result
+
+        result.update({"status": "available", "reason": "mcp-context-readable"})
+        return result
 
     result["reason"] = "canonical-base-index-missing"
     return result
