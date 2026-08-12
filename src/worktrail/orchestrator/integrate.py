@@ -1083,6 +1083,48 @@ def integrate_one(
     return (name, pr_base, out)
 
 
+def reconcile_unreconciled_tail_evidence(
+    findings: list,
+    repo: Path,
+    spec_id: str,
+    tasks: list,
+    remote: str,
+    run_id: str,
+    base: str,
+    journal_path: Optional[str],
+    pr_labels: Optional[list[str]] = None,
+    route: Optional[str] = None,
+    gates: str = "",
+) -> list:
+    """Open (or reuse) a group PR for each `detect_unreconciled_tail_evidence`
+    finding, so a tail task's stranded evidence commit reaches `base` the same
+    way an impl group's does -- instead of sitting on a throwaway worktree
+    branch a later cleanup pass deletes with zero trace.
+
+    Each finding becomes a synthetic single-task group (`tail-<task-id>`, no
+    deps) fed straight into `integrate_one` -- the same merge/push/PR/quarantine
+    seam every impl group already goes through, so a real merge conflict on
+    the tail branch quarantines it exactly like any other group would rather
+    than needing new handling here.
+    """
+    status = {t["id"]: t.get("status", "done") for t in tasks}
+    by_id = {t["id"]: t for t in tasks}
+    for finding in findings:
+        task_id = finding["task"]
+        g = {
+            "name": f"tail-{task_id.lower()}",
+            "tasks": [task_id],
+            "depends_on": [],
+            "reqs": by_id.get(task_id, {}).get("reqs", []),
+        }
+        integrate_one(
+            g, repo, spec_id, tasks, remote, run_id, base, journal_path, status,
+            group_branch={}, quarantined={},
+            pr_labels=pr_labels, route=route, gates=gates,
+        )
+    return findings
+
+
 def _wait_for_pr_checks(
     repo: Path, pr_url: str, timeout_s: int, poll_s: int = 30
 ) -> str:

@@ -806,6 +806,46 @@ class RecordUnreconciledTailEvidence(unittest.TestCase):
         integrate._record_unreconciled_tail_evidence(None, [{"task": "T022"}])  # must not raise
 
 
+class ReconcileUnreconciledTailEvidence(unittest.TestCase):
+    """reconcile_unreconciled_tail_evidence turns each detect_unreconciled_tail_evidence
+    finding into a synthetic single-task group fed through integrate_one -- the same
+    merge/push/PR/quarantine seam every impl group already goes through."""
+
+    def test_builds_synthetic_group_and_opens_pr_via_integrate_one(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            journal_path = Path(tmpdir) / "journal.json"
+            journal_path.write_text(json.dumps({"run_id": "run-1"}) + "\n")
+
+            run = FakeRunWithOperator.FakeRunHelper()
+            findings = [{"task": "T022", "worktree": "/x", "head_sha": "abc123"}]
+            task = _tail_task("T022", "e2e", status="done")
+            task["reqs"] = ["REQ-009"]
+
+            with patch("worktrail.orchestrator.integrate._git", side_effect=run):
+                with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
+                    result = integrate.reconcile_unreconciled_tail_evidence(
+                        findings, Path("/repo"), "spec-001", [task], "origin",
+                        "run-1", "main", str(journal_path),
+                    )
+
+            self.assertEqual(result, findings)  # same finding data returned
+            create_calls = run.find_calls("gh", "pr", "create")
+            self.assertEqual(len(create_calls), 1)
+            self.assertIn("run-1/tail-t022", create_calls[0])
+            journal = json.loads(journal_path.read_text())
+            self.assertEqual(journal["groups"]["tail-t022"]["state"], "OPEN")
+
+    def test_empty_findings_is_noop(self):
+        with patch("worktrail.orchestrator.integrate._git") as mock_git:
+            with patch("worktrail.orchestrator.integrate.subprocess.run") as mock_run:
+                result = integrate.reconcile_unreconciled_tail_evidence(
+                    [], Path("/repo"), "spec-001", [], "origin", "run-1", "main", None,
+                )
+            self.assertEqual(result, [])
+            mock_git.assert_not_called()
+            mock_run.assert_not_called()
+
+
 class IntegrationSmokeTest(unittest.TestCase):
     """Option-3: policy integrate_smoke_cmd gate on a group's integration branch."""
 
