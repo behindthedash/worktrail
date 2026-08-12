@@ -1,0 +1,14 @@
+{
+  "contract": "worktrail.nightly-drain-summary",
+  "version": 1,
+  "stop_reasons": {
+    "capacity_gated": {
+      "operator_alert": false,
+      "meaning": "All configured providers are temporarily unavailable and the persisted capacity gate stopped the drain safely."
+    },
+    "circuit_breaker": {
+      "operator_alert": true,
+      "meaning": "Repeated unclassified execution failures crossed the configured failure threshold."
+    }
+  }
+}
