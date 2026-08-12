@@ -304,6 +304,33 @@ def bootstrap_codex_skills(codex_home: str, skill: str) -> bool:
     return (destination_root / skill).exists()
 
 
+def prepare_codex_child_environment(
+    codex_home_override: str | None = None,
+    *,
+    inherit_auth: bool = True,
+) -> tuple[dict[str, str], str, bool]:
+    """Prepare a writable, provider-preserving environment for a Codex child.
+
+    The skill adapter and the parallel orchestrator both launch Codex children.
+    Keep home selection and authentication inheritance in one place so a direct
+    orchestrator worker cannot accidentally inherit a read-only parent home.
+    Skill bootstrapping remains the adapter's responsibility because workers do
+    not discover Worktrail skills through ``CODEX_HOME``.
+    """
+    codex_home, automatic_home = select_codex_home(codex_home_override)
+    remediation = codex_home_write_remediation(resolve_codex_home(codex_home))
+    if remediation:
+        raise OSError(remediation)
+    ensure_codex_home(codex_home)
+    if inherit_auth:
+        inherit_codex_chatgpt_auth(
+            resolve_parent_codex_home(), Path(codex_home).expanduser()
+        )
+    child_env = os.environ.copy()
+    child_env["CODEX_HOME"] = codex_home
+    return child_env, codex_home, automatic_home
+
+
 def codex_home_write_remediation(path: str) -> str | None:
     """Return a remediation message if the nested Codex app-server would not
     be able to write to `path`, or None if it can. Checks directory
@@ -394,17 +421,11 @@ def main(argv: list[str] | None = None) -> int:
     if parsed.skill in _INTERNAL_SKILLS:
         child_env[_DISPATCH_DEPTH_ENV] = str(dispatch_depth + 1)
     if parsed.agent == "codex":
-        codex_home, automatic_home = select_codex_home(parsed.codex_home)
-        remediation = codex_home_write_remediation(resolve_codex_home(codex_home))
-        if remediation:
-            print(remediation, file=sys.stderr)
-            return 1
         try:
-            ensure_codex_home(codex_home)
-            if not parsed.no_inherit_codex_auth:
-                inherit_codex_chatgpt_auth(
-                    resolve_parent_codex_home(), Path(codex_home).expanduser()
-                )
+            child_env, codex_home, automatic_home = prepare_codex_child_environment(
+                parsed.codex_home,
+                inherit_auth=not parsed.no_inherit_codex_auth,
+            )
             if not bootstrap_codex_skills(codex_home, parsed.skill):
                 print(
                     f"Worktrail skill '{parsed.skill}' was not found for the Codex child. "
@@ -419,7 +440,8 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 1
-        child_env["CODEX_HOME"] = codex_home
+        if parsed.skill in _INTERNAL_SKILLS:
+            child_env[_DISPATCH_DEPTH_ENV] = str(dispatch_depth + 1)
         if automatic_home:
             print(f"Using automatic Worktrail Codex home: {codex_home}", file=sys.stderr)
     run_kwargs = {"check": False}

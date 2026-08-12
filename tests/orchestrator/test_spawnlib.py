@@ -664,9 +664,37 @@ class CodexSpawn(unittest.TestCase):
             return Proc(0, '{"type":"event"}\n', "")
 
         spawnlib.subprocess.run = fake_run
-        out = spawnlib.spawn_agent("prompt", "/tmp", agent="codex", model="gpt-5.3-codex")
+        with patch.object(
+            spawnlib,
+            "prepare_codex_child_environment",
+            return_value=(os.environ.copy(), "/tmp/worktrail-codex-child", False),
+        ):
+            out = spawnlib.spawn_agent("prompt", "/tmp", agent="codex", model="gpt-5.3-codex")
         self.assertEqual(out.text, "codex final report")
         self.assertEqual(seen["cmd"][:2], ["codex", "exec"])
+
+    def test_codex_worker_uses_prepared_child_home(self):
+        seen = {}
+        child_env = {"CODEX_HOME": "/tmp/worktrail-codex-child"}
+
+        def fake_run(cmd, **kwargs):
+            seen["env"] = kwargs["env"]
+            out_path = cmd[cmd.index("--output-last-message") + 1]
+            with open(out_path, "w") as f:
+                f.write("codex final report")
+            return Proc(0, '{"type":"event"}\n', "")
+
+        spawnlib.subprocess.run = fake_run
+        with patch.object(
+            spawnlib,
+            "prepare_codex_child_environment",
+            return_value=(child_env.copy(), child_env["CODEX_HOME"], False),
+        ) as prepare:
+            spawnlib.spawn_agent("prompt", "/tmp", agent="codex", model="gpt-5.3-codex")
+
+        prepare.assert_called_once_with()
+        self.assertEqual(seen["env"]["CODEX_HOME"], child_env["CODEX_HOME"])
+        self.assertEqual(seen["env"]["CC_HEADLESS"], "1")
 
 
 class OpenCodeSpawn(unittest.TestCase):
