@@ -83,8 +83,11 @@ as `🛠️ Stalled in-flight` with `hours_since_claim` set. Batch companions
 (`batch-primary` pointing at a still-picked primary) fold into the primary's
 entry as `batched: N` rather than appearing as separate rows.
 
-The top-level `active_specs` / `handoff_queue` ints exist for `classify.py
---state "$DASHBOARD_JSON"` (its Route-D demotion and Route-E boost read exactly
-those keys). A spec folder that cannot be read gets `stage: "error"` instead of
+The top-level `active_specs` / `handoff_queue` ints exist for `classify.py --state`
+(its Route-D demotion and Route-E boost read exactly those keys) — extract just
+those two into a small object (`$STATE_JSON` in SKILL.md's Phase 5) rather than
+passing the full `$DASHBOARD_JSON` blob as `--state`; classify.py never reads any
+of the blob's other fields, and passing it whole can overflow the argv size limit
+in a large workspace. A spec folder that cannot be read gets `stage: "error"` instead of
 crashing the scan; it renders under "Unreadable spec folder" and is never a
 picker item.

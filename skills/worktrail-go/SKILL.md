@@ -238,6 +238,22 @@ Surface any warnings from the policy. Hold `$POLICY` for risk assessment in Phas
 
 If no explicit route (route:X or v1 intent keyword) and not a handoff:ID resumption, run classify.py to classify the free-text request.
 
+**`--state` is a small signals object, not the dashboard blob.** classify.py's `--state`
+only reads two keys (`active_specs`, `handoff_queue`); it never reads `rendered`,
+`category_items`, `repos`/`specs`, or `recent_runs`. `$DASHBOARD_JSON` carries all of
+those, and in a multi-repo or long-history workspace it can be large enough that passing
+it as a raw argv string overflows the OS argument-list limit (`Argument list too long`,
+exit 126) — the call fails outside classify.py's own error handling, with no route
+returned at all. Extract just the two signal keys into `$STATE_JSON` first, and pass
+that instead — piping through `python3`'s stdin avoids the argv limit regardless of how
+large `$DASHBOARD_JSON` is:
+
+```bash
+STATE_JSON=$(echo "$DASHBOARD_JSON" | python3 -c \
+  "import sys, json; d = json.load(sys.stdin); \
+   print(json.dumps({'active_specs': d.get('active_specs', 0), 'handoff_queue': d.get('handoff_queue', 0)}))")
+```
+
 **Claimed-brief hint.** If this dispatch came from a `claim` action (interactive or
 `auto`), extract the PRIMARY claimed brief's `recommended-route` frontmatter before
 classifying — the classifier can only weigh it if it's actually passed in:
@@ -247,14 +263,14 @@ RECOMMENDED_ROUTE=$(worktrail-handoff-seed seed "<primary-claimed-path>" --json 
   | python3 -c "import sys, json; print(json.load(sys.stdin).get('recommended_route') or '')")
 HANDOFF_ROUTE_FLAG=(); [ -n "$RECOMMENDED_ROUTE" ] && HANDOFF_ROUTE_FLAG=(--handoff-route "$RECOMMENDED_ROUTE")
 
-worktrail-classify --request "$ARG_INTENT" --state "$DASHBOARD_JSON" "${HANDOFF_ROUTE_FLAG[@]}" --repo "$REPO" --json
+worktrail-classify --request "$ARG_INTENT" --state "$STATE_JSON" "${HANDOFF_ROUTE_FLAG[@]}" --repo "$REPO" --json
 ```
 
 For free-text/level-2-item dispatches with no claimed brief, omit `--handoff-route` (no
 hint to weigh):
 
 ```bash
-worktrail-classify --request "$ARG_INTENT" --state "$DASHBOARD_JSON" --repo "$REPO" --json
+worktrail-classify --request "$ARG_INTENT" --state "$STATE_JSON" --repo "$REPO" --json
 ```
 
 `--repo "$REPO"` lets classify.py resolve the state of any `PR #NNN` cited in the
