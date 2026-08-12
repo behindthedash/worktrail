@@ -361,9 +361,17 @@ def test_capacity_gated_all_providers_for_agent_gated():
     assert capacity_gated(cache, "codex") is False
 
 
-def test_capacity_gated_partial_gate_does_not_stop():
+def test_capacity_gated_bare_agent_gate_overrides_model_history():
     cache = {"providers": {
         "claude": {"status": "gated"},
+        "claude:sonnet": {"status": "ok"},
+    }}
+    assert capacity_gated(cache, "claude") is True
+
+
+def test_capacity_gated_partial_model_gate_does_not_stop():
+    cache = {"providers": {
+        "claude:opus": {"status": "unavailable"},
         "claude:sonnet": {"status": "ok"},
     }}
     assert capacity_gated(cache, "claude") is False
@@ -832,6 +840,33 @@ def test_drain_usage_limit_output_becomes_blocked_and_persists_gate(tmp_path, mo
     assert entry["failure_class"] == "billing"
     retry_at = datetime.fromisoformat(entry["retry_after"])
     assert (retry_at.year, retry_at.month, retry_at.day) == (2026, 8, 8)
+
+
+def test_drain_bare_capacity_gate_overrides_available_model_history(
+        tmp_path, monkeypatch):
+    fake = FakeQueue([2, 2, 2, 0])
+    install_fake_queue(monkeypatch, fake)
+    config = make_config(tmp_path, agent="claude", fallback_agents=["codex"])
+    config.capacity_cache.write_text(json.dumps({"providers": {
+        "claude:sonnet": {"status": "available"},
+    }}))
+    seen_cmds = []
+
+    def spawner(cmd, timeout):
+        seen_cmds.append(cmd)
+        if cmd[0] == "claude":
+            return SpawnOutcome(1, "You've hit your weekly limit", "")
+        write_run_record(
+            config.runs_dir, "go-1", "completed_pr_open", pr="https://pr/1")
+        return SpawnOutcome(0)
+
+    summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
+
+    assert [cmd[0] for cmd in seen_cmds] == ["claude", "codex"]
+    assert [item["kind"] for item in summary["iterations"]] == [
+        "blocked", "success",
+    ]
+    assert summary["stopped"].startswith("queue_empty")
 
 
 def test_drain_writes_transcript_when_transcript_dir_configured(tmp_path, monkeypatch):
