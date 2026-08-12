@@ -1239,8 +1239,9 @@ def drain(config: DrainConfig,
           clock: Callable[[], float] = time.time,
           log: Callable[[str], None] = print) -> Dict[str, object]:
     """Run the drain loop. Returns a summary dict (also the --json payload)."""
+    uses_builtin_spawner = spawner is None
     agent_env = build_agent_environment()
-    if spawner is None:
+    if uses_builtin_spawner:
         spawner = functools.partial(run_one_shot, env=agent_env)
     if not acquire_lock(config.lock_file):
         return {"stopped": "lock_held",
@@ -1295,7 +1296,8 @@ def drain(config: DrainConfig,
                 log(f"dry-run: would launch {' '.join(cmd)} "
                     f"({state.ready_count} ready briefs)")
                 break
-            validate_agent_runtime(active_agent, agent_env)
+            if uses_builtin_spawner:
+                validate_agent_runtime(active_agent, agent_env)
             iter_start = clock()
             ready_before = state.ready_count
             known_records = (set(config.runs_dir.glob("*/*.yaml"))
