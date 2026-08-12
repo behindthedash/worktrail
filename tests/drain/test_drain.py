@@ -869,6 +869,42 @@ def test_drain_bare_capacity_gate_overrides_available_model_history(
     assert summary["stopped"].startswith("queue_empty")
 
 
+def test_drain_weekly_limit_persists_gate_and_stops_as_capacity_gated(
+        tmp_path, monkeypatch):
+    """The summary consumed by bridge-health-guard must not look like a fault.
+
+    A stale available model entry must not override the bare-agent gate written
+    from a weekly-limit response.  That was the live shape that previously
+    advanced to the circuit breaker instead of reporting expected exhaustion.
+    """
+    fake = FakeQueue([2, 2, 2, 0])
+    install_fake_queue(monkeypatch, fake)
+    config = make_config(tmp_path, agent="claude", fallback_agents=["codex"])
+    config.capacity_cache.write_text(json.dumps({"providers": {
+        "claude:sonnet": {"status": "available"},
+        "codex:gpt-5": {"status": "available"},
+    }}))
+    seen_agents = []
+
+    def spawner(cmd, timeout):
+        seen_agents.append(cmd[0])
+        return SpawnOutcome(1, "You've hit your weekly limit", "")
+
+    summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
+
+    assert seen_agents == ["claude", "codex"]
+    assert len(summary["iterations"]) == 2
+    assert all(item["kind"] == "blocked" for item in summary["iterations"])
+    assert all(item["state"] == "blocked_capacity_billing"
+               for item in summary["iterations"])
+    assert summary["stopped"].startswith("capacity_gated")
+
+    cache = json.loads(config.capacity_cache.read_text())
+    for agent in ("claude", "codex"):
+        assert cache["providers"][agent]["status"] == "unavailable"
+        assert cache["providers"][agent]["failure_class"] == "billing"
+
+
 def test_drain_writes_transcript_when_transcript_dir_configured(tmp_path, monkeypatch):
     # End-to-end regression for the live incident (2026-08-03): a no_pick
     # iteration left no trace of what the one-shot actually did, so answering
