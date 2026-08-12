@@ -8,6 +8,11 @@ from pathlib import Path
 
 import pytest
 
+from worktrail.drain.summary_contract import (
+    load_nightly_drain_summary_contract,
+    stop_semantics,
+)
+
 from worktrail.drain import drain
 from worktrail.drain.drain import (
     MAX_TRANSCRIPT_FILES,
@@ -1900,3 +1905,16 @@ def test_close_stale_bookkeeping_gh_pr_create_failure_raises(tmp_path, monkeypat
     with pytest.raises(RuntimeError, match="gh pr create failed"):
         close_stale_bookkeeping(
             finding, "claude", 30, lambda c, t: SpawnOutcome(0), lambda _l: None)
+
+
+def test_nightly_drain_summary_contract_distinguishes_capacity_and_breaker():
+    contract = load_nightly_drain_summary_contract()
+
+    assert contract["contract"] == "worktrail.nightly-drain-summary"
+    assert contract["version"] == 1
+    assert stop_semantics(
+        "capacity_gated: provider capacity gate persisted for claude"
+    ) == {"kind": "capacity_gated", "operator_alert": False}
+    assert stop_semantics(
+        "circuit_breaker: 2 consecutive failed iterations"
+    ) == {"kind": "circuit_breaker", "operator_alert": True}
