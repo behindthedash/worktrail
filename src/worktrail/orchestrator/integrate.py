@@ -33,6 +33,7 @@ from . import coordinator
 from . import dispatch
 from . import live
 from . import progress
+from . import worktree
 from ..taskformats import resolve as taskformats
 
 TAIL = ("e2e", "cleanup")
@@ -482,6 +483,76 @@ def _mark_integrate_complete_if_terminal(
     except Exception as e:
         print(f"  WARNING: Failed to finalize integrate journal: {e}")
         return False
+
+
+def detect_unreconciled_tail_evidence(
+    repo: Path, remote: Optional[str], base: Optional[str], spec_id: str,
+    wt_base: Path, tasks: list,
+) -> list:
+    """Flag terminal tail-kind (e2e/cleanup) tasks whose own worktree branch
+    carries commits that never made it onto the base branch.
+
+    Tail tasks are held out of the parallel fan-out's group/PR machinery by
+    design (see PENDING_TAIL_REASON) and each runs in its own stacked
+    per-task worktree (`live.py`'s `ensure_wt`/`_dispatch_pending_tail`).
+    Nothing merges, pushes, or opens a PR for that worktree afterward, so a
+    spawned worker's real commit there (an evidence file, a doc update, the
+    task's own tasks.md checkbox flip) sits on a throwaway branch that a
+    later worktree-cleanup pass deletes with zero trace -- while the task
+    itself still reports DONE and the run claims full completion (reproduced
+    2026-08-12: a fixture-backed dry-run evidence commit sat on an unpushed,
+    unmerged task branch after a 12/12-done run).
+
+    Detection only -- this never merges, pushes, or deletes anything. A task
+    with an empty `files:` scope that genuinely made no commits (HEAD never
+    moved past its stacked-base) is not flagged; only one whose HEAD is not
+    an ancestor of `<remote>/<base>` is.
+    """
+    if not remote or not base:
+        return []
+    findings: list = []
+    remote_base_ref = f"{remote}/{base}"
+    for task in tasks:
+        if task.get("kind") not in TAIL:
+            continue
+        if task.get("status") not in coordinator.DONE:
+            continue
+        wt = worktree.worktree_path(wt_base, spec_id, task["id"])
+        if not wt.is_dir():
+            continue
+        head = _git(wt, "rev-parse", "HEAD", check=False).stdout.strip()
+        if not head:
+            continue
+        p = _git(wt, "merge-base", "--is-ancestor", head, remote_base_ref, check=False)
+        if p.returncode != 0:
+            findings.append({"task": task["id"], "worktree": str(wt), "head_sha": head[:8]})
+    return findings
+
+
+def _record_unreconciled_tail_evidence(journal_path: Optional[str], findings: list) -> None:
+    """Persist `detect_unreconciled_tail_evidence`'s findings into the run
+    journal as `unreconciled_tail_evidence`, mirroring how `pending_tail_tasks`
+    is recorded -- `journal_selfcheck.check_repo()` reads this field into a
+    `unreconciled-tail-evidence` finding, which the `go` dashboard's existing
+    "Stranded runs" section already renders generically by kind (no dashboard
+    change needed). Cleared when there is nothing to report (idempotent).
+    """
+    if not journal_path:
+        return
+    try:
+        journal_file = Path(journal_path)
+        journal: dict = {}
+        if journal_file.exists():
+            journal = json.loads(journal_file.read_text())
+        if findings:
+            journal["unreconciled_tail_evidence"] = findings
+        else:
+            journal.pop("unreconciled_tail_evidence", None)
+        progress.atomic_write_text(
+            journal_file, json.dumps(journal, indent=2, sort_keys=True) + "\n"
+        )
+    except Exception as e:
+        print(f"  WARNING: Failed to record unreconciled tail evidence: {e}")
 
 
 SMOKE_TIMEOUT_DEFAULT = int(os.environ.get("ORCH_SMOKE_TIMEOUT", "1800"))

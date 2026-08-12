@@ -74,6 +74,69 @@ class TestStrandedTail:
         assert journal_selfcheck.check_repo(repo)["findings"] == []
 
 
+class TestUnreconciledTailEvidence:
+    """The sibling bug class to stranded-tail: the tail task DID dispatch and
+    finish, but its own commit never merged onto base (brief 20260812-152318)."""
+
+    def test_unreconciled_evidence_is_flagged(self, tmp_path):
+        repo = _repo_with_journal(
+            tmp_path,
+            "008-x",
+            {
+                "integrate_complete": True,
+                "unreconciled_tail_evidence": [
+                    {"task": "T022", "worktree": "/wt/008-x-t022", "head_sha": "abc123"}
+                ],
+            },
+        )
+        findings = journal_selfcheck.check_repo(repo)["findings"]
+        assert len(findings) == 1
+        assert findings[0]["kind"] == "unreconciled-tail-evidence"
+        assert findings[0]["spec_id"] == "008-x"
+        assert "T022" in findings[0]["detail"]
+
+    def test_no_unreconciled_evidence_is_clean(self, tmp_path):
+        repo = _repo_with_journal(
+            tmp_path,
+            "008-x",
+            {"integrate_complete": True, "unreconciled_tail_evidence": [], "groups": {}},
+        )
+        assert journal_selfcheck.check_repo(repo)["findings"] == []
+
+    def test_live_runlock_suppresses_the_finding(self, tmp_path):
+        import fcntl
+
+        repo = _repo_with_journal(
+            tmp_path,
+            "008-x",
+            {"unreconciled_tail_evidence": [{"task": "T022"}]},
+        )
+        lock = repo.parent / "myapp-worktrees" / "run-008-x.lock"
+        fh = open(lock, "a")
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            assert journal_selfcheck.check_repo(repo)["findings"] == []
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            fh.close()
+
+    def test_composes_with_stranded_tail_for_the_same_spec(self, tmp_path):
+        # A run can carry both signals at once: one tail task never dispatched
+        # (stranded-tail) while a different, earlier tail task dispatched and
+        # finished but was never reconciled (unreconciled-tail-evidence).
+        repo = _repo_with_journal(
+            tmp_path,
+            "008-x",
+            {
+                "integrate_complete": True,
+                "pending_tail_tasks": ["T023"],
+                "unreconciled_tail_evidence": [{"task": "T022"}],
+            },
+        )
+        kinds = {f["kind"] for f in journal_selfcheck.check_repo(repo)["findings"]}
+        assert kinds == {"stranded-tail", "unreconciled-tail-evidence"}
+
+
 class TestMalformedJournal:
     def test_unparseable_journal_is_flagged(self, tmp_path):
         repo = _repo_with_journal(tmp_path, "008-x", "integrate_complete: true\ngroups: {}\n")

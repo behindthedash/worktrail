@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import subprocess
 import tempfile
 import unittest
 from collections import deque, namedtuple
@@ -639,6 +640,170 @@ class PendingTailRecording(unittest.TestCase):
 
     def test_pending_tail_task_ids_none_safe(self):
         self.assertEqual(integrate._pending_tail_task_ids(None), [])
+
+
+def _run_git(cwd, *args):
+    r = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True)
+    assert r.returncode == 0, f"git {' '.join(args)} failed: {r.stderr}"
+    return r.stdout.strip()
+
+
+class UnreconciledTailEvidence(unittest.TestCase):
+    """detect_unreconciled_tail_evidence flags a terminal tail task whose own
+    worktree branch never merged onto base -- the sibling bug class to
+    stranded-tail (PR #235/#238): there the tail never dispatched at all;
+    here it DID dispatch and reach DONE, but its own commit (evidence file,
+    tasks.md checkbox flip) is stranded on a throwaway branch a later
+    worktree-cleanup pass deletes with zero trace while the run reports full
+    success (reproduced 2026-08-12, brief 20260812-152318)."""
+
+    def _init_repo(self, tmpdir):
+        repo = Path(tmpdir) / "myrepo"
+        repo.mkdir()
+        _run_git(repo, "init", "-q", "-b", "main")
+        _run_git(repo, "config", "user.email", "t@example.com")
+        _run_git(repo, "config", "user.name", "T")
+        (repo / "README.md").write_text("hello\n")
+        _run_git(repo, "add", "README.md")
+        _run_git(repo, "commit", "-q", "-m", "init")
+        # Local stand-in for the remote-tracking ref detect_unreconciled_tail_evidence
+        # compares against -- no real remote needed for these tests.
+        _run_git(repo, "update-ref", "refs/remotes/origin/main", "main")
+        wt_base = repo.parent / f"{repo.name}-worktrees"
+        wt_base.mkdir()
+        return repo, wt_base
+
+    def _add_task_worktree(self, repo, wt_base, spec_id, task_id):
+        wt = wt_base / f"{spec_id}-{task_id.lower()}"
+        _run_git(repo, "worktree", "add", "-B", f"{spec_id}/{task_id.lower()}", str(wt), "main")
+        return wt
+
+    def test_flags_terminal_tail_task_with_unmerged_commit(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo, wt_base = self._init_repo(tmpdir)
+            wt = self._add_task_worktree(repo, wt_base, "008-x", "T022")
+            (wt / "evidence.md").write_text("dry-run evidence\n")
+            _run_git(wt, "add", "evidence.md")
+            _run_git(wt, "commit", "-q", "-m", "tail evidence")
+
+            findings = integrate.detect_unreconciled_tail_evidence(
+                repo, "origin", "main", "008-x", wt_base,
+                [_tail_task("T022", "e2e", status="done")],
+            )
+
+            self.assertEqual(len(findings), 1)
+            self.assertEqual(findings[0]["task"], "T022")
+            self.assertEqual(findings[0]["worktree"], str(wt))
+            self.assertTrue(findings[0]["head_sha"])
+
+    def test_no_finding_when_task_made_no_commit(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo, wt_base = self._init_repo(tmpdir)
+            self._add_task_worktree(repo, wt_base, "008-x", "T022")
+            # No commit made in the worktree -- HEAD is still base itself.
+
+            findings = integrate.detect_unreconciled_tail_evidence(
+                repo, "origin", "main", "008-x", wt_base,
+                [_tail_task("T022", "e2e", status="done")],
+            )
+            self.assertEqual(findings, [])
+
+    def test_no_finding_once_the_commit_is_reconciled_onto_base(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo, wt_base = self._init_repo(tmpdir)
+            wt = self._add_task_worktree(repo, wt_base, "008-x", "T022")
+            (wt / "evidence.md").write_text("dry-run evidence\n")
+            _run_git(wt, "add", "evidence.md")
+            _run_git(wt, "commit", "-q", "-m", "tail evidence")
+            # Simulate the fix landing: merge the tail branch onto base and
+            # advance the remote-tracking stand-in the same way a push would.
+            _run_git(repo, "merge", "-q", "--ff-only", "008-x/t022")
+            _run_git(repo, "update-ref", "refs/remotes/origin/main", "main")
+
+            findings = integrate.detect_unreconciled_tail_evidence(
+                repo, "origin", "main", "008-x", wt_base,
+                [_tail_task("T022", "e2e", status="done")],
+            )
+            self.assertEqual(findings, [])
+
+    def test_pending_tail_task_not_flagged(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo, wt_base = self._init_repo(tmpdir)
+            wt = self._add_task_worktree(repo, wt_base, "008-x", "T022")
+            (wt / "evidence.md").write_text("dry-run evidence\n")
+            _run_git(wt, "add", "evidence.md")
+            _run_git(wt, "commit", "-q", "-m", "tail evidence")
+
+            findings = integrate.detect_unreconciled_tail_evidence(
+                repo, "origin", "main", "008-x", wt_base,
+                [_tail_task("T022", "e2e", status="pending")],
+            )
+            self.assertEqual(findings, [])
+
+    def test_no_worktree_on_disk_is_skipped(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo, wt_base = self._init_repo(tmpdir)
+            findings = integrate.detect_unreconciled_tail_evidence(
+                repo, "origin", "main", "008-x", wt_base,
+                [_tail_task("T022", "e2e", status="done")],
+            )
+            self.assertEqual(findings, [])
+
+    def test_non_tail_kind_ignored(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo, wt_base = self._init_repo(tmpdir)
+            wt = self._add_task_worktree(repo, wt_base, "008-x", "T001")
+            (wt / "code.py").write_text("x = 1\n")
+            _run_git(wt, "add", "code.py")
+            _run_git(wt, "commit", "-q", "-m", "impl change")
+
+            findings = integrate.detect_unreconciled_tail_evidence(
+                repo, "origin", "main", "008-x", wt_base,
+                [mock_task("T001", status="done")],  # kind="impl"
+            )
+            self.assertEqual(findings, [])
+
+    def test_missing_remote_or_base_returns_empty(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo, wt_base = self._init_repo(tmpdir)
+            findings = integrate.detect_unreconciled_tail_evidence(
+                repo, None, None, "008-x", wt_base,
+                [_tail_task("T022", "e2e", status="done")],
+            )
+            self.assertEqual(findings, [])
+
+
+class RecordUnreconciledTailEvidence(unittest.TestCase):
+    """_record_unreconciled_tail_evidence persists/clears the journal field,
+    mirroring the pending_tail_tasks recording pattern."""
+
+    def test_writes_findings_to_journal(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            jp = Path(tmpdir) / "journal.json"
+            jp.write_text(json.dumps({"run_id": "x"}) + "\n")
+            findings = [{"task": "T022", "worktree": "/x", "head_sha": "abc123"}]
+
+            integrate._record_unreconciled_tail_evidence(str(jp), findings)
+
+            journal = json.loads(jp.read_text())
+            self.assertEqual(journal["unreconciled_tail_evidence"], findings)
+
+    def test_clears_field_when_no_findings(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            jp = Path(tmpdir) / "journal.json"
+            jp.write_text(
+                json.dumps(
+                    {"run_id": "x", "unreconciled_tail_evidence": [{"task": "T022"}]}
+                ) + "\n"
+            )
+
+            integrate._record_unreconciled_tail_evidence(str(jp), [])
+
+            journal = json.loads(jp.read_text())
+            self.assertNotIn("unreconciled_tail_evidence", journal)
+
+    def test_no_journal_path_is_noop(self):
+        integrate._record_unreconciled_tail_evidence(None, [{"task": "T022"}])  # must not raise
 
 
 class IntegrationSmokeTest(unittest.TestCase):

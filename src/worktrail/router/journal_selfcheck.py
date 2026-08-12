@@ -2,7 +2,7 @@
 """journal_selfcheck.py — run-journal invariant detector (stranded runs).
 
 The orchestrator's run journal (`<repo>-worktrees/run-<spec_id>.json`) is a
-state machine artifact. Two invariant violations have each caused real
+state machine artifact. These invariant violations have each caused real
 production incidents that were only caught by an operator noticing manually:
 
 - **stranded-tail** — `integrate_complete: true` with `pending_tail_tasks`
@@ -11,6 +11,13 @@ production incidents that were only caught by an operator noticing manually:
   PR #235/#238 bug class). Test-time coverage now exists for that class;
   this is the production-time safety net for it and for whatever state bug
   comes next.
+- **unreconciled-tail-evidence** — `unreconciled_tail_evidence` non-empty: a
+  tail-kind (e2e/cleanup) task DID dispatch and reached DONE, but its own
+  worktree branch still carries commits that never merged onto base (a
+  checkbox flip, an evidence file) -- the sibling bug class to stranded-tail,
+  where the run instead reports full success while real evidence sits on a
+  branch a later worktree-cleanup pass deletes with zero trace (reproduced
+  2026-08-12). See `integrate.detect_unreconciled_tail_evidence`.
 - **malformed-journal** — the journal no longer parses as JSON. State files
   are written only by the orchestrator's atomic writer, so a parse failure
   means something else rewrote it (observed 2026-08-08: a worker hand-edited
@@ -151,6 +158,23 @@ def check_repo(repo: Path, run_record_dir: Optional[Path] = None) -> Dict[str, A
                         f"integrate_complete with undispatched tail task(s) "
                         f"{', '.join(str(t) for t in pending_tail)} and no live run — "
                         "resume the run to dispatch them"
+                    ),
+                }
+            )
+        unreconciled = journal.get("unreconciled_tail_evidence")
+        if isinstance(unreconciled, list) and unreconciled:
+            task_ids = [
+                str(u.get("task", u)) if isinstance(u, dict) else str(u) for u in unreconciled
+            ]
+            findings.append(
+                {
+                    "kind": "unreconciled-tail-evidence",
+                    "spec_id": spec_id,
+                    "journal": str(journal_file),
+                    "detail": (
+                        f"tail task(s) {', '.join(task_ids)} completed but their own "
+                        "commits never merged onto base — reconcile before the "
+                        "worktree is cleaned up"
                     ),
                 }
             )
