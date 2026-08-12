@@ -17,10 +17,6 @@
   window and the CLI-flag admission rule, mirroring the existing docstring's level of detail for
   the rules it already documents.
 
-- [x] 1.4 No version bump in this PR, per this repo's stated practice of periodic multi-PR
-  batch bumps (`AGENTS.md` Versioning) -- apply the `go:no-version-bump` label at PR creation
-  instead of bumping `pyproject.toml`/`.codex-plugin/plugin.json` here.
-
 ## 2. Tests
 
 - [x] 2.1 Extend `tests/router/test_check_brief_staleness.py` extraction coverage: a

@@ -42,6 +42,10 @@ admits for snake_case symbols; they were never wired up.
   exactly like existing symbol probes (`git log -S` and `git log --grep`, since a new flag
   typically appears as a literal string in an `argparse` call and often in a commit's subject).
 
+No `pyproject.toml`/`.codex-plugin/plugin.json` version bump in this PR, per this repo's stated
+practice of periodic multi-PR batch bumps (`AGENTS.md` Versioning) -- the `go:no-version-bump`
+label is applied at PR creation instead.
+
 Deliberately out of scope: fuzzy multi-word technical-phrase extraction from a brief's ordinary
 prose. The existing spec's own design draws a hard line -- "ordinary unquoted prose is not a
 symbol probe" -- specifically because unbounded phrase matching against `git log --grep` has no
