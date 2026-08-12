@@ -551,8 +551,10 @@ primary when the host exposes it, and report adapter use in the run status.
 **Do not use the adapter for an active-run resume** (see the dispatch policy above):
 it spawns a fresh nested worker, so re-entering a run the active parent already owns
 starts a duplicate/self-polling worker instead of handing execution back. Reserve the
-adapter for fresh background dispatch (routes D/F/G/H); headless `drain` one-shots are
-never active-run resumes and keep spawning.
+adapter for fresh background dispatch (routes D/F/G/H). Headless `drain`
+one-shots are terminal owners: invoke the adapter as a blocking foreground
+command (or use native Skill in-session) and do not return until the shared run
+record has a real `final_status`; the bounded background poll is attended-only.
 
 **Provider-capacity gate:** a headless dispatch may raise the orchestrator's
 `AllProvidersUnavailable` result after the primary and configured fallback have

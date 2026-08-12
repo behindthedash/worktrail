@@ -112,7 +112,11 @@ from ..router.policy_selfcheck import discover_repo_names
 from ..router.pr_labels import ensure_pr_risk_label
 from ..taskformats.devkit.schema import set_status_completed
 
-PROMPT = "worktrail-go auto"
+PROMPT = (
+    "worktrail-go auto. This is an unattended drain one-shot: keep this process "
+    "in the foreground until the run record reaches a real final_status; do not "
+    "return after a bounded background-dispatch poll or while PR checks are pending."
+)
 
 # Failure classes (see agent_capacity.classify_failure) that mean the account
 # itself is blocked -- retrying the same agent is pointless until the cache's
@@ -157,7 +161,8 @@ def build_command(agent: str, permission_args: List[str],
                   go_repo: Optional[str] = None) -> List[str]:
     """Build the one-shot CLI argv. A template with {prompt} overrides the
     per-agent shape entirely (permission args are the caller's job then)."""
-    prompt = f"worktrail-go {go_repo} auto" if go_repo else PROMPT
+    prompt = (PROMPT.replace("worktrail-go auto", f"worktrail-go {go_repo} auto", 1)
+              if go_repo else PROMPT)
     if template:
         parts = template.split()
         if "{prompt}" not in parts:
@@ -1073,7 +1078,7 @@ def release_lock(lock_file: Path) -> None:
 class Outcome:
     """Classified result of one iteration."""
     kind: str                 # "success" | "blocked" | "failed"
-                               # | "timeout_after_pr" | "no_pick" | "pending"
+                               # | "timeout_after_pr" | "no_pick"
     state: Optional[str] = None      # run-record completion state, if any
     brief_id: Optional[str] = None
     pr_url: Optional[str] = None
@@ -1161,19 +1166,12 @@ def classify_outcome(record_fields: Optional[Dict[str, Optional[str]]],
         # circuit breaker. A timeout with no PR is a real failure.
         if exit_code == 124 and pr:
             return Outcome("timeout_after_pr", state, brief, pr)
-        # A clean exit (0) with an unfinished record means the one-shot
-        # process itself did not crash -- the workflow legitimately stopped
-        # short of a terminal state, e.g. a Route-C run asking the operator
-        # an implementation-intent question, or a Route-G run returning
-        # after dispatching an async background pipeline that keeps running
-        # independently of this process. That is not the automation
-        # misbehaving, so (like timeout_after_pr) it must not count against
-        # the circuit breaker -- but it also never reached a completion
-        # state, so it does not reset the counter either. A nonzero exit
-        # with an unfinished record is still a real failure: the process
-        # itself errored.
+        # Drain launches unattended terminal one-shots. A clean provider exit
+        # with an unfinished record is therefore a lifecycle failure, not a
+        # legitimate asynchronous hand-off: no durable process owns the
+        # remaining CI/review-thread loop (PR #2244 incident).
         if exit_code == 0:
-            return Outcome("pending", state, brief, pr)
+            return Outcome("failed", "failed_recoverable", brief, pr)
         return Outcome("failed", state, brief, pr)
     if claimed_delta == 0 and exit_code == 0:
         return Outcome("no_pick")
@@ -1345,11 +1343,9 @@ def drain(config: DrainConfig,
                 state.consecutive_failures += 1
             elif outcome.kind == "success":
                 state.consecutive_failures = 0
-            # "timeout_after_pr" and "pending" leave consecutive_failures
-            # unchanged: neither is the automation crashing (see
-            # classify_outcome), so neither must trip the breaker, but
-            # neither is a full `success` signal either (the run never
-            # reached a completion state), so neither resets the counter.
+            # timeout_after_pr leaves consecutive_failures unchanged: the
+            # automation reached a PR before its hard timeout, but did not
+            # reach a full terminal success state.
             if outcome.state == "completed_awaiting_human_approval":
                 pending_approvals.append(outcome.pr_url or outcome.brief_id or "?")
             elapsed = int(clock() - iter_start)
