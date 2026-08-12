@@ -107,7 +107,17 @@ Routes that need `AskUserQuestion` mid-flow (C, I) use the in-session
 `Skill("worktrail-sdd-workflow", args="...")` call, never a subprocess —
 a headless worker cannot surface interactive prompts to the parent session.
 Subprocess dispatch applies to the background routes (D/F/G/H) with the bounded
-poll below.
+poll below only for an attended parent session.
+
+**Unattended terminal ownership.** A drain/cron/CI one-shot (its prompt says it
+is unattended and must remain foreground until `final_status`) must not use the
+background-plus-bounded-poll path below. Execute D/F/G/H in the owning process
+via the native Skill capability, or invoke `worktrail-skill-dispatch` as a
+blocking foreground command and wait for its exit. The one-shot may return only
+after the shared run record contains a real `final_status`. Pending PR checks,
+an active CI watch, or an unfinished review-thread pass are not ownership
+transfers and are not terminal states. This rule is provider-independent and
+applies equally to Claude Code, Codex, and OpenCode.
 
 **Active-run resume (Route E) also stays in-session.** A Route E continue/resume whose run
 is **already active** (run record exists with no `final_status` AND its `worktree` path
@@ -122,7 +132,7 @@ active-run resume is not fresh and must not start its own poll loop. Headless
 
 ### Bounded poll contract (background routes D/F/G/H)
 
-After spawning a background subprocess (routes D, F, G, H), go Phase 7 polls the shared run record
+In an attended parent session, after spawning a background subprocess (routes D, F, G, H), go Phase 7 polls the shared run record
 for completion using `poll_run.py`. The poll MUST respect a hard 10-minute ceiling to prevent
 unbounded waits.
 

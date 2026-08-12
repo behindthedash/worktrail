@@ -16,6 +16,7 @@ from worktrail.drain.summary_contract import (
 from worktrail.drain import drain
 from worktrail.drain.drain import (
     MAX_TRANSCRIPT_FILES,
+    PROMPT,
     REMEDIATION_TABLE,
     DrainConfig,
     LoopState,
@@ -57,24 +58,24 @@ from worktrail.drain.drain import (
 
 
 def test_build_command_claude_default_has_no_permission_flags():
-    assert build_command("claude", []) == ["claude", "-p", "worktrail-go auto"]
+    assert build_command("claude", []) == ["claude", "-p", PROMPT]
 
 
 def test_build_command_claude_permission_args_are_explicit_passthrough():
     cmd = build_command("claude", ["--dangerously-skip-permissions"])
-    assert cmd == ["claude", "-p", "worktrail-go auto", "--dangerously-skip-permissions"]
+    assert cmd == ["claude", "-p", PROMPT, "--dangerously-skip-permissions"]
 
 
 def test_build_command_opencode_and_codex_shapes():
-    assert build_command("opencode", []) == ["opencode", "run", "worktrail-go auto"]
+    assert build_command("opencode", []) == ["opencode", "run", PROMPT]
     assert build_command("codex", []) == [
-        "codex", "exec", "-s", "danger-full-access", "worktrail-go auto"]
+        "codex", "exec", "-s", "danger-full-access", PROMPT]
 
 
 def test_build_command_template_overrides_agent_shape():
     cmd = build_command("claude", ["--ignored-by-template"],
                         template="mycli --oneshot {prompt}")
-    assert cmd == ["mycli", "--oneshot", "worktrail-go auto"]
+    assert cmd == ["mycli", "--oneshot", PROMPT]
 
 
 def test_build_command_template_without_prompt_placeholder_rejected():
@@ -267,6 +268,16 @@ def test_classify_outcome_success_states():
         assert out.kind == "success" and out.state == state
 
 
+@pytest.mark.parametrize("agent", ["claude", "codex", "opencode"])
+def test_provider_commands_require_unattended_terminal_ownership(agent):
+    command = drain.build_command(agent, [], go_repo="worktrail")
+    prompt = next(part for part in command if part.startswith("worktrail-go "))
+    assert prompt.startswith("worktrail-go worktrail auto")
+    assert "in the foreground" in prompt
+    assert "real final_status" in prompt
+    assert "PR checks are pending" in prompt
+
+
 def test_classify_outcome_blocked_and_failed_states():
     assert classify_outcome({"final_status": "blocked_external_dependency"},
                             1, 0).kind == "blocked"
@@ -278,22 +289,18 @@ def test_classify_outcome_unfinished_record_is_failure():
     assert out.kind == "failed"
 
 
-def test_classify_outcome_clean_exit_unfinished_record_is_pending_not_failed():
-    # Regression (brief 20260806-084302): a Route-C run that stops to ask the
-    # operator an implementation-intent question, or a Route-G run that
-    # dispatches an async background pipeline and returns, both exit 0
-    # without the run record ever reaching a terminal final_status. Neither
-    # is the one-shot process crashing, so it must not count as a plain
-    # circuit-breaker failure -- but it also never reached a completion
-    # state, so (like timeout_after_pr) it must not reset the counter either.
+def test_classify_outcome_clean_exit_unfinished_record_is_recoverable_failure():
+    # Regression (brief 20260812-091707): a provider one-shot returned 0 while
+    # PR checks were pending, abandoning the unfinished run record.
     out = classify_outcome({"final_status": None}, claimed_delta=1, exit_code=0)
-    assert out.kind == "pending"
+    assert out.kind == "failed"
+    assert out.state == "failed_recoverable"
 
 
 def test_classify_outcome_clean_exit_unfinished_record_attributes_claimed_brief():
     out = classify_outcome({"final_status": None}, claimed_delta=1, exit_code=0,
                            claimed_briefs=["20260806-brief"])
-    assert out.kind == "pending" and out.brief_id == "20260806-brief"
+    assert out.kind == "failed" and out.brief_id == "20260806-brief"
 
 
 def test_classify_outcome_no_record_no_claim_clean_exit_is_no_pick():
@@ -587,15 +594,6 @@ def test_decide_awaiting_approval_continues():
     assert d.proceed is True
 
 
-def test_decide_pending_outcome_does_not_trip_circuit_breaker():
-    # Two consecutive "pending" outcomes (clean-exit, unfinished record) must
-    # not read as consecutive_failures -- the drain loop never increments
-    # the counter for this kind, so decide() sees it unchanged below threshold.
-    d = decide(make_state(last_outcome=Outcome("pending"),
-                          consecutive_failures=0), now=0)
-    assert d.proceed is True
-
-
 # ---------------------------------------------------------------------------
 # lockfile
 
@@ -811,12 +809,7 @@ def test_drain_timeout_after_pr_does_not_trip_circuit_breaker(tmp_path, monkeypa
     assert summary["stopped"].startswith("max_items")
 
 
-def test_drain_pending_outcome_does_not_trip_circuit_breaker(tmp_path, monkeypatch):
-    # Regression (brief 20260806-084302): a run that exits 0 (the one-shot
-    # process itself did not crash) but leaves its run record unfinished --
-    # e.g. Route C stopping to ask an implementation-intent question, or
-    # Route G returning after dispatching an async background pipeline --
-    # must not trip the 2-consecutive-failure breaker the way real crashes do.
+def test_drain_unfinished_clean_exit_trips_circuit_breaker(tmp_path, monkeypatch):
     fake = FakeQueue([5])
     install_fake_queue(monkeypatch, fake)
     config = make_config(tmp_path, max_items=3, failure_threshold=2)
@@ -828,9 +821,9 @@ def test_drain_pending_outcome_does_not_trip_circuit_breaker(tmp_path, monkeypat
         return SpawnOutcome(0)
 
     summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
-    assert len(summary["iterations"]) == 3
-    assert all(i["kind"] == "pending" for i in summary["iterations"])
-    assert summary["stopped"].startswith("max_items")
+    assert len(summary["iterations"]) == 2
+    assert all(i["kind"] == "failed" for i in summary["iterations"])
+    assert summary["stopped"].startswith("circuit_breaker")
 
 
 def test_drain_timeout_without_pr_still_trips_circuit_breaker(tmp_path, monkeypatch):
@@ -1027,7 +1020,7 @@ def test_drain_falls_back_to_configured_agent_when_primary_gated(tmp_path, monke
 
     summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
     # Selected before the first spawn -- claude never gets a chance to fail.
-    assert seen_cmds == [["opencode", "run", "worktrail-go auto"]]
+    assert seen_cmds == [["opencode", "run", PROMPT]]
     assert summary["iterations"][0]["agent"] == "opencode"
     assert summary["stopped"].startswith("queue_empty")
 
@@ -1125,10 +1118,11 @@ def test_drive_skips_ensure_pr_risk_label_when_no_pr(tmp_path, monkeypatch):
 
 
 def test_build_command_go_repo_scopes_the_prompt():
+    scoped = PROMPT.replace("worktrail-go auto", "worktrail-go ggb auto", 1)
     assert build_command("claude", [], go_repo="ggb") == [
-        "claude", "-p", "worktrail-go ggb auto"]
+        "claude", "-p", scoped]
     assert build_command("claude", [], template="x {prompt}",
-                         go_repo="ggb") == ["x", "worktrail-go ggb auto"]
+                         go_repo="ggb") == ["x", scoped]
 
 
 # ---------------------------------------------------------------------------
