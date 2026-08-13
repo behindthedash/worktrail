@@ -602,12 +602,10 @@ on pipeline and non-pipeline paths alike. `--model-map` entries win for a role's
 a role pinned to a different agent falls back to that agent's own default model.
 
 **Run mechanics (non-negotiable):**
-- The pipelined engine is `full-real`'s DEFAULT since v0.9.1 — `--pipeline` is a
+- The pipelined engine is `full-real`'s ONLY scheduler — `--pipeline` is a
   no-op affirmation and may be omitted. Include a non-zero `--run-budget`. The
-  legacy serial scheduler survives only behind the DEPRECATED `--sequential`
-  escape hatch (frozen, no new fixes, removal in v1.1 — see
-  `openspec/changes/scheduler-consolidation/`); never use it except when a user
-  explicitly asks for serial debug mode.
+  legacy serial scheduler was deleted (`--sequential` is now a hard error — see
+  `openspec/changes/scheduler-consolidation/`); never pass it.
 - **Run `worktrail-compile` before `full-real` for every OpenSpec change** (see the
   code block above). `full-real` auto-compiles a missing plan inline since PR #56
   (`apply_run_plan()` calls `compile_run_plan()`), so skipping this step no longer
@@ -666,10 +664,10 @@ a role pinned to a different agent falls back to that agent's own default model.
   to merge — so sibling group PRs don't hit a shared CI runner pool simultaneously; on
   auto-merge repos the previous PR typically lands during the wait, which also gives
   dependent groups a real merged base instead of a moving stacked diff. Best-effort: a
-  red, stuck, or check-less PR never blocks integration beyond the bound. Paces both the
-  sequential path and `--pipeline` (there it serializes only the integrate+PR-open step;
-  verify still overlaps). Omit the flag when the policy key is unset or 0 (PRs open
-  back-to-back, today's behavior).
+  red, stuck, or check-less PR never blocks integration beyond the bound. Serializes only
+  the integrate+PR-open step across the concurrent per-group IV threads; verify still
+  overlaps. Omit the flag when the policy key is unset or 0 (PRs open back-to-back,
+  today's behavior).
 - **Branch-aware merge method (opt-in, from policy):** when `docs/specs/go-policy.yaml`
   sets `merge_method_by_base` for `$BASE`, resolve it (`policy.py --merge-method-for-branch
   "$BASE"`, loaded in Phase 4) and pass it through as `--merge-method <method>`. This

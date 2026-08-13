@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Tests for --notify-cmd and --progress-interval wiring in live.py full-real."""
+"""Tests for notify_cmd/progress_interval wiring in live.py's live_run_real
+(the full-real CLI flags died with the serial scheduler -- the pipeline
+scheduler never consumed them), plus full-real's --run-budget conversion."""
 
 import inspect
 import json
@@ -104,35 +106,13 @@ class LiveRunRealSignature(unittest.TestCase):
         self.assertIsNone(sig.parameters["progress_interval"].default)
 
 
-class FullRealSignature(unittest.TestCase):
-    def test_notify_cmd_in_full_real(self):
-        sig = inspect.signature(live.full_real)
-        self.assertIn("notify_cmd", sig.parameters)
-        self.assertIsNone(sig.parameters["notify_cmd"].default)
-
-    def test_progress_interval_in_full_real(self):
-        sig = inspect.signature(live.full_real)
-        self.assertIn("progress_interval", sig.parameters)
-        self.assertIsNone(sig.parameters["progress_interval"].default)
-
-    def test_notify_cmd_in_full_real_inner(self):
-        sig = inspect.signature(live._full_real_inner)
-        self.assertIn("notify_cmd", sig.parameters)
-        self.assertIsNone(sig.parameters["notify_cmd"].default)
-
-    def test_progress_interval_in_full_real_inner(self):
-        sig = inspect.signature(live._full_real_inner)
-        self.assertIn("progress_interval", sig.parameters)
-        self.assertIsNone(sig.parameters["progress_interval"].default)
-
-
 # ---------------------------------------------------------------------------
 # CLI parsing
 # ---------------------------------------------------------------------------
 
 
-class CLINotifyArgs(unittest.TestCase):
-    """--notify-cmd and --progress-interval parse correctly from live.py's main()."""
+class CLIRunBudgetArgs(unittest.TestCase):
+    """--run-budget parses (and converts to seconds) from live.py's main()."""
 
     def _parse(self, *extra):
         # Use live.main() with a fake full-real invocation; capture the full_real call.
@@ -153,22 +133,6 @@ class CLINotifyArgs(unittest.TestCase):
             live.main(argv)
 
         return captured
-
-    def test_notify_cmd_absent_passes_none(self):
-        captured = self._parse()
-        self.assertIsNone(captured.get("notify_cmd"))
-
-    def test_notify_cmd_passed_through(self):
-        captured = self._parse("--notify-cmd", "notify-send 'orch done'")
-        self.assertEqual(captured.get("notify_cmd"), "notify-send 'orch done'")
-
-    def test_progress_interval_absent_passes_none(self):
-        captured = self._parse()
-        self.assertIsNone(captured.get("progress_interval"))
-
-    def test_progress_interval_passed_through(self):
-        captured = self._parse("--progress-interval", "30")
-        self.assertEqual(captured.get("progress_interval"), 30)
 
     def test_run_budget_absent_defaults_off(self):
         captured = self._parse()

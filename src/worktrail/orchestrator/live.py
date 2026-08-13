@@ -1033,87 +1033,6 @@ def _annotate_external_deps(repo: Path, tasks: list, spec_rel: str | None = None
         t["external_deps_blockers"] = blockers
 
 
-def _is_terminal(task: dict) -> bool:
-    status = task.get("status")
-    return status in orchestrate.TERMINAL or status in coordinator.DONE
-
-
-def _fanout_dispatchable(tasks: list, with_tail: bool) -> list:
-    """Tasks the fan-out actually dispatches. Tail-kind tasks (e2e, cleanup) are
-    only dispatched with `--with-tail`; otherwise they stay `pending` by design
-    and must be excluded from completeness checks (else the run never integrates)."""
-    if with_tail:
-        return tasks
-    held_out = set(coordinator.tail_held_out_task_ids(tasks))
-    return [
-        t for t in tasks if t.get("kind") not in coordinator.TAIL_KINDS and t["id"] not in held_out
-    ]
-
-
-def _fanout_complete(tasks: list, with_tail: bool = True) -> bool:
-    return all(_is_terminal(t) for t in _fanout_dispatchable(tasks, with_tail))
-
-
-def _fanout_incomplete_detail(tasks: list, with_tail: bool) -> dict:
-    dispatchable = _fanout_dispatchable(tasks, with_tail)
-    failed = [t for t in dispatchable if t.get("status") in coordinator.FAILED_STATUSES]
-    failed_ids = {t["id"] for t in failed}
-    blocked = []
-    summary = []
-
-    for t in failed:
-        summary.append(f"{t['id']}={t.get('status', 'failed')}")
-
-    for t in dispatchable:
-        if _is_terminal(t):
-            continue
-        blockers = [dep for dep in t.get("deps", []) if dep in failed_ids]
-        blockers = blockers + list(t.get("external_deps_blockers") or [])
-        blocked.append(
-            {
-                "id": t["id"],
-                "status": t.get("status", "pending"),
-                "blocked_by": blockers,
-            }
-        )
-        if blockers:
-            summary.append(
-                f"{t['id']}={t.get('status', 'pending')} (blocked by {', '.join(blockers)})"
-            )
-        else:
-            summary.append(f"{t['id']}={t.get('status', 'pending')}")
-
-    return {
-        "failed_tasks": [{"id": t["id"], "status": t.get("status", "failed")} for t in failed],
-        "blocked_tasks": blocked,
-        "summary": summary,
-    }
-
-
-def _stranded_after_integrate(
-    tasks: list, journal_groups: dict, migration_patterns: "list[str] | None" = None
-) -> list:
-    """Task ids whose work was fanned out but lands in NO integrated group.
-
-    When the journal already marks every recorded group integrated
-    (`integrate_complete` + every group has a `pr_url`), `full-real` skips the
-    integrate stage and reuses those records. If new tasks were added to the
-    spec and fanned out on this resume, they form group(s) whose name is absent
-    from the journal -- their work never reaches a PR. Returns the terminal task
-    ids in those un-integrated groups (sorted) so the operator can be told to
-    re-run with `--re-integrate`. Tail-kind tasks never appear in a group, so
-    they are excluded by construction."""
-    by_id = {t["id"]: t for t in tasks}
-    stranded = []
-    for g in coordinator.plan_groups(tasks, migration_patterns=migration_patterns or ()):
-        if g["name"] in journal_groups:
-            continue
-        stranded.extend(
-            tid for tid in g["tasks"] if (t := by_id.get(tid)) is not None and _is_terminal(t)
-        )
-    return sorted(stranded)
-
-
 def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["git", "-C", str(repo), *args], capture_output=True, text=True, check=check
@@ -2724,8 +2643,9 @@ def live_run_real(
         effort=effort,
     )
     # Set unconditionally (default-constructed or caller-injected, e.g. the
-    # --fork-research spawn built in _full_real_inner) so ROLE_IMPLEMENT prompts
-    # can surface a dependency's delivered files (see dispatch.build_worker_prompt).
+    # --fork-research spawn built by the live-run-real CLI handler) so
+    # ROLE_IMPLEMENT prompts can surface a dependency's delivered files (see
+    # dispatch.build_worker_prompt).
     if hasattr(spawn, "by_id"):
         spawn.by_id = by_id
     if hasattr(spawn, "external_deps_by_ref"):
@@ -3265,14 +3185,10 @@ def full_real(
     fallback_chain: "list[str] | None" = None,
     effort: str | None = None,
     run_budget: int | None = None,
-    pipeline: bool = False,
     re_integrate: bool = False,
     smoke_cmd: str | None = None,
     post_merge_smoke_cmd: str | None = None,
     bootstrap_cmd: str | None = None,
-    fork_research: bool = False,
-    notify_cmd: str | None = None,
-    progress_interval: int | None = None,
     merge_method: str | None = None,
     pr_labels: list[str] | None = None,
     pr_pacing_wait: int = 0,
@@ -3318,14 +3234,10 @@ def full_real(
             purpose_tier_map=purpose_tier_map,
             fallback_chain=fallback_chain,
             effort=effort,
-            pipeline=pipeline,
             re_integrate=re_integrate,
             smoke_cmd=smoke_cmd,
             post_merge_smoke_cmd=post_merge_smoke_cmd,
             bootstrap_cmd=bootstrap_cmd,
-            fork_research=fork_research,
-            notify_cmd=notify_cmd,
-            progress_interval=progress_interval,
             merge_method=merge_method,
             pr_labels=pr_labels,
             pr_pacing_wait=pr_pacing_wait,
@@ -3356,20 +3268,18 @@ def _dispatch_pending_tail(
     effort: str | None,
     run_budget: int | None,
     bootstrap_cmd: str | None = None,
-    notify_cmd: str | None = None,
-    progress_interval: int | None = None,
     spawn=None,
     remote: str | None = None,
     base: str | None = None,
 ) -> dict | None:
     """Dispatch pending e2e/cleanup tail tasks once the impl-group fan-out is
-    integrated (`full-real`'s two schedulers both reach this point with every
-    non-tail task already terminal). Neither scheduler ever threads
-    `with_tail=True` through to `live_run_real` on its own -- tail-kind tasks
-    are excluded from `runnable_frontier` unconditionally, so without this call
-    they are never dispatched by `full-real`, first run or resume alike (the
-    journal's `pending_tail_tasks`/`pending_tail_reason` fields were bookkeeping
-    with no consumer). A second `live_run_real` call is level-triggered by
+    integrated (`_pipeline_scheduler` reaches this point with every non-tail
+    task already terminal). The scheduler never threads `with_tail=True`
+    through to `live_run_real` on its own -- tail-kind tasks are excluded from
+    `runnable_frontier` unconditionally, so without this call they are never
+    dispatched by `full-real`, first run or resume alike (the journal's
+    `pending_tail_tasks`/`pending_tail_reason` fields were bookkeeping with no
+    consumer). A second `live_run_real` call is level-triggered by
     construction: it reloads task status fresh, and `drive()` no-ops on any
     task already terminal, so repeat calls (including a resume in a fresh
     process) are safe and idempotent.
@@ -3377,7 +3287,7 @@ def _dispatch_pending_tail(
     `remote`/`base` pass straight through to `live_run_real` (see its docstring):
     tail tasks are exactly the deterministic squash-merged-dependency case
     (`_dispatch_pending_tail` only fires once every group is integrated/verified/
-    merged and cleaned up), so both call sites here supply them.
+    merged and cleaned up), so the call site supplies them.
 
     Returns None when there is no tail work outstanding (no-op); otherwise the
     dict `live_run_real` returns for its `with_tail=True` pass.
@@ -3404,8 +3314,6 @@ def _dispatch_pending_tail(
         fallback_chain=fallback_chain,
         effort=effort,
         run_budget=run_budget,
-        notify_cmd=notify_cmd,
-        progress_interval=progress_interval,
         bootstrap_cmd=bootstrap_cmd,
         spawn=spawn,
         remote=remote,
@@ -3499,7 +3407,7 @@ def _pipeline_scheduler(
     groups = coordinator.plan_groups(tasks, migration_patterns=migration_patterns or ())
     by_id = {t["id"]: t for t in tasks}
 
-    # Spec-folder ownership (matches finish_real logic): only the first independent
+    # Spec-folder ownership: only the first independent
     # group carries docs/specs/<spec_id>/; all other independent siblings strip it.
     _spec_carrier = next((g["name"] for g in groups if not g.get("depends_on")), None)
     if _spec_carrier is None and groups:
@@ -3530,7 +3438,7 @@ def _pipeline_scheduler(
         _integrate_one if _integrate_one is not None else integrate_module.integrate_one
     )
     if pr_pacing_wait > 0:
-        # PR pacing (mirrors finish_real's sequential pacing): serialize the
+        # PR pacing: serialize the
         # integrate+PR-open step across the concurrent per-group IV threads and,
         # between PR creations, wait (bounded) for the previous group PR's
         # checks to resolve so sibling PRs don't hit a shared CI runner pool
@@ -4302,17 +4210,17 @@ def _pipeline_scheduler(
 def _record_verify_outcomes(
     journal_path: str, vres: dict, group_branch: dict, run_id: str
 ) -> None:
-    """Persist verify's merge outcomes into the journal on the SEQUENTIAL path.
+    """Persist verify's merge outcomes into the journal on the --from-verify path.
 
     The pipeline scheduler already stamps MERGED / AUTOMERGE_ARMED per group
-    right after verify (see _integrate_verify_group); the sequential path
-    called verify_and_cleanup and then never wrote the outcome back, so a
-    fully-merged sequential run's journal permanently claimed every group was
-    still OPEN — found by the lifecycle harness's first real-verify run, and
-    the same serial/pipeline divergence class as PR #221/#223. Same confirmed-
-    merge semantics as the pipeline path: only vres["merged"] gets MERGED;
-    a group only queued for auto-merge gets AUTOMERGE_ARMED (non-terminal, so
-    a resume re-verifies it).
+    right after verify (see _integrate_verify_group); the --from-verify entry
+    point calls verify_and_cleanup outside that flow, so without this a
+    fully-merged --from-verify run's journal permanently claimed every group
+    was still OPEN (originally found on the deleted serial scheduler by the
+    lifecycle harness's first real-verify run). Same confirmed-merge semantics
+    as the pipeline path: only vres["merged"] gets MERGED; a group only queued
+    for auto-merge gets AUTOMERGE_ARMED (non-terminal, so a resume re-verifies
+    it).
     """
     from . import integrate
 
@@ -4357,14 +4265,10 @@ def _full_real_inner(
     purpose_tier_map: dict | None = None,
     fallback_chain: "list[str] | None" = None,
     effort: str | None = None,
-    pipeline: bool = False,
     re_integrate: bool = False,
     smoke_cmd: str | None = None,
     post_merge_smoke_cmd: str | None = None,
     bootstrap_cmd: str | None = None,
-    fork_research: bool = False,
-    notify_cmd: str | None = None,
-    progress_interval: int | None = None,
     merge_method: str | None = None,
     pr_labels: list[str] | None = None,
     pr_pacing_wait: int = 0,
@@ -4392,7 +4296,7 @@ def _full_real_inner(
                   implement/fix stay on a cheaper `agent`).
     run_budget  — optional whole-run wall-clock cap (s) for the fan-out (0 = off).
     effort      — optional run-level default effort, threaded to every LiveSpawn
-                  this run constructs (pipeline and non-pipeline paths alike).
+                  this run constructs.
     purpose_tier_map — optional {purpose: tier} table (routing.purpose_tiers),
                   threaded to every LiveSpawn this run constructs alongside
                   tier_map (task-purpose-classification 5.1).
@@ -4423,8 +4327,7 @@ def _full_real_inner(
         print(f"{_ts()} WARNING: repo is on '{current}', expected '{base}'. Proceeding anyway.")
 
     # Pre-integrate freshness: fetch + ff-only the local base ref before the
-    # first integrate_one of this run/resume, for BOTH the pipeline and
-    # sequential paths below (brief 20260723-171500).
+    # first integrate_one of this run/resume (brief 20260723-171500).
     _refresh_base_branch(repo, remote, base)
 
     # Journal lives beside the worktrees (OUTSIDE the repo, so the base checkout is
@@ -4439,11 +4342,8 @@ def _full_real_inner(
     def _persist_newly_quarantined(quarantined_names, run_id_fallback: str) -> None:
         """Persist newly-quarantined groups so a later resume sees QUARANTINED
         instead of replaying the pre-verify journal state (matches the pipeline
-        path's _record_group_fn behavior in _integrate_verify_group). Single
-        shared call site for both the --from-verify and default sequential
-        branches below, so the sequential (non-pipeline) flow's quarantine-write
-        semantics live in exactly one place instead of two independently
-        maintained copies (PR #221, #227 each had to fix both).
+        path's _record_group_fn behavior in _integrate_verify_group). Serves the
+        --from-verify branch below, which runs verify outside the pipeline flow.
         """
         for _qname in quarantined_names:
             integrate._write_group_journal(
@@ -4452,13 +4352,13 @@ def _full_real_inner(
             )
 
     # Foreign-journal guard, fired directly in _full_real_inner's own resume
-    # block (spec-path-task-crosscheck 1.2) so it covers every path below --
-    # --from-verify, --pipeline, and the default sequential path -- before any
-    # of them reconcile a journal from a different --spec onto this run's
-    # tasks. live_run_real / _pipeline_scheduler carry the identical guard on
-    # their own reconcile_from_journal() call too, for callers that reach
-    # those functions directly (e.g. the `live-run-real` CLI command) without
-    # going through this function.
+    # block (spec-path-task-crosscheck 1.2) so it covers both paths below --
+    # --from-verify and the pipeline scheduler -- before either reconciles a
+    # journal from a different --spec onto this run's tasks. live_run_real /
+    # _pipeline_scheduler carry the identical guard on their own
+    # reconcile_from_journal() call too, for callers that reach those
+    # functions directly (e.g. the `live-run-real` CLI command) without going
+    # through this function.
     if resume and Path(journal_path).exists():
         try:
             _resume_journal = json.loads(Path(journal_path).read_text())
@@ -4577,82 +4477,23 @@ def _full_real_inner(
             "automerge_evidence": automerge_evidence,
         }
 
-    # --pipeline: route to the pipeline scheduler.
-    if pipeline:
-        run_id = read_or_create_run_id(Path(journal_path))
-        return _pipeline_scheduler(
-            re_integrate=re_integrate,
-            repo=repo,
-            spec_rel=spec_rel,
-            remote=remote,
-            base=base,
-            agent=agent,
-            model=model,
-            max_workers=max_workers,
-            timeout=timeout,
-            resume=resume,
-            only=only,
-            role_models=role_models,
-            role_agents=role_agents,
-            fallback_agent=fallback_agent,
-            tier_map=tier_map,
-            purpose_tier_map=purpose_tier_map,
-            fallback_chain=fallback_chain,
-            effort=effort,
-            run_budget=run_budget,
-            journal_path=journal_path,
-            run_id=run_id,
-            smoke_cmd=smoke_cmd,
-            post_merge_smoke_cmd=post_merge_smoke_cmd,
-            bootstrap_cmd=bootstrap_cmd,
-            merge_method=merge_method,
-            pr_labels=pr_labels,
-            pr_pacing_wait=pr_pacing_wait,
-            route=route,
-            gates=gates,
-            migration_patterns=migration_patterns,
-        )
-
-    # Read or generate a stable run_id (persists in journal across invocations).
+    # Single scheduler: the pipelined engine. scheduler-consolidation stage 2
+    # deleted the legacy serial path (full fan-out, then INTEGRATE, then
+    # VERIFY); every full-real run now routes here after the --from-verify
+    # branch above.
     run_id = read_or_create_run_id(Path(journal_path))
-
-    # --fork-research: pre-load shared source files once; workers fork from that session.
-    research_spawn = None
-    if fork_research:
-        spec_folder = repo / spec_rel
-        sid = run_research_session(
-            spec_folder, agent=agent, model=model, effort=effort, timeout=timeout
-        )
-        if sid:
-            spec_id_tmp, _ = taskformats.load_spec(str(spec_folder))
-            research_spawn = LiveSpawn(
-                spec_id_tmp,
-                spec_rel.rstrip("/") + "/",
-                timeout=timeout,
-                agent=agent,
-                model=model,
-                role_models=role_models,
-                role_agents=role_agents,
-                fallback_agent=fallback_agent,
-                tier_map=tier_map,
-                purpose_tier_map=purpose_tier_map,
-                fallback_chain=fallback_chain,
-                effort=effort,
-            )
-            research_spawn.research_session_id = sid
-
-    res = live_run_real(
-        repo,
-        spec_rel,
-        max_workers=max_workers,
-        out_cassette=journal_path,
-        only=only,
-        with_tail=False,
+    return _pipeline_scheduler(
+        re_integrate=re_integrate,
+        repo=repo,
+        spec_rel=spec_rel,
+        remote=remote,
+        base=base,
         agent=agent,
         model=model,
+        max_workers=max_workers,
         timeout=timeout,
         resume=resume,
-        run_id=run_id,
+        only=only,
         role_models=role_models,
         role_agents=role_agents,
         fallback_agent=fallback_agent,
@@ -4661,316 +4502,18 @@ def _full_real_inner(
         fallback_chain=fallback_chain,
         effort=effort,
         run_budget=run_budget,
-        spawn=research_spawn,
-        notify_cmd=notify_cmd,
-        progress_interval=progress_interval,
-        bootstrap_cmd=bootstrap_cmd,
-        remote=remote,
-        base=base,
-    )
-    spec_id, tasks = res["spec_id"], res["tasks"]
-    for t in tasks:
-        t.setdefault("retry_count", 0)
-    # `_full_real_inner` dispatches the fan-out with with_tail=False (see the
-    # live_run_real call above), so tail-kind tasks (e2e, cleanup) are never run
-    # and must be excluded from the completeness check and the diagnostic list --
-    # otherwise the run reports "FAN-OUT INCOMPLETE" forever and never integrates.
-    if not _fanout_complete(tasks, with_tail=False):
-        incomplete = _fanout_incomplete_detail(tasks, with_tail=False)
-        print(
-            f"{_ts()} FAN-OUT INCOMPLETE -- stopping before integrate: "
-            f"{', '.join(incomplete['summary']) or 'unknown'}"
-        )
-        if incomplete["failed_tasks"]:
-            print(
-                f"{_ts()} Retry hint: remove the failed task entries from the cassette "
-                f"and re-run to retry: {', '.join(t['id'] for t in incomplete['failed_tasks'])}"
-            )
-        progress.set_phase(
-            journal_path,
-            "fanout_failed",
-            detail={
-                "failed_tasks": incomplete["failed_tasks"],
-                "blocked_tasks": incomplete["blocked_tasks"],
-            },
-        )
-        if notify_cmd:
-            done_ct = sum(1 for t in tasks if t.get("status") in coordinator.DONE)
-            _fire_notify(
-                notify_cmd,
-                {
-                    "spec": spec_id,
-                    "run_id": run_id,
-                    "phase": "fanout_failed",
-                    "tasks_done": done_ct,
-                    "tasks_total": len(tasks),
-                },
-            )
-        return {
-            "group_prs": [],
-            "final": None,
-            "quarantined": {"fanout": "incomplete task terminal state"},
-            "merged": [],
-        }
-    progress.set_phase(journal_path, "integrate")
-    if notify_cmd:
-        done_ct = sum(1 for t in tasks if t.get("status") in coordinator.DONE)
-        _fire_notify(
-            notify_cmd,
-            {
-                "spec": spec_id,
-                "run_id": run_id,
-                "phase": "integrate",
-                "tasks_done": done_ct,
-                "tasks_total": len(tasks),
-            },
-        )
-
-    # Check if integrate_complete is set and we can skip finish_real
-    journal_file = Path(journal_path)
-    journal = {}
-    if journal_file.exists():
-        try:
-            journal = json.loads(journal_file.read_text())
-        except (OSError, json.JSONDecodeError):
-            pass
-
-    # --re-integrate: a prior pass set integrate_complete (and per-group records) but
-    # the integration was wrong/incomplete. Clear both so the skip-path below is
-    # bypassed and finish_real rebuilds the group branches/PRs (it stays reconcile-safe
-    # against any branches/PRs that still exist on the remote). Persist the cleared
-    # marker so a later resume doesn't see the stale integrate_complete again.
-    if re_integrate and _clear_integration_state(journal):
-        if journal_file.exists():
-            progress.atomic_write_text(
-                journal_path, json.dumps(journal, indent=2, sort_keys=True) + "\n"
-            )
-        print(f"{_ts()} RE-INTEGRATE: cleared integrate_complete + group records; rebuilding")
-
-    integrate_complete = journal.get("integrate_complete", False)
-    journal_groups = journal.get("groups", {})
-
-    # Skip finish_real only when the journal shows EVERY group already integrated
-    # (each has a pr_url). Otherwise call finish_real unconditionally: it is
-    # reconcile-safe (reuses existing remote branches + OPEN PRs, skips MERGED,
-    # creates only what's missing) and returns a COMPLETE group_branch map so the
-    # verify stage covers every group -- including ones already integrated on a
-    # prior pass. (Replaces a broken partial-re-entry that passed an unsupported
-    # only_groups= kwarg to finish_real -> TypeError, and that also dropped the
-    # already-complete groups out of group_branch so verify never merged them.)
-    all_integrated = bool(
-        integrate_complete
-        and journal_groups
-        and all(rec.get("pr_url") for rec in journal_groups.values())
-    )
-    if all_integrated:
-        print("=== INTEGRATE (skipped; all groups already integrated in journal) ===")
-        stranded = _stranded_after_integrate(
-            tasks, journal_groups, migration_patterns=migration_patterns
-        )
-        if stranded:
-            print(
-                f"{_ts()} WARNING: integrate skipped (journal marks every recorded group "
-                f"integrated), but these fanned-out task(s) belong to NO integrated group "
-                f"and were delivered to no PR: {', '.join(stranded)}. Re-run with "
-                f"--re-integrate to rebuild the group branches/PRs and deliver them."
-            )
-        group_branch, quarantined = _group_branch_from_journal(journal_groups, run_id)
-        prs = [(name, base, rec.get("pr_url")) for name, rec in journal_groups.items()]
-    else:
-        print("=== INTEGRATE ===")
-        # Same role-aware assembly-resolve worker the pipeline path gets: without
-        # it, any assembly-time merge conflict here quarantined the group
-        # immediately (only the deterministic add/add init auto-resolve ran).
-        _ar_agent, _ar_model = _role_agent_model(
-            dispatch.ROLE_ASSEMBLY_RESOLVE, agent, model, role_agents, role_models
-        )
-        prs, group_branch, quarantined = integrate.finish_real(
-            repo,
-            spec_id,
-            tasks,
-            remote,
-            run_id,
-            base,
-            cleanup=False,
-            journal_path=journal_path,
-            smoke_cmd=smoke_cmd,
-            assembly_resolve_spawn=verify._make_live_spawn(_ar_model, timeout, agent=_ar_agent),
-            pr_labels=pr_labels,
-            pr_pacing_wait=pr_pacing_wait,
-            route=route,
-            gates=gates,
-            migration_patterns=migration_patterns,
-        )
-
-    if not group_branch:
-        print("No groups integrated cleanly -- nothing to assemble; see quarantine above.")
-        progress.set_phase(journal_path, "done")
-        _print_usage_report(journal_path)
-        print("=== FULL RUN COMPLETE (quarantined only) ===")
-        return {"group_prs": prs, "final": None, "quarantined": quarantined, "merged": []}
-
-    # Verify each group PR in dependency order: ensure mergeable (resolve loop),
-    # block on CI (ci-fix loop, 3-strikes), auto-merge on green, then tear down
-    # the merged group's task worktrees + branches. Quarantined groups keep theirs.
-    progress.set_phase(journal_path, "verify")
-    if notify_cmd:
-        done_ct = sum(1 for t in tasks if t.get("status") in coordinator.DONE)
-        _fire_notify(
-            notify_cmd,
-            {
-                "spec": spec_id,
-                "run_id": run_id,
-                "phase": "verify",
-                "tasks_done": done_ct,
-                "tasks_total": len(tasks),
-            },
-        )
-    print("=== VERIFY (mergeability + CI -> auto-merge -> gated cleanup) ===")
-    groups = coordinator.plan_groups(tasks, migration_patterns=migration_patterns or ())
-    # Which tasks each group actually delivered (defect B: a split group ships its
-    # healthy subset; the dropped task's worktree must survive cleanup). Recompute
-    # from the same deliverable_subset finish_real used -- single source of truth.
-    status = {t["id"]: t.get("status", "done") for t in tasks}
-    delivered = {
-        g["name"]: coordinator.deliverable_subset(g["tasks"], tasks, status)[0] for g in groups
-    }
-    resolve_spawn, ci_fix_spawn = _verifier_role_spawns(
-        agent, model, timeout, role_agents, role_models
-    )
-    vres = verify.verify_and_cleanup(
-        repo,
-        remote,
-        base,
-        spec_id,
-        groups,
-        group_branch,
-        delivered,
-        spawn=resolve_spawn,
-        ci_fix_spawn=ci_fix_spawn,
-        merge_method=merge_method,
+        journal_path=journal_path,
+        run_id=run_id,
+        smoke_cmd=smoke_cmd,
         post_merge_smoke_cmd=post_merge_smoke_cmd,
-        # Without these the deny-list falls back to devkit's spec root,
-        # leaving an OpenSpec run's own tree unguarded.
-        spec_rel=spec_rel,
-        declared_files=coordinator.declared_files_by_group(groups, tasks),
+        bootstrap_cmd=bootstrap_cmd,
+        merge_method=merge_method,
+        pr_labels=pr_labels,
+        pr_pacing_wait=pr_pacing_wait,
+        route=route,
+        gates=gates,
+        migration_patterns=migration_patterns,
     )
-    quarantined = {**quarantined, **vres["quarantined"]}
-    # Covers both the all_integrated fast path (skipped integrate, journal_groups
-    # reconstructed above) and the finish_real path (fresh integrate just ran).
-    _persist_newly_quarantined(vres["quarantined"], run_id)
-    _record_verify_outcomes(journal_path, vres, group_branch, run_id)
-    self_merged = vres.get("self_merged", {})
-    post_merge_regressed = vres.get("post_merge_regressed", {})
-    automerge_evidence = vres.get("automerge_evidence", {})
-    progress.append_safety_net_events(
-        journal_path,
-        _safety_net_events_from_preflight_fallbacks(vres.get("preflight_fallbacks", {})),
-    )
-
-    if quarantined:
-        print(
-            f"NOTE: {len(quarantined)} group(s) quarantined for human review "
-            f"(worktrees kept): {', '.join(quarantined)}"
-        )
-    if self_merged:
-        print(
-            f"!! SELF-MERGE VIOLATION: {len(self_merged)} group(s) merged by a worker "
-            f"itself, not the orchestrator (worktrees kept): {', '.join(self_merged)}"
-        )
-    if post_merge_regressed:
-        print(
-            f"!! POST-MERGE REGRESSION: {len(post_merge_regressed)} group(s) merged, "
-            f"then failed the cumulative post-merge smoke check against the updated "
-            f"base -- human review required, no automatic revert: "
-            f"{', '.join(post_merge_regressed)}"
-        )
-    note = _format_automerge_evidence_note(automerge_evidence)
-    if note:
-        print(note)
-    tail_res = None
-    if integrate._mark_integrate_complete_if_terminal(journal_path, groups, tasks):
-        progress.set_phase(journal_path, "tail")
-        tail_res = _dispatch_pending_tail(
-            repo,
-            spec_rel,
-            journal_path,
-            run_id,
-            tasks,
-            max_workers,
-            agent,
-            model,
-            timeout,
-            role_models,
-            role_agents,
-            fallback_agent,
-            tier_map,
-            purpose_tier_map,
-            fallback_chain,
-            effort,
-            run_budget,
-            bootstrap_cmd=bootstrap_cmd,
-            notify_cmd=notify_cmd,
-            progress_interval=progress_interval,
-            remote=remote,
-            base=base,
-        )
-        if tail_res is not None:
-            integrate._mark_integrate_complete_if_terminal(
-                journal_path, groups, tail_res["tasks"]
-            )
-    unreconciled_tail = integrate.detect_unreconciled_tail_evidence(
-        repo, remote, base, spec_id, wt_base, (tail_res or {}).get("tasks", tasks)
-    )
-    if unreconciled_tail:
-        unreconciled_tail = integrate.reconcile_unreconciled_tail_evidence(
-            unreconciled_tail,
-            repo,
-            spec_id,
-            (tail_res or {}).get("tasks", tasks),
-            remote,
-            run_id,
-            base,
-            journal_path,
-            pr_labels=pr_labels,
-            route=route,
-            gates=gates,
-        )
-    integrate._record_unreconciled_tail_evidence(journal_path, unreconciled_tail)
-    unreconciled_note = _format_unreconciled_tail_note(unreconciled_tail)
-    if unreconciled_note:
-        print(unreconciled_note)
-    progress.set_phase(journal_path, "done")
-    if notify_cmd:
-        done_ct = sum(1 for t in tasks if t.get("status") in coordinator.DONE)
-        _fire_notify(
-            notify_cmd,
-            {
-                "spec": spec_id,
-                "run_id": run_id,
-                "phase": "done",
-                "tasks_done": done_ct,
-                "tasks_total": len(tasks),
-                "quarantined": list(quarantined.keys()),
-                "merged": vres["merged"],
-                "self_merged": list(self_merged.keys()),
-                "post_merge_regressed": list(post_merge_regressed.keys()),
-                "automerge_evidence": automerge_evidence,
-            },
-        )
-    _print_usage_report(journal_path)
-    print("=== FULL RUN COMPLETE ===")
-    return {
-        "group_prs": prs,
-        "final": None,
-        "quarantined": quarantined,
-        "merged": vres["merged"],
-        "automerge_armed": vres.get("automerge_armed", {}),
-        "self_merged": self_merged,
-        "post_merge_regressed": post_merge_regressed,
-        "automerge_evidence": automerge_evidence,
-        "unreconciled_tail_evidence": unreconciled_tail,
-    }
 
 
 def smoke(agent: str = DEFAULT_AGENT, model: str | None = None) -> bool:
@@ -5322,25 +4865,25 @@ def main(argv=None) -> int:
         "--pipeline",
         action="store_true",
         default=True,
-        help="Pipelined run (the DEFAULT since v0.9.1): integrate and verify each group "
-        "as its tasks finish, overlapping with continued fan-out of later groups. "
-        "The flag is kept for compatibility; it is a no-op affirmation.",
+        help="Pipelined run (the ONLY scheduler since the serial path's removal): "
+        "integrate and verify each group as its tasks finish, overlapping with "
+        "continued fan-out of later groups. The flag is kept for compatibility; "
+        "it is a no-op affirmation.",
     )
     fr.add_argument(
         "--sequential",
         action="store_true",
         default=False,
-        help="DEPRECATED escape hatch: run the legacy serial scheduler (full fan-out, "
-        "then integrate, then verify). Frozen for removal in v1.1 — it receives no "
-        "new fixes; every state-machine fix lands on the pipelined engine only. "
-        "See openspec/changes/scheduler-consolidation/.",
+        help="REMOVED: the legacy serial scheduler was deleted "
+        "(openspec/changes/scheduler-consolidation/). Passing this flag is a hard "
+        "error; the pipelined engine is the only scheduler.",
     )
     fr.add_argument(
         "--re-integrate",
         action="store_true",
         dest="re_integrate",
         help="Force re-integration: clear the journal's integrate_complete marker and "
-        "per-group records so finish_real runs again (reconcile-safe). Use after a failed "
+        "per-group records so integration runs again (reconcile-safe). Use after a failed "
         "integration instead of hand-editing the journal JSON.",
     )
     fr.add_argument(
@@ -5402,9 +4945,9 @@ def main(argv=None) -> int:
         help="Seconds to wait (bounded) for the previous group PR's checks to resolve "
         "before opening the next group's PR, so sibling PRs don't hit a shared CI "
         "runner pool simultaneously (0 = off, the default). Best-effort: a red, "
-        "stuck, or check-less PR never blocks integration beyond this bound. Paces "
-        "both the sequential integrate path and --pipeline (where it serializes "
-        "only the integrate+PR-open step; verify still overlaps). Sourced from "
+        "stuck, or check-less PR never blocks integration beyond this bound. "
+        "Serializes only the integrate+PR-open step across the concurrent "
+        "per-group IV threads; verify still overlaps. Sourced from "
         "go-policy.yaml's pr_pacing_wait_s by the sdd-workflow conductor.",
     )
     fr.add_argument(
@@ -5437,35 +4980,6 @@ def main(argv=None) -> int:
         default="",
         help="Comma-separated classifier gates for this run, forwarded to the group-PR "
         "label refresh's --gates for the same eligibility check as the one-off PR path.",
-    )
-    fr.add_argument(
-        "--fork-research",
-        action="store_true",
-        dest="fork_research",
-        default=False,
-        help="Pre-load shared source files in a single research session and fork each "
-        "worker from it, reducing cache-miss token cost for overlapping file reads (opt-in).",
-    )
-    fr.add_argument(
-        "--notify-cmd",
-        default=None,
-        dest="notify_cmd",
-        help="Shell command invoked on each task-state transition and phase boundary "
-        "(integrate, verify, done). JSON payload is written to its stdin: "
-        "{spec, run_id, phase, tasks_done, tasks_total, current_task, role, "
-        "old_status, new_status}. Best-effort: errors are silently ignored and "
-        "never block a run. Omit to disable.",
-    )
-    fr.add_argument(
-        "--progress-interval",
-        type=int,
-        default=None,
-        dest="progress_interval",
-        metavar="N",
-        help="Emit a compact one-line progress summary to stdout every N seconds "
-        "(e.g. '[HH:MM:SS] PROGRESS: 4/7 done · TASK-005 · 12m elapsed'), "
-        "independent of transition cadence. Useful when a single step runs long. "
-        "Omit to disable.",
     )
     pc = sub.add_parser(
         "precheck",
@@ -5600,6 +5114,13 @@ def main(argv=None) -> int:
         print(progress.render_context_quality(journal))
         return 0
     if args.cmd == "full-real":
+        if args.sequential:
+            print(
+                f"{_ts()} ERROR: --sequential was removed; the legacy serial scheduler "
+                "no longer exists (openspec/changes/scheduler-consolidation/). The "
+                "pipelined engine is the only scheduler -- re-run without --sequential."
+            )
+            return 2
         only = [s.strip() for s in args.only.split(",")] if args.only else None
         smoke_cmd = args.smoke_cmd
         if smoke_cmd is None:
@@ -5607,12 +5128,6 @@ def main(argv=None) -> int:
         post_merge_smoke_cmd = args.post_merge_smoke_cmd
         if post_merge_smoke_cmd is None:
             post_merge_smoke_cmd = _default_post_merge_smoke_cmd(Path(args.repo))
-        if args.sequential:
-            print(
-                f"{_ts()} WARNING: --sequential is DEPRECATED and frozen for removal in "
-                "v1.1. It receives no new fixes; the pipelined engine (the default) is "
-                "the supported scheduler. See openspec/changes/scheduler-consolidation/."
-            )
         full_real(
             args.repo,
             args.spec,
@@ -5633,14 +5148,10 @@ def main(argv=None) -> int:
             fallback_chain=fallback_chain,
             effort=args.effort,
             run_budget=args.run_budget * 60 if args.run_budget else args.run_budget,
-            pipeline=args.pipeline and not args.sequential,
             re_integrate=args.re_integrate,
             smoke_cmd=smoke_cmd,
             post_merge_smoke_cmd=post_merge_smoke_cmd,
             bootstrap_cmd=args.bootstrap_cmd,
-            fork_research=args.fork_research,
-            notify_cmd=getattr(args, "notify_cmd", None),
-            progress_interval=getattr(args, "progress_interval", None),
             merge_method=args.merge_method,
             pr_labels=args.pr_labels,
             pr_pacing_wait=args.pr_pacing_wait,

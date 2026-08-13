@@ -2,14 +2,14 @@
 """
 Parallel SDD Orchestrator -- post-PR verify stage + gated cleanup.
 
-`finish_real()` (integrate.py) opens one PR per group and stops. That left two
+`integrate_one()` (integrate.py) opens one PR per group and stops. That left two
 gaps in the real-repo path: (1) PR-vs-base conflicts and CI status were never
 checked, and (2) every task worktree + branch leaked (nothing was ever torn
 down). This module closes both.
 
 For each group PR, in dependency order (base group before its dependents; a base
 group that fails verification quarantines its dependents -- mirroring the
-`depends_on quarantined` logic in finish_real):
+`depends_on quarantined` logic in integrate_one):
 
   1. MERGEABILITY -- `gh pr view --json mergeable,mergeStateStatus`. If the base
      advanced and the PR is CONFLICTING, spawn a `resolve` worker in the group's
@@ -1440,7 +1440,7 @@ class Verifier:
                 group_branch: Dict[str, str],
                 delivered: Optional[Dict[str, List[str]]] = None) -> Dict[str, Any]:
         # Free every group branch from the main working tree so per-group verify
-        # worktrees can check them out (finish_real leaves the repo on the last
+        # worktrees can check them out (integration leaves the repo on the last
         # group branch).
         self._git("checkout", self.base)
 

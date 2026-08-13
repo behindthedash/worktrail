@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
-"""Regression coverage for brief 20260807-175851: `_full_real_inner`'s serial
-(non-pipeline) code paths never persisted a group's QUARANTINED state back to
-the run journal after `verify.verify_and_cleanup()` ran. Without this, a
-resume re-reads the stale pre-verify journal record (head_branch/pr_url
-unchanged) instead of seeing QUARANTINED -- unlike the pipeline path's
-`_integrate_verify_group`, which calls `_record_group_fn(..., "QUARANTINED")`.
-
-Covers both affected call sites: the `--from-verify` entry point and the
-default sequential flow's shared post-integrate verify step (which serves
-both the all_integrated fast path -- integrate skipped, journal reused as-is
--- and the finish_real branch -- integrate just ran).
+"""Regression coverage for brief 20260807-175851: `_full_real_inner`'s
+`--from-verify` entry point (which runs `verify.verify_and_cleanup()` outside
+the pipeline scheduler) must persist a group's QUARANTINED state back to the
+run journal. Without this, a resume re-reads the stale pre-verify journal
+record (head_branch/pr_url unchanged) instead of seeing QUARANTINED -- unlike
+the pipeline path's `_integrate_verify_group`, which calls
+`_record_group_fn(..., "QUARANTINED")`. (The serial scheduler's identical leg
+was deleted with that scheduler -- scheduler-consolidation stage 2.)
 """
 
 import json
@@ -104,72 +101,13 @@ class FromVerifyPersistsQuarantineTest(unittest.TestCase):
             self.assertEqual(
                 journal["groups"]["feature-1"].get("quarantine_reason"),
                 integrate.QUARANTINE_INTEGRATION_ERROR,
-                "serial-path quarantine must carry a classified quarantine_reason, "
+                "from-verify quarantine must carry a classified quarantine_reason, "
                 "matching the pipeline path's ordinary-quarantine branch",
             )
             # Groups verify_and_cleanup reported merged are stamped MERGED
-            # (sequential-path parity with the pipeline scheduler's
-            # _record_group_fn — before _record_verify_outcomes they stayed
-            # OPEN forever, lying to every resume/dashboard reader).
-            self.assertEqual(journal["groups"]["base"]["state"], "MERGED")
-            self.assertEqual(journal["groups"]["feature-2"]["state"], "MERGED")
-
-
-class AllIntegratedFastPathPersistsQuarantineTest(unittest.TestCase):
-    """Default sequential flow, all_integrated=True (fan-out mocked done, every
-    group already has a pr_url so integrate is skipped): a group newly
-    quarantined by verify_and_cleanup must be written into the on-disk journal
-    as state=QUARANTINED, not left as the stale pre-verify OPEN record."""
-
-    def test_quarantined_group_state_written_to_journal(self):
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            repo = _init_repo(Path(tmp))
-            (repo.parent / f"{repo.name}-worktrees").mkdir(parents=True, exist_ok=True)
-
-            journal_path = live.journal_path_for(repo, "docs/specs/001-x")
-            journal_path.parent.mkdir(parents=True, exist_ok=True)
-            journal_path.write_text(json.dumps({
-                "run_id": "full-test",
-                "spec_id": "001-x",
-                "entries": [],
-                "groups": {
-                    "base": {"pr_url": "http://pr/base", "head_branch": "full-test/base", "state": "OPEN"},
-                    "feature-1": {"pr_url": "http://pr/f1", "head_branch": "full-test/feature-1", "state": "OPEN"},
-                    "feature-2": {"pr_url": "http://pr/f2", "head_branch": "full-test/feature-2", "state": "OPEN"},
-                },
-                "integrate_complete": True,
-            }))
-
-            fake_tasks = [
-                {"id": "TASK-001", "status": "done", "retry_count": 0},
-                {"id": "TASK-002", "status": "done", "retry_count": 0},
-                {"id": "TASK-003", "status": "done", "retry_count": 0},
-            ]
-
-            def mock_vac(repo_, remote, base_, spec_id, groups, group_branch, delivered, **kw):
-                return {"merged": ["base", "feature-2"], "quarantined": {"feature-1": "CI failed after 3 retries"}}
-
-            with unittest.mock.patch.object(verify, "verify_and_cleanup", mock_vac), \
-                 unittest.mock.patch.object(
-                     live, "live_run_real",
-                     return_value={"spec_id": "001-x", "tasks": fake_tasks, "entries": 0, "done": 3, "total": 3},
-                 ):
-                live._full_real_inner(
-                    str(repo),
-                    "docs/specs/001-x",
-                    remote="origin",
-                    base="main",
-                    resume=True,
-                )
-
-            journal = json.loads(journal_path.read_text())
-            self.assertEqual(journal["groups"]["feature-1"]["state"], "QUARANTINED")
-            self.assertEqual(
-                journal["groups"]["feature-1"].get("quarantine_reason"),
-                integrate.QUARANTINE_INTEGRATION_ERROR,
-                "serial-path quarantine must carry a classified quarantine_reason, "
-                "matching the pipeline path's ordinary-quarantine branch",
-            )
+            # (parity with the pipeline scheduler's _record_group_fn — before
+            # _record_verify_outcomes they stayed OPEN forever, lying to every
+            # resume/dashboard reader).
             self.assertEqual(journal["groups"]["base"]["state"], "MERGED")
             self.assertEqual(journal["groups"]["feature-2"]["state"], "MERGED")
 

@@ -243,8 +243,8 @@ class AlreadyIntegratedGroupRegistersBranch(unittest.TestCase):
     """A group whose every task is already status:"completed" (ALREADY_INTEGRATED --
     impl work merged in a prior session, outside this orchestrator's own bookkeeping)
     has an empty deliverable subset and is journaled MERGED, but must also register in
-    group_branch so callers (finish_real -> full-real) see it as integrated rather than
-    concluding "nothing to assemble" and skipping tail dispatch."""
+    group_branch so callers (the scheduler's group integrate loop) see it as integrated
+    rather than concluding "nothing to assemble" and skipping tail dispatch."""
 
     def test_group_branch_populated_when_all_tasks_already_integrated(self):
         quarantined: dict = {}

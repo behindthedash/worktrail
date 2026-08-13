@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for finish_real reconcile-before-create (integrate.py).
+"""Unit tests for multi-group reconcile-before-create (integrate.py).
 
 Tests the reconciliation behavior when resuming a run with existing PRs
 and remote branches. Follows the FakeRun pattern from test_verify.py.
@@ -33,6 +33,63 @@ def mock_group(name, tasks, depends_on=None):
 def mock_task(task_id, status="done"):
     """Create a mock task dict."""
     return {"id": task_id, "status": status, "kind": "impl"}
+
+
+def integrate_groups(
+    repo,
+    spec_id,
+    tasks,
+    remote,
+    run_id,
+    base,
+    cleanup=False,
+    journal_path=None,
+    smoke_cmd=None,
+    assembly_resolve_spawn=None,
+    pr_labels=None,
+    route=None,
+    gates="",
+    migration_patterns=None,
+):
+    """Test driver: integrate every planned group through integrate_one, in
+    group order, exactly the way `_pipeline_scheduler._integrate_verify_group`
+    does (spec-carrier selection, strip_spec_folder rule, per-group journal
+    records, integrate_complete marker). Replaces the deleted production
+    `integrate_groups()` loop (scheduler-consolidation stage 2) so the
+    integrate-layer tests below keep exercising integrate_one's multi-group
+    reconcile semantics through one shared loop.
+
+    Returns the same (prs, group_branch, quarantined) tuple finish_real did.
+    """
+    assert cleanup is False, "the test driver never supports the cleanup branch"
+    groups = coordinator.plan_groups(tasks, migration_patterns=migration_patterns or ())
+    status = {t["id"]: t.get("status", "done") for t in tasks}
+    group_branch: dict = {}
+    quarantined: dict = {}
+    prs = []
+
+    # Spec-folder ownership (mirrors _pipeline_scheduler): only the first
+    # independent group carries docs/specs/<spec_id>/.
+    spec_carrier = next((g["name"] for g in groups if not g.get("depends_on")), None)
+    if spec_carrier is None and groups:
+        spec_carrier = groups[0]["name"]
+
+    for g in groups:
+        result = integrate.integrate_one(
+            g, repo, spec_id, tasks, remote, run_id, base,
+            journal_path, status, group_branch, quarantined,
+            strip_spec_folder=not g.get("depends_on") and g["name"] != spec_carrier,
+            smoke_cmd=smoke_cmd,
+            assembly_resolve_spawn=assembly_resolve_spawn,
+            pr_labels=pr_labels,
+            route=route,
+            gates=gates,
+        )
+        if result is not None:
+            prs.append(result)
+
+    integrate._mark_integrate_complete_if_terminal(journal_path, groups, tasks)
+    return prs, group_branch, quarantined
 
 
 class FakeRun:
@@ -171,7 +228,7 @@ class ReuseExistingOpenPR(unittest.TestCase):
     """AC-005, AC-013: Reuse existing open PR instead of creating new one."""
 
     def test_reuse_open_pr(self):
-        """Verify finish_real reuses an OPEN PR and does not call gh pr create."""
+        """Verify the integrate loop reuses an OPEN PR and does not call gh pr create."""
         pr_view = {
             "full-123/base": [
                 {"number": 42, "state": "OPEN", "url": "https://github.com/owner/repo/pull/42"}
@@ -187,7 +244,7 @@ class ReuseExistingOpenPR(unittest.TestCase):
                     group = mock_group("base", ["T001"])
                     mock_groups.return_value = [group]
 
-                    prs, gb, quarantined = integrate.finish_real(
+                    prs, gb, quarantined = integrate_groups(
                         Path("/repo"),
                         "spec-001",
                         [mock_task("T001")],
@@ -227,7 +284,7 @@ class ReuseExistingOpenPR(unittest.TestCase):
             with patch("worktrail.orchestrator.integrate._git", side_effect=run):
                 with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
                     mock_groups.return_value = [mock_group("base", ["T001"])]
-                    prs, _, _ = integrate.finish_real(
+                    prs, _, _ = integrate_groups(
                         Path("/repo"), "spec-001", [mock_task("T001")], "origin",
                         "run-draft", "main", cleanup=False,
                     )
@@ -254,7 +311,7 @@ class ReuseExistingOpenPR(unittest.TestCase):
                     group = mock_group("base", ["T001"])
                     mock_groups.return_value = [group]
 
-                    prs, gb, _ = integrate.finish_real(
+                    prs, gb, _ = integrate_groups(
                         Path("/repo"),
                         "spec-001",
                         [mock_task("T001")],
@@ -283,7 +340,7 @@ class SkipMergedPRs(unittest.TestCase):
     """AC-007: Skip re-integration for groups with MERGED PRs."""
 
     def test_merged_pr_skipped(self):
-        """Verify finish_real skips groups with MERGED PRs."""
+        """Verify the integrate loop skips groups with MERGED PRs."""
         pr_view = {
             "full-789/base": [
                 {"number": 30, "state": "MERGED", "url": "https://github.com/owner/repo/pull/30"}
@@ -299,7 +356,7 @@ class SkipMergedPRs(unittest.TestCase):
                     group = mock_group("base", ["T001"])
                     mock_groups.return_value = [group]
 
-                    prs, gb, _ = integrate.finish_real(
+                    prs, gb, _ = integrate_groups(
                         Path("/repo"),
                         "spec-001",
                         [mock_task("T001")],
@@ -325,7 +382,7 @@ class NoExistingBranchOrPR(unittest.TestCase):
     """Regression: Normal create flow when no existing branch/PR (REQ-008)."""
 
     def test_create_when_no_pr_exists(self):
-        """Verify finish_real creates PR normally when gh pr view returns error."""
+        """Verify the integrate loop creates PR normally when gh pr view returns error."""
         pr_view = {}  # empty = pr view fails
         ls_remote = {}  # no remote branch
 
@@ -337,7 +394,7 @@ class NoExistingBranchOrPR(unittest.TestCase):
                     group = mock_group("base", ["T001"])
                     mock_groups.return_value = [group]
 
-                    prs, gb, _ = integrate.finish_real(
+                    prs, gb, _ = integrate_groups(
                         Path("/repo"),
                         "spec-001",
                         [mock_task("T001")],
@@ -375,7 +432,7 @@ class NoExistingBranchOrPR(unittest.TestCase):
                     group = mock_group("base", ["T001"])
                     mock_groups.return_value = [group]
 
-                    prs, gb, _ = integrate.finish_real(
+                    prs, gb, _ = integrate_groups(
                         Path("/repo"),
                         "spec-001",
                         [mock_task("T001")],
@@ -450,8 +507,8 @@ class FailedLabelAddDoesNotCorruptPrUrl(unittest.TestCase):
             self.assertEqual(record["state"], "QUARANTINED")
             self.assertEqual(record["quarantine_reason"], integrate.QUARANTINE_INTEGRATION_ERROR)
 
-    def test_finish_real_quarantines_group_on_label_failure(self):
-        """End-to-end via finish_real: no PR recorded, group quarantined."""
+    def test_group_loop_quarantines_group_on_label_failure(self):
+        """End-to-end via the integrate loop: no PR recorded, group quarantined."""
         run = self._failing_run()
 
         with patch("worktrail.orchestrator.integrate.coordinator.plan_groups") as mock_groups:
@@ -460,7 +517,7 @@ class FailedLabelAddDoesNotCorruptPrUrl(unittest.TestCase):
                     group = mock_group("base", ["T001"])
                     mock_groups.return_value = [group]
 
-                    prs, _gb, quarantined = integrate.finish_real(
+                    prs, _gb, quarantined = integrate_groups(
                         Path("/repo"),
                         "spec-001",
                         [mock_task("T001")],
@@ -723,7 +780,7 @@ class PRLabels(unittest.TestCase):
                                    return_value=Path(fake_gate)):
                             mock_groups.return_value = [mock_group("base", ["T001"])]
 
-                            integrate.finish_real(
+                            integrate_groups(
                                 Path("/repo"),
                                 "spec-001",
                                 [mock_task("T001")],
@@ -761,7 +818,7 @@ class PRLabels(unittest.TestCase):
             with patch("worktrail.orchestrator.integrate._git", side_effect=run):
                 with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
                     mock_groups.return_value = [mock_group("base", ["T001"])]
-                    integrate.finish_real(
+                    integrate_groups(
                         Path("/repo"), "spec-001", [mock_task("T001")], "origin",
                         "run-eligible", "main", cleanup=False, pr_labels=["go:risk-low"],
                     )
@@ -787,7 +844,7 @@ class PRLabels(unittest.TestCase):
                                    return_value=Path(fake_gate)):
                             mock_groups.return_value = [mock_group("base", ["T001"])]
 
-                            integrate.finish_real(
+                            integrate_groups(
                                 Path("/repo"),
                                 "spec-001",
                                 [mock_task("T001")],
@@ -826,7 +883,7 @@ class PRLabels(unittest.TestCase):
                                    return_value=Path(fake_gate)):
                             mock_groups.return_value = [mock_group("base", ["T001"])]
 
-                            integrate.finish_real(
+                            integrate_groups(
                                 Path("/repo"),
                                 "spec-001",
                                 [mock_task("T001")],
@@ -860,7 +917,7 @@ class NoForceResetExistingRemoteBranch(unittest.TestCase):
                     group = mock_group("base", ["T001"])
                     mock_groups.return_value = [group]
 
-                    prs, gb, _ = integrate.finish_real(
+                    prs, gb, _ = integrate_groups(
                         Path("/repo"),
                         "spec-001",
                         [mock_task("T001")],
@@ -897,7 +954,7 @@ class EdgeCases(unittest.TestCase):
                     group = mock_group("base", ["T001"])
                     mock_groups.return_value = [group]
 
-                    prs, gb, _ = integrate.finish_real(
+                    prs, gb, _ = integrate_groups(
                         Path("/repo"),
                         "spec-001",
                         [mock_task("T001")],
@@ -946,7 +1003,7 @@ class EdgeCases(unittest.TestCase):
                     mock_git.side_effect = run_side_effect
                     mock_run.side_effect = run_side_effect
 
-                    prs, gb, _ = integrate.finish_real(
+                    prs, gb, _ = integrate_groups(
                         Path("/repo"),
                         "spec-001",
                         [mock_task("T001")],
@@ -992,7 +1049,7 @@ class MultipleGroupsReconciliation(unittest.TestCase):
                     feat2 = mock_group("feature-2", ["T003"], depends_on=["base"])
                     mock_groups.return_value = [base, feat1, feat2]
 
-                    prs, gb, _ = integrate.finish_real(
+                    prs, gb, _ = integrate_groups(
                         Path("/repo"),
                         "spec-001",
                         [mock_task("T001"), mock_task("T002"), mock_task("T003")],
@@ -1090,7 +1147,7 @@ class SingleGroupIntegrateEntry(unittest.TestCase):
                 self.assertIn(
                     "base", group_branch,
                     "a MERGED group must still register in group_branch so callers "
-                    "(finish_real) see it as integrated rather than concluding "
+                    "see it as integrated rather than concluding "
                     "'nothing to assemble' and bailing out before tail dispatch",
                 )
                 checkout_b = [c for c in run.calls if "checkout" in c and "-B" in c]
@@ -1221,11 +1278,12 @@ class SingleGroupIntegrateEntry(unittest.TestCase):
             )
 
 
-class FinishRealOverSeam(unittest.TestCase):
-    """AC-009, AC-010: finish_real re-expressed as a loop over integrate_one."""
+class MultiGroupLoopShapes(unittest.TestCase):
+    """AC-009, AC-010: the per-group integrate_one seam, driven in a loop,
+    produces the multi-group shapes the scheduler relies on."""
 
-    def test_finish_real_correct_prs_journal_and_field_shapes(self):
-        """finish_real produces correct prs, group_branch, quarantined, and journal records."""
+    def test_loop_correct_prs_journal_and_field_shapes(self):
+        """The loop produces correct prs, group_branch, quarantined, and journal records."""
         with tempfile.TemporaryDirectory() as tmpdir:
             journal_path = str(Path(tmpdir) / "journal.json")
             Path(journal_path).write_text(json.dumps({"run_id": "run-fr"}) + "\n")
@@ -1246,7 +1304,7 @@ class FinishRealOverSeam(unittest.TestCase):
                             mock_group("feature", ["T002"], depends_on=["base"]),
                         ]
 
-                        prs, gb, quarantined = integrate.finish_real(
+                        prs, gb, quarantined = integrate_groups(
                             Path("/repo"),
                             "spec-001",
                             [mock_task("T001"), mock_task("T002")],
@@ -1458,7 +1516,7 @@ class SpecFolderOwnership(unittest.TestCase):
                     group = mock_group("base", ["T001"])
                     mock_groups.return_value = [group]
 
-                    integrate.finish_real(
+                    integrate_groups(
                         Path("/repo"), "spec-048",
                         [mock_task("T001")], "origin", "full-123", "main",
                         cleanup=False,
@@ -1480,7 +1538,7 @@ class SpecFolderOwnership(unittest.TestCase):
                     feat_g = mock_group("feature-2", ["T002"], depends_on=[])  # independent
                     mock_groups.return_value = [base_g, feat_g]
 
-                    integrate.finish_real(
+                    integrate_groups(
                         Path("/repo"), "spec-048",
                         [mock_task("T001"), mock_task("T002")], "origin", "full-123", "main",
                         cleanup=False,
@@ -1508,7 +1566,7 @@ class SpecFolderOwnership(unittest.TestCase):
                     feat_g = mock_group("feature-1", ["T002"], depends_on=["base"])
                     mock_groups.return_value = [base_g, feat_g]
 
-                    integrate.finish_real(
+                    integrate_groups(
                         Path("/repo"), "spec-048",
                         [mock_task("T001"), mock_task("T002")], "origin", "full-123", "main",
                         cleanup=False,
