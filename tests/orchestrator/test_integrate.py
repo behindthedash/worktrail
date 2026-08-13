@@ -474,6 +474,237 @@ class FailedLabelAddDoesNotCorruptPrUrl(unittest.TestCase):
                     self.assertIn("base", quarantined)
 
 
+class TransientGhFailureRetry(unittest.TestCase):
+    """brief 20260724-142000 item 1: a single transient GitHub failure (GraphQL
+    "Something went wrong" / HTTP 5xx / timeout / connection error) on the
+    integrate tail's gh calls must be retried instead of quarantining a group
+    whose implement, review, merge, and smoke all already succeeded (the
+    datalena 097-app-shell run lost a 10-task group to exactly one such 500 on
+    `gh pr create`). Deterministic failures (validation errors, unresolvable
+    labels, "already exists", auth) keep the existing single-shot behavior."""
+
+    TRANSIENT_ERR = "GraphQL: Something went wrong while executing your query. (HTTP 500)"
+
+    def _flaky(self, fail_prefix, n_failures, stderr, base_run=None):
+        """Side-effect callable failing the first `n_failures` calls matching
+        `fail_prefix` with `stderr`, delegating everything else to a FakeRun.
+        Returns (callable, fake_run) so tests can inspect fake_run.calls."""
+        run = base_run or FakeRun(pr_view_responses={}, ls_remote_responses={})
+        remaining = {"n": n_failures}
+
+        def call(*args, **kwargs):
+            cmd = args[0] if args and not isinstance(args[0], (str, Path)) else list(args[1:])
+            if cmd[: len(fail_prefix)] == list(fail_prefix) and remaining["n"] > 0:
+                remaining["n"] -= 1
+                run.calls.append(cmd)  # keep find_calls() accounting complete
+                return Proc(1, "", stderr)
+            return run(*args, **kwargs)
+
+        return call, run
+
+    def _integrate(self, side_effect, journal_path, sleeps, run_id="run-tr"):
+        group = mock_group("base", ["T001"])
+        quarantined: dict = {}
+        with patch("worktrail.orchestrator.integrate._retry_sleep", new=sleeps.append):
+            with patch("worktrail.orchestrator.integrate._git", side_effect=side_effect):
+                with patch(
+                    "worktrail.orchestrator.integrate.subprocess.run", side_effect=side_effect
+                ):
+                    result = integrate.integrate_one(
+                        group,
+                        Path("/repo"),
+                        "spec-001",
+                        [mock_task("T001")],
+                        "origin",
+                        run_id,
+                        "main",
+                        journal_path,
+                        {"T001": "done"},
+                        {},
+                        quarantined,
+                    )
+        return result, quarantined
+
+    def test_pr_create_transient_failure_retries_then_succeeds(self):
+        """One GraphQL 500 on `gh pr create`, then success: the group must get
+        its PR recorded (state OPEN, real URL) and must NOT be quarantined."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            journal_path = str(Path(tmpdir) / "journal.json")
+            call, run = self._flaky(["gh", "pr", "create"], 1, self.TRANSIENT_ERR)
+            sleeps: list = []
+
+            result, quarantined = self._integrate(call, journal_path, sleeps)
+
+            self.assertEqual(quarantined, {}, "transient failure must not quarantine")
+            self.assertIsNotNone(result)
+            self.assertEqual(result[2], "https://github.com/owner/repo/pull/123")
+            self.assertEqual(len(run.find_calls("gh", "pr", "create")), 2)
+            self.assertEqual(sleeps, [integrate.GH_TRANSIENT_BACKOFF_S])
+
+            record = json.loads(Path(journal_path).read_text())["groups"]["base"]
+            self.assertEqual(record["state"], "OPEN")
+            self.assertEqual(record["pr_url"], "https://github.com/owner/repo/pull/123")
+
+    def test_pr_create_deterministic_failure_not_retried(self):
+        """A deterministic failure (unresolvable label) quarantines immediately:
+        exactly one attempt, no sleep -- existing behavior unchanged."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            journal_path = str(Path(tmpdir) / "journal.json")
+            call, run = self._flaky(
+                ["gh", "pr", "create"], 99,
+                "could not add label: 'go:risk-medium' not found",
+            )
+            sleeps: list = []
+
+            result, quarantined = self._integrate(call, journal_path, sleeps)
+
+            self.assertIsNone(result)
+            self.assertIn("base", quarantined)
+            self.assertEqual(len(run.find_calls("gh", "pr", "create")), 1,
+                             "deterministic failures must not retry")
+            self.assertEqual(sleeps, [])
+            record = json.loads(Path(journal_path).read_text())["groups"]["base"]
+            self.assertEqual(record["state"], "QUARANTINED")
+            self.assertEqual(record["pr_url"], "")
+
+    def test_pr_create_persistent_transient_failure_quarantines(self):
+        """A transient error that never clears exhausts the bounded attempts
+        (with linear backoff between them) and then quarantines as before."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            journal_path = str(Path(tmpdir) / "journal.json")
+            call, run = self._flaky(["gh", "pr", "create"], 99, self.TRANSIENT_ERR)
+            sleeps: list = []
+
+            result, quarantined = self._integrate(call, journal_path, sleeps)
+
+            self.assertIsNone(result)
+            self.assertIn("base", quarantined)
+            self.assertIn("Something went wrong", quarantined["base"])
+            self.assertEqual(
+                len(run.find_calls("gh", "pr", "create")),
+                integrate.GH_TRANSIENT_ATTEMPTS,
+            )
+            self.assertEqual(
+                sleeps,
+                [integrate.GH_TRANSIENT_BACKOFF_S * n
+                 for n in range(1, integrate.GH_TRANSIENT_ATTEMPTS)],
+            )
+            record = json.loads(Path(journal_path).read_text())["groups"]["base"]
+            self.assertEqual(record["state"], "QUARANTINED")
+            self.assertEqual(record["quarantine_reason"], integrate.QUARANTINE_INTEGRATION_ERROR)
+
+    def test_pr_view_transient_failure_retried_reuses_open_pr(self):
+        """A transient 5xx on the reconcile `gh pr view` must not fall through
+        to `gh pr create` (which would fail 'already exists' and quarantine);
+        the retry sees the existing OPEN PR and reuses it."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            journal_path = str(Path(tmpdir) / "journal.json")
+            base_run = FakeRun(
+                pr_view_responses={
+                    "run-pv/base": [{
+                        "number": 5, "state": "OPEN",
+                        "url": "https://github.com/owner/repo/pull/5",
+                        "headRefName": "run-pv/base", "isDraft": False,
+                    }]
+                },
+                ls_remote_responses={"run-pv/base": True},
+            )
+            call, run = self._flaky(
+                ["gh", "pr", "view"], 1, self.TRANSIENT_ERR, base_run=base_run
+            )
+            sleeps: list = []
+
+            result, quarantined = self._integrate(call, journal_path, sleeps, run_id="run-pv")
+
+            self.assertEqual(quarantined, {})
+            self.assertIsNotNone(result)
+            self.assertEqual(result[2], "https://github.com/owner/repo/pull/5")
+            self.assertEqual(run.find_calls("gh", "pr", "create"), [],
+                             "existing OPEN PR must be reused, not re-created")
+            self.assertEqual(sleeps, [integrate.GH_TRANSIENT_BACKOFF_S])
+
+    def test_pr_list_transient_failure_retried_discovers_operator_pr(self):
+        """Operator-PR discovery (`gh pr list --search`) retries a transient
+        failure and then reuses the discovered PR."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            journal_path = str(Path(tmpdir) / "journal.json")
+            run = FakeRun(pr_view_responses={}, ls_remote_responses={})
+            state = {"failed": False}
+
+            def call(*args, **kwargs):
+                cmd = args[0] if args and not isinstance(args[0], (str, Path)) else list(args[1:])
+                if cmd[:3] == ["gh", "pr", "list"]:
+                    run.calls.append(cmd)
+                    if not state["failed"]:
+                        state["failed"] = True
+                        return Proc(1, "", "HTTP 502: Bad Gateway")
+                    return Proc(0, json.dumps([{
+                        "number": 7, "state": "OPEN",
+                        "url": "https://github.com/owner/repo/pull/7",
+                        "headRefName": "operator/base", "isDraft": False,
+                    }]), "")
+                return run(*args, **kwargs)
+
+            sleeps: list = []
+            result, quarantined = self._integrate(call, journal_path, sleeps)
+
+            self.assertEqual(quarantined, {})
+            self.assertIsNotNone(result)
+            self.assertEqual(result[2], "https://github.com/owner/repo/pull/7")
+            self.assertEqual(run.find_calls("gh", "pr", "create"), [])
+            self.assertEqual(sleeps, [integrate.GH_TRANSIENT_BACKOFF_S])
+
+    def test_pr_ready_transient_failure_retried(self):
+        """Marking a reused draft PR ready (`gh pr ready`) retries a transient
+        failure instead of quarantining the group."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            journal_path = str(Path(tmpdir) / "journal.json")
+            base_run = FakeRun(
+                pr_view_responses={
+                    "run-rd/base": [{
+                        "number": 9, "state": "OPEN",
+                        "url": "https://github.com/owner/repo/pull/9",
+                        "headRefName": "run-rd/base", "isDraft": True,
+                    }]
+                },
+                ls_remote_responses={"run-rd/base": True},
+            )
+            call, run = self._flaky(
+                ["gh", "pr", "ready"], 1, self.TRANSIENT_ERR, base_run=base_run
+            )
+            sleeps: list = []
+
+            result, quarantined = self._integrate(call, journal_path, sleeps, run_id="run-rd")
+
+            self.assertEqual(quarantined, {})
+            self.assertIsNotNone(result)
+            self.assertEqual(result[2], "https://github.com/owner/repo/pull/9")
+            self.assertEqual(len(run.find_calls("gh", "pr", "ready")), 2)
+            self.assertEqual(sleeps, [integrate.GH_TRANSIENT_BACKOFF_S])
+
+    def test_transient_classification(self):
+        transient = [
+            "GraphQL: Something went wrong while executing your query.",
+            "HTTP 502: Bad Gateway",
+            "HTTP 503: Service Unavailable",
+            "Post \"https://api.github.com/graphql\": dial tcp: i/o timeout",
+            "net/http: TLS handshake timeout",
+            "dial tcp: lookup api.github.com: connection refused",
+        ]
+        deterministic = [
+            "could not add label: 'go:risk-medium' not found",
+            'a pull request for branch "x" into branch "main" already exists',
+            "HTTP 422: Validation Failed (createPullRequest)",
+            "gh: To get started with GitHub CLI, please run: gh auth login",
+            "no pull requests found for branch",
+            "",
+        ]
+        for msg in transient:
+            self.assertTrue(integrate._gh_error_is_transient(msg), msg)
+        for msg in deterministic:
+            self.assertFalse(integrate._gh_error_is_transient(msg), msg or "(empty)")
+
+
 class PRLabels(unittest.TestCase):
     """The orchestrator carries the GO gate's exact labels to group PRs."""
 
