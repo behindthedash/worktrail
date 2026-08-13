@@ -61,6 +61,8 @@ jobs:
 
   lint-test-build:
     name: "Lint, Test & Build"
+    needs: changes
+    if: needs.changes.outputs.bookkeeping == 'false'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
