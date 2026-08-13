@@ -49,6 +49,7 @@ worktrail-check-related-brief-claims = "worktrail.router.check_related_brief_cla
 worktrail-check-req-coverage = "worktrail.router.check_req_coverage:main"
 worktrail-check-compile-markers = "worktrail.router.check_compile_markers:main"
 worktrail-check-repo-freshness = "worktrail.router.check_repo_freshness:main"
+worktrail-check-resumable-state = "worktrail.router.check_resumable_state:main"
 worktrail-check-review-threads = "worktrail.router.check_review_threads:main"
 worktrail-check-spec-collision = "worktrail.router.check_spec_collision:main"
 worktrail-check-spec-sync = "worktrail.router.check_spec_sync:main"

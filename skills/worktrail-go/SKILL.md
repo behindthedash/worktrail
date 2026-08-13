@@ -257,12 +257,34 @@ classifying — the classifier can only weigh it if it's actually passed in:
 RECOMMENDED_ROUTE=$(worktrail-handoff-seed seed "<primary-claimed-path>" --json \
   | python3 -c "import sys, json; print(json.load(sys.stdin).get('recommended_route') or '')")
 HANDOFF_ROUTE_FLAG=(); [ -n "$RECOMMENDED_ROUTE" ] && HANDOFF_ROUTE_FLAG=(--handoff-route "$RECOMMENDED_ROUTE")
-
-worktrail-classify --request "$ARG_INTENT" --state "$STATE_JSON" "${HANDOFF_ROUTE_FLAG[@]}" --repo "$REPO" --json
 ```
 
-For free-text/level-2-item dispatches with no claimed brief, omit `--handoff-route` (no
-hint to weigh):
+**Resumable-state pre-check (mandatory for every brief-sourced dispatch, not just an `E`
+hint).** classify.py's Route E signals (`resume`, `handoff`, `worktree`, `open pr`, ...) are
+plain keyword regexes with no negation awareness — a brief *reporting* that no resumable
+state exists ("no worktree", "no open PR") trips the exact same signals as one describing
+real in-flight work, and a fresh claim can organically outscore every other route on E
+before `--handoff-route` even gets a say (observed: brief 20260812-163747 scored E=11 at
+high confidence purely from its own bug-report prose). Run the mechanical check and always
+pass its result — `resumable: false` disqualifies E outright regardless of text score or a
+stale `recommended-route: E` in the brief's own frontmatter; omit the flag only for a
+free-text dispatch with no claimed brief at all:
+
+```bash
+RESUMABLE_JSON=$(worktrail-check-resumable-state --brief "<primary-claimed-path>" --json)
+RESUMABLE=$(echo "$RESUMABLE_JSON" | python3 -c "import sys, json; d = json.load(sys.stdin); print(str(d['resumable']).lower() if d.get('checked') else '')")
+RESUMABLE_FLAG=(); [ -n "$RESUMABLE" ] && RESUMABLE_FLAG=(--resumable-state "$RESUMABLE")
+
+worktrail-classify --request "$ARG_INTENT" --state "$STATE_JSON" "${HANDOFF_ROUTE_FLAG[@]}" "${RESUMABLE_FLAG[@]}" --repo "$REPO" --json
+```
+
+`checked: false` (the claimed brief itself couldn't be read) leaves `$RESUMABLE` empty and
+`--resumable-state` omitted — fail-open to classify.py's prior behavior, never a reason to
+block dispatch. `auto` mode runs this exactly the same way; there is no human here either,
+which is the whole reason a mechanical check replaces agent judgment for this signal.
+
+For free-text/level-2-item dispatches with no claimed brief, omit both `--handoff-route` and
+`--resumable-state` (no hint to weigh, nothing to check):
 
 ```bash
 worktrail-classify --request "$ARG_INTENT" --state "$STATE_JSON" --repo "$REPO" --json

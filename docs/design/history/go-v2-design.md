@@ -110,6 +110,25 @@ Risk is keyword + path classified: `critical` (billing, secrets, destructive
 migration, auth weakening), `high` (authz, migrations, PII), `medium` (API/schema),
 `low` (docs, tests, internal). Risk maps to gates via policy.
 
+**Route E's text signals have no negation awareness** (`\bworktree\b`, `\bhandoff\b`,
+`\bresume\b`, ...): a brief *reporting* the absence of resumable state ("no
+worktree", "no open PR") matches the exact same regexes as one describing real
+in-flight work. Incident 20260812-163747: a brief that was itself a bug report
+about this failure mode scored Route E at high confidence (11) purely from its
+own prose. `classify.py` stays a pure text scorer by design and has no way to
+distinguish the two cases from text alone, so the fix is a mechanical
+pre-check instead of a smarter regex: `check_resumable_state.py` inspects
+actual run-state (an in-flight run record whose worktree still exists on disk,
+or an open PR referencing the brief) for the specific claimed brief, and
+`classify(..., resumable_state=False)` disqualifies E outright — the score
+suppression, the zero-signal-default fallback, and the handoff-recommended-route
+override are all gated on it, so neither path can silently put E back once the
+mechanical check has ruled it out. `resumable_state=None` (a free-text dispatch
+with no claimed brief) leaves E's scoring exactly as before. `worktrail-go`
+Phase 5 runs the check for every brief-sourced dispatch, attended or `auto` —
+the unattended case is the one that motivated this: `worktrail-drain`'s
+headless one-shots have no human to notice a bad E-route reconstruction.
+
 ### 2.3 Workflow state machine
 
 Run-level states, journaled in the run record:

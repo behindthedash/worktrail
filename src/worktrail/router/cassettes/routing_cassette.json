@@ -177,6 +177,26 @@
       "id": "new-ci-gate-can-fail-pr",
       "request": "Add a new CI job that fails the PR when generated files drift",
       "expect": {"route": "C", "confidence": "low"}
+    },
+    {
+      "id": "resumable-state-false-disqualifies-e-despite-resume-vocabulary",
+      "request": "classify-handoff's route hint defaults to E (continue/resume) for brand-new queue briefs with no prior run. Harden classify-handoff/classify.py so a fresh claim (no existing run record, no worktree, no open PR) doesn't default to E, or add a mechanical pre-check in Route E's own reconstruction step that reroutes immediately when no resumable state is found.",
+      "handoff_route": "E",
+      "resumable_state": false,
+      "expect": {"route": "J", "route_source": "classifier"}
+    },
+    {
+      "id": "resumable-state-true-preserves-organic-e",
+      "request": "classify-handoff's route hint defaults to E (continue/resume) for brand-new queue briefs with no prior run. Harden classify-handoff/classify.py so a fresh claim (no existing run record, no worktree, no open PR) doesn't default to E, or add a mechanical pre-check in Route E's own reconstruction step that reroutes immediately when no resumable state is found.",
+      "handoff_route": "E",
+      "resumable_state": true,
+      "expect": {"route": "E", "confidence": "high"}
+    },
+    {
+      "id": "resumable-state-false-does-not-default-zero-signal-to-e",
+      "request": "Standardize the shared helper used by two call sites",
+      "resumable_state": false,
+      "expect": {"route_source": "classifier"}
     }
   ]
 }
