@@ -29,10 +29,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
-from ..shared.homedir import worktrail_home
+from ..shared.homedir import env_setting, worktrail_home
 
 POLICY_RELPATH = "docs/specs/go-policy.yaml"
-ROUTING_FILE_ENV = "GO_ROUTING_FILE"
+ROUTING_FILE_ENV = "WORKTRAIL_ROUTING_FILE"
 
 
 def default_routing_file() -> Path:
@@ -462,7 +462,7 @@ def _load_yaml_mapping(text: str) -> Optional[Dict[str, Any]]:
 
 def _resolve_routing(repo: Path, parsed_local: Dict[str, Any], meta: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Resolve `policy["routing"]`: repo-local `routing:` block, else the
-    machine-wide routing file (`GO_ROUTING_FILE`, default `worktrail_home()/routing.yaml`),
+    machine-wide routing file (`WORKTRAIL_ROUTING_FILE`, default `worktrail_home()/routing.yaml`),
     else `None` (flat keys remain the last-resort default — AC-003/AC-004).
 
     The repo-local block is re-parsed with `yaml.safe_load` (architecture §3.8)
@@ -473,7 +473,7 @@ def _resolve_routing(repo: Path, parsed_local: Dict[str, Any], meta: Dict[str, A
     validated = _validate_routing(local_raw, meta)
     if validated is not None:
         return validated
-    routing_override = os.environ.get(ROUTING_FILE_ENV)
+    routing_override = env_setting(ROUTING_FILE_ENV)
     routing_path = (
         Path(routing_override).expanduser() if routing_override else default_routing_file()
     )

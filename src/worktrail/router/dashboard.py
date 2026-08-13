@@ -127,7 +127,7 @@ from .audit_postmerge import (
 # Policy routing is used only to annotate picker items.
 from .policy import DEFAULTS as _POLICY_DEFAULTS, load_policy as _load_policy, resolve_routing as _resolve_routing
 
-from ..shared.homedir import worktrail_home
+from ..shared.homedir import env_setting, worktrail_home
 
 # check_cache_freshness's ancestor-walk is reused by _dashboard_repo_root() to
 # find the true repo root across install topologies.
@@ -1441,14 +1441,14 @@ def auto_pick_brief(
     return {"pick": None, "skipped": skipped}
 
 
-AUTO_PICK_MISS_LOG_ENV = "GO_AUTO_PICK_MISS_LOG"
+AUTO_PICK_MISS_LOG_ENV = "WORKTRAIL_AUTO_PICK_MISS_LOG"
 MAX_AUTO_PICK_MISS_ENTRIES = 200  # bounded like agent_capacity.py's audit log
 
 
 def auto_pick_miss_log_path(path: Optional[Path] = None) -> Path:
     if path:
         return path
-    override = os.environ.get(AUTO_PICK_MISS_LOG_ENV)
+    override = env_setting(AUTO_PICK_MISS_LOG_ENV)
     if override:
         return Path(override).expanduser()
     return worktrail_home() / "auto-pick-misses.jsonl"
@@ -2117,7 +2117,7 @@ def load_recent_runs(
 
     Records live at `<runs_dir>/<repo-name>/<run-id>.yaml` (run_record.py's own
     layout; `runs_dir` defaults to `worktrail_home()/runs`, overridable via
-    `GO_RUN_RECORD_DIR` -- mirrors cluster_telemetry.py's default/override
+    `WORKTRAIL_RUN_RECORD_DIR` -- mirrors cluster_telemetry.py's default/override
     pattern). Sorted by `completed_at`, falling back to `started_at` for runs
     still in progress (no `finish` entry yet). Read-only and best-effort: a
     missing directory, unreadable file, or corrupt record is skipped rather
@@ -2126,7 +2126,7 @@ def load_recent_runs(
     if _load_run_record is None:
         return []
     if runs_dir is None:
-        override = os.environ.get("GO_RUN_RECORD_DIR")
+        override = env_setting("WORKTRAIL_RUN_RECORD_DIR")
         runs_dir = Path(override).expanduser() if override else worktrail_home() / "runs"
     run_dir = runs_dir / Path(repo).resolve().name
     if not run_dir.is_dir():
@@ -2497,20 +2497,20 @@ def main(argv=None) -> int:
     p.add_argument(
         "--capacity-cache",
         default=None,
-        help="provider capacity cache path (default: GO_AGENT_CAPACITY_CACHE or "
+        help="provider capacity cache path (default: WORKTRAIL_AGENT_CAPACITY_CACHE or "
         "~/.worktrail/agent-capacity.json)",
     )
     p.add_argument(
         "--postmerge-audit-state",
         default=None,
-        help="post-merge audit state dir (default: GO_POSTMERGE_AUDIT_STATE or "
+        help="post-merge audit state dir (default: WORKTRAIL_POSTMERGE_AUDIT_STATE or "
         "~/.worktrail/postmerge-audit-state)",
     )
     p.add_argument(
         "--run-record-dir",
         default=None,
         help="go run-record root for the 'Recent runs' section "
-        "(default: GO_RUN_RECORD_DIR or ~/.worktrail/runs)",
+        "(default: WORKTRAIL_RUN_RECORD_DIR or ~/.worktrail/runs)",
     )
     p.add_argument(
         "--check-freshness",

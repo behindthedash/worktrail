@@ -2,7 +2,7 @@
 """
 Human-eyeball report for the cluster-detection precision telemetry log
 (spec 018, change 2026-07-14--cluster-precision-telemetry). Reads
-`worktrail_home()/cluster-log.jsonl` (or `--log-path`/`$GO_CLUSTER_LOG`) and prints
+`worktrail_home()/cluster-log.jsonl` (or `--log-path`/`$WORKTRAIL_CLUSTER_LOG`) and prints
 shown/consolidated/declined counts plus the derived precision.
 
 No dashboard UI is needed for this -- this script is the whole reporting
@@ -25,7 +25,7 @@ def main(argv=None) -> int:
     p.add_argument(
         "--log-path",
         default=None,
-        help="override the telemetry log path (default: ~/.worktrail/cluster-log.jsonl or $GO_CLUSTER_LOG)",
+        help="override the telemetry log path (default: ~/.worktrail/cluster-log.jsonl or $WORKTRAIL_CLUSTER_LOG)",
     )
     p.add_argument("--json", action="store_true", help="emit JSON instead of a human-readable report")
     args = p.parse_args(argv)

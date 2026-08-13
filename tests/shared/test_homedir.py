@@ -5,6 +5,10 @@ the real operator machine's ~/.worktrail / legacy ~/.go can never leak in
 (same isolation posture as tests/conftest.py's machine-wide-config fixture).
 """
 
+import os
+import unittest
+from unittest import mock
+
 import pytest
 
 from worktrail.shared import homedir
@@ -67,3 +71,27 @@ class TestDirScan:
         # Never created eagerly -- write sites own their lazy mkdir.
         assert not (tmp_path / ".worktrail").exists()
         assert capsys.readouterr().err == ""
+
+
+class EnvSettingTests(unittest.TestCase):
+    def test_current_name_wins_over_legacy(self):
+        with mock.patch.dict(
+            os.environ,
+            {"WORKTRAIL_CLUSTER_LOG": "/new/path", "GO_CLUSTER_LOG": "/old/path"},
+        ):
+            self.assertEqual(homedir.env_setting("WORKTRAIL_CLUSTER_LOG"), "/new/path")
+
+    def test_legacy_synonym_accepted_when_current_unset(self):
+        with mock.patch.dict(os.environ, {"GO_CLUSTER_LOG": "/old/path"}, clear=False):
+            os.environ.pop("WORKTRAIL_CLUSTER_LOG", None)
+            self.assertEqual(homedir.env_setting("WORKTRAIL_CLUSTER_LOG"), "/old/path")
+
+    def test_neither_set_returns_none(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("WORKTRAIL_CLUSTER_LOG", None)
+            os.environ.pop("GO_CLUSTER_LOG", None)
+            self.assertIsNone(homedir.env_setting("WORKTRAIL_CLUSTER_LOG"))
+
+    def test_non_worktrail_name_rejected(self):
+        with self.assertRaises(ValueError):
+            homedir.env_setting("GO_CLUSTER_LOG")

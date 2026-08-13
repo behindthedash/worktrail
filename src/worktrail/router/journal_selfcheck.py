@@ -56,7 +56,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .run_record import _load_lenient as _load_run_record_lenient
-from ..shared.homedir import worktrail_home
+from ..shared.homedir import env_setting, worktrail_home
 
 
 def _runlock_held(lock_path: Path) -> bool:
@@ -95,7 +95,7 @@ def _malformed_run_record_findings(
     live.
     """
     if run_record_dir is None:
-        override = os.environ.get("GO_RUN_RECORD_DIR")
+        override = env_setting("WORKTRAIL_RUN_RECORD_DIR")
         run_record_dir = Path(override).expanduser() if override else worktrail_home() / "runs"
     run_dir = run_record_dir / repo.resolve().name
     if not run_dir.is_dir():
@@ -212,7 +212,7 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="run-journal invariant detector")
     parser.add_argument("--repo", required=True)
     parser.add_argument("--run-record-dir", default=None,
-                         help="defaults to $GO_RUN_RECORD_DIR or ~/.worktrail/runs")
+                         help="defaults to $WORKTRAIL_RUN_RECORD_DIR or ~/.worktrail/runs")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     run_record_dir = Path(args.run_record_dir).expanduser() if args.run_record_dir else None

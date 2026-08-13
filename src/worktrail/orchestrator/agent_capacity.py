@@ -17,11 +17,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, Optional
 
-from ..shared.homedir import worktrail_home
+from ..shared.homedir import env_setting, worktrail_home
 
 
 def cache_path() -> Path:
-    override = os.environ.get("GO_AGENT_CAPACITY_CACHE")
+    override = env_setting("WORKTRAIL_AGENT_CAPACITY_CACHE")
     if override:
         return Path(override).expanduser()
     return worktrail_home() / "agent-capacity.json"

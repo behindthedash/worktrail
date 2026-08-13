@@ -60,3 +60,20 @@ def worktrail_home() -> Path:
             )
         return legacy
     return preferred
+
+
+def env_setting(name: str) -> "str | None":
+    """Read a `WORKTRAIL_*` override env var, honoring its legacy `GO_*` name.
+
+    `name` must be the current `WORKTRAIL_`-prefixed form; the legacy synonym
+    is the same suffix under the historical `GO_` prefix (the "/go" front door
+    era, same rename as `worktrail_home()`'s directory fallback above). The
+    current name wins when both are set; the legacy form is accepted silently
+    so long-lived shells, crontabs, and CI configs migrate lazily.
+    """
+    if not name.startswith("WORKTRAIL_"):
+        raise ValueError(f"env_setting expects a WORKTRAIL_-prefixed name, got {name!r}")
+    value = os.environ.get(name)
+    if value is not None:
+        return value
+    return os.environ.get("GO_" + name[len("WORKTRAIL_"):])
