@@ -221,6 +221,39 @@ def test_executor_guard_distinguishes_adapter_entry_from_direct_invocation():
     assert "sdd-workflow is an internal executor. Use /go for all engineering work." in text
 
 
+def test_go_dispatch_mode_table_pins_invocation_context_constants():
+    """Phase 7 of worktrail-go/SKILL.md branches on the `dispatch_mode` values
+    `invocation_context.resolve()` emits. A table row naming a mode the resolver
+    never produces — or a missing row for one it does — sends the agent down a
+    dead dispatch path at runtime, the same drift class as a SKILL.md naming a
+    retired console script. The table must list exactly the resolver's
+    `DISPATCH_MODES`, in the decision tree's order."""
+    from worktrail.router import invocation_context
+
+    text = (SKILLS_DIR / "worktrail-go" / "SKILL.md").read_text()
+    header = "| `dispatch_mode` | action |"
+    assert header in text, "worktrail-go/SKILL.md lost its dispatch_mode table"
+
+    lines = text[text.index(header):].splitlines()
+    assert re.fullmatch(r"\|[-\s|]+\|", lines[1].strip()), (
+        f"expected a markdown separator row after the table header, got: {lines[1]!r}"
+    )
+    modes = []
+    for line in lines[2:]:
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            break
+        cell = re.match(r"\|\s*`([a-z-]+)`\s*\|", stripped)
+        assert cell, f"unparseable dispatch_mode row: {stripped!r}"
+        modes.append(cell.group(1))
+
+    assert tuple(modes) == invocation_context.DISPATCH_MODES, (
+        "worktrail-go/SKILL.md's dispatch_mode table has drifted from "
+        f"invocation_context.DISPATCH_MODES: table={modes} "
+        f"resolver={list(invocation_context.DISPATCH_MODES)}"
+    )
+
+
 def test_active_run_resume_stays_in_session_never_spawns_nested_worker():
     """An interactive parent resuming its own already-active run (no final_status +
     existing worktree, Route E) must hand execution back to the active parent and continue
