@@ -828,7 +828,14 @@ class ReconcileUnreconciledTailEvidence(unittest.TestCase):
                         "run-1", "main", str(journal_path),
                     )
 
-            self.assertEqual(result, findings)  # same finding data returned
+            # Enriched contract (post-1.2/1.3): a new list carrying each finding's
+            # original fields plus reconcile_state/reconcile_pr_url; input untouched.
+            self.assertEqual(len(result), 1)
+            enriched = result[0]
+            self.assertEqual(enriched["task"], "T022")
+            self.assertEqual(enriched["reconcile_state"], "opened")
+            self.assertEqual(enriched["reconcile_pr_url"], "https://github.com/owner/repo/pull/123")
+            self.assertNotIn("reconcile_state", findings[0])  # input list not mutated
             create_calls = run.find_calls("gh", "pr", "create")
             self.assertEqual(len(create_calls), 1)
             self.assertIn("run-1/tail-t022", create_calls[0])
