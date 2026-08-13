@@ -20,7 +20,7 @@
 
 ## 2. `changes` and `bookkeeping-bypass` jobs in `ci.yml`
 
-- [ ] 2.1 Add a `changes` job to `ci.yml`: `actions/checkout@v7`, then
+- [x] 2.1 Add a `changes` job to `ci.yml`: `actions/checkout@v7`, then
       `dorny/paths-filter@v3` with `predicate-quantifier: every`, gated
       `if: github.event_name == 'pull_request'`, defining a `code` filter
       that matches `**` excluding `openspec/**`, `docs/**`, `**/*.md`; add a
@@ -33,10 +33,10 @@
       `scripts/ci/bookkeeping_gate.sh` to produce a job output
       `bookkeeping`.
       Requirement: "Full suite runs when classification is not bookkeeping-only or is ambiguous" (non-PR fallback branch).
-- [ ] 2.2 Gate `lint-test-build`'s test/build steps (or the whole job) on
+- [x] 2.2 Gate `lint-test-build`'s test/build steps (or the whole job) on
       `needs.changes.outputs.bookkeeping == 'false'`.
       Requirement: "Full suite skipped for bookkeeping-only diffs" and Requirement: "Full suite runs when classification is not bookkeeping-only or is ambiguous" (both sides of the gate).
-- [ ] 2.3 Add a `bookkeeping-bypass` job (`needs: changes`,
+- [x] 2.3 Add a `bookkeeping-bypass` job (`needs: changes`,
       `if: needs.changes.outputs.bookkeeping == 'true'`, `permissions:
       checks: write`) that posts a `success` check named exactly
       `Lint, Test & Build` via `actions/github-script` +
