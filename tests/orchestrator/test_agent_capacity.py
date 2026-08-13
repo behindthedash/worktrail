@@ -1,4 +1,6 @@
 import json
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 
 from worktrail.orchestrator import agent_capacity
@@ -352,6 +354,81 @@ def test_main_clear_missing_reason_returns_nonzero(tmp_path):
 def test_main_no_command_returns_nonzero(tmp_path):
     rc = agent_capacity.main(["--cache", str(tmp_path / "c.json")])
     assert rc == 1
+
+
+def _run_racing_writers(tmp_path, monkeypatch, writer_a, writer_b):
+    """Race two writer callables against one cache with a widened read window.
+
+    Wraps ``load`` with a post-read sleep so both writers are guaranteed to
+    read the same snapshot before either saves -- the exact lost-update
+    interleaving two concurrent workers hit at task completion. With
+    ``_write_lock`` serializing load->mutate->save, the sleep happens under
+    the lock and the second writer sees the first writer's state.
+    """
+    real_load = agent_capacity.load
+
+    def slow_load(path=None):
+        data = real_load(path)
+        time.sleep(0.05)
+        return data
+
+    monkeypatch.setattr(agent_capacity, "load", slow_load)
+    barrier = threading.Barrier(2)
+    errors = []
+
+    def run(writer):
+        try:
+            barrier.wait(timeout=5)
+            writer()
+        except Exception as exc:  # pragma: no cover - failure reporting only
+            errors.append(exc)
+
+    threads = [threading.Thread(target=run, args=(w,)) for w in (writer_a, writer_b)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+    assert errors == []
+
+
+def test_concurrent_record_calls_both_survive(tmp_path, monkeypatch):
+    # Regression: record() used to load-mutate-save with no lock, so two
+    # workers finishing close together (full-real default max_workers=3) could
+    # both load the same snapshot and the second os.replace silently dropped
+    # the first worker's capacity-gate write.
+    path = tmp_path / "capacity.json"
+    now = datetime(2026, 8, 12, 20, 0, tzinfo=timezone.utc)
+    _run_racing_writers(
+        tmp_path,
+        monkeypatch,
+        lambda: agent_capacity.record(
+            "claude", "sonnet", outcome="unavailable", failure_class="billing",
+            retry_after=now + timedelta(hours=1), path=path, now=now,
+        ),
+        lambda: agent_capacity.record(
+            "codex", "gpt", outcome="available", path=path, now=now,
+        ),
+    )
+
+    providers = json.loads(path.read_text(encoding="utf-8"))["providers"]
+    assert providers["claude:sonnet"]["status"] == "unavailable"
+    assert providers["codex:gpt"]["status"] == "available"
+
+
+def test_concurrent_record_and_configure_both_survive(tmp_path, monkeypatch):
+    # configure() and record() mutate different top-level keys of the same
+    # file; without the shared lock either one's save can clobber the other's.
+    path = tmp_path / "capacity.json"
+    _run_racing_writers(
+        tmp_path,
+        monkeypatch,
+        lambda: agent_capacity.configure([("claude", "sonnet")], path=path),
+        lambda: agent_capacity.record("claude", "sonnet", outcome="available", path=path),
+    )
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["configured_providers"] == ["claude:sonnet"]
+    assert data["providers"]["claude:sonnet"]["status"] == "available"
 
 
 def test_preflight_reports_all_providers_gated_without_spawning(tmp_path, monkeypatch):

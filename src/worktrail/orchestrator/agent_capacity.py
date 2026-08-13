@@ -12,9 +12,10 @@ import os
 import re
 import sys
 import tempfile
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, Iterable, Optional
+from typing import Dict, Iterable, Iterator, Optional
 
 
 def cache_path() -> Path:
@@ -106,14 +107,46 @@ def save(value: Dict, path: Optional[Path] = None) -> None:
             pass
 
 
+@contextmanager
+def _write_lock(path: Path) -> Iterator[None]:
+    """Serialize a load -> mutate -> save sequence against concurrent writers.
+
+    Every writer in this module (``configure``/``record``/``cmd_clear``) holds
+    a blocking exclusive ``flock`` on a sidecar ``<cache>.lock`` for the whole
+    read-modify-write; without it, two workers finishing close together both
+    load the same snapshot and the second ``os.replace`` silently discards the
+    first worker's provider state. The kernel drops the lock when the holder
+    dies, so a crash never wedges the cache. Readers (``check``,
+    ``gate_snapshot``, ``cmd_status``, bare ``load``) stay lock-free on
+    purpose: ``save`` publishes via ``os.replace``, so a concurrent ``load``
+    always sees a complete old or new file, never a torn one. Best-effort: if
+    ``flock`` is unavailable (non-POSIX), degrade to the unlocked behavior
+    rather than failing the write, matching ``live.RunLock``.
+    """
+    try:
+        import fcntl
+    except ImportError:  # non-POSIX: degrade to no-op
+        yield
+        return
+    lock_path = path.with_name(path.name + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "w") as fh:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
 def configure(providers: Iterable[tuple[str, str]], path: Optional[Path] = None) -> None:
     """Remember the provider/model-safe set used by the current dispatch."""
     path = path or cache_path()
-    data = load(path)
-    data["configured_providers"] = sorted(
-        {_safe_identifier(provider_key(agent, model)) for agent, model in providers}
-    )
-    save(data, path)
+    with _write_lock(path):
+        data = load(path)
+        data["configured_providers"] = sorted(
+            {_safe_identifier(provider_key(agent, model)) for agent, model in providers}
+        )
+        save(data, path)
 
 
 def gate_snapshot(path: Optional[Path] = None, now: Optional[datetime] = None) -> Dict:
@@ -175,7 +208,7 @@ def record(
     now: Optional[datetime] = None,
 ) -> Dict:
     now = now or _now()
-    data = load(path)
+    path = path or cache_path()
     key = provider_key(agent, model)
     state = {
         "status": outcome,
@@ -188,9 +221,11 @@ def record(
     }
     if retry_after:
         state["retry_after"] = retry_after.isoformat()
-    data.setdefault("version", 1)
-    data.setdefault("providers", {})[key] = state
-    save(data, path)
+    with _write_lock(path):
+        data = load(path)
+        data.setdefault("version", 1)
+        data.setdefault("providers", {})[key] = state
+        save(data, path)
     return state
 
 
@@ -325,30 +360,31 @@ def cmd_clear(scope: str, reason: str, path: Optional[Path] = None, now: Optiona
         print(f"error: --reason must be at most {MAX_REASON_LENGTH} characters", file=sys.stderr)
         return 1
 
-    raw = load(p)
-    providers = raw.get("providers", {})
+    with _write_lock(p):
+        raw = load(p)
+        providers = raw.get("providers", {})
 
-    if scope == "--all":
-        if not providers:
+        if scope == "--all":
+            if not providers:
+                return 0
+            cleared = sorted(providers.keys())
+            raw["providers"] = {}
+            _add_audit(raw, "clear", "all", cleared, reason_trimmed, now)
+            save(raw, p)
+            for key in cleared:
+                print(f"cleared: {key}")
             return 0
-        cleared = sorted(providers.keys())
-        raw["providers"] = {}
-        _add_audit(raw, "clear", "all", cleared, reason_trimmed, now)
+
+        key = _safe_identifier(scope)
+        if key not in providers:
+            print(f"error: unknown provider key '{scope}'", file=sys.stderr)
+            return 1
+
+        del raw["providers"][key]
+        _add_audit(raw, "clear", "provider", [key], reason_trimmed, now)
         save(raw, p)
-        for key in cleared:
-            print(f"cleared: {key}")
+        print(f"cleared: {key}")
         return 0
-
-    key = _safe_identifier(scope)
-    if key not in providers:
-        print(f"error: unknown provider key '{scope}'", file=sys.stderr)
-        return 1
-
-    del raw["providers"][key]
-    _add_audit(raw, "clear", "provider", [key], reason_trimmed, now)
-    save(raw, p)
-    print(f"cleared: {key}")
-    return 0
 
 
 def main(argv: Optional[list[str]] = None) -> int:
