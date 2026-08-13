@@ -82,8 +82,17 @@ STALE_PARENT_STATUSES = {
 }
 
 # Filenames excluded when looking for the parent-spec markdown file at the
-# top level of a spec directory.
-AUX_FILENAMES = {"data-model.md", "decision-log.md", "traceability-matrix.md", "technical-plan.md"}
+# top level of a spec directory. `user-request.md` is the devkit-format
+# verbatim capture artifact that sits beside spec.md in every devkit spec dir;
+# since find_parent_spec() takes the lexicographically last candidate, leaving
+# it in shadows spec.md and flags a phantom missing-Status drift fleet-wide.
+AUX_FILENAMES = {
+    "data-model.md",
+    "decision-log.md",
+    "traceability-matrix.md",
+    "technical-plan.md",
+    "user-request.md",
+}
 
 
 def find_task_statuses(tasks_dir: Path) -> dict[str, str]:

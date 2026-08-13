@@ -188,6 +188,26 @@ class CheckSpecSyncTests(unittest.TestCase):
         )
         self.assertEqual(check_spec(self.spec_dir), [])
 
+    def test_user_request_capture_never_shadows_parent_spec(self):
+        # Regression fixture for worktrail's own 001-task-ac-verification-gate
+        # (2026-08-13): find_parent_spec() takes the lexicographically last
+        # candidate, so the devkit capture artifact user-request.md (which
+        # carries no Status header by design) shadowed spec.md and flagged a
+        # phantom "no Status header" drift on a correctly-stamped spec --
+        # fleet-wide, since every devkit spec dir ships a user-request.md.
+        make_task(self.spec_dir, "TASK-001", "completed")
+        self.task_summary({"TASK-001": "completed"})
+        self.parent_spec("Completed")
+        write(self.spec_dir / "user-request.md", "Please build the fixture.\n")
+        self.assertEqual(check_spec(self.spec_dir), [])
+
+    def test_user_request_alone_is_not_a_parent_spec(self):
+        # A spec dir whose only top-level markdown is the capture artifact has
+        # no parent spec to check -- skip, don't flag the capture file.
+        make_task(self.spec_dir, "TASK-001", "completed")
+        write(self.spec_dir / "user-request.md", "Please build the fixture.\n")
+        self.assertEqual(check_spec(self.spec_dir), [])
+
     def test_ready_to_implement_near_miss_is_flagged(self):
         # Regression fixture for devops PR #184 / spec
         # 102-fleet-dependabot-classifier: "Ready to implement" is a
