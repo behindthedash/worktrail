@@ -1,6 +1,6 @@
 ## 1. Bookkeeping changes-gate script
 
-- [ ] 1.1 Add `scripts/ci/bookkeeping_gate.sh` (stdlib bash, mirroring
+- [x] 1.1 Add `scripts/ci/bookkeeping_gate.sh` (stdlib bash, mirroring
       `scripts/ci/version_bump_check.sh`'s `--github-output` shape): takes
       `--paths-filter-code <true|false>` (the `dorny/paths-filter` `code`
       output — true means a non-doc/openspec/md path changed),
@@ -11,7 +11,7 @@
       `true` only because `pyproject.toml` changed and the diff's only
       changed line matches `version = `, bookkeeping is `true`. Otherwise
       `false`. Implements Requirement: Bookkeeping-only diff classification.
-- [ ] 1.2 Add `scripts/ci/test_bookkeeping_gate.sh` (mirroring
+- [x] 1.2 Add `scripts/ci/test_bookkeeping_gate.sh` (mirroring
       `test_version_bump_check.sh`'s `run_case`/`assert_kv` pattern): cover
       docs-only, docs+openspec, src-alongside-docs (not bookkeeping),
       pyproject-version-only (bookkeeping), pyproject-with-other-line (not
@@ -46,7 +46,7 @@
 
 ## 3. OpenSpec archive remediation row
 
-- [ ] 3.1 In `src/worktrail/drain/drain.py`, add
+- [x] 3.1 In `src/worktrail/drain/drain.py`, add
       `find_complete_openspec_changes(repos_root, go_repo=None)`: scans
       `dashboard.scan()` results per repo (mirroring
       `find_stale_bookkeeping_specs`'s repo-iteration shape), selecting rows
@@ -54,7 +54,7 @@
       same `{"repo", "repo_name", "spec_id", "spec_rel"}` finding shape as
       the other finders (resolve `spec_rel` via the existing
       `resolve_spec_rel`).
-- [ ] 3.2 Add `archive_openspec_change(finding, agent, timeout, spawner,
+- [x] 3.2 Add `archive_openspec_change(finding, agent, timeout, spawner,
       log)`: reusing `close_stale_bookkeeping`'s fix-branch worktree
       lifecycle (`_existing_stale_bookkeeping_pr`-equivalent open-PR check,
       `_reset_stale_bookkeeping_worktree`-equivalent teardown-and-retry,
@@ -65,11 +65,11 @@
       path. Title/body: `chore(<change-id>): archive completed change`.
       Raise on `openspec archive` failure or `gh pr create` failure (per
       D2's per-finding isolation, caught by `sweep_remediations`).
-- [ ] 3.3 Add a `StageRemediation("openspec_archive", "archive-openspec-change",
+- [x] 3.3 Add a `StageRemediation("openspec_archive", "archive-openspec-change",
       find_complete_openspec_changes, archive_openspec_change)` row to
       `REMEDIATION_TABLE`.
       Requirement: "OpenSpec change archive remediation".
-- [ ] 3.4 In `tests/drain/test_drain.py`, cover: an OpenSpec change at
+- [x] 3.4 In `tests/drain/test_drain.py`, cover: an OpenSpec change at
       `stage == "complete"` is found and archived; a devkit spec at
       `stage == "complete"` is NOT selected by the finder (the critical
       scope guard from design.md); no complete OpenSpec changes yields an
@@ -80,13 +80,13 @@
 
 ## 4. Verification
 
-- [ ] 4.1 [e2e] Run `bash scripts/ci/test_bookkeeping_gate.sh`.
-- [ ] 4.2 [e2e] Run `PYTHONPATH=src pytest -q tests/drain/test_drain.py`.
-- [ ] 4.3 [e2e] Run `PYTHONPATH=src pytest -q` and
+- [x] 4.1 [e2e] Run `bash scripts/ci/test_bookkeeping_gate.sh`.
+- [x] 4.2 [e2e] Run `PYTHONPATH=src pytest -q tests/drain/test_drain.py`.
+- [x] 4.3 [e2e] Run `PYTHONPATH=src pytest -q` and
       `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`.
-- [ ] 4.4 [cleanup] Confirm `ci.yml`'s new job names are valid YAML (e.g.
+- [x] 4.4 [cleanup] Confirm `ci.yml`'s new job names are valid YAML (e.g.
       `actionlint` if available, else a manual read-through) and that
       `bookkeeping-bypass`'s posted check name is byte-identical to
       `"Lint, Test & Build"` in `.github/rulesets/protect-main.json`.
-- [ ] 4.5 [cleanup] Run `openspec validate ci-changes-gate-and-auto-archive
+- [x] 4.5 [cleanup] Run `openspec validate ci-changes-gate-and-auto-archive
       --strict` and confirm the change is structurally valid.

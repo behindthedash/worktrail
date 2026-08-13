@@ -24,6 +24,7 @@ from worktrail.drain.drain import (
     SpawnOutcome,
     StageRemediation,
     acquire_lock,
+    archive_openspec_change,
     build_agent_environment,
     build_command,
     build_full_real_resume_command,
@@ -35,6 +36,7 @@ from worktrail.drain.drain import (
     count_ready_briefs,
     decide,
     ensure_pr_risk_label,
+    find_complete_openspec_changes,
     find_resumable_quarantines,
     find_stale_bookkeeping_specs,
     find_sync_pending_specs,
@@ -1410,6 +1412,170 @@ def test_find_sync_pending_specs_go_repo_filter(tmp_path):
     assert [f["repo_name"] for f in found] == ["repo-b"]
 
 
+# ---------------------------------------------------------------------------
+# OpenSpec archive sweep (complete-stage changes)
+
+
+def _write_openspec_complete_change(repo: Path, change_id: str) -> None:
+    """An OpenSpec change with every task checked and no delta specs -- the
+    fixture shape dashboard._safe_detect_openspec requires to label a change
+    "complete" (mirrors tests/router/test_dashboard.py's
+    test_change_without_delta_specs_is_complete)."""
+    change = repo / "openspec" / "changes" / change_id
+    change.mkdir(parents=True)
+    (change / "tasks.md").write_text("## 1. Export\n\n- [x] 1.1 Add exporter\n")
+
+
+def _write_devkit_complete_spec(repo: Path, spec_id: str) -> None:
+    """A devkit spec with every task completed and a synced knowledge-graph --
+    the fixture shape dashboard.detect_stage requires to label a spec
+    "complete" (mirrors tests/router/test_dashboard.py's
+    test_all_tasks_completed_and_synced_is_complete). Format-less (devkit rows
+    carry no "format" key), so this proves find_complete_openspec_changes's
+    format=="openspec" guard actually excludes a same-stage devkit spec rather
+    than relying on devkit never reaching "complete" at all."""
+    spec_dir = repo / "docs" / "specs" / spec_id
+    tasks_dir = spec_dir / "tasks"
+    tasks_dir.mkdir(parents=True)
+    (spec_dir / "2026-05-29--feature.md").write_text(
+        f"# Feature Specification: X\n\n**ID**: {spec_id}\n\n## Summary\nstuff\n"
+    )
+    (tasks_dir / "TASK-001.md").write_text(
+        "---\nid: TASK-001\nstatus: completed\nkind: impl\ndependencies: []\n---\n# TASK-001\n"
+    )
+    (spec_dir / "knowledge-graph.json").write_text(
+        '{"metadata": {"spec_id": "%s", "analysis_sources": '
+        '[{"agent": "spec-sync", "timestamp": "2026-05-31T10:05:00Z", "mode": "full"}]}}'
+        % spec_id
+    )
+
+
+def test_find_complete_openspec_changes_discovers_across_repos(tmp_path):
+    repo_a = _make_repo(tmp_path, "repo-a")
+    _write_openspec_complete_change(repo_a, "add-export")
+    repo_b = _make_repo(tmp_path, "repo-b")  # clean repo, nothing complete
+
+    found = find_complete_openspec_changes(tmp_path)
+
+    assert [f["repo_name"] for f in found] == ["repo-a"]
+    assert found[0]["spec_id"] == "add-export"
+    assert found[0]["spec_rel"] == "openspec/changes/add-export"
+
+
+def test_find_complete_openspec_changes_excludes_devkit_complete_stage(tmp_path):
+    # The critical scope guard from design.md: a devkit spec reaching the same
+    # "complete" stage label must never be routed into `openspec archive`.
+    repo = _make_repo(tmp_path, "repo-a")
+    _write_devkit_complete_spec(repo, "spec-a")
+
+    assert find_complete_openspec_changes(tmp_path) == []
+
+
+def test_find_complete_openspec_changes_returns_empty_when_none_complete(tmp_path):
+    repo = _make_repo(tmp_path, "repo-a")
+    _write_openspec_sync_pending_change(repo, "add-export")  # not complete yet
+
+    assert find_complete_openspec_changes(tmp_path) == []
+
+
+def test_find_complete_openspec_changes_go_repo_filter(tmp_path):
+    repo_a = _make_repo(tmp_path, "repo-a")
+    _write_openspec_complete_change(repo_a, "add-export")
+    repo_b = _make_repo(tmp_path, "repo-b")
+    _write_openspec_complete_change(repo_b, "add-import")
+
+    found = find_complete_openspec_changes(tmp_path, go_repo="repo-b")
+
+    assert [f["repo_name"] for f in found] == ["repo-b"]
+
+
+def _fake_gh_and_openspec_archive_subprocess_run(pr_url: str):
+    """Real `git`/other commands pass through to the real subprocess.run; the
+    `openspec archive` and two gh-pr-related calls are faked so the test needs
+    no network, `gh` auth, or a real `openspec` CLI. The faked archive call
+    writes a marker file into the worktree so the subsequent `git commit` has
+    something to commit, mirroring what a real `openspec archive -y` would
+    move/write."""
+    real_run = subprocess.run
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:2] == ["openspec", "archive"]:
+            Path(kwargs["cwd"], "ARCHIVED.marker").write_text("archived\n")
+            return subprocess.CompletedProcess(cmd, 0, stdout="archived\n", stderr="")
+        if cmd[:2] == ["gh", "pr"] and cmd[2] == "list":
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if cmd[:2] == ["gh", "pr"] and cmd[2] == "create":
+            return subprocess.CompletedProcess(cmd, 0, stdout=f"{pr_url}\n", stderr="")
+        return real_run(cmd, **kwargs)
+
+    return fake_run
+
+
+def test_archive_openspec_change_runs_archive_and_opens_pr(tmp_path, monkeypatch):
+    repo = _init_repo_with_origin(tmp_path, "repo-a")
+    finding = {"repo": repo, "repo_name": "repo-a", "spec_id": "add-export"}
+
+    monkeypatch.setattr(
+        drain.subprocess, "run",
+        _fake_gh_and_openspec_archive_subprocess_run("https://example.invalid/pr/9"))
+
+    result = archive_openspec_change(
+        finding, "claude", 30, lambda c, t: SpawnOutcome(0), lambda _l: None)
+
+    assert result == {"repo": "repo-a", "spec_id": "add-export",
+                       "pr_url": "https://example.invalid/pr/9"}
+    committed = subprocess.run(
+        ["git", "-C", str(repo), "show", "chore/archive-add-export:ARCHIVED.marker"],
+        capture_output=True, text=True, check=True).stdout
+    assert committed == "archived\n"
+
+
+def test_archive_openspec_change_existing_pr_skips_rearchiving(tmp_path, monkeypatch):
+    repo = _init_repo_with_origin(tmp_path, "repo-a")
+    finding = {"repo": repo, "repo_name": "repo-a", "spec_id": "add-export"}
+    calls = []
+    real_run = subprocess.run
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[:2] == ["gh", "pr"] and cmd[2] == "list":
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout="https://example.invalid/pr/5\n", stderr="")
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(drain.subprocess, "run", fake_run)
+
+    result = archive_openspec_change(
+        finding, "claude", 30, lambda c, t: SpawnOutcome(0), lambda _l: None)
+
+    assert result == {"repo": "repo-a", "spec_id": "add-export",
+                       "pr_url": "https://example.invalid/pr/5"}
+    assert not any(c[:2] == ["openspec", "archive"] for c in calls)
+    assert not any(c[:2] == ["gh", "pr"] and c[2] == "create" for c in calls)
+
+
+def test_archive_openspec_change_gh_pr_create_failure_raises(tmp_path, monkeypatch):
+    repo = _init_repo_with_origin(tmp_path, "repo-a")
+    finding = {"repo": repo, "repo_name": "repo-a", "spec_id": "add-export"}
+    real_run = subprocess.run
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:2] == ["openspec", "archive"]:
+            Path(kwargs["cwd"], "ARCHIVED.marker").write_text("archived\n")
+            return subprocess.CompletedProcess(cmd, 0, stdout="archived\n", stderr="")
+        if cmd[:2] == ["gh", "pr"] and cmd[2] == "list":
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if cmd[:2] == ["gh", "pr"] and cmd[2] == "create":
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="label not found")
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(drain.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="gh pr create failed"):
+        archive_openspec_change(
+            finding, "claude", 30, lambda c, t: SpawnOutcome(0), lambda _l: None)
+
+
 def test_resume_sync_pending_invokes_skill_dispatch_once_per_spec(tmp_path):
     repo = _make_repo(tmp_path, "repo-a")
     _write_sync_pending_spec(repo, "spec-a")
@@ -1684,6 +1850,7 @@ def test_drain_sweeps_verify_pending_at_pre_and_post_loop_points(tmp_path, monke
     assert "resumed_verify_pending" in summary
     assert "resumed_stale_bookkeeping" in summary
     assert "resumed_sync_pending" in summary
+    assert "resumed_openspec_archive" in summary
 
 
 # ---------------------------------------------------------------------------
@@ -1731,10 +1898,19 @@ def test_sweep_remediations_isolates_per_finding_failure(monkeypatch):
     def ok_action(finding, agent, timeout, spawner, log):
         return {"repo": finding["repo_name"], "spec_id": finding["spec_id"]}
 
+    def openspec_archive_finder(repos_root, go_repo):
+        return [{"repo_name": "repo-d", "spec_id": "add-export"}]
+
+    def openspec_archive_action(finding, agent, timeout, spawner, log):
+        return {"repo": finding["repo_name"], "spec_id": finding["spec_id"],
+                "pr_url": "https://example.invalid/pr/1"}
+
     logs = []
     fake_table = [
         StageRemediation("flaky", "flaky-label", failing_finder, failing_action),
         StageRemediation("ok", "ok-label", ok_finder, ok_action),
+        StageRemediation("openspec_archive", "archive-openspec-change",
+                          openspec_archive_finder, openspec_archive_action),
     ]
     monkeypatch.setattr(drain, "REMEDIATION_TABLE", fake_table)
 
@@ -1744,8 +1920,11 @@ def test_sweep_remediations_isolates_per_finding_failure(monkeypatch):
     # repo-a's failure is caught and logged; repo-b (same row) still runs.
     assert results["flaky"] == [{"repo": "repo-b", "spec_id": "spec-b"}]
     assert any("flaky-label error" in line and "repo-a" in line for line in logs)
-    # The other row is unaffected by the first row's failure.
+    # The other rows are unaffected by the first row's failure, including the
+    # new openspec_archive row.
     assert results["ok"] == [{"repo": "repo-c", "spec_id": "spec-c"}]
+    assert results["openspec_archive"] == [
+        {"repo": "repo-d", "spec_id": "add-export", "pr_url": "https://example.invalid/pr/1"}]
 
 
 def test_sweep_remediations_keys_filter_restricts_rows(monkeypatch):
@@ -1775,7 +1954,7 @@ def test_remediation_table_excludes_orchestrator_stuck():
     assert "fanout_failed" not in keys
     assert keys == {
         "quarantined_budget_exhausted", "verify_pending",
-        "stale_bookkeeping", "sync_pending",
+        "stale_bookkeeping", "sync_pending", "openspec_archive",
     }
 
 
