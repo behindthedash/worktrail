@@ -1048,6 +1048,52 @@ class ReconcileUnreconciledTailEvidence(unittest.TestCase):
             self.assertEqual(journal["groups"]["tail-t023"]["state"], "OPEN")
 
 
+class QuarantinedTailGroupPickedUpByQuarantineSelfcheck(unittest.TestCase):
+    """Regression test for design.md's "no dashboard change needed" claim: a
+    synthetic `tail-<task-id>` group that reconcile_unreconciled_tail_evidence
+    quarantines is just another QUARANTINED entry in `journal["groups"]` --
+    quarantine_selfcheck.check_repo() needs no awareness of the tail-specific
+    naming to surface it, because it keys off `state`, not group-name shape.
+    """
+
+    def test_quarantined_tail_group_surfaces_as_finding(self):
+        from worktrail.router import quarantine_selfcheck
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir) / "myrepo"
+            (repo / ".git").mkdir(parents=True)
+            worktrees_dir = repo.parent / "myrepo-worktrees"
+            worktrees_dir.mkdir()
+            journal_path = worktrees_dir / "run-spec-001.json"
+            journal_path.write_text(json.dumps({"run_id": "run-1"}) + "\n")
+
+            run = ReconcileUnreconciledTailEvidence._GhWorldHelper(
+                conflict_branches={"spec-001/t022"}
+            )
+            findings = [{"task": "T022", "worktree": "/x", "head_sha": "abc123"}]
+            task = _tail_task("T022", "e2e", status="done")
+
+            with patch("worktrail.orchestrator.integrate._git", side_effect=run):
+                with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
+                    integrate.reconcile_unreconciled_tail_evidence(
+                        findings, repo, "spec-001", [task], "origin",
+                        "run-1", "main", str(journal_path),
+                    )
+
+            journal = json.loads(journal_path.read_text())
+            self.assertEqual(journal["groups"]["tail-t022"]["state"], "QUARANTINED")
+
+            result = quarantine_selfcheck.check_repo(repo)
+
+            self.assertEqual(len(result["findings"]), 1)
+            finding = result["findings"][0]
+            self.assertEqual(finding["spec_id"], "spec-001")
+            self.assertEqual(finding["group"], "tail-t022")
+            self.assertEqual(finding["quarantine_reason"], integrate.QUARANTINE_MERGE_CONFLICT)
+            self.assertEqual(result["reconciled"], [])
+            self.assertEqual(result["resumable"], [])
+
+
 class IntegrationSmokeTest(unittest.TestCase):
     """Option-3: policy integrate_smoke_cmd gate on a group's integration branch."""
 
