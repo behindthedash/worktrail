@@ -112,6 +112,7 @@ from ..router.policy_selfcheck import discover_repo_names
 from ..router.pr_labels import ensure_pr_risk_label
 from ..shared.homedir import worktrail_home
 from ..taskformats.devkit.schema import set_status_completed
+from ..workqueue import seed_backlog as seed_backlog_mod
 
 PROMPT = (
     "worktrail-go auto. This is an unattended drain one-shot: keep this process "
@@ -1204,6 +1205,7 @@ class DrainConfig:
     queue_dir: Optional[Path] = None
     dry_run: bool = False
     repos_root: Optional[Path] = None
+    seed_backlog: bool = True
 
 
 @dataclass
@@ -1261,11 +1263,24 @@ def drain(config: DrainConfig,
     # picks it back up automatically, no restart or config edit required.
     candidates = [config.agent] + list(config.fallback_agents)
     active_agent = config.agent
+    seeded_backlog: Dict[str, Any] = {}
     try:
         if config.repos_root is not None and not config.dry_run:
             resumed = sweep_remediations(
                 config.repos_root, config.go_repo, active_agent,
                 config.iteration_timeout, spawner, log)
+            if config.seed_backlog:
+                # Top the queue up from backlog invisible to auto mode
+                # (needs-tasks specs, under-specced epics) BEFORE the loop's
+                # first ready-count check, so freshly seeded briefs drain in
+                # this same pass. Best-effort like the sweep: a seeding
+                # failure never aborts the drain.
+                try:
+                    seeded_backlog = seed_backlog_mod.seed_backlog(
+                        config.repos_root, config.go_repo,
+                        queue_base=config.queue_dir, log=log)
+                except Exception as exc:  # noqa: BLE001
+                    log(f"seed-backlog error: {exc}")
         cmd = build_command(active_agent, config.permission_args,
                             config.agent_cmd, config.go_repo)
         while True:
@@ -1388,6 +1403,7 @@ def drain(config: DrainConfig,
         "resumed_verify_pending": resumed.get("verify_pending", []),
         "resumed_stale_bookkeeping": resumed.get("stale_bookkeeping", []),
         "resumed_sync_pending": resumed.get("sync_pending", []),
+        "seeded_backlog": seeded_backlog,
         "elapsed_s": int(clock() - started),
     }
     if pending_approvals:
@@ -1451,6 +1467,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                         help="swept before and after each drain pass for QUARANTINED/"
                              "budget_exhausted groups (quarantine_selfcheck), each resumed "
                              "with a plain full-real re-run; a nonexistent path is a no-op")
+    parser.add_argument("--no-seed-backlog", action="store_true",
+                        help="skip the pre-loop backlog seeding step (needs-tasks "
+                             "specs and under-specced epics are then not converted "
+                             "into queue briefs this pass)")
     parser.add_argument("--dry-run", action="store_true",
                         help="report the first decision + command, launch nothing")
     parser.add_argument("--json", action="store_true", dest="as_json",
@@ -1478,6 +1498,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         queue_dir=args.queue_dir,
         dry_run=args.dry_run,
         repos_root=args.repos_root,
+        seed_backlog=not args.no_seed_backlog,
     )
     try:
         summary = drain(config)

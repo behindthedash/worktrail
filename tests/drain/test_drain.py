@@ -1962,3 +1962,82 @@ def test_nightly_drain_summary_contract_distinguishes_capacity_and_breaker():
     assert stop_semantics(
         "circuit_breaker: 2 consecutive failed iterations"
     ) == {"kind": "circuit_breaker", "operator_alert": True}
+
+
+# ---------------------------------------------------------------------------
+# Backlog seeding (pre-loop queue top-up)
+
+
+def _make_needs_tasks_repo(repos_root, name, spec_id):
+    repo = repos_root / name
+    (repo / ".git").mkdir(parents=True)
+    spec_dir = repo / "docs" / "specs" / spec_id
+    spec_dir.mkdir(parents=True)
+    (spec_dir / "spec.md").write_text("# Spec\n\nApproved, no markers.\n")
+    return repo
+
+
+def test_drain_seeds_backlog_before_loop(tmp_path, monkeypatch):
+    repos_root = tmp_path / "projects"
+    _make_needs_tasks_repo(repos_root, "repo-a", "010-alpha")
+    queue_base = tmp_path / "wq"
+    monkeypatch.setenv("WORK_QUEUE_DIR", str(queue_base))
+    fake = FakeQueue([0])
+    install_fake_queue(monkeypatch, fake)
+    config = make_config(tmp_path, repos_root=repos_root)
+
+    summary = drain.drain(config, spawner=lambda c, t: SpawnOutcome(0),
+                          log=lambda _l: None)
+
+    seeded = summary["seeded_backlog"]["seeded"]
+    assert [s["seed_key"] for s in seeded] == ["repo-a:spec:010-alpha"]
+    assert len(list((queue_base / "queue").glob("*.md"))) == 1
+
+
+def test_drain_no_seed_backlog_opt_out(tmp_path, monkeypatch):
+    repos_root = tmp_path / "projects"
+    _make_needs_tasks_repo(repos_root, "repo-a", "010-alpha")
+    queue_base = tmp_path / "wq"
+    monkeypatch.setenv("WORK_QUEUE_DIR", str(queue_base))
+    fake = FakeQueue([0])
+    install_fake_queue(monkeypatch, fake)
+    config = make_config(tmp_path, repos_root=repos_root, seed_backlog=False)
+
+    summary = drain.drain(config, spawner=lambda c, t: SpawnOutcome(0),
+                          log=lambda _l: None)
+
+    assert summary["seeded_backlog"] == {}
+    assert not (queue_base / "queue").is_dir()
+
+
+def test_drain_seed_backlog_failure_never_aborts(tmp_path, monkeypatch):
+    repos_root = tmp_path / "projects"
+    (repos_root / "repo-a" / ".git").mkdir(parents=True)
+    fake = FakeQueue([0])
+    install_fake_queue(monkeypatch, fake)
+    config = make_config(tmp_path, repos_root=repos_root)
+
+    def boom(*_a, **_k):
+        raise RuntimeError("queue dir unwritable")
+
+    monkeypatch.setattr(drain.seed_backlog_mod, "seed_backlog", boom)
+    logs = []
+    summary = drain.drain(config, spawner=lambda c, t: SpawnOutcome(0),
+                          log=logs.append)
+    assert summary["stopped"].startswith("queue_empty")
+    assert any("seed-backlog error" in line for line in logs)
+
+
+def test_drain_dry_run_never_seeds(tmp_path, monkeypatch):
+    repos_root = tmp_path / "projects"
+    _make_needs_tasks_repo(repos_root, "repo-a", "010-alpha")
+    queue_base = tmp_path / "wq"
+    monkeypatch.setenv("WORK_QUEUE_DIR", str(queue_base))
+    fake = FakeQueue([1])
+    install_fake_queue(monkeypatch, fake)
+    config = make_config(tmp_path, repos_root=repos_root, dry_run=True)
+
+    summary = drain.drain(config, spawner=lambda c, t: SpawnOutcome(0),
+                          log=lambda _l: None)
+    assert summary["seeded_backlog"] == {}
+    assert not (queue_base / "queue").is_dir()

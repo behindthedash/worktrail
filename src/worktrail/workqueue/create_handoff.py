@@ -108,6 +108,7 @@ def create_handoff(
     triage: Optional[str] = None,
     blocked_by: Optional[Iterable[str]] = None,
     watch: Optional[Iterable[str]] = None,
+    seeded_from: Optional[str] = None,
 ) -> dict[str, Any]:
     """Create one queued brief and auto-link high-confidence neighbours."""
     focus = focus.strip()
@@ -151,6 +152,7 @@ def create_handoff(
         ("change-kind", change_kind),
         ("target-spec", target_spec),
         ("triage", triage),
+        ("seeded-from", seeded_from),
     ):
         if value:
             frontmatter[key] = value
