@@ -368,14 +368,29 @@ def _format_unreconciled_tail_note(findings: "list[dict]") -> "str | None":
     findings -- terminal tail-kind (e2e/cleanup) tasks whose own commits never
     got merged onto base, so the run must not report unqualified success.
     Returns None for empty findings so callers can `if note:`.
+
+    When findings carry `reconcile_state`/`reconcile_pr_url` (i.e. they went
+    through `integrate.reconcile_unreconciled_tail_evidence`), each entry is
+    annotated with that outcome so the console log doesn't read as still
+    purely manual -- the fuller per-state wording lives in
+    `journal_selfcheck.py`'s dashboard finding, not here.
     """
     if not findings:
         return None
+
+    def _entry(f: dict) -> str:
+        state = f.get("reconcile_state")
+        suffix = f" reconcile={state}" if state else ""
+        pr_url = f.get("reconcile_pr_url")
+        if pr_url and state in ("opened", "already-open"):
+            suffix += f" {pr_url}"
+        return f"{f['task']} (sha {f['head_sha']} @ {f['worktree']}{suffix})"
+
     return (
         f"!! {len(findings)} tail task(s) completed with unreconciled evidence "
         f"(commits never merged onto base -- reconcile before worktree cleanup, "
         f"see journal `unreconciled_tail_evidence`): "
-        + ", ".join(f"{f['task']} (sha {f['head_sha']} @ {f['worktree']})" for f in findings)
+        + ", ".join(_entry(f) for f in findings)
     )
 
 
