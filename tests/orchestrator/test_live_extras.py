@@ -546,8 +546,8 @@ class LiveSpawnRoleAgentsTests(unittest.TestCase):
 
 class RoleAgentModelHelperTests(unittest.TestCase):
     """_role_agent_model is the shared per-role (agent, model) resolution used by
-    both assembly-resolve spawn sites (pipeline scheduler and the non-pipeline
-    finish_real call). Same semantics as LiveSpawn.__call__."""
+    the pipeline scheduler's assembly-resolve spawn site. Same semantics as
+    LiveSpawn.__call__."""
 
     ROLE = "assembly-resolve"
 

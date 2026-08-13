@@ -141,7 +141,7 @@ DEFAULTS: Dict[str, Any] = {
     # through as `--merge-method` (see references/subagent-prompts.md#orchestrator).
     "merge_method_by_base": {},
     # Optional bounded wait (seconds) between the orchestrator's group PR
-    # creations: before opening group N+1's PR, finish_real waits up to this
+    # creations: before opening group N+1's PR, the orchestrator waits up to this
     # long for group N's PR checks to resolve (or the PR to merge/close).
     # Prevents N sibling group PRs from hitting a shared self-hosted CI runner
     # pool simultaneously (the "open orchestrator PRs sequentially" rule,

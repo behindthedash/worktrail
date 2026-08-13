@@ -20,7 +20,8 @@ task-status commits), the real `verify` merge/confirm flow (the fake `gh pr
 merge` genuinely advances the bare remote's base ref), the real journal
 resume logic, and the real RunLock.
 
-Matrix: {devkit, openspec} × {sequential, --pipeline} × {fresh, kill+resume}.
+Matrix: {devkit, openspec} × {fresh, kill+resume}, on the pipelined engine
+(full-real's only scheduler since scheduler-consolidation stage 2).
 
 Run: pytest tests/orchestrator/lifecycle/ -q
 """
@@ -233,7 +234,7 @@ class ScriptedWorker:
         )
 
 
-def _run_full_real(repo: Path, spec_rel: str, env: dict, *, pipeline: bool,
+def _run_full_real(repo: Path, spec_rel: str, env: dict, *,
                    resume: bool = True, worker: "ScriptedWorker | None" = None) -> dict:
     """Invoke the real `_full_real_inner` with only LiveSpawn + sleep patched."""
     worker = worker or ScriptedWorker()
@@ -247,7 +248,6 @@ def _run_full_real(repo: Path, spec_rel: str, env: dict, *, pipeline: bool,
                     base="main",
                     max_workers=3,
                     timeout=60,
-                    pipeline=pipeline,
                     resume=resume,
                 )
     result["_worker"] = worker
@@ -283,11 +283,11 @@ class _LifecycleCase(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------- #
-# Fresh lifecycle: devkit format, both schedulers
+# Fresh lifecycle: devkit format
 # --------------------------------------------------------------------------- #
 
 class DevkitFreshLifecycle(_LifecycleCase):
-    def _run(self, pipeline: bool):
+    def _run(self):
         import tempfile
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -296,7 +296,7 @@ class DevkitFreshLifecycle(_LifecycleCase):
             remote = _publish_to_bare_origin(repo, tmp)
             env = _install_fake_gh(tmp, remote)
 
-            _run_full_real(repo, DEVKIT_SPEC_REL, env, pipeline=pipeline)
+            _run_full_real(repo, DEVKIT_SPEC_REL, env)
 
             self.assert_all_groups_merged(repo, DEVKIT_SPEC_REL)
             # The work actually landed on the REMOTE base branch.
@@ -312,19 +312,16 @@ class DevkitFreshLifecycle(_LifecycleCase):
                 self.assertIsNotNone(fm)
                 self.assertIn("status: completed", fm)
 
-    def test_sequential(self):
-        self._run(pipeline=False)
-
     def test_pipeline(self):
-        self._run(pipeline=True)
+        self._run()
 
 
 # --------------------------------------------------------------------------- #
-# Fresh lifecycle + fresh-rerun skip: openspec format, both schedulers
+# Fresh lifecycle + fresh-rerun skip: openspec format
 # --------------------------------------------------------------------------- #
 
 class OpenspecFreshLifecycle(_LifecycleCase):
-    def _run(self, pipeline: bool):
+    def _run(self):
         import tempfile
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -334,7 +331,7 @@ class OpenspecFreshLifecycle(_LifecycleCase):
             env = _install_fake_gh(tmp, remote)
             _precompile_openspec_runplan(repo)
 
-            _run_full_real(repo, OPENSPEC_SPEC_REL, env, pipeline=pipeline)
+            _run_full_real(repo, OPENSPEC_SPEC_REL, env)
 
             self.assert_all_groups_merged(repo, OPENSPEC_SPEC_REL)
             tasks_md = _remote_file(remote, "openspec/changes/001-x/tasks.md")
@@ -349,7 +346,7 @@ class OpenspecFreshLifecycle(_LifecycleCase):
             _git(repo, "fetch", "-q", "origin")
             _git(repo, "reset", "-q", "--hard", "origin/main")
             rerun = _run_full_real(
-                repo, OPENSPEC_SPEC_REL, env, pipeline=pipeline, resume=False
+                repo, OPENSPEC_SPEC_REL, env, resume=False
             )
             implements = [
                 c for c in rerun["_worker"].calls if c[1] in ("implement", "fix")
@@ -359,25 +356,22 @@ class OpenspecFreshLifecycle(_LifecycleCase):
                 f"fresh rerun redispatched completed tasks: {implements}",
             )
 
-    def test_sequential(self):
-        self._run(pipeline=False)
-
     def test_pipeline(self):
-        self._run(pipeline=True)
+        self._run()
 
 
 # --------------------------------------------------------------------------- #
 # Kill mid-fan-out, then resume — the #235/#238 incident shape, for real
 # --------------------------------------------------------------------------- #
 
-def _child_run(repo_s: str, spec_rel: str, env: dict, pipeline: bool):
+def _child_run(repo_s: str, spec_rel: str, env: dict):
     """Child-process body: dies via os._exit inside the worker on TASK-003."""
     worker = ScriptedWorker(exit_on=("TASK-003", "implement"))
-    _run_full_real(Path(repo_s), spec_rel, env, pipeline=pipeline, worker=worker)
+    _run_full_real(Path(repo_s), spec_rel, env, worker=worker)
 
 
 class KillAndResume(_LifecycleCase):
-    def _run(self, pipeline: bool):
+    def _run(self):
         import tempfile
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -388,7 +382,7 @@ class KillAndResume(_LifecycleCase):
 
             ctx = multiprocessing.get_context("fork")
             child = ctx.Process(
-                target=_child_run, args=(str(repo), DEVKIT_SPEC_REL, env, pipeline)
+                target=_child_run, args=(str(repo), DEVKIT_SPEC_REL, env)
             )
             child.start()
             child.join(timeout=120)
@@ -397,7 +391,7 @@ class KillAndResume(_LifecycleCase):
 
             # Resume in-process: must finish everything without re-implementing
             # what the dead run already completed.
-            result = _run_full_real(repo, DEVKIT_SPEC_REL, env, pipeline=pipeline)
+            result = _run_full_real(repo, DEVKIT_SPEC_REL, env)
 
             self.assert_all_groups_merged(repo, DEVKIT_SPEC_REL)
             for tid in ("task-001", "task-002", "task-003"):
@@ -413,11 +407,8 @@ class KillAndResume(_LifecycleCase):
                 "resume re-implemented TASK-001, which the dead run completed",
             )
 
-    def test_sequential(self):
-        self._run(pipeline=False)
-
     def test_pipeline(self):
-        self._run(pipeline=True)
+        self._run()
 
 
 # --------------------------------------------------------------------------- #
@@ -427,7 +418,7 @@ class KillAndResume(_LifecycleCase):
 # --------------------------------------------------------------------------- #
 
 class SquashMergedDependencyCarryLifecycle(_LifecycleCase):
-    def _run(self, pipeline: bool):
+    def _run(self):
         import tempfile
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -442,7 +433,7 @@ class SquashMergedDependencyCarryLifecycle(_LifecycleCase):
             # branches are gone by then, so `dependency_start_ref` falls back to
             # the run-start local base, which predates their squash-merges. This
             # call must complete without raising it.
-            _run_full_real(repo, DEVKIT_SPEC_REL, env, pipeline=pipeline)
+            _run_full_real(repo, DEVKIT_SPEC_REL, env)
 
             # The three impl groups (base/feature-1/feature-2) really did merge
             # into the remote base -- the squash-merge boundary TASK-004's carry
@@ -469,11 +460,8 @@ class SquashMergedDependencyCarryLifecycle(_LifecycleCase):
                     f"TASK-004 worktree missing carried {tid}.txt",
                 )
 
-    def test_sequential(self):
-        self._run(pipeline=False)
-
     def test_pipeline(self):
-        self._run(pipeline=True)
+        self._run()
 
 
 if __name__ == "__main__":

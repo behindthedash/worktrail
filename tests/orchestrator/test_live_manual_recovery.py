@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
-"""Tests for manual recovery: integrate_complete skip and --from-verify entry point.
-
-Covers AC-020 (skip finish_real when integrate_complete set), AC-023 (re-enter
-incomplete groups), and AC-027 (test: resume with integrate_complete set skips
-finish_real and invokes verify_and_cleanup).
+"""Tests for manual recovery: the --from-verify entry point, --re-integrate
+journal clearing, and the skip/clear-task journal-repair commands.
 
 Run: python3 scripts/test_live_manual_recovery.py
 """
@@ -20,33 +17,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from worktrail.orchestrator import live  # noqa: E402
 
 
-class IntegrateCompleteDetection(unittest.TestCase):
-    """AC-020: When a journal has integrate_complete set with complete group records,
-    the logic correctly detects this and skips finish_real."""
-
-    def test_detect_complete_groups_vs_incomplete(self):
-        """Test the detection logic for complete vs incomplete groups."""
-        # Complete groups (all have pr_url)
-        complete_journal = {
-            "groups": {
-                "base": {"pr_url": "https://...", "head_branch": "run/base"},
-                "feature": {"pr_url": "https://...", "head_branch": "run/feature"},
-            }
-        }
-        journal_groups = complete_journal.get("groups", {})
-        incomplete = [name for name, rec in journal_groups.items() if not rec.get("pr_url")]
-        self.assertEqual(incomplete, [])
-
-        # Incomplete groups (one missing pr_url)
-        incomplete_journal = {
-            "groups": {
-                "base": {"pr_url": "https://...", "head_branch": "run/base"},
-                "feature": {"head_branch": "run/feature"},  # No pr_url
-            }
-        }
-        journal_groups = incomplete_journal.get("groups", {})
-        incomplete = [name for name, rec in journal_groups.items() if not rec.get("pr_url")]
-        self.assertEqual(incomplete, ["feature"])
+class GroupBranchReconstruction(unittest.TestCase):
+    """--from-verify reconstructs group_branch from the journal's per-group
+    integrate records."""
 
     def test_reconstruct_group_branch_from_journal(self):
         """Test reconstruction of group_branch dict from journal records."""
@@ -63,29 +36,6 @@ class IntegrateCompleteDetection(unittest.TestCase):
 
         self.assertEqual(group_branch["base"], "run-123/base")
         self.assertEqual(group_branch["feature"], "run-123/feature")
-
-    def test_all_integrated_detection(self):
-        """#3: finish_real is SKIPPED only when EVERY journal group already has a
-        pr_url; if any is missing, finish_real runs (it is reconcile-safe and
-        returns a complete group_branch). This replaces a broken partial-re-entry
-        that passed an unsupported only_groups= kwarg -> TypeError."""
-        complete = {"base": {"pr_url": "u1"}, "feature": {"pr_url": "u2"}}
-        all_integrated = bool(complete and all(r.get("pr_url") for r in complete.values()))
-        self.assertTrue(all_integrated)  # -> skip finish_real
-
-        partial = {"base": {"pr_url": "u1"}, "feature": {"head_branch": "x"}}
-        all_integrated = bool(partial and all(r.get("pr_url") for r in partial.values()))
-        self.assertFalse(all_integrated)  # -> call finish_real (reconcile-safe)
-
-    def test_finish_real_rejects_only_groups_kwarg(self):
-        """Guard: the broken kwarg is gone -- finish_real must NOT accept only_groups
-        (the old call would raise TypeError on the resume path)."""
-        import inspect
-
-        from worktrail.orchestrator import integrate
-
-        params = inspect.signature(integrate.finish_real).parameters
-        self.assertNotIn("only_groups", params)
 
 
 class FromVerifyLogicTests(unittest.TestCase):
@@ -163,7 +113,7 @@ class JournalWritingTests(unittest.TestCase):
 
 class ReIntegrateClearsState(unittest.TestCase):
     """item 4: --re-integrate clears the integrate_complete marker + per-group records
-    so finish_real rebuilds them, instead of an operator hand-editing the journal."""
+    so integration rebuilds them, instead of an operator hand-editing the journal."""
 
     def test_clears_marker_and_groups_preserving_entries(self):
         journal = {

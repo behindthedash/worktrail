@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from collections import deque, namedtuple
@@ -22,6 +24,9 @@ from unittest.mock import patch
 
 from worktrail.orchestrator import coordinator
 from worktrail.orchestrator import integrate
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from test_integrate import integrate_groups  # noqa: E402
 
 Proc = namedtuple("Proc", "returncode stdout stderr")
 
@@ -164,7 +169,7 @@ class IntegrateCompleteMarker(unittest.TestCase):
                         group = mock_group("base", ["T001"])
                         mock_groups.return_value = [group]
 
-                        prs, _, _ = integrate.finish_real(
+                        prs, _, _ = integrate_groups(
                             Path("/repo"),
                             "spec-001",
                             [mock_task("T001")],
@@ -209,7 +214,7 @@ class IntegrateCompleteMarker(unittest.TestCase):
                         group = mock_group("base", ["T001"])
                         mock_groups.return_value = [group]
 
-                        prs, _, _ = integrate.finish_real(
+                        prs, _, _ = integrate_groups(
                             Path("/repo"),
                             "spec-001",
                             [mock_task("T001")],
@@ -258,7 +263,7 @@ class PerGroupIntegrateRecords(unittest.TestCase):
                         group = mock_group("base", ["T001"])
                         mock_groups.return_value = [group]
 
-                        prs, _, _ = integrate.finish_real(
+                        prs, _, _ = integrate_groups(
                             Path("/repo"),
                             "spec-001",
                             [mock_task("T001")],
@@ -308,7 +313,7 @@ class PerGroupIntegrateRecords(unittest.TestCase):
                         group = mock_group("base", ["T001"])
                         mock_groups.return_value = [group]
 
-                        prs, _, _ = integrate.finish_real(
+                        prs, _, _ = integrate_groups(
                             Path("/repo"),
                             "spec-001",
                             [mock_task("T001")],
@@ -360,7 +365,7 @@ class OperatorPRDiscovery(unittest.TestCase):
                         group = mock_group("base", ["T001"])
                         mock_groups.return_value = [group]
 
-                        prs, _, _ = integrate.finish_real(
+                        prs, _, _ = integrate_groups(
                             Path("/repo"),
                             "spec-001",
                             [mock_task("T001")],
@@ -410,7 +415,7 @@ class OperatorPRDiscovery(unittest.TestCase):
                         group = mock_group("base", ["T001"])
                         mock_groups.return_value = [group]
 
-                        prs, _, _ = integrate.finish_real(
+                        prs, _, _ = integrate_groups(
                             Path("/repo"),
                             "spec-001",
                             [mock_task("T001")],
@@ -445,7 +450,7 @@ class OperatorPRDiscovery(unittest.TestCase):
                     group = mock_group("base", ["T001"])
                     mock_groups.return_value = [group]
 
-                    prs, _, _ = integrate.finish_real(
+                    prs, _, _ = integrate_groups(
                         Path("/repo"),
                         "spec-001",
                         [mock_task("T001")],
@@ -507,7 +512,7 @@ class MultipleGroupsWithOperatorPR(unittest.TestCase):
                         feat2 = mock_group("feature-2", ["T003"], depends_on=["base"])
                         mock_groups.return_value = [base, feat1, feat2]
 
-                        prs, _, _ = integrate.finish_real(
+                        prs, _, _ = integrate_groups(
                             Path("/repo"),
                             "spec-001",
                             [mock_task("T001"), mock_task("T002"), mock_task("T003")],

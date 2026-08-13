@@ -11,7 +11,6 @@ import json
 import os
 import sys
 import tempfile
-import types
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -255,15 +254,10 @@ class FullRealInnerFreshDiscardsForeignJournalTest(unittest.TestCase):
 
             fake_git = MagicMock()
             fake_git.stdout = "dev"
-            fake_integrate = types.ModuleType("integrate")
-            fake_integrate.finish_real = MagicMock(return_value=([], {}, {}))
-            fake_verify = types.ModuleType("verify")
-            fake_verify.verify_and_cleanup = MagicMock(return_value={"quarantined": {}, "merged": []})
-            fake_verify._make_live_spawn = MagicMock(return_value=MagicMock())
 
             current_tasks = [{"id": "1.1", "status": "pending"}]
 
-            with patch.dict(sys.modules, {"integrate": fake_integrate, "verify": fake_verify}), patch(
+            with patch(
                 "worktrail.orchestrator.live._git", return_value=fake_git
             ), patch(
                 "worktrail.orchestrator.live.journal_path_for", return_value=journal_path
@@ -271,18 +265,13 @@ class FullRealInnerFreshDiscardsForeignJournalTest(unittest.TestCase):
                 "worktrail.orchestrator.live.taskformats.load_spec",
                 return_value=("spec-id", current_tasks),
             ), patch(
-                "worktrail.orchestrator.live.live_run_real",
-                return_value={"spec_id": "spec-id", "tasks": current_tasks, "entries": 0, "done": 0, "total": 0},
-            ) as mock_lrr, patch(
+                "worktrail.orchestrator.live._pipeline_scheduler",
+                return_value={"group_prs": [], "final": None, "quarantined": {}, "merged": []},
+            ) as mock_sched, patch(
                 "worktrail.orchestrator.live.read_or_create_run_id", return_value="full-fresh-test"
             ), patch(
-                "worktrail.orchestrator.live.coordinator"
-            ) as mock_coord, patch(
                 "worktrail.orchestrator.live.progress"
             ):
-                mock_coord.plan_groups.return_value = []
-                mock_coord.deliverable_subset.return_value = ([], [])
-
                 try:
                     live._full_real_inner(
                         "/tmp/fake-repo",
@@ -300,7 +289,7 @@ class FullRealInnerFreshDiscardsForeignJournalTest(unittest.TestCase):
             # --fresh (resume=False) discards the journal before the guard's
             # resume block is ever reached.
             self.assertFalse(Path(journal_path).exists())
-            mock_lrr.assert_called_once()
+            mock_sched.assert_called_once()
 
 
 if __name__ == "__main__":

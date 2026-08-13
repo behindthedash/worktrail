@@ -456,19 +456,25 @@ class TestStalledExternalDepSurfacesThroughHeartbeat(unittest.TestCase):
             )
             tasks = _load(repo, "docs/specs/099-y")
             self.assertFalse(tasks[0]["external_deps_ok"])
-
-            detail = live._fanout_incomplete_detail(tasks, with_tail=False)
-            self.assertEqual(detail["failed_tasks"], [])
-            self.assertEqual(len(detail["blocked_tasks"]), 1)
-            self.assertIn("098-x-missing/TASK-036", detail["blocked_tasks"][0]["blocked_by"][0])
+            self.assertIn("098-x-missing/TASK-036", tasks[0]["external_deps_blockers"][0])
 
             journal_path = live.journal_path_for(repo, "docs/specs/099-y")
+            # The detail shape a stalled run's fanout_failed heartbeat carries
+            # (originally written by the deleted serial scheduler's
+            # `_fanout_incomplete_detail`; legacy journals with this sidecar
+            # still surface through precheck's read-back).
             progress.set_phase(
                 journal_path,
                 "fanout_failed",
                 detail={
-                    "failed_tasks": detail["failed_tasks"],
-                    "blocked_tasks": detail["blocked_tasks"],
+                    "failed_tasks": [],
+                    "blocked_tasks": [
+                        {
+                            "id": "TASK-038",
+                            "status": "pending",
+                            "blocked_by": list(tasks[0]["external_deps_blockers"]),
+                        }
+                    ],
                 },
             )
 
