@@ -357,6 +357,7 @@ def compile_run_plan(
     cache_dir: "str | Path | None" = None,
     allow_llm: bool = True,
     force: bool = False,
+    allow_force_over_active_worktrees: bool = False,
     timeout: int = COMPILE_TIMEOUT_DEFAULT,
     spawn: Optional[Callable[..., str]] = None,
     log: Callable[[str], None] = lambda *_: None,
@@ -366,6 +367,18 @@ def compile_run_plan(
     `spawn(prompt, cwd, timeout, log) -> str` is injectable so the cache
     behaviour can be tested without a model, and so a caller can route the
     compile through its own agent policy.
+
+    `force` re-invokes the model even on a cache hit -- deliberately, so a
+    human can retry a compile that produced a bad plan (the CLI's own
+    scope/ordering-gap errors suggest exactly this). The model call is not
+    deterministic, so two forced recompiles of unchanged content can produce
+    two different (each individually valid) dependency graphs. That is safe
+    before any task worktree exists for this spec; once one does, its files
+    were fanned out under whatever plan is currently cached, and silently
+    replacing that plan out from under it is how a resumed run ends up
+    disagreeing with the work already in progress. `force` therefore refuses
+    to overwrite an existing cache entry while task worktrees exist for this
+    spec, unless the caller passes `allow_force_over_active_worktrees=True`.
     """
     spec_dir = Path(spec_dir)
     repo = Path(repo).resolve()
@@ -377,6 +390,19 @@ def compile_run_plan(
         if cached is not None:
             log(f"run plan: cache hit {fp[:12]} ({cached.source})")
             return cached
+    else:
+        cached = runplan.load_cached(cache_dir, spec_id, fp)
+        if cached is not None and not allow_force_over_active_worktrees:
+            from worktrail.orchestrator import worktree as _worktree
+
+            if _worktree.has_task_worktrees(repo, spec_id):
+                log(
+                    f"run plan: --force refused ({fp[:12]}) -- task worktree(s) already "
+                    f"exist for {spec_id} and were fanned out under the currently cached "
+                    "plan; a non-deterministic recompile could disagree with that "
+                    "in-progress work. Pass allow_force_over_active_worktrees to override."
+                )
+                return cached
 
     gaps = needs_compile(tasks)
     if not gaps:
@@ -467,6 +493,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("spec", help="path to the spec or OpenSpec change directory")
     ap.add_argument("--cache-dir", default=None, help="override the plan cache location")
     ap.add_argument("--force", action="store_true", help="recompile even on a cache hit")
+    ap.add_argument(
+        "--allow-force-over-active-worktrees",
+        action="store_true",
+        help=(
+            "with --force, also recompile when task worktree(s) already exist for this "
+            "spec (normally refused: a non-deterministic recompile could disagree with "
+            "the plan those worktrees were fanned out under)"
+        ),
+    )
     ap.add_argument("--no-llm", action="store_true", help="seed from the artifact only; never spawn")
     ap.add_argument("--timeout", type=int, default=COMPILE_TIMEOUT_DEFAULT)
     ap.add_argument("--json", action="store_true", help="print the plan as JSON")
@@ -495,6 +530,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         cache_dir=a.cache_dir,
         allow_llm=not a.no_llm,
         force=a.force,
+        allow_force_over_active_worktrees=a.allow_force_over_active_worktrees,
         timeout=a.timeout,
         log=lambda m: print(m, file=sys.stderr),
     )
