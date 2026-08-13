@@ -14,6 +14,15 @@ stripped), and focus-text tokens (lowercase alphanumeric tokens of length
 - **WHEN** a brief's filename is `20260731-161140-promote-contract-sentinel-s-route.md`
 - **THEN** the extracted slug is `promote-contract-sentinel-s-route`
 
+#### Scenario: Block-scalar focus text is extracted
+- **WHEN** a brief's frontmatter declares `focus` as a YAML block scalar
+  (`focus: |-` or `focus: >-` followed by indented text lines — the format
+  the handoff capture flow writes)
+- **THEN** the focus-text tokens are extracted from the block's actual
+  text, not from the literal block-scalar marker (which previously made
+  every such brief contribute zero focus tokens, disabling focus-overlap
+  detection for it entirely)
+
 ### Requirement: Duplicate-Slug Matching Is Repo-Independent
 The system SHALL match two briefs as `duplicate-slug` whenever their
 extracted slugs are identical, regardless of either brief's `repo` value
@@ -72,29 +81,41 @@ formed by all Signal Matches (any type) across the queued-brief set.
   C have no direct Signal Match
 - **THEN** A, B, and C are assembled into one cluster
 
-### Requirement: Size-Based Reporting Threshold
-The system SHALL surface every cluster of size >= 3 unconditionally. For a
-cluster of exactly size 2, the system SHALL surface it only if the pair's
-`focus-overlap` Signal Match coefficient is >= `NEAR_IDENTICAL_THRESHOLD`
-(0.50), OR the pair is surfaced via the LLM Verification Gate below.
+### Requirement: Uniform Reporting Threshold Across Cluster Sizes
+The system SHALL surface every assembled cluster, regardless of size. A
+cluster of exactly size 2 SHALL be surfaced under the same per-signal
+thresholds that form its edges (e.g. a `focus-overlap` edge at
+`OVERLAP_THRESHOLD` (0.45)) — no additional near-identical bar applies to
+size-2 clusters. (Full-recall decision, 2026-08-13: the report is
+advisory, and the prior size-2 near-identical bar hid 2 genuine duplicate
+pairs on the live queue while surfacing 0.)
 
 #### Scenario: Size-3 cluster always surfaced
 - **WHEN** a cluster contains 3 or more briefs matched by any signal type
 - **THEN** the cluster is surfaced regardless of overlap coefficients
 
-#### Scenario: Size-2 cluster below near-identical threshold not surfaced by heuristics alone
+#### Scenario: Size-2 focus-overlap cluster at 0.46 surfaced
 - **WHEN** a 2-brief cluster's only Signal Match is a `focus-overlap` edge
-  with coefficient 0.48
-- **THEN** the cluster is not surfaced by the heuristic threshold alone
-  (it may still be surfaced via the LLM Verification Gate — see below)
+  with coefficient 0.46
+- **THEN** the cluster is surfaced (previously hidden by the size-2
+  near-identical bar)
+
+#### Scenario: Size-2 non-scored-signal cluster surfaced
+- **WHEN** a 2-brief cluster's only Signal Match is a `same-target-spec`
+  or `related-link` edge (no `focus-overlap` edge at all)
+- **THEN** the cluster is surfaced
 
 ### Requirement: LLM Verification Gate for Borderline Size-2 Candidates
-For a candidate 2-brief pair where both briefs have `repo: null`, and the
-pair's focus-overlap coefficient is >= `LLM_GATE_FLOOR` (0.35) and <
-`NEAR_IDENTICAL_THRESHOLD` (0.50), the system SHALL invoke an LLM
-verification call asking whether the two briefs describe the same
-underlying work. A positive verdict SHALL cause the pair to be surfaced as
-a cluster; a negative verdict SHALL leave the pair unsurfaced.
+For a candidate 2-brief pair where both briefs have `repo: null`, neither
+brief already belongs to an assembled cluster, and the pair's
+focus-overlap coefficient is >= `LLM_GATE_FLOOR` (0.35) and <
+`OVERLAP_THRESHOLD` (0.45), the system SHALL invoke an LLM verification
+call asking whether the two briefs describe the same underlying work. A
+positive verdict SHALL cause the pair to be surfaced as a cluster; a
+negative verdict SHALL leave the pair unsurfaced. (The band's upper bound
+was `NEAR_IDENTICAL_THRESHOLD` (0.50) before the full-recall decision;
+pairs at/above `OVERLAP_THRESHOLD` now form an ordinary edge and surface
+without LLM involvement.)
 
 #### Scenario: Real missed pair (PR #93) surfaced via LLM verification
 - **WHEN** two briefs both have `repo: null`, differing slugs, a
@@ -111,8 +132,8 @@ a cluster; a negative verdict SHALL leave the pair unsurfaced.
 #### Scenario: LLM gate not triggered for non-null-repo pairs
 - **WHEN** a same-repo (non-null) pair's focus-overlap coefficient is 0.44
 - **THEN** no LLM verification call is made (the LLM gate only applies to
-  null-vs-null size-2 pairs); the pair follows the ordinary size-based
-  reporting threshold above
+  null-vs-null size-2 pairs); the pair forms no `focus-overlap` edge
+  (below `OVERLAP_THRESHOLD`) and is not surfaced
 
 ### Requirement: LLM Verification Gate Fails Open
 The system SHALL treat any LLM verification call that times out (10

@@ -148,6 +148,23 @@ def parse_frontmatter(text: str) -> Dict[str, Any]:
         if val.startswith("[") and val.endswith("]"):
             inner = val[1:-1].strip()
             fm[key] = [x.strip().strip("\"'") for x in inner.split(",") if x.strip()]
+        elif val in ("|", "|-", "|+", ">", ">-", ">+"):
+            # YAML block scalar (the handoff capture flow writes `focus: |-`):
+            # collect the following indented lines as the value. Without this,
+            # the literal marker ("|-") was returned as the value and the
+            # block's text was dropped entirely.
+            block: List[str] = []
+            while i < len(lines):
+                nxt = lines[i]
+                if not nxt.strip():
+                    block.append("")
+                    i += 1
+                elif nxt[0] in (" ", "\t"):
+                    block.append(nxt.strip())
+                    i += 1
+                else:
+                    break
+            fm[key] = "\n".join(block).strip()
         elif not val:
             # Multi-line block list: collect following `  - value` lines
             items: List[str] = []

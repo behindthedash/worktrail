@@ -20,13 +20,11 @@ from unittest import mock
 from worktrail.router import cluster_detect as _cluster_detect_mod
 from worktrail.router.cluster_detect import (
     LLM_GATE_FLOOR,
-    NEAR_IDENTICAL_THRESHOLD,
     OVERLAP_THRESHOLD,
     _assemble_clusters,
     _connected_components,
     _Edge,
     _extract_signal,
-    _filter_reportable,
     _overlap_coefficient,
     _signal_matches,
     _slug,
@@ -449,74 +447,56 @@ class ConnectedComponentsTests(unittest.TestCase):
         self.assertEqual(_connected_components([]), [])
 
 
-class FilterReportableTests(unittest.TestCase):
-    def _component(self, members, signals, edges):
-        return {
-            "members": sorted(members),
-            "signals": sorted(signals),
-            "size": len(members),
-            "_edges": edges,
-        }
+class UniformReportingThresholdTests(unittest.TestCase):
+    """Full-recall decision (2026-08-13): every assembled component is
+    surfaced, size 2 included — 2-member components pass under the same
+    per-signal edge thresholds as larger ones, with no additional
+    near-identical bar (the pre-change contract dropped a size-2
+    focus-overlap component below NEAR_IDENTICAL_THRESHOLD (0.50) and any
+    size-2 component whose only edge was a non-scored signal)."""
 
     def test_size_three_always_surfaced(self):
-        comp = self._component(
-            ["a", "b", "c"],
-            ["related-link"],
-            [("a", "b", [("related-link", None)]), ("b", "c", [("related-link", None)])],
-        )
-        reportable = _filter_reportable([comp])
-        self.assertEqual(len(reportable), 1)
-        self.assertNotIn("_edges", reportable[0])
+        edges: List[_Edge] = [
+            ("a", "b", [("related-link", None)]),
+            ("b", "c", [("related-link", None)]),
+        ]
+        clusters = _assemble_clusters(edges)
+        self.assertEqual(len(clusters), 1)
+        self.assertEqual(clusters[0]["size"], 3)
 
     def test_size_two_duplicate_slug_surfaced(self):
-        comp = self._component(
-            ["a", "b"], ["duplicate-slug"], [("a", "b", [("duplicate-slug", None)])]
-        )
-        reportable = _filter_reportable([comp])
-        self.assertEqual(len(reportable), 1)
+        edges: List[_Edge] = [("a", "b", [("duplicate-slug", None)])]
+        self.assertEqual(len(_assemble_clusters(edges)), 1)
 
-    def test_size_two_focus_overlap_at_or_above_near_identical_surfaced(self):
-        comp = self._component(
-            ["a", "b"],
-            ["focus-overlap"],
-            [("a", "b", [("focus-overlap", NEAR_IDENTICAL_THRESHOLD)])],
-        )
-        reportable = _filter_reportable([comp])
-        self.assertEqual(len(reportable), 1)
+    def test_size_two_focus_overlap_at_overlap_threshold_surfaced(self):
+        edges: List[_Edge] = [("a", "b", [("focus-overlap", OVERLAP_THRESHOLD)])]
+        clusters = _assemble_clusters(edges)
+        self.assertEqual(len(clusters), 1)
+        self.assertEqual(clusters[0]["members"], ["a", "b"])
 
-    def test_size_two_focus_overlap_below_near_identical_not_surfaced(self):
-        below = NEAR_IDENTICAL_THRESHOLD - 0.01
-        self.assertGreaterEqual(below, OVERLAP_THRESHOLD)
-        comp = self._component(
-            ["a", "b"], ["focus-overlap"], [("a", "b", [("focus-overlap", below)])]
-        )
-        self.assertEqual(_filter_reportable([comp]), [])
+    def test_size_two_focus_overlap_below_old_near_identical_bar_now_surfaced(self):
+        # 0.46: forms an ordinary edge (>= OVERLAP_THRESHOLD) but sat below
+        # the removed NEAR_IDENTICAL_THRESHOLD (0.50) — hidden before the
+        # full-recall change, surfaced now.
+        score = 0.46
+        self.assertGreaterEqual(score, OVERLAP_THRESHOLD)
+        self.assertLess(score, 0.50)
+        edges: List[_Edge] = [("a", "b", [("focus-overlap", score)])]
+        clusters = _assemble_clusters(edges)
+        self.assertEqual(len(clusters), 1)
+        self.assertEqual(clusters[0]["signals"], ["focus-overlap"])
 
-    def test_size_two_focus_overlap_between_old_and_new_threshold_now_surfaced(self):
-        # Between the lowered NEAR_IDENTICAL_THRESHOLD (0.50) and the old one
-        # (0.75): dropped before the threshold change, surfaced now.
-        score = 0.60
-        self.assertGreaterEqual(score, NEAR_IDENTICAL_THRESHOLD)
-        self.assertLess(score, 0.75)
-        comp = self._component(
-            ["a", "b"], ["focus-overlap"], [("a", "b", [("focus-overlap", score)])]
-        )
-        reportable = _filter_reportable([comp])
-        self.assertEqual(len(reportable), 1)
+    def test_size_two_same_target_spec_only_surfaced(self):
+        edges: List[_Edge] = [("a", "b", [("same-target-spec", None)])]
+        self.assertEqual(len(_assemble_clusters(edges)), 1)
 
-    def test_size_two_same_target_spec_only_not_surfaced(self):
-        comp = self._component(
-            ["a", "b"], ["same-target-spec"], [("a", "b", [("same-target-spec", None)])]
-        )
-        self.assertEqual(_filter_reportable([comp]), [])
+    def test_size_two_related_link_only_surfaced(self):
+        edges: List[_Edge] = [("a", "b", [("related-link", None)])]
+        self.assertEqual(len(_assemble_clusters(edges)), 1)
 
-    def test_size_two_related_link_only_not_surfaced(self):
-        comp = self._component(["a", "b"], ["related-link"], [("a", "b", [("related-link", None)])])
-        self.assertEqual(_filter_reportable([comp]), [])
-
-    def test_size_one_never_surfaced(self):
-        comp = self._component(["a"], [], [])
-        self.assertEqual(_filter_reportable([comp]), [])
+    def test_no_signal_match_never_surfaced(self):
+        edges: List[_Edge] = [("a", "b", [])]
+        self.assertEqual(_assemble_clusters(edges), [])
 
 
 class AssembleClustersTests(unittest.TestCase):
@@ -534,15 +514,18 @@ class AssembleClustersTests(unittest.TestCase):
         self.assertEqual(clusters[0]["signals"], ["related-link", "same-target-spec"])
         self.assertEqual(clusters[0]["size"], 3)
 
-    def test_end_to_end_ordinary_size_two_pair_dropped_alongside_surfaced_trio(self):
+    def test_end_to_end_size_two_pair_surfaced_alongside_trio(self):
+        # Full-recall decision: a size-2 related-link pair surfaces alongside
+        # the trio (the pre-change contract dropped it as non-near-identical).
         edges: List[_Edge] = [
             ("a", "b", [("same-target-spec", None)]),
             ("b", "c", [("related-link", None)]),
             ("d", "e", [("related-link", None)]),
         ]
         clusters = _assemble_clusters(edges)
-        self.assertEqual(len(clusters), 1)
+        self.assertEqual(len(clusters), 2)
         self.assertEqual(clusters[0]["members"], ["a", "b", "c"])
+        self.assertEqual(clusters[1]["members"], ["d", "e"])
 
     def test_end_to_end_duplicate_slug_pair_surfaced(self):
         edges: List[_Edge] = [("a", "b", [("duplicate-slug", None)])]
@@ -650,11 +633,12 @@ class ComputeClustersTests(unittest.TestCase):
             focus="fix login flow",
         )
 
-        # ordinary (non-near-identical) focus-overlap pair, size-2 -> dropped.
-        # 5 shared / 11 tokens each ~= 0.4545: above OVERLAP_THRESHOLD (0.45)
-        # so a focus-overlap match exists, but below the lowered
-        # NEAR_IDENTICAL_THRESHOLD (0.50) so it stays non-qualifying.
-        _write_brief(
+        # ordinary focus-overlap pair, size-2 -> surfaced (full-recall
+        # decision). 5 shared / 11 tokens each ~= 0.4545: above
+        # OVERLAP_THRESHOLD (0.45) so a focus-overlap edge forms, and no
+        # near-identical bar applies any more (this exact pair was dropped
+        # by the removed NEAR_IDENTICAL_THRESHOLD (0.50) bar).
+        delta = _write_brief(
             self.dir,
             "20260610-097000-delta.md",
             repo="repo-e",
@@ -663,7 +647,7 @@ class ComputeClustersTests(unittest.TestCase):
                 "grape honey kiwi lemon mango nectarine"
             ),
         )
-        _write_brief(
+        epsilon = _write_brief(
             self.dir,
             "20260610-098000-epsilon.md",
             repo="repo-e",
@@ -683,7 +667,7 @@ class ComputeClustersTests(unittest.TestCase):
 
         clusters = compute_clusters(self.dir, _fake_parse_frontmatter)
 
-        self.assertEqual(len(clusters), 2)
+        self.assertEqual(len(clusters), 3)
 
         dup_cluster = self._members_containing(clusters, dup_a.stem)
         self.assertIsNotNone(dup_cluster)
@@ -696,6 +680,12 @@ class ComputeClustersTests(unittest.TestCase):
         assert trio_cluster is not None
         self.assertEqual(trio_cluster["size"], 3)
         self.assertEqual(trio_cluster["signals"], ["related-link", "same-target-spec"])
+
+        overlap_cluster = self._members_containing(clusters, delta.stem)
+        self.assertIsNotNone(overlap_cluster)
+        assert overlap_cluster is not None
+        self.assertEqual(overlap_cluster["members"], sorted([delta.stem, epsilon.stem]))
+        self.assertEqual(overlap_cluster["signals"], ["focus-overlap"])
 
     def test_integration_real_tmpdir_queue_fixture(self):
         queue_dir = self.dir / "queue"
@@ -719,9 +709,8 @@ class RealPR93RegressionTests(unittest.TestCase):
     briefs about the same underlying work (finishing contract-sentinel's
     route-existence-gate rollout), both `repo: null`, differing slugs, and
     a focus-overlap coefficient of 0.44 — below `OVERLAP_THRESHOLD` (0.45,
-    so `_signal_matches` itself draws no edge) and below
-    `NEAR_IDENTICAL_THRESHOLD` (0.50), but within the LLM gate band
-    `[LLM_GATE_FLOOR, NEAR_IDENTICAL_THRESHOLD)`. Focus text below is
+    so `_signal_matches` itself draws no edge), but within the LLM gate
+    band `[LLM_GATE_FLOOR, OVERLAP_THRESHOLD)`. Focus text below is
     token-engineered (4 tokens shared out of a 9-token minimum set, 4/9 =
     0.4444) to reproduce that exact real-world 0.44 overlap."""
 
@@ -759,7 +748,6 @@ class RealPR93RegressionTests(unittest.TestCase):
         self.assertAlmostEqual(score, 4 / 9)
         self.assertLess(score, OVERLAP_THRESHOLD)
         self.assertGreaterEqual(score, LLM_GATE_FLOOR)
-        self.assertLess(score, NEAR_IDENTICAL_THRESHOLD)
         # Below OVERLAP_THRESHOLD, so the ordinary heuristic draws no edge at all.
         self.assertEqual(_signal_matches(sig_a, sig_b), [])
 
@@ -778,7 +766,7 @@ class RealPR93RegressionTests(unittest.TestCase):
 
     def test_not_surfaced_when_llm_call_fails_open(self):
         """Cluster-level counterpart to VerifySameWorkFailOpenTests: now that
-        task 2.2 wires `_verify_same_work` into `_filter_reportable`, a real
+        `_verify_same_work` is wired into cluster assembly, a real
         `subprocess.run` failure for an in-band candidate must degrade to
         "not surfaced" at the `compute_clusters()` level, not just at the
         `_verify_same_work` unit level."""
@@ -895,29 +883,134 @@ class NullRepoGateSignalMatchesTests(unittest.TestCase):
         self.assertNotIn("focus-overlap", matches)
 
 
-class LoweredNearIdenticalThresholdTests(unittest.TestCase):
-    """duplicate-brief-detection design.md D2: NEAR_IDENTICAL_THRESHOLD
-    dropped from 0.75 to 0.50, so a size-2 focus-overlap pair scoring
-    between the two is now surfaced."""
+class FullRecallSizeTwoTests(unittest.TestCase):
+    """Full-recall decision (2026-08-13): the size-2 near-identical bar is
+    gone, so a 2-member component whose focus-overlap edge scores in
+    [OVERLAP_THRESHOLD, 0.50) — previously hidden by both the original 0.75
+    bar and the lowered 0.50 one — now surfaces through the real
+    `compute_clusters()` entry point, with no LLM involvement. Fixture
+    focus text is token-engineered to 6 shared tokens out of a 13-token
+    minimum set (6/13 ~= 0.4615, matching the live queue's missed 0.46
+    pair)."""
 
-    def test_size_two_pair_between_new_and_old_threshold_now_surfaced(self):
-        score = 0.60
-        self.assertGreaterEqual(score, NEAR_IDENTICAL_THRESHOLD)
-        self.assertLess(score, 0.75)
-        comp = {
-            "members": ["a", "b"],
-            "signals": ["focus-overlap"],
-            "size": 2,
-            "_edges": [("a", "b", [("focus-overlap", score)])],
-        }
-        reportable = _filter_reportable([comp])
-        self.assertEqual(len(reportable), 1)
+    _FOCUS_A = (
+        "alpha beta gamma delta epsilon zeta "
+        "eta theta iota kappa lambda omicron sigma"
+    )
+    _FOCUS_B = (
+        "alpha beta gamma delta epsilon zeta "
+        "tau upsilon phi chi psi omega rho"
+    )
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _write_pair(self, repo_a: Optional[str], repo_b: Optional[str]):
+        a = _write_brief(
+            self.dir, "20260813-090000-alpha-work.md", repo=repo_a, focus=self._FOCUS_A
+        )
+        b = _write_brief(
+            self.dir, "20260813-091000-beta-work.md", repo=repo_b, focus=self._FOCUS_B
+        )
+        return a, b
+
+    def test_fixture_reproduces_the_046_band(self):
+        a, b = self._write_pair("repo-x", "repo-x")
+        sig_a = _extract_signal(a, _fake_parse_frontmatter)
+        sig_b = _extract_signal(b, _fake_parse_frontmatter)
+        assert sig_a is not None and sig_b is not None
+        score = _overlap_coefficient(sig_a["focus_tokens"], sig_b["focus_tokens"])
+        self.assertAlmostEqual(score, 6 / 13)
+        self.assertGreaterEqual(score, OVERLAP_THRESHOLD)
+        self.assertLess(score, 0.50)
+
+    def test_same_repo_pair_at_046_surfaces_without_llm(self):
+        # Previously hidden by the near-identical bar; no agent_cli is
+        # passed, so surfacing cannot be coming from the LLM gate.
+        a, b = self._write_pair("repo-x", "repo-x")
+        clusters = compute_clusters(self.dir, _fake_parse_frontmatter)
+        self.assertEqual(len(clusters), 1)
+        self.assertEqual(clusters[0]["members"], sorted([a.stem, b.stem]))
+        self.assertEqual(clusters[0]["signals"], ["focus-overlap"])
+        self.assertEqual(clusters[0]["size"], 2)
+
+    def test_both_null_repo_pair_at_046_surfaces_without_llm(self):
+        # Both decision halves together: a both-null pair participates in
+        # focus-overlap (workspace scope) AND its size-2 component surfaces
+        # at the ordinary edge threshold, deterministically (no LLM gate —
+        # no agent_cli is passed).
+        a, b = self._write_pair(None, None)
+        clusters = compute_clusters(self.dir, _fake_parse_frontmatter)
+        self.assertEqual(len(clusters), 1)
+        self.assertEqual(clusters[0]["members"], sorted([a.stem, b.stem]))
+        self.assertEqual(clusters[0]["signals"], ["focus-overlap"])
+
+    def test_one_null_repo_pair_at_046_still_not_surfaced(self):
+        # A mixed null/non-null pair remains a genuine scope mismatch: no
+        # repo-scoped edge forms, and (with no agent CLI) nothing surfaces.
+        self._write_pair(None, "repo-x")
+        self.assertEqual(compute_clusters(self.dir, _fake_parse_frontmatter), [])
+
+
+class BlockScalarFocusProductionParserTests(unittest.TestCase):
+    """End-to-end pin on the PRODUCTION frontmatter parser (the loader-backed
+    `parse_frontmatter` dashboard.py injects), not this file's fake: briefs
+    written by the handoff capture flow declare `focus: |-` as a YAML block
+    scalar, which the parser previously returned as the literal marker
+    string ("|-") — zero focus tokens, so such briefs could never form a
+    focus-overlap edge at ANY threshold (this hid the live queue's genuine
+    duplicate pairs that motivated the full-recall decision)."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _write_block_scalar_brief(self, filename: str, focus_lines: List[str]) -> Path:
+        body = ["---", f"id: {filename[:-3]}", "focus: |-"]
+        body.extend(f"  {line}" for line in focus_lines)
+        body += ["repo: null", "status: queued", "---", "", "## Focus", ""]
+        body.extend(focus_lines)
+        path = self.dir / filename
+        path.write_text("\n".join(body) + "\n", encoding="utf-8")
+        return path
+
+    def test_block_scalar_focus_pair_surfaces_via_production_parser(self):
+        from worktrail.taskformats.devkit.source import parse_frontmatter as real_parse
+
+        a = self._write_block_scalar_brief(
+            "20260813-090000-npm-audit-vuln.md",
+            ["mailbox service npm audit reports high severity transitive dep vuln"],
+        )
+        b = self._write_block_scalar_brief(
+            "20260813-091000-npm-audit-moderate.md",
+            ["mailbox service npm audit reports moderate severity issues pending"],
+        )
+        sig_a = _extract_signal(a, real_parse)
+        sig_b = _extract_signal(b, real_parse)
+        assert sig_a is not None and sig_b is not None
+        # The block's text (not the "|-" marker) must be what gets tokenized.
+        self.assertIn("mailbox", sig_a["focus_tokens"])
+        self.assertNotEqual(sig_a["focus_tokens"], set())
+        score = _overlap_coefficient(sig_a["focus_tokens"], sig_b["focus_tokens"])
+        self.assertGreaterEqual(score, OVERLAP_THRESHOLD)
+
+        clusters = compute_clusters(self.dir, real_parse)
+        self.assertEqual(len(clusters), 1)
+        self.assertEqual(clusters[0]["members"], sorted([a.stem, b.stem]))
+        self.assertEqual(clusters[0]["signals"], ["focus-overlap"])
 
 
 class LlmVerificationGateBandTests(unittest.TestCase):
     """duplicate-brief-detection design.md D3: a size-2, null-vs-null pair
     whose focus-overlap coefficient falls in [LLM_GATE_FLOOR,
-    NEAR_IDENTICAL_THRESHOLD) triggers a (mocked) LLM verification call."""
+    OVERLAP_THRESHOLD) triggers a (mocked) LLM verification call."""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -944,7 +1037,7 @@ class LlmVerificationGateBandTests(unittest.TestCase):
         assert sig_a is not None and sig_b is not None
         score = _overlap_coefficient(sig_a["focus_tokens"], sig_b["focus_tokens"])
         self.assertGreaterEqual(score, LLM_GATE_FLOOR)
-        self.assertLess(score, NEAR_IDENTICAL_THRESHOLD)
+        self.assertLess(score, OVERLAP_THRESHOLD)
 
         mock_result = mock.Mock(returncode=0, stdout="YES: same underlying work\n")
         with mock.patch.object(

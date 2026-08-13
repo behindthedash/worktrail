@@ -13,9 +13,11 @@ duplicate-slug, which is otherwise repo-independent); same-target-spec,
 related-link, and focus-overlap additionally require both briefs to share a
 non-null `repo`.
 
-Cluster assembly (connected components over the Signal Match edges) and the
-reporting-threshold filter that decides which components are surfaced (size
->= 3 always; size == 2 only when near-identical) are implemented here too.
+Cluster assembly (connected components over the Signal Match edges) is
+implemented here too; every assembled component is surfaced, size 2
+included — 2-member components pass under the same per-signal edge
+thresholds as larger ones (full-recall decision, 2026-08-13; no
+near-identical bar).
 The public `compute_clusters()` entry point wires queued briefs end-to-end
 through extraction/matching/assembly/filtering, skipping any unreadable
 brief and degrading to `[]` on any unexpected failure — the whole module
@@ -51,19 +53,14 @@ _SLUG_PREFIX_RE = re.compile(r"^\d{8}-\d{6}-")
 # score_candidates.py's BATCH_MIN (Consume-time companion floor).
 OVERLAP_THRESHOLD = 0.45
 
-# Stricter overlap-coefficient floor a size-2 component's focus-overlap edge
-# must clear to be treated as near-identical (and thus surfaced) rather than
-# an ordinary match (REQ-013). Lowered from 0.75 per duplicate-brief-detection
-# design.md decision D2: a meaningful drop without collapsing onto
-# OVERLAP_THRESHOLD (0.45), which would eliminate the size-2 extra-scrutiny
-# concept entirely rather than loosening it.
-NEAR_IDENTICAL_THRESHOLD = 0.50
-
-# Lower overlap-coefficient floor, below NEAR_IDENTICAL_THRESHOLD, at/above
-# which a size-2, null-vs-null focus-overlap candidate becomes eligible for
-# LLM verification (see duplicate-brief-detection design.md decision D3).
-# Chosen to include the motivating PR #93 pair (0.44) with headroom, without
-# inviting near-zero-overlap pairs into an LLM call.
+# Lower overlap-coefficient floor, below OVERLAP_THRESHOLD, at/above which a
+# size-2, null-vs-null focus-overlap candidate becomes eligible for LLM
+# verification (see duplicate-brief-detection design.md decision D3). Chosen
+# to include the motivating PR #93 pair (0.44) with headroom, without
+# inviting near-zero-overlap pairs into an LLM call. (The band's upper bound
+# was NEAR_IDENTICAL_THRESHOLD (0.50) until the 2026-08-13 full-recall
+# decision removed the size-2 near-identical bar; pairs at/above
+# OVERLAP_THRESHOLD now form an ordinary edge and surface directly.)
 LLM_GATE_FLOOR = 0.35
 
 
@@ -324,18 +321,18 @@ def _llm_gate_score(sig_a: Dict[str, Any], sig_b: Dict[str, Any]) -> Optional[fl
     """Return the focus-overlap coefficient if this pair falls in the LLM
     verification gate's band (design.md D3): both `repo` null, not
     blocked-by-excluded, and overlap in `[LLM_GATE_FLOOR,
-    NEAR_IDENTICAL_THRESHOLD)`. `None` if any of those don't hold. This band
-    starts below `OVERLAP_THRESHOLD`, so it deliberately overlaps pairs that
-    `_signal_matches` does not itself connect with a focus-overlap edge
-    (the motivating PR #93 case, at 0.44) as well as ones it does
-    (0.45 to <0.50).
+    OVERLAP_THRESHOLD)`. `None` if any of those don't hold. The band sits
+    entirely below `OVERLAP_THRESHOLD`, so it covers exactly the pairs
+    `_signal_matches` does not connect with a focus-overlap edge (the
+    motivating PR #93 case, at 0.44); pairs at/above the threshold form an
+    ordinary edge and surface without LLM involvement.
     """
     if sig_a["repo"] is not None or sig_b["repo"] is not None:
         return None
     if _is_blocked_by_pair(sig_a, sig_b):
         return None
     overlap = _overlap_coefficient(sig_a["focus_tokens"], sig_b["focus_tokens"])
-    if LLM_GATE_FLOOR <= overlap < NEAR_IDENTICAL_THRESHOLD:
+    if LLM_GATE_FLOOR <= overlap < OVERLAP_THRESHOLD:
         return overlap
     return None
 
@@ -352,18 +349,15 @@ def _llm_gate_clusters(
     for the ones the LLM confirms describe the same underlying work
     (design.md D3).
 
-    `components` is `_connected_components`'s raw (pre-filter) output, used
-    only to check that a candidate pair isn't already folded into a larger
-    or already-qualifying structure: a pair is only gated when neither brief
-    already belongs to a component with a third member, and (for a pair that
-    already forms an ordinary focus-overlap edge in the 0.45-0.50 sub-band)
-    that component isn't already near-identical by some other edge. This
-    keeps the gate scoped to genuine size-2 candidates, never promoting a
-    member of an already-decided cluster.
+    `components` is `_connected_components`'s output, used only to check
+    that neither brief of a candidate pair already belongs to an assembled
+    component: every component is surfaced outright (no size-2 bar), so a
+    member of one never needs — and must never get — LLM promotion into a
+    second, overlapping cluster. The gate is thereby scoped to
+    component-free pairs whose only connection is sub-threshold focus
+    overlap.
     """
-    member_component: Dict[str, int] = {
-        member: idx for idx, comp in enumerate(components) for member in comp["members"]
-    }
+    clustered_members = {member for comp in components for member in comp["members"]}
     gate_clusters: List[Dict[str, Any]] = []
     for i in range(len(signals)):
         for j in range(i + 1, len(signals)):
@@ -371,19 +365,8 @@ def _llm_gate_clusters(
             if _llm_gate_score(sig_a, sig_b) is None:
                 continue
             stem_a, stem_b = sig_a["stem"], sig_b["stem"]
-            comp_a = member_component.get(stem_a)
-            comp_b = member_component.get(stem_b)
-            if comp_a != comp_b:
-                continue  # one of the pair already belongs elsewhere
-
-            labels = ["focus-overlap"]
-            if comp_a is not None:
-                comp = components[comp_a]
-                if comp["size"] != 2:
-                    continue
-                if any(_is_near_identical(matches) for (_, _, matches) in comp["_edges"]):
-                    continue  # already surfaced without the LLM gate
-                labels = comp["signals"]
+            if stem_a in clustered_members or stem_b in clustered_members:
+                continue  # already surfaced via a component, or belongs elsewhere
 
             verdict = _verify_same_work(
                 sig_a["focus_text"], sig_b["focus_text"], repo_root=repo_root, agent_cli=agent_cli
@@ -391,7 +374,7 @@ def _llm_gate_clusters(
             if not verdict:
                 continue
             gate_clusters.append(
-                {"members": sorted((stem_a, stem_b)), "signals": labels, "size": 2}
+                {"members": sorted((stem_a, stem_b)), "signals": ["focus-overlap"], "size": 2}
             )
     return gate_clusters
 
@@ -399,32 +382,19 @@ def _llm_gate_clusters(
 _Edge = Tuple[str, str, List[Tuple[str, Optional[float]]]]
 
 
-def _is_near_identical(matches: List[Tuple[str, Optional[float]]]) -> bool:
-    """True if a pair's Signal Matches qualify it as near-identical: a
-    duplicate-slug match, or a focus-overlap score at/above
-    NEAR_IDENTICAL_THRESHOLD (REQ-013)."""
-    for label, score in matches:
-        if label == "duplicate-slug":
-            return True
-        if label == "focus-overlap" and score is not None and score >= NEAR_IDENTICAL_THRESHOLD:
-            return True
-    return False
-
-
 def _connected_components(edges: List[_Edge]) -> List[Dict[str, Any]]:
     """Assemble Signal Match edges into connected components via union-find.
 
     Any edge with a non-empty matches list connects its two ids into the same
     component, regardless of signal type or score — connectivity does not
-    distinguish qualifying from ordinary matches (REQ-011); that distinction
-    is applied later by `_filter_reportable`. Edges with an empty matches list
-    (no Signal Match) are ignored.
+    distinguish signal types (REQ-011). Edges with an empty matches list (no
+    Signal Match) are ignored. Every component is surfaced, size 2 included
+    (full-recall decision, 2026-08-13): a component always has >= 2 members
+    (it requires at least one edge), and no near-identical bar applies.
 
-    Returns one dict per component with `members` (sorted ids), `signals`
-    (sorted, de-duplicated labels of every edge within the component), `size`,
-    and `_edges` (the raw contributing edges — internal, consumed by
-    `_filter_reportable` to test near-identical qualification and stripped
-    from the final surfaced output).
+    Returns one surfaced-shape dict per component with `members` (sorted
+    ids), `signals` (sorted, de-duplicated labels of every edge within the
+    component), and `size`.
     """
     parent: Dict[str, str] = {}
 
@@ -445,50 +415,22 @@ def _connected_components(edges: List[_Edge]) -> List[Dict[str, Any]]:
         union(id_a, id_b)
 
     members_by_root: Dict[str, set] = {}
-    edges_by_root: Dict[str, List[_Edge]] = {}
+    signals_by_root: Dict[str, set] = {}
     for id_a, id_b, matches in active_edges:
         root = find(id_a)
         members_by_root.setdefault(root, set()).update((id_a, id_b))
-        edges_by_root.setdefault(root, []).append((id_a, id_b, matches))
+        signals_by_root.setdefault(root, set()).update(label for label, _ in matches)
 
-    components = []
-    for root, members in members_by_root.items():
-        comp_edges = edges_by_root[root]
-        signals = sorted({label for (_, _, matches) in comp_edges for label, _ in matches})
-        components.append(
-            {
-                "members": sorted(members),
-                "signals": signals,
-                "size": len(members),
-                "_edges": comp_edges,
-            }
-        )
+    components = [
+        {
+            "members": sorted(members),
+            "signals": sorted(signals_by_root[root]),
+            "size": len(members),
+        }
+        for root, members in members_by_root.items()
+    ]
     components.sort(key=lambda c: c["members"])
     return components
-
-
-def _filter_reportable(components: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Apply the reporting-threshold filter to connected components.
-
-    Every component of size >= 3 is surfaced unconditionally (REQ-012).
-    A size == 2 component is surfaced only if it qualifies as near-identical
-    (REQ-013); otherwise it is dropped (REQ-014). Components of size <= 1
-    never occur here (a component requires at least one edge) but would be
-    dropped too. Strips the internal `_edges` key from the returned dicts.
-    """
-    reportable = []
-    for comp in components:
-        size = comp["size"]
-        if size >= 3:
-            qualifies = True
-        elif size == 2:
-            qualifies = any(_is_near_identical(matches) for (_, _, matches) in comp["_edges"])
-        else:
-            qualifies = False
-        if not qualifies:
-            continue
-        reportable.append({"members": comp["members"], "signals": comp["signals"], "size": size})
-    return reportable
 
 
 def _assemble_clusters(
@@ -498,10 +440,10 @@ def _assemble_clusters(
     repo_root: Optional[Path] = None,
     agent_cli: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """Assemble Signal Match edges into surfaced clusters: connected-component
-    assembly (`_connected_components`) followed by the reporting-threshold
-    filter (`_filter_reportable`). An empty `edges` list yields an empty
-    cluster list.
+    """Assemble Signal Match edges into surfaced clusters via
+    connected-component assembly (`_connected_components`); every assembled
+    component is surfaced. An empty `edges` list yields an empty cluster
+    list.
 
     `signals` (the original Cluster Signals the edges were computed from) is
     optional and, when supplied, additionally runs the LLM verification gate
@@ -511,7 +453,7 @@ def _assemble_clusters(
     exactly — no LLM calls, gate-only candidates never surfaced.
     """
     components = _connected_components(edges)
-    reportable = _filter_reportable(components)
+    reportable = list(components)
     if signals:
         existing = {tuple(c["members"]) for c in reportable}
         for gated in _llm_gate_clusters(

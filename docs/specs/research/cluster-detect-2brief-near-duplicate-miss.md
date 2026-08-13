@@ -2,6 +2,18 @@
 
 Handoff brief: `20260731-171144-dashboard-cluster-detection-missed-a`
 
+> **Status: RESOLVED (historical record).** The thresholds and gating this
+> investigation describes have since changed twice: the archived
+> `duplicate-brief-detection` change (2026-08-02) made both-null repo pairs
+> same-scope, lowered `NEAR_IDENTICAL_THRESHOLD` from 0.75 to 0.50, and
+> added an LLM verification gate; the full-recall decision (2026-08-13,
+> user-approved for brief `20260731-173028`) then removed the size-2
+> near-identical bar entirely, so 2-member components surface at the same
+> `OVERLAP_THRESHOLD` (0.45) edge floor as larger ones. See
+> `openspec/specs/duplicate-brief-detection/spec.md` for the current
+> contract. The body below is preserved as written, describing the
+> pre-2026-08-02 behavior it investigated.
+
 ## Question
 
 Why did dashboard cluster-detection miss the 2-brief pair

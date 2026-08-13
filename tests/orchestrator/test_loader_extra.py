@@ -64,6 +64,43 @@ class ParseFrontmatterTests(unittest.TestCase):
         fm = loader.parse_frontmatter(text)
         self.assertEqual(fm["title"], "My Task")
 
+    def test_block_scalar_literal_parsed(self):
+        # The handoff capture flow writes `focus: |-` with indented text —
+        # the block's text is the value, never the literal "|-" marker.
+        text = (
+            "---\n"
+            "id: T1\n"
+            "focus: |-\n"
+            "  first line of the focus text\n"
+            "  second line of the focus text\n"
+            "repo: null\n"
+            "---\nbody"
+        )
+        fm = loader.parse_frontmatter(text)
+        self.assertEqual(
+            fm["focus"], "first line of the focus text\nsecond line of the focus text"
+        )
+        self.assertEqual(fm["id"], "T1")
+        self.assertEqual(fm["repo"], "null")
+
+    def test_block_scalar_folded_parsed(self):
+        text = "---\nfocus: >-\n  folded text here\nstatus: queued\n---\nbody"
+        fm = loader.parse_frontmatter(text)
+        self.assertEqual(fm["focus"], "folded text here")
+        self.assertEqual(fm["status"], "queued")
+
+    def test_block_scalar_with_blank_line_inside(self):
+        text = "---\nfocus: |\n  para one\n\n  para two\nid: T2\n---\nbody"
+        fm = loader.parse_frontmatter(text)
+        self.assertEqual(fm["focus"], "para one\n\npara two")
+        self.assertEqual(fm["id"], "T2")
+
+    def test_block_scalar_with_no_indented_lines_is_empty(self):
+        text = "---\nfocus: |-\nid: T3\n---\nbody"
+        fm = loader.parse_frontmatter(text)
+        self.assertEqual(fm["focus"], "")
+        self.assertEqual(fm["id"], "T3")
+
 
 class FindTasksDirTests(unittest.TestCase):
     def test_main_tasks_dir_preferred(self):
