@@ -18,7 +18,7 @@ modification time.
   `run-*.json` files at all
 - **THEN** `check_repo()` returns an empty `findings` list for that repo
 
-#### Scenario: Repo has one or more quarantined groups, none reconciled
+#### Scenario: Repo has one or more quarantined groups
 - **WHEN** `check_repo(repo)` is run against a repo with at least one
   `run-*.json` file containing a `groups` entry with `state: "QUARANTINED"`,
   and reconciliation does not auto-resolve it
