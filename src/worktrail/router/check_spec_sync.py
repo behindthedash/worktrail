@@ -29,10 +29,17 @@ Scope (deliberately narrow):
     Once every task under a spec is terminal (completed/superseded/optional),
     the parent spec's "**Status**:" header must not still read one of a small
     set of known pre-implementation values (Draft, Ready for Implementation,
-    Planned, Proposed, In Review, In Progress). Anything else (including
-    legitimate non-standard values like "Backfill") passes -- this is a
-    disallow-list, not an allow-list, specifically so backfill specs and
-    project-specific status wording are not flagged.
+    Ready to Implement, Planned, Proposed, In Review, In Progress), and must
+    not be entirely missing. Anything else (including legitimate
+    non-standard values like "Backfill", "Shipped", or "Complete") passes --
+    this is a disallow-list, not an allow-list, specifically so backfill
+    specs and project-specific status wording are not flagged (verified
+    against a fleet-wide survey of real Status header values, 2026-08-13; a
+    naive allow-list of e.g. {Implemented, Backfill} would false-positive on
+    those and others). A missing header is always flagged once tasks are
+    terminal -- unlike an unrecognized-but-present value, there is no
+    legitimate reason for a fully-done spec to carry no Status line at all
+    (devops PR #184, spec 004-governance-automation).
 
 Both checks are gated so they only fire once a spec's own tasks show it is
 fully done; specs with any task still pending/in_progress/implemented/reviewed
@@ -67,6 +74,7 @@ TERMINAL_STATUSES = {"completed", "superseded", "optional"}
 STALE_PARENT_STATUSES = {
     "draft",
     "ready for implementation",
+    "ready to implement",
     "planned",
     "proposed",
     "in review",
@@ -185,9 +193,15 @@ def check_spec(spec_dir: Path) -> list[str]:
         parent_spec = find_parent_spec(spec_dir)
         if parent_spec is not None:
             status = parent_spec_status(parent_spec)
-            if status is not None and status.strip().lower() in STALE_PARENT_STATUSES:
+            terminal_summary = ", ".join(sorted(set(task_statuses.values())))
+            if status is None:
                 failures.append(
-                    f"{parent_spec.name}: all tasks are terminal ({', '.join(sorted(set(task_statuses.values())))}) "
+                    f"{parent_spec.name}: all tasks are terminal ({terminal_summary}) "
+                    f"but parent spec has no Status header"
+                )
+            elif status.strip().lower() in STALE_PARENT_STATUSES:
+                failures.append(
+                    f"{parent_spec.name}: all tasks are terminal ({terminal_summary}) "
                     f"but parent spec Status is still '{status}'"
                 )
 

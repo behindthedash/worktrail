@@ -158,6 +158,63 @@ class CheckSpecSyncTests(unittest.TestCase):
         self.parent_spec("Draft")
         self.assertEqual(check_spec(self.spec_dir), [])
 
+    def test_missing_status_header_is_flagged_when_all_terminal(self):
+        # Regression fixture for devops PR #184 / spec 004-governance-automation:
+        # all tasks completed, but the parent spec markdown file has no
+        # "**Status**:" line at all (parent_spec_status() returns None).
+        # Previously silently skipped -- Check B only fired when a status
+        # value was found and matched the disallow-list.
+        make_task(self.spec_dir, "TASK-001", "completed")
+        self.task_summary({"TASK-001": "completed"})
+        write(
+            self.spec_dir / "2026-01-01--fixture.md",
+            "# Functional Specification: Fixture\n\n"
+            "**Spec ID**: 000-fixture\n**Date**: 2026-01-01\n**Version**: 1.0\n",
+        )
+        failures = check_spec(self.spec_dir)
+        self.assertEqual(len(failures), 1)
+        self.assertIn("no Status header", failures[0])
+
+    def test_missing_status_header_not_flagged_when_in_progress(self):
+        # A spec with no Status header at all but still-pending tasks must
+        # not be flagged -- the check stays gated on all_terminal, same as
+        # every other Check B case.
+        make_task(self.spec_dir, "TASK-001", "pending")
+        self.task_summary({"TASK-001": "pending"})
+        write(
+            self.spec_dir / "2026-01-01--fixture.md",
+            "# Functional Specification: Fixture\n\n"
+            "**Spec ID**: 000-fixture\n**Date**: 2026-01-01\n**Version**: 1.0\n",
+        )
+        self.assertEqual(check_spec(self.spec_dir), [])
+
+    def test_ready_to_implement_near_miss_is_flagged(self):
+        # Regression fixture for devops PR #184 / spec
+        # 102-fleet-dependabot-classifier: "Ready to implement" is a
+        # near-miss of the disallow-list's "ready for implementation" and
+        # was previously missed by exact-phrase matching.
+        make_task(self.spec_dir, "TASK-001", "completed")
+        self.task_summary({"TASK-001": "completed"})
+        self.parent_spec("Ready to implement")
+        failures = check_spec(self.spec_dir)
+        self.assertEqual(len(failures), 1)
+        self.assertIn("Ready to implement", failures[0])
+
+    def test_shipped_and_complete_statuses_still_pass(self):
+        # Verified against the real fleet (survey across all repos'
+        # docs/specs/ Status headers, 2026-08-13): "Shipped" and "Complete"/
+        # "Completed" are legitimate terminal statuses in active use
+        # (datalena, others) that are not "Implemented" or "Backfill". The
+        # disallow-list approach -- not an allow-list -- is what keeps these
+        # passing; a naive allow-list of {Implemented, Backfill} would
+        # regress them into false positives fleet-wide.
+        for status in ("Shipped", "Complete", "Completed", "Implemented (PRs #1450, #1451)"):
+            with self.subTest(status=status):
+                make_task(self.spec_dir, "TASK-001", "completed")
+                self.task_summary({"TASK-001": "completed"})
+                self.parent_spec(status)
+                self.assertEqual(check_spec(self.spec_dir), [])
+
 
 if __name__ == "__main__":
     unittest.main()

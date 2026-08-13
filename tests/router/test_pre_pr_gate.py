@@ -603,6 +603,7 @@ class TestReqAcCoverageGate(unittest.TestCase):
 
     _SPEC_WITH_REQ_001 = (
         "# Functional Specification: Fixture\n\n"
+        "**Status**: Implemented\n\n"
         "## Requirements\n\n"
         "| REQ-001 | The system SHALL do the thing. |\n"
     )
