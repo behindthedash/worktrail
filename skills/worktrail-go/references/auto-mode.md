@@ -38,7 +38,13 @@ actively working that repo — stale lock files probe as free).
    `--auto` and take the fresh pick. After 3 lost primary races, stop and report rather
    than spinning.
 
-4. Continue Phases 3–8 exactly as for an interactive claim: one classification fed the
+4. If the PRIMARY brief's frontmatter carries `awaiting-decision:` (it re-entered the
+   queue because a human answered a decision an earlier one-shot filed), consume the
+   answer first per `references/decision-queue.md#resume-from-decision` — the `## Answer`
+   is binding, continue the route from the original block point, and `worktrail-decision
+   resolve` the record.
+
+5. Continue Phases 3–8 exactly as for an interactive claim: one classification fed the
    PRIMARY brief's `recommended-route` via `--handoff-route` (Phase 5) — at low/medium
    classifier confidence this wins outright over a low-signal organic guess, since auto
    mode has no human present to catch a bad one — one run record listing every claimed
@@ -51,16 +57,20 @@ actively working that repo — stale lock files probe as free).
 entirely absent, not merely unanswered). Auto mode's three Phase 5.5 branches
 (`references/spec-collision-check.md` Route F/G, `references/brief-staleness-check.md`,
 `references/related-brief-collision-check.md`) each check `$AUTO_MODE` before their ask and,
-when true, skip it: they open a minimal run record, `finish` it `blocked_product_decision` with
-a summary of what needed a human call, and leave the brief claimed in `picked/` for the existing
-stalled-in-flight resume path — never guessing an answer and never hanging on an unavailable
-tool. (Route C/D's spec-collision ask has no `$AUTO_MODE=true` variant at all: auto mode always
+when true, skip it: they open a minimal run record, file the judgment call as a decision record
+and release the brief per `references/decision-queue.md#file-a-decision` (so a human can answer
+asynchronously and the next drain pass resumes it), then `finish` the record
+`blocked_product_decision` with a summary of what needed a human call — never guessing an
+answer and never hanging on an unavailable tool. Only if filing fails does the site fall back
+to leaving the brief claimed in `picked/` for the stalled-in-flight resume path. (Route C/D's spec-collision ask has no `$AUTO_MODE=true` variant at all: auto mode always
 has a claimed brief in play, per Phase 2 above, and a confirmed C/D match on a brief-sourced
 dispatch auto-closes the brief outright rather than asking — see
 `references/spec-collision-check.md`'s "Dispatch source 1" section — so it never reaches an ask
-in the first place.) `drain.py` already classifies `blocked_product_decision` as a `blocked`
-outcome — see `references/drain.md` and `classify_outcome()` in `drain.py` — so this fits the
-existing stop conditions without any driver-loop change.
+in the first place.) `drain.py` classifies `blocked_product_decision` as a `blocked` outcome —
+see `references/drain.md` and `classify_outcome()` in `drain.py` — and treats it as a cleanly
+handled iteration (no circuit-breaker pressure) only when the one-shot actually filed a
+decision record during the iteration; a decision-less block still counts toward the breaker,
+which is the incentive that keeps filing honest.
 
 ## Phase 7 — route-execution asks have no ask either
 
@@ -69,8 +79,9 @@ route execution: an auto/drain dispatch routed to C (or any route sharing the
 pipeline anchors) reaches ask sites there too. Every such site carries a
 documented `$AUTO_MODE=true` branch — a safe default where one exists (slug
 derivation, Route C's planning-only stop, Route A's stop-at-note), otherwise
-finish the run `blocked_product_decision` and leave the brief claimed in
-`picked/`. The per-site index lives at
+file a decision record, release the brief
+(`references/decision-queue.md#file-a-decision`), and finish the run
+`blocked_product_decision`. The per-site index lives at
 `references/subagent-prompts.md#auto-mode-ask-fallbacks`; Route I defines no ask
 sites.
 

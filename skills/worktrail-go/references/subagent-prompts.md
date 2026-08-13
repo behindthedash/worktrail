@@ -114,8 +114,9 @@ any layer and `AskUserQuestion` is not a registered tool in the process at all
 5.5). The in-session call still applies — spawning another layer cannot recover
 interactivity — but every ask site reachable from route execution must take its
 documented `$AUTO_MODE=true` branch: a safe documented default where one
-exists, otherwise finish the run `blocked_product_decision` and leave any
-claimed brief in `picked/`. Per-site index: `#auto-mode-ask-fallbacks`.
+exists, otherwise file a decision record and finish the run
+`blocked_product_decision` (`decision-queue.md#file-a-decision`). Per-site
+index: `#auto-mode-ask-fallbacks`.
 Subprocess dispatch applies to the background routes (D/F/G/H) with the bounded
 poll below only for an attended parent session.
 
@@ -219,12 +220,19 @@ worktrail-run-record finish "$RUN" --status blocked_product_decision --merge-res
   "<one-line summary of the decision that needed a human>"
 ```
 
-Do not call `work_queue.py done` or `work_queue.py release` — leave the brief
-claimed in `picked/` for the existing stalled-in-flight resume path, exactly as
-the Phase 5.5 fallbacks do. Sites with a safe documented default take it
-silently and record it (`worktrail-run-record append "$RUN" decisions "..."`)
-instead of blocking. Never guess an answer to a product question, and never
-attempt the `AskUserQuestion` call — the tool is absent, not merely unanswered.
+Before that `finish`, file the question itself as a decision record and release
+the brief per `decision-queue.md#file-a-decision` (guardrails:
+`decision-queue.md#decision-filing-guardrails`) — the human answers
+asynchronously and the next drain pass resumes from the blocked point. Do not
+call `work_queue.py done`, and do not release the brief by hand — the
+`worktrail-decision ask --brief ... --release` path is what stamps
+`awaiting-decision` so the brief stays blocked until answered. Only if filing
+itself fails, fall back to leaving the brief claimed in `picked/` for the
+stalled-in-flight resume path, exactly as the Phase 5.5 fallbacks do. Sites
+with a safe documented default take it silently and record it
+(`worktrail-run-record append "$RUN" decisions "..."`) instead of blocking.
+Never guess an answer to a product question, and never attempt the
+`AskUserQuestion` call — the tool is absent, not merely unanswered.
 
 Per-site branches (`$AUTO_MODE=true`):
 

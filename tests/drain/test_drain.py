@@ -2041,3 +2041,61 @@ def test_drain_dry_run_never_seeds(tmp_path, monkeypatch):
                           log=lambda _l: None)
     assert summary["seeded_backlog"] == {}
     assert not (queue_base / "queue").is_dir()
+
+
+# ---------------------------------------------------------------------------
+# Decision-queue awareness
+
+
+def _file_open_decision(queue_base, name):
+    d = queue_base / "decisions" / "open"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{name}.md").write_text(
+        "---\nid: " + name + "\nstatus: open\n---\n\n## Question\n\nQ?\n")
+
+
+def test_drain_decision_filed_block_skips_circuit_breaker(tmp_path, monkeypatch):
+    queue_base = tmp_path / "wq"
+    monkeypatch.setenv("WORK_QUEUE_DIR", str(queue_base))
+    fake = FakeQueue([3, 2, 2, 1, 1, 0, 0])
+    install_fake_queue(monkeypatch, fake)
+    config = make_config(tmp_path)
+    n = {"spawned": 0}
+
+    def spawner(cmd, timeout):
+        n["spawned"] += 1
+        _file_open_decision(queue_base, f"20260813-12000{n['spawned']}-q")
+        write_run_record(config.runs_dir, f"go-{n['spawned']}",
+                         "blocked_product_decision")
+        return SpawnOutcome(0)
+
+    logs = []
+    summary = drain.drain(config, spawner=spawner, log=logs.append)
+    # threshold is 2: two decision-less blocked iterations would trip the
+    # breaker; decision-filed blocks must not.
+    assert n["spawned"] == 3
+    assert summary["stopped"].startswith("queue_empty")
+    assert all(i["decisions_filed"] for i in summary["iterations"])
+    assert any("decision filed for a human" in line for line in logs)
+    assert summary["decisions_open"] == 3
+    assert any("decisions awaiting a human: 3" in line for line in logs)
+
+
+def test_drain_decisionless_block_still_trips_breaker(tmp_path, monkeypatch):
+    queue_base = tmp_path / "wq"
+    monkeypatch.setenv("WORK_QUEUE_DIR", str(queue_base))
+    fake = FakeQueue([3, 2, 2, 1])
+    install_fake_queue(monkeypatch, fake)
+    config = make_config(tmp_path)
+    n = {"spawned": 0}
+
+    def spawner(cmd, timeout):
+        n["spawned"] += 1
+        write_run_record(config.runs_dir, f"go-{n['spawned']}",
+                         "blocked_product_decision")
+        return SpawnOutcome(0)
+
+    summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
+    assert n["spawned"] == 2
+    assert summary["stopped"].startswith("circuit_breaker")
+    assert summary["decisions_open"] == 0

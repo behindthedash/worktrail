@@ -112,6 +112,7 @@ from ..router.policy_selfcheck import discover_repo_names
 from ..router.pr_labels import ensure_pr_risk_label
 from ..shared.homedir import worktrail_home
 from ..taskformats.devkit.schema import set_status_completed
+from ..workqueue import decisions as decisions_mod
 from ..workqueue import seed_backlog as seed_backlog_mod
 
 PROMPT = (
@@ -1316,6 +1317,8 @@ def drain(config: DrainConfig,
             ready_before = state.ready_count
             known_records = (set(config.runs_dir.glob("*/*.yaml"))
                               if config.runs_dir.is_dir() else set())
+            open_decisions_before = set(
+                decisions_mod.open_decision_ids(config.queue_dir))
             spawned = spawner(cmd, config.iteration_timeout)
             exit_code = spawned.exit_code
             record_path = newest_run_record(config.runs_dir, known_records)
@@ -1355,13 +1358,26 @@ def drain(config: DrainConfig,
                                      failure_class, reset_at)
             state.iteration += 1
             state.last_outcome = outcome
-            if outcome.kind in ("failed", "blocked"):
+            # A blocked_product_decision one-shot that actually FILED a
+            # decision record this iteration handled the block cleanly: the
+            # question is queued for a human and the brief left the ready
+            # pool, so there is nothing to escalate. A decision-less block
+            # still counts toward the breaker -- that pressure is what keeps
+            # filing honest (decision-queue.md#decision-filing-guardrails).
+            decisions_filed = (
+                sorted(set(decisions_mod.open_decision_ids(config.queue_dir))
+                       - open_decisions_before)
+                if outcome.state == "blocked_product_decision" else [])
+            if decisions_filed:
+                log("decision filed for a human: "
+                    f"{', '.join(decisions_filed)} (worktrail-decision list)")
+            if outcome.kind in ("failed", "blocked") and not decisions_filed:
                 state.consecutive_failures += 1
             elif outcome.kind == "success":
                 state.consecutive_failures = 0
-            # timeout_after_pr leaves consecutive_failures unchanged: the
-            # automation reached a PR before its hard timeout, but did not
-            # reach a full terminal success state.
+            # timeout_after_pr (and a decision-filed block) leaves
+            # consecutive_failures unchanged: the automation did its job but
+            # did not reach a full terminal success state.
             if outcome.state == "completed_awaiting_human_approval":
                 pending_approvals.append(outcome.pr_url or outcome.brief_id or "?")
             elapsed = int(clock() - iter_start)
@@ -1381,6 +1397,7 @@ def drain(config: DrainConfig,
                 "kind": outcome.kind, "state": outcome.state,
                 "brief": outcome.brief_id, "pr": outcome.pr_url,
                 "exit_code": exit_code, "elapsed_s": elapsed,
+                "decisions_filed": decisions_filed,
                 "transcript": str(transcript_path) if transcript_path else None,
             })
         if config.repos_root is not None and not config.dry_run and state.iteration > 0:
@@ -1404,10 +1421,15 @@ def drain(config: DrainConfig,
         "resumed_stale_bookkeeping": resumed.get("stale_bookkeeping", []),
         "resumed_sync_pending": resumed.get("sync_pending", []),
         "seeded_backlog": seeded_backlog,
+        "decisions_open": len(decisions_mod.open_decision_ids(config.queue_dir)),
         "elapsed_s": int(clock() - started),
     }
     if pending_approvals:
         log(f"pending human approval: {', '.join(pending_approvals)}")
+    if summary["decisions_open"]:
+        log(f"decisions awaiting a human: {summary['decisions_open']} "
+            "-- review with `worktrail-decision list` and answer with "
+            "`worktrail-decision answer <id> --answer ...`")
     return summary
 
 
