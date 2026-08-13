@@ -136,6 +136,86 @@ class TestUnreconciledTailEvidence:
         kinds = {f["kind"] for f in journal_selfcheck.check_repo(repo)["findings"]}
         assert kinds == {"stranded-tail", "unreconciled-tail-evidence"}
 
+    @pytest.mark.parametrize("reconcile_state", ["opened", "already-open"])
+    def test_open_auto_reconciliation_pr_gets_informational_wording(self, tmp_path, reconcile_state):
+        repo = _repo_with_journal(
+            tmp_path,
+            "008-x",
+            {
+                "integrate_complete": True,
+                "unreconciled_tail_evidence": [
+                    {
+                        "task": "T022",
+                        "reconcile_state": reconcile_state,
+                        "reconcile_pr_url": "https://github.com/acme/myapp/pull/42",
+                    }
+                ],
+            },
+        )
+        findings = journal_selfcheck.check_repo(repo)["findings"]
+        assert len(findings) == 1
+        detail = findings[0]["detail"]
+        assert "T022" in detail
+        assert "https://github.com/acme/myapp/pull/42" in detail
+        assert "auto-reconciliation" in detail and "awaiting merge" in detail
+        assert "reconcile before the worktree is cleaned up" not in detail
+
+    @pytest.mark.parametrize("reconcile_state", ["quarantined", None])
+    def test_unresolved_state_keeps_manual_triage_wording(self, tmp_path, reconcile_state):
+        entry: "dict[str, object]" = {"task": "T022"}
+        if reconcile_state is not None:
+            entry["reconcile_state"] = reconcile_state
+        repo = _repo_with_journal(
+            tmp_path,
+            "008-x",
+            {"integrate_complete": True, "unreconciled_tail_evidence": [entry]},
+        )
+        findings = journal_selfcheck.check_repo(repo)["findings"]
+        assert len(findings) == 1
+        detail = findings[0]["detail"]
+        assert "T022" in detail
+        assert "reconcile before the worktree is cleaned up" in detail
+        assert "auto-reconciliation" not in detail
+
+    def test_all_merged_emits_no_finding(self, tmp_path):
+        repo = _repo_with_journal(
+            tmp_path,
+            "008-x",
+            {
+                "integrate_complete": True,
+                "unreconciled_tail_evidence": [
+                    {"task": "T022", "reconcile_state": "merged"},
+                    {"task": "T023", "reconcile_state": "merged"},
+                ],
+            },
+        )
+        assert journal_selfcheck.check_repo(repo)["findings"] == []
+
+    def test_mixed_states_report_both_wordings_in_one_finding(self, tmp_path):
+        repo = _repo_with_journal(
+            tmp_path,
+            "008-x",
+            {
+                "integrate_complete": True,
+                "unreconciled_tail_evidence": [
+                    {"task": "T022", "reconcile_state": "quarantined"},
+                    {
+                        "task": "T023",
+                        "reconcile_state": "opened",
+                        "reconcile_pr_url": "https://github.com/acme/myapp/pull/43",
+                    },
+                    {"task": "T024", "reconcile_state": "merged"},
+                ],
+            },
+        )
+        findings = journal_selfcheck.check_repo(repo)["findings"]
+        assert len(findings) == 1
+        detail = findings[0]["detail"]
+        assert "T022" in detail and "reconcile before the worktree is cleaned up" in detail
+        assert "T023" in detail and "auto-reconciliation" in detail
+        assert "https://github.com/acme/myapp/pull/43" in detail
+        assert "T024" not in detail
+
 
 class TestMalformedJournal:
     def test_unparseable_journal_is_flagged(self, tmp_path):
