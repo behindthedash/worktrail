@@ -368,14 +368,29 @@ def _format_unreconciled_tail_note(findings: "list[dict]") -> "str | None":
     findings -- terminal tail-kind (e2e/cleanup) tasks whose own commits never
     got merged onto base, so the run must not report unqualified success.
     Returns None for empty findings so callers can `if note:`.
+
+    When findings carry `reconcile_state`/`reconcile_pr_url` (i.e. they went
+    through `integrate.reconcile_unreconciled_tail_evidence`), each entry is
+    annotated with that outcome so the console log doesn't read as still
+    purely manual -- the fuller per-state wording lives in
+    `journal_selfcheck.py`'s dashboard finding, not here.
     """
     if not findings:
         return None
+
+    def _entry(f: dict) -> str:
+        state = f.get("reconcile_state")
+        suffix = f" reconcile={state}" if state else ""
+        pr_url = f.get("reconcile_pr_url")
+        if pr_url and state in ("opened", "already-open"):
+            suffix += f" {pr_url}"
+        return f"{f['task']} (sha {f['head_sha']} @ {f['worktree']}{suffix})"
+
     return (
         f"!! {len(findings)} tail task(s) completed with unreconciled evidence "
         f"(commits never merged onto base -- reconcile before worktree cleanup, "
         f"see journal `unreconciled_tail_evidence`): "
-        + ", ".join(f"{f['task']} (sha {f['head_sha']} @ {f['worktree']})" for f in findings)
+        + ", ".join(_entry(f) for f in findings)
     )
 
 
@@ -4122,6 +4137,20 @@ def _pipeline_scheduler(
     unreconciled_tail = integrate_module.detect_unreconciled_tail_evidence(
         repo, remote, base, spec_id, wt_base, (tail_res or {}).get("tasks", tasks)
     )
+    if unreconciled_tail:
+        unreconciled_tail = integrate_module.reconcile_unreconciled_tail_evidence(
+            unreconciled_tail,
+            repo,
+            spec_id,
+            (tail_res or {}).get("tasks", tasks),
+            remote,
+            run_id,
+            base,
+            journal_path,
+            pr_labels=pr_labels,
+            route=route,
+            gates=gates,
+        )
     integrate_module._record_unreconciled_tail_evidence(journal_path, unreconciled_tail)
     unreconciled_note = _format_unreconciled_tail_note(unreconciled_tail)
     if unreconciled_note:
@@ -4762,6 +4791,20 @@ def _full_real_inner(
     unreconciled_tail = integrate.detect_unreconciled_tail_evidence(
         repo, remote, base, spec_id, wt_base, (tail_res or {}).get("tasks", tasks)
     )
+    if unreconciled_tail:
+        unreconciled_tail = integrate.reconcile_unreconciled_tail_evidence(
+            unreconciled_tail,
+            repo,
+            spec_id,
+            (tail_res or {}).get("tasks", tasks),
+            remote,
+            run_id,
+            base,
+            journal_path,
+            pr_labels=pr_labels,
+            route=route,
+            gates=gates,
+        )
     integrate._record_unreconciled_tail_evidence(journal_path, unreconciled_tail)
     unreconciled_note = _format_unreconciled_tail_note(unreconciled_tail)
     if unreconciled_note:

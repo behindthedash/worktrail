@@ -811,6 +811,72 @@ class ReconcileUnreconciledTailEvidence(unittest.TestCase):
     finding into a synthetic single-task group fed through integrate_one -- the same
     merge/push/PR/quarantine seam every impl group already goes through."""
 
+    class _GhWorldHelper(FakeRunWithOperator.FakeRunHelper):
+        """Stateful git+gh fake standing in for a real remote across repeated
+        reconcile_unreconciled_tail_evidence calls: `gh pr create` makes a
+        branch's later `gh pr view`/`ls-remote` report OPEN + existing, the
+        way a real GitHub PR and pushed branch would -- so a second call over
+        the same finding naturally reuses it instead of needing per-call
+        response scripting. `conflict_branches` names task branches (e.g.
+        "spec-001/t022") whose `merge --no-edit` fails, simulating a real
+        merge conflict on that tail branch.
+        """
+
+        def __init__(self, remote_url="https://github.com/owner/repo.git", conflict_branches=None):
+            super().__init__(remote_url=remote_url)
+            self._prs: dict = {}
+            self._next_pr_num = 200
+            self.conflict_branches = conflict_branches or set()
+
+        def __call__(self, *args, **kwargs):
+            cmd = (
+                list(args[1:])
+                if args and isinstance(args[0], (str, Path))
+                else (args[0] if args else [])
+            )
+            self.calls.append(cmd)
+
+            if cmd[:2] == ["ls-remote", "origin"]:
+                branch = cmd[-1]
+                if branch in self._prs:
+                    return Proc(0, f"abc123\trefs/heads/{branch}\n", "")
+                return Proc(1, "", "")
+
+            if cmd[:3] == ["gh", "pr", "view"]:
+                branch = cmd[3] if len(cmd) > 3 else None
+                pr = self._prs.get(branch)
+                if not pr:
+                    return Proc(1, "", "no pull requests found")
+                return Proc(0, json.dumps({
+                    "number": pr["number"],
+                    "state": pr["state"],
+                    "url": pr["url"],
+                    "headRefName": branch,
+                    "isDraft": False,
+                }), "")
+
+            if cmd[:3] == ["gh", "pr", "list"]:
+                return Proc(0, "[]", "")
+
+            if cmd[:3] == ["gh", "pr", "create"]:
+                branch = cmd[cmd.index("--head") + 1]
+                self._next_pr_num += 1
+                url = f"https://github.com/owner/repo/pull/{self._next_pr_num}"
+                self._prs[branch] = {"number": self._next_pr_num, "state": "OPEN", "url": url}
+                return Proc(0, url + "\n", "")
+
+            if "remote" in cmd and "get-url" in cmd:
+                return Proc(0, self.remote_url, "")
+
+            if cmd[:2] == ["merge", "--no-edit"] and len(cmd) > 2 \
+                    and cmd[2] in self.conflict_branches:
+                return Proc(1, "", "CONFLICT (content): Merge conflict in foo.py")
+
+            if "merge" in cmd or "push" in cmd or "checkout" in cmd:
+                return Proc(0, "", "")
+
+            return Proc(0, "", "")
+
     def test_builds_synthetic_group_and_opens_pr_via_integrate_one(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             journal_path = Path(tmpdir) / "journal.json"
@@ -828,7 +894,14 @@ class ReconcileUnreconciledTailEvidence(unittest.TestCase):
                         "run-1", "main", str(journal_path),
                     )
 
-            self.assertEqual(result, findings)  # same finding data returned
+            # Enriched contract (post-1.2/1.3): a new list carrying each finding's
+            # original fields plus reconcile_state/reconcile_pr_url; input untouched.
+            self.assertEqual(len(result), 1)
+            enriched = result[0]
+            self.assertEqual(enriched["task"], "T022")
+            self.assertEqual(enriched["reconcile_state"], "opened")
+            self.assertEqual(enriched["reconcile_pr_url"], "https://github.com/owner/repo/pull/123")
+            self.assertNotIn("reconcile_state", findings[0])  # input list not mutated
             create_calls = run.find_calls("gh", "pr", "create")
             self.assertEqual(len(create_calls), 1)
             self.assertIn("run-1/tail-t022", create_calls[0])
@@ -844,6 +917,181 @@ class ReconcileUnreconciledTailEvidence(unittest.TestCase):
             self.assertEqual(result, [])
             mock_git.assert_not_called()
             mock_run.assert_not_called()
+
+    def test_second_call_reuses_open_pr_as_already_open(self):
+        """A repeated call over the same finding/journal must reuse the PR the
+        first call opened rather than creating a second one (AC: reconciliation
+        is safe to retry across resumed runs)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            journal_path = Path(tmpdir) / "journal.json"
+            journal_path.write_text(json.dumps({"run_id": "run-1"}) + "\n")
+
+            run = self._GhWorldHelper()
+            findings = [{"task": "T022", "worktree": "/x", "head_sha": "abc123"}]
+            task = _tail_task("T022", "e2e", status="done")
+
+            with patch("worktrail.orchestrator.integrate._git", side_effect=run):
+                with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
+                    first = integrate.reconcile_unreconciled_tail_evidence(
+                        findings, Path("/repo"), "spec-001", [task], "origin",
+                        "run-1", "main", str(journal_path),
+                    )
+                    second = integrate.reconcile_unreconciled_tail_evidence(
+                        findings, Path("/repo"), "spec-001", [task], "origin",
+                        "run-1", "main", str(journal_path),
+                    )
+
+            self.assertEqual(first[0]["reconcile_state"], "opened")
+            self.assertEqual(second[0]["reconcile_state"], "already-open")
+            self.assertEqual(second[0]["reconcile_pr_url"], first[0]["reconcile_pr_url"])
+            create_calls = run.find_calls("gh", "pr", "create")
+            self.assertEqual(len(create_calls), 1, "second call must not open a second PR")
+
+    def test_pr_already_merged_returns_merged(self):
+        """A finding whose PR has since merged (per gh pr view) is reported as
+        'merged', not re-integrated."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            journal_path = Path(tmpdir) / "journal.json"
+            journal_path.write_text(json.dumps({"run_id": "run-1"}) + "\n")
+
+            gb = "run-1/tail-t022"
+            merged_url = "https://github.com/owner/repo/pull/77"
+            pr_view = {
+                gb: [{
+                    "number": 77,
+                    "state": "MERGED",
+                    "url": merged_url,
+                    "headRefName": gb,
+                    "isDraft": False,
+                }]
+            }
+            run = FakeRunWithOperator.FakeRunHelper(pr_view_responses=pr_view)
+            findings = [{"task": "T022", "worktree": "/x", "head_sha": "abc123"}]
+            task = _tail_task("T022", "e2e", status="done")
+
+            with patch("worktrail.orchestrator.integrate._git", side_effect=run):
+                with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
+                    result = integrate.reconcile_unreconciled_tail_evidence(
+                        findings, Path("/repo"), "spec-001", [task], "origin",
+                        "run-1", "main", str(journal_path),
+                    )
+
+            self.assertEqual(result[0]["reconcile_state"], "merged")
+            self.assertEqual(result[0]["reconcile_pr_url"], merged_url)
+            self.assertEqual(run.find_calls("gh", "pr", "create"), [])
+            journal = json.loads(journal_path.read_text())
+            self.assertEqual(journal["groups"]["tail-t022"]["state"], "MERGED")
+
+    def test_merge_conflict_quarantines_with_reason(self):
+        """A finding whose tail branch conflicts with base on merge is
+        quarantined with the same QUARANTINE_MERGE_CONFLICT reason used by
+        every other group's merge-conflict path (reconciliation reuses
+        existing conflict handling, it does not invent its own)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            journal_path = Path(tmpdir) / "journal.json"
+            journal_path.write_text(json.dumps({"run_id": "run-1"}) + "\n")
+
+            run = self._GhWorldHelper(conflict_branches={"spec-001/t022"})
+            findings = [{"task": "T022", "worktree": "/x", "head_sha": "abc123"}]
+            task = _tail_task("T022", "e2e", status="done")
+
+            with patch("worktrail.orchestrator.integrate._git", side_effect=run):
+                with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
+                    result = integrate.reconcile_unreconciled_tail_evidence(
+                        findings, Path("/repo"), "spec-001", [task], "origin",
+                        "run-1", "main", str(journal_path),
+                    )
+
+            self.assertEqual(result[0]["reconcile_state"], "quarantined")
+            self.assertEqual(result[0]["reconcile_pr_url"], "")
+            self.assertEqual(run.find_calls("gh", "pr", "create"), [])
+            journal = json.loads(journal_path.read_text())
+            record = journal["groups"]["tail-t022"]
+            self.assertEqual(record["state"], "QUARANTINED")
+            self.assertEqual(record["quarantine_reason"], integrate.QUARANTINE_MERGE_CONFLICT)
+
+    def test_two_findings_reconciled_independently(self):
+        """Two findings in the same call are reconciled independently: one
+        quarantined (merge conflict), one opened cleanly -- both outcomes
+        reflected correctly regardless of list order."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            journal_path = Path(tmpdir) / "journal.json"
+            journal_path.write_text(json.dumps({"run_id": "run-1"}) + "\n")
+
+            run = self._GhWorldHelper(conflict_branches={"spec-001/t022"})
+            findings = [
+                {"task": "T022", "worktree": "/x", "head_sha": "abc123"},
+                {"task": "T023", "worktree": "/y", "head_sha": "def456"},
+            ]
+            tasks = [
+                _tail_task("T022", "e2e", status="done"),
+                _tail_task("T023", "cleanup", status="done"),
+            ]
+
+            with patch("worktrail.orchestrator.integrate._git", side_effect=run):
+                with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
+                    result = integrate.reconcile_unreconciled_tail_evidence(
+                        findings, Path("/repo"), "spec-001", tasks, "origin",
+                        "run-1", "main", str(journal_path),
+                    )
+
+            by_task = {r["task"]: r for r in result}
+            self.assertEqual(by_task["T022"]["reconcile_state"], "quarantined")
+            self.assertEqual(by_task["T022"]["reconcile_pr_url"], "")
+            self.assertEqual(by_task["T023"]["reconcile_state"], "opened")
+            self.assertTrue(
+                by_task["T023"]["reconcile_pr_url"].startswith("https://github.com/owner/repo/pull/")
+            )
+
+            journal = json.loads(journal_path.read_text())
+            self.assertEqual(journal["groups"]["tail-t022"]["state"], "QUARANTINED")
+            self.assertEqual(journal["groups"]["tail-t023"]["state"], "OPEN")
+
+
+class QuarantinedTailGroupPickedUpByQuarantineSelfcheck(unittest.TestCase):
+    """Regression test for design.md's "no dashboard change needed" claim: a
+    synthetic `tail-<task-id>` group that reconcile_unreconciled_tail_evidence
+    quarantines is just another QUARANTINED entry in `journal["groups"]` --
+    quarantine_selfcheck.check_repo() needs no awareness of the tail-specific
+    naming to surface it, because it keys off `state`, not group-name shape.
+    """
+
+    def test_quarantined_tail_group_surfaces_as_finding(self):
+        from worktrail.router import quarantine_selfcheck
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir) / "myrepo"
+            (repo / ".git").mkdir(parents=True)
+            worktrees_dir = repo.parent / "myrepo-worktrees"
+            worktrees_dir.mkdir()
+            journal_path = worktrees_dir / "run-spec-001.json"
+            journal_path.write_text(json.dumps({"run_id": "run-1"}) + "\n")
+
+            run = ReconcileUnreconciledTailEvidence._GhWorldHelper(
+                conflict_branches={"spec-001/t022"}
+            )
+            findings = [{"task": "T022", "worktree": "/x", "head_sha": "abc123"}]
+            task = _tail_task("T022", "e2e", status="done")
+
+            with patch("worktrail.orchestrator.integrate._git", side_effect=run):
+                with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
+                    integrate.reconcile_unreconciled_tail_evidence(
+                        findings, repo, "spec-001", [task], "origin",
+                        "run-1", "main", str(journal_path),
+                    )
+
+            journal = json.loads(journal_path.read_text())
+            self.assertEqual(journal["groups"]["tail-t022"]["state"], "QUARANTINED")
+
+            result = quarantine_selfcheck.check_repo(repo)
+
+            self.assertEqual(len(result["findings"]), 1)
+            finding = result["findings"][0]
+            self.assertEqual(finding["spec_id"], "spec-001")
+            self.assertEqual(finding["group"], "tail-t022")
+            self.assertEqual(finding["quarantine_reason"], integrate.QUARANTINE_MERGE_CONFLICT)
+            self.assertEqual(result["reconciled"], [])
+            self.assertEqual(result["resumable"], [])
 
 
 class IntegrationSmokeTest(unittest.TestCase):

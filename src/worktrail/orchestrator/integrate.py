@@ -1089,6 +1089,20 @@ def integrate_one(
     return (name, pr_base, out)
 
 
+def _read_group_journal_record(journal_path: Optional[str], name: str) -> dict:
+    """Return group `name`'s current journal record, or `{}` if absent."""
+    if not journal_path:
+        return {}
+    try:
+        journal_file = Path(journal_path)
+        if not journal_file.exists():
+            return {}
+        journal = json.loads(journal_file.read_text())
+        return journal.get("groups", {}).get(name, {})
+    except Exception:
+        return {}
+
+
 def reconcile_unreconciled_tail_evidence(
     findings: list,
     repo: Path,
@@ -1112,23 +1126,64 @@ def reconcile_unreconciled_tail_evidence(
     seam every impl group already goes through, so a real merge conflict on
     the tail branch quarantines it exactly like any other group would rather
     than needing new handling here.
+
+    Returns a new list (the input `findings` is never mutated) of dicts each
+    carrying the original finding fields plus `reconcile_state` (one of
+    "opened", "already-open", "merged", "quarantined") and `reconcile_pr_url`
+    (empty string when there is none, e.g. quarantined). The journal is
+    re-read after each `integrate_one` call rather than trusting its return
+    value, since that call returns None on both a MERGED-skip and a
+    QUARANTINED outcome. Distinguishing a freshly-opened PR from one reused
+    from a prior call requires the group's journal state from *before* this
+    call too, so that is captured first -- this makes reconciliation safe to
+    retry across resumed runs.
+
+    Each finding is reconciled independently by its own task id: an
+    unexpected failure reconciling one finding (e.g. `detect_unreconciled_tail_evidence`
+    somehow yielding more than one finding for the same task across repeated
+    calls -- should not happen given its dedup-by-construction, but this is
+    the last line of defense) is caught and recorded as "quarantined" for
+    that finding alone, rather than raising and losing every other finding
+    in the same batch.
     """
     status = {t["id"]: t.get("status", "done") for t in tasks}
     by_id = {t["id"]: t for t in tasks}
+    enriched: list = []
     for finding in findings:
         task_id = finding["task"]
-        g = {
-            "name": f"tail-{task_id.lower()}",
-            "tasks": [task_id],
-            "depends_on": [],
-            "reqs": by_id.get(task_id, {}).get("reqs", []),
-        }
-        integrate_one(
-            g, repo, spec_id, tasks, remote, run_id, base, journal_path, status,
-            group_branch={}, quarantined={},
-            pr_labels=pr_labels, route=route, gates=gates,
-        )
-    return findings
+        name = f"tail-{task_id.lower()}"
+        try:
+            pre_state = _read_group_journal_record(journal_path, name).get("state")
+            g = {
+                "name": name,
+                "tasks": [task_id],
+                "depends_on": [],
+                "reqs": by_id.get(task_id, {}).get("reqs", []),
+            }
+            integrate_one(
+                g, repo, spec_id, tasks, remote, run_id, base, journal_path, status,
+                group_branch={}, quarantined={},
+                pr_labels=pr_labels, route=route, gates=gates,
+            )
+            post_record = _read_group_journal_record(journal_path, name)
+            post_state = post_record.get("state")
+            if post_state == "OPEN":
+                reconcile_state = "already-open" if pre_state == "OPEN" else "opened"
+            elif post_state == "MERGED":
+                reconcile_state = "merged"
+            else:
+                reconcile_state = "quarantined"
+            pr_url = post_record.get("pr_url", "") or ""
+        except Exception as e:
+            print(f"  WARNING: reconciliation failed for tail task {task_id}: {e}")
+            reconcile_state = "quarantined"
+            pr_url = ""
+        enriched.append({
+            **finding,
+            "reconcile_state": reconcile_state,
+            "reconcile_pr_url": pr_url,
+        })
+    return enriched
 
 
 def _wait_for_pr_checks(
