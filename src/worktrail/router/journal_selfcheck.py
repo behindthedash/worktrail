@@ -163,21 +163,42 @@ def check_repo(repo: Path, run_record_dir: Optional[Path] = None) -> Dict[str, A
             )
         unreconciled = journal.get("unreconciled_tail_evidence")
         if isinstance(unreconciled, list) and unreconciled:
-            task_ids = [
-                str(u.get("task", u)) if isinstance(u, dict) else str(u) for u in unreconciled
-            ]
-            findings.append(
-                {
-                    "kind": "unreconciled-tail-evidence",
-                    "spec_id": spec_id,
-                    "journal": str(journal_file),
-                    "detail": (
-                        f"tail task(s) {', '.join(task_ids)} completed but their own "
-                        "commits never merged onto base — reconcile before the "
-                        "worktree is cleaned up"
-                    ),
-                }
-            )
+            manual_triage: List[str] = []
+            reconciling: List[str] = []
+            for u in unreconciled:
+                if isinstance(u, dict):
+                    task_id = str(u.get("task", u))
+                    reconcile_state = u.get("reconcile_state")
+                    pr_url = u.get("reconcile_pr_url") or ""
+                else:
+                    task_id, reconcile_state, pr_url = str(u), None, ""
+                if reconcile_state == "merged":
+                    continue  # belt-and-suspenders: detect_ already stops reporting these
+                if reconcile_state in ("opened", "already-open"):
+                    reconciling.append(f"{task_id} ({pr_url})" if pr_url else task_id)
+                else:  # "quarantined", or missing/absent for pre-reconciliation journals
+                    manual_triage.append(task_id)
+            detail_parts = []
+            if manual_triage:
+                detail_parts.append(
+                    f"tail task(s) {', '.join(manual_triage)} completed but their own "
+                    "commits never merged onto base — reconcile before the "
+                    "worktree is cleaned up"
+                )
+            if reconciling:
+                detail_parts.append(
+                    f"tail task(s) {', '.join(reconciling)} auto-reconciliation "
+                    "PR(s) open, awaiting merge"
+                )
+            if detail_parts:
+                findings.append(
+                    {
+                        "kind": "unreconciled-tail-evidence",
+                        "spec_id": spec_id,
+                        "journal": str(journal_file),
+                        "detail": "; ".join(detail_parts),
+                    }
+                )
     return {"findings": findings}
 
 
