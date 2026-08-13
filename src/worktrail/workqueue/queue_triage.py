@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from ..shared.brief_frontmatter import read_frontmatter, split_frontmatter
+from ..shared.homedir import worktrail_home
 from .work_queue import claim, done, picked_dir, queue_dir, release, resolve
 
 logger = logging.getLogger(__name__)
@@ -598,8 +599,8 @@ def write_verdict_file(verdicts: List[Verdict], out_dir: "str | Path") -> Path:
     every verdict here -- including `parse_verdicts()`'s fail-open `keep` fallbacks -- is
     written as-is and in order, so this file is a complete, machine-applyable record of the
     run with nothing silently dropped. Lives outside any target repo (default
-    `~/.go/triage/<run-id>/`, per design.md); `out_dir` itself is the caller's concern (3.2's
-    CLI), not this function's.
+    `worktrail_home()/triage/<run-id>/`, per design.md); `out_dir` itself is the
+    caller's concern (3.2's CLI), not this function's.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -679,9 +680,10 @@ def _worktrail_repo_root() -> Path:
 
 
 def _default_out_dir() -> Path:
-    """`~/.go/triage/<run-id>/`, per design.md -- run output lives beside `~/.go/runs`."""
+    """`worktrail_home()/triage/<run-id>/`, per design.md -- run output lives
+    beside `worktrail_home()/runs`."""
     run_id = f"triage-{time.strftime('%Y%m%d-%H%M%S')}"
-    return Path.home() / ".go" / "triage" / run_id
+    return worktrail_home() / "triage" / run_id
 
 
 def cmd_evaluate(args: argparse.Namespace) -> int:
@@ -801,7 +803,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     evaluate_parser.add_argument(
         "--out-dir", default=None,
-        help="where to write verdict.json + report.md (default ~/.go/triage/<run-id>/)",
+        help="where to write verdict.json + report.md (default ~/.worktrail/triage/<run-id>/)",
     )
     evaluate_parser.add_argument(
         "--queue-dir", default=None,

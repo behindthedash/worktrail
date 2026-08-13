@@ -208,14 +208,14 @@ def _run_tests() -> int:
                 "--base", "dev",
                 "--route", "D",
                 "--spec", "016-go-subprocess-dispatch",
-                "--run", "/home/user/.go/runs/test.json",
+                "--run", "/home/user/.worktrail/runs/test.json",
             ])
             self.assertEqual(code, 0, f"stderr: {stderr}")
             self.assertIn("Repo: /home/user/projects/foo", stdout)
             self.assertIn("Base branch: dev", stdout)
             self.assertIn("Route: D", stdout)
             self.assertIn("Spec: 016-go-subprocess-dispatch", stdout)
-            self.assertIn("Run record path: /home/user/.go/runs/test.json", stdout)
+            self.assertIn("Run record path: /home/user/.worktrail/runs/test.json", stdout)
             self.assertIn("Agent CLI: claude", stdout)
             self.assertIn("Instruction: Execute sdd-workflow", stdout)
             # Seed must NOT contain go internals.
@@ -231,7 +231,7 @@ def _run_tests() -> int:
                 "--base", "dev",
                 "--route", "D",
                 "--spec", "016-go-subprocess-dispatch",
-                "--run", "/home/user/.go/runs/test.json",
+                "--run", "/home/user/.worktrail/runs/test.json",
                 "--brief", "/home/user/work-queue/queue/brief.md",
             ])
             self.assertEqual(code, 0, f"stderr: {stderr}")
@@ -244,7 +244,7 @@ def _run_tests() -> int:
                 "--base", "dev",
                 "--route", "D",
                 "--spec", "016-go-subprocess-dispatch",
-                "--run", "/home/user/.go/runs/test.json",
+                "--run", "/home/user/.worktrail/runs/test.json",
                 "--agent", "codex",
             ])
             self.assertEqual(code, 0, f"stderr: {stderr}")
@@ -257,7 +257,7 @@ def _run_tests() -> int:
                 "--base", "dev",
                 "--route", "D",
                 "--spec", "016-go-subprocess-dispatch",
-                "--run", "/home/user/.go/runs/test.json",
+                "--run", "/home/user/.worktrail/runs/test.json",
                 "--agent", "opencode",
             ])
             self.assertEqual(code, 0, f"stderr: {stderr}")
@@ -281,7 +281,7 @@ def _run_tests() -> int:
                     "--base", "dev",
                     "--route", "D",
                     "--spec", "016-go-subprocess-dispatch",
-                    "--run", "/home/user/.go/runs/test.json",
+                    "--run", "/home/user/.worktrail/runs/test.json",
                 ],
                 env_overrides={"GO_AGENT_CLI": "gpt-cli"},
             )
@@ -297,7 +297,7 @@ def _run_tests() -> int:
                     "--base", "dev",
                     "--route", "D",
                     "--spec", "016-go-subprocess-dispatch",
-                    "--run", "/home/user/.go/runs/test.json",
+                    "--run", "/home/user/.worktrail/runs/test.json",
                     "--agent", "claude",
                 ],
                 env_overrides={"GO_AGENT_CLI": "gpt-cli"},
@@ -311,7 +311,7 @@ def _run_tests() -> int:
                 "--base", "dev",
                 "--route", "D",
                 "--spec", "016-go-subprocess-dispatch",
-                "--run", "/home/user/.go/runs/test.json",
+                "--run", "/home/user/.worktrail/runs/test.json",
             ])
             self.assertNotEqual(code, 0, "Should exit non-zero when --repo is missing")
             self.assertIn("required", stderr.lower() or stdout.lower())
@@ -323,7 +323,7 @@ def _run_tests() -> int:
                 "--base", "dev",
                 "--route", "D",
                 "--spec", "016-go-subprocess-dispatch",
-                "--run", "/home/user/.go/runs/test.json",
+                "--run", "/home/user/.worktrail/runs/test.json",
             ])
             self.assertNotEqual(code, 0, "Should exit non-zero for relative path")
             self.assertIn("absolute", stderr.lower())

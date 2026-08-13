@@ -19,11 +19,12 @@ from worktrail.router import cluster_telemetry as ct
 
 
 class DefaultLogPathTests(unittest.TestCase):
-    def test_default_is_under_go_home(self):
-        with unittest.mock.patch.dict(os.environ, {}, clear=False):
+    def test_default_is_under_worktrail_home(self):
+        with unittest.mock.patch.dict(
+                os.environ, {"WORKTRAIL_HOME": "/tmp/wt-home"}, clear=False):
             os.environ.pop("GO_CLUSTER_LOG", None)
             path = ct.default_log_path()
-        self.assertEqual(path, Path.home() / ".go" / "cluster-log.jsonl")
+        self.assertEqual(path, Path("/tmp/wt-home") / "cluster-log.jsonl")
 
     def test_env_override(self):
         with unittest.mock.patch.dict(os.environ, {"GO_CLUSTER_LOG": "/tmp/custom-cluster-log.jsonl"}):

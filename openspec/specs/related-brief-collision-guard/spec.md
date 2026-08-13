@@ -56,14 +56,14 @@ be reported as an active match.
 
 When an active match's `claimed-by` value matches the local machine's own
 agent label, the system SHALL attempt to find a local GO run record under
-`~/.go/runs/<repo-name>/` referencing the related brief's id, and SHALL
+`~/.worktrail/runs/<repo-name>/` referencing the related brief's id, and SHALL
 include its path in the match when found. The absence of a matching run
 record SHALL NOT change whether the match is reported as active, and any
 failure reading the run-record directory SHALL be silently ignored.
 
 #### Scenario: A same-machine active claim is enriched with its run record
 - **WHEN** an active match's `claimed-by` matches this machine's agent
-  label and a local run record under `~/.go/runs/<repo>/` names the related
+  label and a local run record under `~/.worktrail/runs/<repo>/` names the related
   brief's id
 - **THEN** the match includes that run record's path
 

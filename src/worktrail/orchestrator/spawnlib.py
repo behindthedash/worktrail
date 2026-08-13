@@ -69,6 +69,7 @@ import yaml
 
 from . import agent_capacity
 from ..router.skill_dispatch import prepare_codex_child_environment
+from ..shared.homedir import worktrail_home
 
 
 class SpawnResult(NamedTuple):
@@ -363,7 +364,8 @@ def is_infra_failure(returncode: int, stdout: Optional[str]) -> bool:
 # aliases are the only one of the three that don't go stale this way.
 # default_model_for_agent() resolves, in order: an explicit ORCH_*_MODEL env
 # var (an intentional per-invocation choice) > the operator-maintained
-# ~/.go/model-defaults.yaml (kept current without a code change) > these
+# model-defaults.yaml under worktrail_home() (kept current without a code
+# change) > these
 # constants (only reached when neither is set -- e.g. a fresh machine with no
 # config file yet).
 DEFAULT_CLAUDE_MODEL = "sonnet"
@@ -373,7 +375,14 @@ DEFAULT_OPENCODE_MODEL = "deepseek/deepseek-v4-flash"
 SUPPORTED_AGENTS = {"claude", "codex", "opencode"}
 
 MODEL_DEFAULTS_FILE_ENV = "GO_MODEL_DEFAULTS_FILE"
-DEFAULT_MODEL_DEFAULTS_FILE = "~/.go/model-defaults.yaml"
+
+
+def _model_defaults_file() -> Path:
+    """`$GO_MODEL_DEFAULTS_FILE` if set, else `worktrail_home()/model-defaults.yaml`."""
+    override = os.environ.get(MODEL_DEFAULTS_FILE_ENV)
+    if override:
+        return Path(override).expanduser()
+    return worktrail_home() / "model-defaults.yaml"
 
 
 def _load_model_defaults() -> Dict[str, str]:
@@ -382,7 +391,7 @@ def _load_model_defaults() -> Dict[str, str]:
     all degrade the same way agent_capacity.py's own cache loads do: never
     raise, never block a spawn over a config-file problem.
     """
-    path = Path(os.environ.get(MODEL_DEFAULTS_FILE_ENV, DEFAULT_MODEL_DEFAULTS_FILE)).expanduser()
+    path = _model_defaults_file()
     if not path.is_file():
         return {}
     try:

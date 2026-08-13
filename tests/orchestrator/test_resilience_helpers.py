@@ -188,8 +188,8 @@ class DefaultModelSelection(unittest.TestCase):
     def test_opencode_defaults_to_sonnet_family(self):
         # clear=True wipes the conftest-level GO_MODEL_DEFAULTS_FILE isolation
         # too, so it must be re-supplied here -- without it this test would
-        # read whatever is actually at ~/.go/model-defaults.yaml on a real
-        # operator machine instead of falling through to the hardcoded default.
+        # read whatever is actually in the machine's real model-defaults.yaml
+        # (under worktrail_home()) on a real operator machine instead of falling through to the hardcoded default.
         with patch.dict(os.environ, {"GO_MODEL_DEFAULTS_FILE": "/nonexistent-model-defaults.yaml"},
                         clear=True):
             self.assertEqual(
@@ -206,7 +206,7 @@ class DefaultModelSelection(unittest.TestCase):
 
 
 class ModelDefaultsFileTest(unittest.TestCase):
-    """~/.go/model-defaults.yaml (GO_MODEL_DEFAULTS_FILE): an operator-maintained
+    """worktrail_home()/model-defaults.yaml (GO_MODEL_DEFAULTS_FILE): an operator-maintained
     override so a vendor renaming/retiring a model doesn't need a code change --
     confirmed live 2026-08-03: DEFAULT_CODEX_MODEL had drifted to "gpt-5.4-mini"
     while the operator's actual codex CLI listed "gpt-5.6-sol" as current."""

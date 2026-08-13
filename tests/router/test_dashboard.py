@@ -1188,7 +1188,7 @@ class ReposScan(unittest.TestCase):
 
     def test_run_record_dir_threaded_into_journal_findings(self):
         # scan_repos's own run_record_dir param must reach journal_selfcheck
-        # so a malformed ~/.go/runs/<repo>/*.yaml record shows up in
+        # so a malformed worktrail_home()/runs/<repo>/*.yaml record shows up in
         # journal_findings (and hence the "Stranded runs" dashboard section)
         # without the caller re-deriving the path a second way.
         with tempfile.TemporaryDirectory() as tmp:

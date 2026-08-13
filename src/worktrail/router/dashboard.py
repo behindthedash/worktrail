@@ -127,6 +127,8 @@ from .audit_postmerge import (
 # Policy routing is used only to annotate picker items.
 from .policy import DEFAULTS as _POLICY_DEFAULTS, load_policy as _load_policy, resolve_routing as _resolve_routing
 
+from ..shared.homedir import worktrail_home
+
 # check_cache_freshness's ancestor-walk is reused by _dashboard_repo_root() to
 # find the true repo root across install topologies.
 from .check_cache_freshness import _find_git_root
@@ -1440,12 +1442,16 @@ def auto_pick_brief(
 
 
 AUTO_PICK_MISS_LOG_ENV = "GO_AUTO_PICK_MISS_LOG"
-DEFAULT_AUTO_PICK_MISS_LOG = "~/.go/auto-pick-misses.jsonl"
 MAX_AUTO_PICK_MISS_ENTRIES = 200  # bounded like agent_capacity.py's audit log
 
 
 def auto_pick_miss_log_path(path: Optional[Path] = None) -> Path:
-    return path or Path(os.environ.get(AUTO_PICK_MISS_LOG_ENV, DEFAULT_AUTO_PICK_MISS_LOG)).expanduser()
+    if path:
+        return path
+    override = os.environ.get(AUTO_PICK_MISS_LOG_ENV)
+    if override:
+        return Path(override).expanduser()
+    return worktrail_home() / "auto-pick-misses.jsonl"
 
 
 def log_auto_pick_miss(
@@ -1742,7 +1748,7 @@ def scan_repos(parent: Path, run_record_dir: Optional[Path] = None) -> List[Dict
     journal invariant violations (stranded-tail, malformed-journal) plus
     malformed `run_record_dir/<repo>/*.yaml` records (empty = clean).
     `run_record_dir` is threaded through so both readers agree on where
-    records live (env override, then `~/.go/runs`, same as `load_recent_runs`).
+    records live (env override, then `worktrail_home()/runs`, same as `load_recent_runs`).
 
     detect_stage calls are parallelised with a flat ThreadPoolExecutor across
     all spec dirs in all repos -- no nested pools, one thread per spec dir.
@@ -2104,16 +2110,13 @@ def build_category_items(
     return result
 
 
-_DEFAULT_RUN_RECORD_DIR = Path.home() / ".go" / "runs"
-
-
 def load_recent_runs(
     repo: Path, limit: int = 5, runs_dir: Optional[Path] = None
 ) -> List[Dict[str, Any]]:
     """Read the `limit` most-recent go run records for `repo`.
 
     Records live at `<runs_dir>/<repo-name>/<run-id>.yaml` (run_record.py's own
-    layout; `runs_dir` defaults to ~/.go/runs, overridable via
+    layout; `runs_dir` defaults to `worktrail_home()/runs`, overridable via
     `GO_RUN_RECORD_DIR` -- mirrors cluster_telemetry.py's default/override
     pattern). Sorted by `completed_at`, falling back to `started_at` for runs
     still in progress (no `finish` entry yet). Read-only and best-effort: a
@@ -2124,7 +2127,7 @@ def load_recent_runs(
         return []
     if runs_dir is None:
         override = os.environ.get("GO_RUN_RECORD_DIR")
-        runs_dir = Path(override).expanduser() if override else _DEFAULT_RUN_RECORD_DIR
+        runs_dir = Path(override).expanduser() if override else worktrail_home() / "runs"
     run_dir = runs_dir / Path(repo).resolve().name
     if not run_dir.is_dir():
         return []
@@ -2494,19 +2497,20 @@ def main(argv=None) -> int:
     p.add_argument(
         "--capacity-cache",
         default=None,
-        help="provider capacity cache path (default: GO_AGENT_CAPACITY_CACHE or ~/.go/agent-capacity.json)",
+        help="provider capacity cache path (default: GO_AGENT_CAPACITY_CACHE or "
+        "~/.worktrail/agent-capacity.json)",
     )
     p.add_argument(
         "--postmerge-audit-state",
         default=None,
         help="post-merge audit state dir (default: GO_POSTMERGE_AUDIT_STATE or "
-        "~/.go/postmerge-audit-state)",
+        "~/.worktrail/postmerge-audit-state)",
     )
     p.add_argument(
         "--run-record-dir",
         default=None,
         help="go run-record root for the 'Recent runs' section "
-        "(default: GO_RUN_RECORD_DIR or ~/.go/runs)",
+        "(default: GO_RUN_RECORD_DIR or ~/.worktrail/runs)",
     )
     p.add_argument(
         "--check-freshness",

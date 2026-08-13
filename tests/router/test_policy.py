@@ -673,7 +673,7 @@ class Routing(unittest.TestCase):
 
     def _no_mw_env(self):
         """Point GO_ROUTING_FILE at a path that doesn't exist, so a real
-        ~/.go/routing.yaml on the test-running machine can't leak in."""
+        machine-wide routing.yaml (under worktrail_home()) can't leak in."""
         return mock.patch.dict(
             os.environ, {"GO_ROUTING_FILE": "/nonexistent/go-routing-test/routing.yaml"})
 

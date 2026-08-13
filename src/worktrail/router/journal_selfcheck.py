@@ -30,7 +30,7 @@ production incidents that were only caught by an operator noticing manually:
   means something else rewrote it (observed 2026-08-08: a worker hand-edited
   a state file with a generic YAML writer). Skipping it silently would make
   every downstream reader disagree about run state.
-- **malformed-run-record** — a `~/.go/runs/<repo>/*.yaml` run record (a
+- **malformed-run-record** — a `worktrail_home()/runs/<repo>/*.yaml` run record (a
   different artifact from the journal above) fails run_record.py's own
   parser for the same reason: a hand-edit or generic-YAML rewrite. Unlike
   the journal case, `run_record.py`'s own directory-wide scans (used by the
@@ -56,8 +56,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .run_record import _load_lenient as _load_run_record_lenient
-
-_DEFAULT_RUN_RECORD_DIR = Path.home() / ".go" / "runs"
+from ..shared.homedir import worktrail_home
 
 
 def _runlock_held(lock_path: Path) -> bool:
@@ -92,12 +91,12 @@ def _malformed_run_record_findings(
 ) -> List[Dict[str, Any]]:
     """Findings for `run_record_dir/<repo-name>/*.yaml` files that fail
     run_record.py's own parser. Mirrors `load_recent_runs()`'s dir-resolution
-    (env override, then `~/.go/runs`) so both readers agree on where records
+    (env override, then `worktrail_home()/runs`) so both readers agree on where records
     live.
     """
     if run_record_dir is None:
         override = os.environ.get("GO_RUN_RECORD_DIR")
-        run_record_dir = Path(override).expanduser() if override else _DEFAULT_RUN_RECORD_DIR
+        run_record_dir = Path(override).expanduser() if override else worktrail_home() / "runs"
     run_dir = run_record_dir / repo.resolve().name
     if not run_dir.is_dir():
         return []
@@ -213,7 +212,7 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="run-journal invariant detector")
     parser.add_argument("--repo", required=True)
     parser.add_argument("--run-record-dir", default=None,
-                         help="defaults to $GO_RUN_RECORD_DIR or ~/.go/runs")
+                         help="defaults to $GO_RUN_RECORD_DIR or ~/.worktrail/runs")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     run_record_dir = Path(args.run_record_dir).expanduser() if args.run_record_dir else None

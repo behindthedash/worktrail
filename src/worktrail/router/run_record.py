@@ -2,8 +2,8 @@
 """GO v2 run record — the machine-readable audit log of every front-door run.
 
 One YAML file per run under <dir>/<repo-name>/<run-id>.yaml (default dir
-~/.go/runs — operational telemetry, deliberately outside the project repo;
-override via policy `run_record_dir`). Fields follow the assignment's §20
+`worktrail_home()/runs`, normally ~/.worktrail/runs — operational telemetry,
+deliberately outside the project repo; override via policy `run_record_dir`). Fields follow the assignment's §20
 structure. `finish` enforces the ten explicit completion states (§22) so a run
 can never end in vague language. It also code-enforces the
 `no_implementation_without_approval` gate (routes.md §A): a run whose
@@ -89,6 +89,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from . import invocation_context
+from ..shared.homedir import worktrail_home
 
 ALLOWED_AGENTS = ("claude", "codex", "opencode")
 
@@ -268,7 +269,8 @@ def _parse_json_object(raw: str, label: str) -> Dict[str, Any]:
 def cmd_start(args: argparse.Namespace) -> int:
     repo = Path(args.repo).resolve()
     run_id = f"go-{time.strftime('%Y%m%d-%H%M%S')}"
-    out_dir = Path(args.dir).expanduser() / repo.name
+    base = Path(args.dir).expanduser() if args.dir else worktrail_home() / "runs"
+    out_dir = base / repo.name
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"{run_id}.yaml"
     agent = (args.agent or "").strip().lower()
@@ -1062,7 +1064,7 @@ def _prune_repo_dir(
 def cmd_prune(args: argparse.Namespace) -> int:
     if args.keep_count < 0 or args.keep_days < 0:
         raise SystemExit("--keep-count and --keep-days must be >= 0")
-    base = Path(args.dir).expanduser()
+    base = Path(args.dir).expanduser() if args.dir else worktrail_home() / "runs"
     if not base.is_dir():
         print(json.dumps({"repos": []}))
         return 0
@@ -1117,7 +1119,8 @@ def main(argv=None) -> int:
     )
     s.add_argument("--base-branch", default=None)
     s.add_argument("--base-commit", default=None)
-    s.add_argument("--dir", default="~/.go/runs")
+    s.add_argument("--dir", default=None,
+                    help="run records directory (default worktrail_home()/runs)")
     s.set_defaults(func=cmd_start)
 
     s = sub.add_parser("set")
@@ -1185,7 +1188,8 @@ def main(argv=None) -> int:
     s.set_defaults(func=cmd_reconcile)
 
     s = sub.add_parser("prune")
-    s.add_argument("--dir", default="~/.go/runs")
+    s.add_argument("--dir", default=None,
+                    help="run records directory (default worktrail_home()/runs)")
     s.add_argument("--repo", default=None,
                     help="only prune this repo's run records (matched by repo directory name); omit to prune every repo")
     s.add_argument("--keep-count", type=int, default=50,

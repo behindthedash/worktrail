@@ -11,7 +11,8 @@ under `unknown_keys` so typos are visible. The `routing:` block is the one
 exception — it needs arbitrary nesting, so it's parsed with `yaml.safe_load`
 (PyYAML) instead; see `_resolve_routing()`.
 
-Safe defaults: auto-merge OFF, no protected paths, run records under ~/.go/runs.
+Safe defaults: auto-merge OFF, no protected paths, run records under
+`worktrail_home()/runs` (default `~/.worktrail/runs`).
 
 Usage: policy.py --repo /path/to/repo [--json]
 """
@@ -28,9 +29,21 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
+from ..shared.homedir import worktrail_home
+
 POLICY_RELPATH = "docs/specs/go-policy.yaml"
 ROUTING_FILE_ENV = "GO_ROUTING_FILE"
-DEFAULT_ROUTING_FILE = "~/.go/routing.yaml"
+
+
+def default_routing_file() -> Path:
+    """Machine-wide routing file: `worktrail_home()/routing.yaml`."""
+    return worktrail_home() / "routing.yaml"
+
+
+def default_run_record_dir() -> str:
+    """Machine-default run-record root (`worktrail_home()/runs`), as a string
+    so it slots into the policy dict exactly like a repo-declared value."""
+    return str(worktrail_home() / "runs")
 
 DEFAULTS: Dict[str, Any] = {
     # None -> auto-detect from `git remote show origin` (HEAD branch).
@@ -62,8 +75,10 @@ DEFAULTS: Dict[str, Any] = {
     # Free-form note: how to authenticate for local protected-route testing
     # (e.g. "Playwright storage state via npm run e2e:auth; creds in .env.local").
     "auth_testing": None,
-    # Where run records are written (outside the repo by default).
-    "run_record_dir": "~/.go/runs",
+    # Where run records are written (outside the repo by default). None is a
+    # lazy sentinel: load_policy() resolves it via default_run_record_dir()
+    # so the worktrail-home lookup happens at load time, not import time.
+    "run_record_dir": None,
     # Optional shell command the orchestrator runs on each group's integration branch
     # (where the group's task branches first coexist) BEFORE opening its PR, to catch
     # cross-task API drift ~a CI round-trip earlier. The command author owns any dep
@@ -447,7 +462,7 @@ def _load_yaml_mapping(text: str) -> Optional[Dict[str, Any]]:
 
 def _resolve_routing(repo: Path, parsed_local: Dict[str, Any], meta: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Resolve `policy["routing"]`: repo-local `routing:` block, else the
-    machine-wide routing file (`GO_ROUTING_FILE`, default `~/.go/routing.yaml`),
+    machine-wide routing file (`GO_ROUTING_FILE`, default `worktrail_home()/routing.yaml`),
     else `None` (flat keys remain the last-resort default — AC-003/AC-004).
 
     The repo-local block is re-parsed with `yaml.safe_load` (architecture §3.8)
@@ -458,7 +473,10 @@ def _resolve_routing(repo: Path, parsed_local: Dict[str, Any], meta: Dict[str, A
     validated = _validate_routing(local_raw, meta)
     if validated is not None:
         return validated
-    routing_path = Path(os.environ.get(ROUTING_FILE_ENV, DEFAULT_ROUTING_FILE)).expanduser()
+    routing_override = os.environ.get(ROUTING_FILE_ENV)
+    routing_path = (
+        Path(routing_override).expanduser() if routing_override else default_routing_file()
+    )
     if not routing_path.is_file():
         return None
     try:
@@ -596,6 +614,9 @@ def detect_external_automerge(repo: Path) -> Dict[str, Any]:
 
 def load_policy(repo: Path) -> Dict[str, Any]:
     policy = copy.deepcopy(DEFAULTS)
+    # Resolved here (not in DEFAULTS) so the worktrail-home lookup stays lazy;
+    # a repo-declared `run_record_dir` below still overrides it.
+    policy["run_record_dir"] = default_run_record_dir()
     src = repo / POLICY_RELPATH
     meta: Dict[str, Any] = {"source": None, "unknown_keys": [], "warnings": []}
     parsed: Dict[str, Any] = {}

@@ -17,9 +17,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, Optional
 
+from ..shared.homedir import worktrail_home
+
 
 def cache_path() -> Path:
-    return Path(os.environ.get("GO_AGENT_CAPACITY_CACHE", "~/.go/agent-capacity.json")).expanduser()
+    override = os.environ.get("GO_AGENT_CAPACITY_CACHE")
+    if override:
+        return Path(override).expanduser()
+    return worktrail_home() / "agent-capacity.json"
 DEFAULT_COOLDOWNS = {
     "startup": 60,
     "sandbox": 60,

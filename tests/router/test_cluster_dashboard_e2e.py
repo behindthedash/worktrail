@@ -261,7 +261,7 @@ class ClusterDashboardE2E(unittest.TestCase):
     def _env(self, wq_base: Optional[Path] = None) -> Dict[str, str]:
         env = dict(os.environ)
         env["WORK_QUEUE_DIR"] = str(wq_base or self.wq_base)
-        # Isolate cluster_telemetry from this machine's real ~/.go/cluster-log.jsonl
+        # Isolate cluster_telemetry from this machine's real worktrail-home cluster-log.jsonl
         # (item 6, cluster-precision dashboard surfacing): without this, dashboard.py
         # reads back real historical outcome counts, which is both a test-isolation
         # leak and a source of cross-run nondeterminism these e2e tests assert against.

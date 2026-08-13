@@ -33,15 +33,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
+from ..shared.homedir import worktrail_home
+
 
 def default_log_path() -> Path:
-    """`~/.go/cluster-log.jsonl`, overridable via `GO_CLUSTER_LOG` -- mirrors
-    `run_record.py`'s `~/.go/runs` default/override pattern. Cross-repo by
-    design: cluster detection scans one shared work queue, not a per-repo one."""
+    """`worktrail_home()/cluster-log.jsonl`, overridable via `GO_CLUSTER_LOG` --
+    mirrors `run_record.py`'s `worktrail_home()/runs` default/override pattern.
+    Cross-repo by design: cluster detection scans one shared work queue, not a
+    per-repo one."""
     override = os.environ.get("GO_CLUSTER_LOG")
     if override:
         return Path(override).expanduser()
-    return Path.home() / ".go" / "cluster-log.jsonl"
+    return worktrail_home() / "cluster-log.jsonl"
 
 
 def _append(record: Dict[str, Any], log_path: Optional[Path] = None) -> None:

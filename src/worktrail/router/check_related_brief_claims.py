@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..shared.brief_frontmatter import read_frontmatter
+from ..shared.homedir import worktrail_home
 from ..workqueue import work_queue as _wq
 from ..workqueue.work_queue import _agent_label as _wq_agent_label
 from ..workqueue.work_queue import resolve as _wq_resolve
@@ -41,10 +42,6 @@ from ..workqueue.work_queue import resolve as _wq_resolve
 # full -- truncated so one runaway focus paragraph doesn't dominate a
 # batched prompt covering several related ids.
 FOCUS_SUMMARY_LIMIT = 200
-
-# GO v2 run records live outside the project repo (`run_record.py`'s own
-# default `--dir`) -- operational telemetry, not project state.
-DEFAULT_RUNS_DIR = Path("~/.go/runs")
 
 _FOCUS_BODY_RE = re.compile(r"^##\s+Focus\s*$\r?\n(.+)$", re.MULTILINE)
 
@@ -175,7 +172,7 @@ def check(
     `agent_label` defaults to this machine's own `work_queue._agent_label()`
     value, so a match claimed by *this* caller (as opposed to some other
     agent or machine) is recognized without the caller having to compute
-    that label itself. `runs_dir` defaults to `~/.go/runs`
+    that label itself. `runs_dir` defaults to `worktrail_home()/runs`
     (`run_record.py`'s own default), joined per-match with the matched
     brief's `repo:` field to scan `runs_dir/<repo-name>/*.yaml`.
     """
@@ -212,7 +209,7 @@ def check(
         resolved_agent_label = agent_label or _wq_agent_label()
     except Exception:  # noqa: BLE001 - enrichment gating only, never fatal
         resolved_agent_label = agent_label
-    resolved_runs_dir = Path(runs_dir).expanduser() if runs_dir is not None else DEFAULT_RUNS_DIR.expanduser()
+    resolved_runs_dir = Path(runs_dir).expanduser() if runs_dir is not None else worktrail_home() / "runs"
     active: List[Dict[str, Any]] = []
     warnings: List[str] = []
 

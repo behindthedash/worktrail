@@ -110,6 +110,7 @@ from ..router import dashboard, quarantine_selfcheck
 from ..router.policy import load_policy
 from ..router.policy_selfcheck import discover_repo_names
 from ..router.pr_labels import ensure_pr_risk_label
+from ..shared.homedir import worktrail_home
 from ..taskformats.devkit.schema import set_status_completed
 
 PROMPT = (
@@ -1434,13 +1435,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--queue-dir", type=Path, default=None,
                         help="WORK_QUEUE_DIR override for queue checks")
     parser.add_argument("--runs-dir", type=Path,
-                        default=Path.home() / ".go" / "runs")
+                        default=worktrail_home() / "runs")
     parser.add_argument("--capacity-cache", type=Path,
-                        default=Path(os.environ.get(
-                            "GO_AGENT_CAPACITY_CACHE",
-                            Path.home() / ".go" / "agent-capacity.json")))
+                        default=agent_capacity.cache_path())
     parser.add_argument("--lock-file", type=Path,
-                        default=Path.home() / ".go" / "drain.lock")
+                        default=worktrail_home() / "drain.lock")
     parser.add_argument("--transcript-dir", type=Path, default=None,
                         help="persist each iteration's raw one-shot stdout/stderr here "
                              "(bounded to the most recent 50 files); omit to write "

@@ -15,7 +15,7 @@ worktrail-go drain dry-run
 Resolve the agent CLI once using the same invocation-context precedence as the
 main Go flow. Then derive the fallback chain from the resolved policy's
 `routing.fallback` (repo-local `routing:` block, else the machine-wide
-`~/.go/routing.yaml`, else the flat `fallback_agent_cli` key), minus the
+`~/.worktrail/routing.yaml`, else the flat `fallback_agent_cli` key), minus the
 primary agent — drain never had `$POLICY` in scope (it branches out of Phase 1,
 before Phase 6's policy load), so fetch it fresh here rather than assume it is
 set. Then run the installed console script in the background:

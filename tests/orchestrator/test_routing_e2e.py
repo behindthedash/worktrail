@@ -370,7 +370,7 @@ class E2EBackwardCompatTest(unittest.TestCase):
 
     def test_no_routing_no_tier_matches_pre_spec_dispatch(self):
         # Isolate the machine-wide routing file: an operator-configured
-        # ~/.go/routing.yaml (e.g. a claude/codex/opencode fallback chain) must
+        # routing.yaml under worktrail_home() (e.g. a claude/codex/opencode fallback chain) must
         # not leak into a test asserting "no routing configured anywhere".
         with tempfile.TemporaryDirectory() as tmp, \
                 mock.patch.dict(os.environ,
@@ -469,7 +469,7 @@ class E2EFallbackChainTest(unittest.TestCase):
         that one hop when the primary is gated, unchanged from pre-spec."""
         # Isolate the machine-wide routing file: this test asserts the LEGACY
         # single-entry shape specifically, which only holds when no machine-wide
-        # fallback chain (e.g. an operator's real ~/.go/routing.yaml) is in play.
+        # fallback chain (e.g. an operator's real machine-wide routing.yaml) is in play.
         with tempfile.TemporaryDirectory() as tmp, \
                 mock.patch.dict(os.environ,
                                 {"GO_ROUTING_FILE": str(Path(tmp) / "no-such-routing.yaml")}):
