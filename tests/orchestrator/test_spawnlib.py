@@ -741,7 +741,7 @@ class OpenCodeSpawn(unittest.TestCase):
         self.assertEqual(seen["cmd"][:2], ["opencode", "run"])
         self.assertIn("--format", seen["cmd"])
         self.assertIn("json", seen["cmd"])
-        self.assertIn("deepseek/deepseek-v4-flash", seen["cmd"])
+        self.assertIn("opencode/deepseek-v4-flash-free", seen["cmd"])
 
     def test_opencode_step_finish_usage_reaches_spawn_result(self):
         events = [
