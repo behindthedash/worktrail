@@ -25,7 +25,8 @@ class TestRoutingCassette(unittest.TestCase):
             with self.subTest(scenario=sc["id"]):
                 result = classify(sc["request"], state=sc.get("state"),
                                    handoff_route=sc.get("handoff_route"),
-                                   pr_states=sc.get("pr_states"))
+                                   pr_states=sc.get("pr_states"),
+                                   resumable_state=sc.get("resumable_state"))
                 exp = sc["expect"]
                 if "route" in exp:
                     self.assertEqual(result["route"], exp["route"],
@@ -207,6 +208,69 @@ class TestOverridesAndSignals(unittest.TestCase):
         r = classify("the bug is that CI is broken on my branch",
                      pr_states={"68": "MERGED"})
         self.assertEqual(r["route"], "E")
+
+
+class TestResumableState(unittest.TestCase):
+    """resumable_state=False (from check_resumable_state.py) disqualifies Route E
+    outright, regardless of how strongly the text scores it. Reproduces the
+    20260812-163747 incident: a brief *reporting* the E-default bug used the
+    exact vocabulary ("continue/resume", "handoff", "worktree", "open PR")
+    that the E signals themselves match, so the classifier organically scored
+    its own bug report as a Route E resume."""
+
+    INCIDENT_TEXT = (
+        "classify-handoff's route hint defaults to E (continue/resume) for "
+        "brand-new queue briefs with no prior run, driven by noisy token-overlap "
+        "scoring rather than a real match. In an attended /go session this is "
+        "recoverable manually, but worktrail-drain's unattended one-shots have "
+        "no one to catch a bad E-route reconstruction. Harden classify-handoff/"
+        "classify.py so a fresh claim (no existing run record, no worktree, no "
+        "open PR) doesn't default to E, or add a mechanical pre-check in Route "
+        "E's own reconstruction step that reroutes immediately when no "
+        "resumable state is found."
+    )
+
+    def test_default_none_reproduces_the_incident(self):
+        # Documents the bug this fix addresses: without a mechanical check,
+        # the classifier's organic score for this exact text is E.
+        r = classify(self.INCIDENT_TEXT, handoff_route="E")
+        self.assertEqual(r["route"], "E")
+
+    def test_resumable_state_false_disqualifies_e(self):
+        r = classify(self.INCIDENT_TEXT, handoff_route="E", resumable_state=False)
+        self.assertNotEqual(r["route"], "E")
+        self.assertEqual(r["route"], "J")
+        # scores omits non-positive entries by design; E's disqualification
+        # (sentinel -1) means it no longer appears at all.
+        self.assertNotIn("E", r["scores"])
+
+    def test_resumable_state_false_survives_stale_handoff_route_hint(self):
+        # The brief's own recommended-route: E frontmatter must not put E back
+        # via the handoff-recommended-override path once the mechanical check
+        # has ruled it out.
+        r = classify(self.INCIDENT_TEXT, handoff_route="E", resumable_state=False)
+        self.assertNotEqual(r["route_source"], "handoff-recommended-override")
+
+    def test_resumable_state_true_preserves_organic_pick(self):
+        r = classify(self.INCIDENT_TEXT, handoff_route="E", resumable_state=True)
+        self.assertEqual(r["route"], "E")
+
+    def test_resumable_state_none_is_unchanged_legacy_behavior(self):
+        r_none = classify("fix the broken receipt date", resumable_state=None)
+        r_default = classify("fix the broken receipt date")
+        self.assertEqual(r_none, r_default)
+
+    def test_zero_signal_text_does_not_default_to_e_when_not_resumable(self):
+        r = classify("Standardize the shared helper used by two call sites",
+                     resumable_state=False)
+        self.assertNotEqual(r["route"], "E")
+        self.assertNotEqual(r["route_source"], "no-signal-default")
+
+    def test_zero_signal_text_still_defaults_to_e_without_the_check(self):
+        r = classify("Standardize the shared helper used by two call sites",
+                     resumable_state=None)
+        self.assertEqual(r["route"], "E")
+        self.assertEqual(r["route_source"], "no-signal-default")
 
 
 class TestCitedPrStates(unittest.TestCase):
