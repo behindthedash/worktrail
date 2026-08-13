@@ -77,10 +77,12 @@ def _write_brief(
 def _build_realistic_queue(queue_dir: Path) -> Dict[str, str]:
     """Materialize the realistic multi-brief fixture demanded by TASK-005's
     Test Instructions: (a) a 3-brief cluster via related + same-target-spec,
-    (b) a literal duplicate-slug pair, (c) a near-identical focus-overlap
-    pair, (d) an ordinary below-threshold overlap pair that must NOT
-    surface, (e) a blocked-by-linked pair that would otherwise match and
-    must NOT surface, (f) unrelated singleton briefs. Returns {label: stem}.
+    (b) a literal duplicate-slug pair, (c) a high focus-overlap pair, (d) an
+    ordinary at-threshold overlap pair (surfaced since the 2026-08-13
+    full-recall decision removed the size-2 near-identical bar), (e) a
+    blocked-by-linked pair that would otherwise match and must NOT surface,
+    (f) unrelated singleton briefs, (g) a genuinely below-threshold overlap
+    pair that must NOT surface. Returns {label: stem}.
     """
     ids: Dict[str, str] = {}
 
@@ -124,9 +126,8 @@ def _build_realistic_queue(queue_dir: Path) -> Dict[str, str]:
         focus="Panel spacing looks wrong after the recent CSS refactor landed",
     )
 
-    # (c) near-identical focus-overlap pair (overlap coefficient ~0.89, at/above
-    # NEAR_IDENTICAL_THRESHOLD == 0.75) -- distinct slugs, so only focus-overlap
-    # produces the match.
+    # (c) high focus-overlap pair (overlap coefficient ~0.89) -- distinct
+    # slugs, so only focus-overlap produces the match.
     ids["c1"] = _write_brief(
         queue_dir,
         "20260703-080000-queue-dup-warning-missing.md",
@@ -140,11 +141,11 @@ def _build_realistic_queue(queue_dir: Path) -> Dict[str, str]:
         focus="Queue dashboard shows duplicate briefs without any warning today",
     )
 
-    # (d) ordinary overlap pair (~0.4545, at/above OVERLAP_THRESHOLD == 0.45
-    # but below NEAR_IDENTICAL_THRESHOLD == 0.50) with no third brief -- must
-    # NOT surface. Retuned for the duplicate-brief-detection change's lowered
-    # NEAR_IDENTICAL_THRESHOLD (was 0.75; this pair's original ~0.57 overlap
-    # cleared the new 0.50 bar and started surfacing).
+    # (d) ordinary overlap pair (~0.4545, at/above OVERLAP_THRESHOLD == 0.45)
+    # with no third brief -- surfaces as a 2-member focus-overlap cluster
+    # since the 2026-08-13 full-recall decision: any edge-forming overlap
+    # surfaces regardless of size (this exact pair was hidden by the removed
+    # NEAR_IDENTICAL_THRESHOLD == 0.50 bar before).
     ids["d1"] = _write_brief(
         queue_dir,
         "20260704-070000-network-retry-noise.md",
@@ -201,6 +202,23 @@ def _build_realistic_queue(queue_dir: Path) -> Dict[str, str]:
         "20260706-092000-standalone-no-repo-note.md",
         repo=None,
         focus="Miscellaneous note captured without an associated repository context",
+    )
+
+    # (g) genuinely below-threshold overlap pair (3 shared tokens / 10-token
+    # minimum set = 0.30, below OVERLAP_THRESHOLD == 0.45) -- must NOT
+    # surface: with the size-2 near-identical bar removed, "no edge at all"
+    # is the contract's remaining negative case for a same-repo pair.
+    ids["g1"] = _write_brief(
+        queue_dir,
+        "20260707-080000-cache-warmup-misses.md",
+        repo="repo-h",
+        focus="Render pipeline cache warmup misses hurt cold start latency numbers",
+    )
+    ids["g2"] = _write_brief(
+        queue_dir,
+        "20260707-081000-cache-eviction-growth.md",
+        repo="repo-h",
+        focus="Render pipeline cache eviction policy causes memory growth during long sessions",
     )
 
     return ids
@@ -305,32 +323,35 @@ class HappyPath(ClusterDashboardE2E):
     def test_expected_clusters_surfaced_and_others_excluded(self):
         """AC-001-009, AC-014's scenario shape: the real dashboard.py --json
         clusters field contains exactly the 3-brief cluster, the
-        duplicate-slug pair, and the near-identical overlap pair -- and
-        excludes the ordinary overlap pair, the blocked-by pair, and every
-        unrelated singleton."""
+        duplicate-slug pair, the high-overlap pair, and the at-threshold
+        overlap pair (surfaced since the full-recall decision) -- and
+        excludes the below-threshold overlap pair, the blocked-by pair, and
+        every unrelated singleton."""
         env = self._env()
         qjson = self._list_queue_json(env)
         data = self._run_dashboard(env, queue_json=qjson)
 
         by_members = _cluster_by_members(data["clusters"])
-        self.assertEqual(len(by_members), 3, msg=data["clusters"])
+        self.assertEqual(len(by_members), 4, msg=data["clusters"])
 
         a1, a2, a3 = self.ids["a1"], self.ids["a2"], self.ids["a3"]
         b1, b2 = self.ids["b1"], self.ids["b2"]
         c1, c2 = self.ids["c1"], self.ids["c2"]
+        d1, d2 = self.ids["d1"], self.ids["d2"]
 
         self.assertIn(frozenset({a1, a2, a3}), by_members)
         self.assertIn(frozenset({b1, b2}), by_members)
         self.assertIn(frozenset({c1, c2}), by_members)
+        self.assertIn(frozenset({d1, d2}), by_members)
 
         excluded = [
-            self.ids["d1"],
-            self.ids["d2"],
             self.ids["e1"],
             self.ids["e2"],
             self.ids["f1"],
             self.ids["f2"],
             self.ids["f3"],
+            self.ids["g1"],
+            self.ids["g2"],
         ]
         all_surfaced_members = set().union(*by_members.keys())
         for stem in excluded:
@@ -347,12 +368,14 @@ class HappyPath(ClusterDashboardE2E):
         a1, a2, a3 = self.ids["a1"], self.ids["a2"], self.ids["a3"]
         b1, b2 = self.ids["b1"], self.ids["b2"]
         c1, c2 = self.ids["c1"], self.ids["c2"]
+        d1, d2 = self.ids["d1"], self.ids["d2"]
 
         self.assertEqual(
             by_members[frozenset({a1, a2, a3})], (("related-link", "same-target-spec"), 3)
         )
         self.assertEqual(by_members[frozenset({b1, b2})], (("duplicate-slug",), 2))
         self.assertEqual(by_members[frozenset({c1, c2})], (("focus-overlap",), 2))
+        self.assertEqual(by_members[frozenset({d1, d2})], (("focus-overlap",), 2))
 
     def test_rendered_text_has_consolidatable_section_with_next_step(self):
         """AC-011, REQ-016, REQ-019: printed text includes the header, one
@@ -363,27 +386,29 @@ class HappyPath(ClusterDashboardE2E):
         data = self._run_dashboard(env, queue_json=qjson)
         lines = data["rendered"].splitlines()
 
-        self.assertIn("🔗 Consolidatable briefs (3)", lines)
-        start = lines.index("🔗 Consolidatable briefs (3)")
+        self.assertIn("🔗 Consolidatable briefs (4)", lines)
+        start = lines.index("🔗 Consolidatable briefs (4)")
 
         a1, a2, a3 = self.ids["a1"], self.ids["a2"], self.ids["a3"]
         b1, b2 = self.ids["b1"], self.ids["b2"]
         c1, c2 = self.ids["c1"], self.ids["c2"]
+        d1, d2 = self.ids["d1"], self.ids["d2"]
 
         expected_rows = {
             f"    • {a1}, {a2}, {a3} — related-link, same-target-spec",
             f"    • {b1}, {b2} — duplicate-slug",
             f"    • {c1}, {c2} — focus-overlap",
+            f"    • {d1}, {d2} — focus-overlap",
         }
-        actual_rows = set(lines[start + 1 : start + 4])
+        actual_rows = set(lines[start + 1 : start + 5])
         self.assertEqual(actual_rows, expected_rows)
 
         # Exactly one trailing suggested-next-step line for the whole section.
         self.assertEqual(
-            lines[start + 4], "    → Review for consolidation before dispatching separately."
+            lines[start + 5], "    → Review for consolidation before dispatching separately."
         )
         # No second header (section appears once).
-        self.assertEqual(lines.count("🔗 Consolidatable briefs (3)"), 1)
+        self.assertEqual(lines.count("🔗 Consolidatable briefs (4)"), 1)
 
 
 # --------------------------------------------------------------------------- #
@@ -424,7 +449,7 @@ class ErrorHandling(ClusterDashboardE2E):
         full = self._run_dashboard(env_full, queue_json=qjson)
         self.assertTrue(full["clusters"])
         full_lines = full["rendered"].splitlines()
-        self.assertIn("🔗 Consolidatable briefs (3)", full_lines)
+        self.assertIn("🔗 Consolidatable briefs (4)", full_lines)
 
         # (1) Empty queue dir: exists, zero .md files.
         empty_base = self.tmp_path / "wq-empty"
@@ -444,10 +469,10 @@ class ErrorHandling(ClusterDashboardE2E):
         self.assertEqual(missing["clusters"], [])
         self.assertNotIn("🔗", missing["rendered"])
 
-        # Byte-for-byte: strip the cluster block (header + 3 rows + 1
+        # Byte-for-byte: strip the cluster block (header + 4 rows + 1
         # suggestion line) out of the populated render and compare.
-        start = full_lines.index("🔗 Consolidatable briefs (3)")
-        block_len = 1 + 3 + 1
+        start = full_lines.index("🔗 Consolidatable briefs (4)")
+        block_len = 1 + 4 + 1
         stripped = full_lines[:start] + full_lines[start + block_len :]
         self.assertEqual("\n".join(stripped), empty["rendered"])
         self.assertEqual(empty["rendered"], missing["rendered"])
@@ -533,7 +558,7 @@ class DataIntegrityAndDeterminism(ClusterDashboardE2E):
 # through subprocess calls -- no mocking of any of the three scripts'
 # internals. Reuses ClusterDashboardE2E's realistic multi-brief fixture: the
 # 3-member cluster "a" (a1/a2/a3, related-link + same-target-spec) and the
-# two 2-member clusters "b" (duplicate-slug) and "c" (focus-overlap).
+# 2-member clusters "b" (duplicate-slug), "c", and "d" (focus-overlap).
 # --------------------------------------------------------------------------- #
 
 
