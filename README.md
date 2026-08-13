@@ -34,7 +34,10 @@ progress (a new citing spec) re-arms the epic's next feature.
 
 **The human decision queue** (`worktrail-decision`). When an unattended run hits a genuine
 product decision — the one thing it must never guess — it files a structured record (question,
-why it is a product call, what was attempted, at least two options, a recommendation) under
+plain-English background, why it is a product call, what was attempted, at least two options in
+priority order with optional per-option cost labels, and a recommendation — conditioned on
+product priority, e.g. quick-to-production vs long-term architecture, when it genuinely
+depends) under
 `$WORK_QUEUE_DIR/decisions/open/`, releases its brief back to the queue blocked on that record,
 and terminates. The human answers on their own time (`worktrail-decision answer <id>
 --answer "..."`, or by editing the record's `## Answer` section and moving the file to

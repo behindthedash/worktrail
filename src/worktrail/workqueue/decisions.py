@@ -136,9 +136,11 @@ def _require(value: Optional[str], name: str) -> str:
 def ask(
     question: str,
     *,
+    background: str,
     why: str,
     context: str,
     options: List[str],
+    option_costs: Optional[List[str]] = None,
     recommendation: Optional[str] = None,
     repo: Optional[str] = None,
     brief: Optional[str] = None,
@@ -150,9 +152,16 @@ def ask(
 
     Structured fields are mandatory by design (see module docstring): the
     record is the entire interface the human gets, and a lazy one-liner
-    punts the real work to them.
+    punts the real work to them. `background` is the plain-English story —
+    what the problem is, why it exists, and how the run got here — written
+    for a reader with no context. `options` are listed in the agent's
+    priority order; `option_costs`, when given, labels each option with its
+    cost/effort tradeoff (index-matched, so the count must agree) so the
+    human can weigh quick-to-production against the better long-term
+    architecture without reading the code.
     """
     question = _require(question, "question")
+    background = _require(background, "background")
     why = _require(why, "why")
     context = _require(context, "context")
     options = [o.strip() for o in options if o and o.strip()]
@@ -160,6 +169,11 @@ def ask(
         raise ValueError(
             "at least two --option entries are required: a decision with one "
             "option is not a decision, it is a notification")
+    option_costs = [c.strip() for c in (option_costs or []) if c and c.strip()]
+    if option_costs and len(option_costs) != len(options):
+        raise ValueError(
+            f"--option-cost must be given once per --option in the same "
+            f"order ({len(options)} option(s), {len(option_costs)} cost(s))")
     if release_brief and not brief:
         raise ValueError("--release requires --brief")
 
@@ -193,12 +207,17 @@ def ask(
             frontmatter[key] = value
 
     option_lines = "\n".join(
-        f"{n}. {opt}" for n, opt in enumerate(options, start=1))
+        f"{n}. {opt}"
+        + (f"\n   - Cost: {option_costs[n - 1]}" if option_costs else "")
+        for n, opt in enumerate(options, start=1))
     body = (
         f"## Question\n\n{question}\n\n"
+        f"## Background\n\n{background}\n\n"
         f"## Why a human decision is needed\n\n{why}\n\n"
         f"## Context (what was attempted)\n\n{context}\n\n"
-        f"## Options\n\n{option_lines}\n"
+        f"## Options\n\n"
+        f"_In priority order (the agent's preference first). Answer with a "
+        f"number, or write your own direction._\n\n{option_lines}\n"
         + (f"\n## Recommendation\n\n{recommendation.strip()}\n"
            if recommendation and recommendation.strip() else "")
         + f"\n## Answer\n\n{_PENDING_ANSWER}\n"
@@ -370,13 +389,26 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     ap = subs.add_parser("ask", help="file a decision for a human to answer")
     ap.add_argument("--question", required=True)
+    ap.add_argument("--background", required=True,
+                    help="plain-English story for a reader with no context: what "
+                         "the problem is, why it exists, how we got here")
     ap.add_argument("--why", required=True,
                     help="why this is a product decision, not an engineering call")
     ap.add_argument("--context", required=True,
                     help="what was attempted and the evidence gathered")
     ap.add_argument("--option", action="append", default=[], dest="options",
-                    help="a concrete option with its tradeoff (repeat; >= 2 required)")
-    ap.add_argument("--recommendation")
+                    help="a concrete option with its tradeoff, in priority order "
+                         "(repeat; >= 2 required)")
+    ap.add_argument("--option-cost", action="append", default=[],
+                    dest="option_costs",
+                    help="cost/effort label for the corresponding --option, in the "
+                         "same order (e.g. 'low -- config only, ships today' vs "
+                         "'high -- better long-term architecture, ~3 days'); when "
+                         "used, give exactly one per --option")
+    ap.add_argument("--recommendation",
+                    help="which option to take -- conditioned on product priority "
+                         "when it genuinely depends (e.g. 'quick to production: "
+                         "option 1; long-term architecture: option 2')")
     ap.add_argument("--repo")
     ap.add_argument("--brief", help="source brief id to stamp awaiting-decision")
     ap.add_argument("--run-record")
@@ -403,8 +435,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     qb = args.queue_dir
     try:
         if args.cmd == "ask":
-            result = ask(args.question, why=args.why, context=args.context,
-                         options=args.options,
+            result = ask(args.question, background=args.background,
+                         why=args.why, context=args.context,
+                         options=args.options, option_costs=args.option_costs,
                          recommendation=args.recommendation, repo=args.repo,
                          brief=args.brief, run_record=args.run_record,
                          release_brief=args.release, queue_base=qb)

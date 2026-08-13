@@ -19,6 +19,8 @@ def qbase(tmp_path, monkeypatch):
 
 def _ask(qbase, **kw):
     defaults = dict(
+        background="Exports were added before archiving existed; both behaviors "
+                   "now have users depending on them.",
         why="Two mutually exclusive user-facing behaviors are both defensible.",
         context="Read the spec, the epic, and the last three PRs; no precedent.",
         options=["Option A: strict — tradeoff X", "Option B: lenient — tradeoff Y"],
@@ -49,13 +51,37 @@ def test_ask_creates_structured_open_record(qbase):
     fm, body = split_frontmatter(open_files[0].read_text(encoding="utf-8"))
     assert fm["status"] == "open"
     assert fm["repo"] == "repo-a"
-    for heading in ("## Question", "## Why a human decision is needed",
+    for heading in ("## Question", "## Background",
+                    "## Why a human decision is needed",
                     "## Context (what was attempted)", "## Options", "## Answer"):
         assert heading in body
     assert "1. Option A" in body and "2. Option B" in body
+    assert "In priority order" in body
+    assert "before archiving existed" in body  # the background story
 
 
-@pytest.mark.parametrize("field", ["why", "context"])
+def test_ask_option_costs_render_per_option(qbase):
+    result = _ask(
+        qbase,
+        options=["Ship the config toggle", "Refactor the export pipeline"],
+        option_costs=["low -- config only, ships today",
+                      "high -- better long-term architecture, ~3 days"],
+        recommendation="Quick to production: option 1; "
+                       "long-term architecture: option 2.")
+    assert result["status"] == "created"
+    open_files = list((qbase / "decisions" / "open").glob("*.md"))
+    _fm, body = split_frontmatter(open_files[0].read_text(encoding="utf-8"))
+    assert "1. Ship the config toggle\n   - Cost: low -- config only" in body
+    assert "2. Refactor the export pipeline\n   - Cost: high -- better" in body
+    assert "Quick to production: option 1" in body
+
+
+def test_ask_option_cost_count_mismatch_refused(qbase):
+    with pytest.raises(ValueError, match="once per --option"):
+        _ask(qbase, option_costs=["low"])
+
+
+@pytest.mark.parametrize("field", ["background", "why", "context"])
 def test_ask_refuses_empty_structured_fields(qbase, field):
     with pytest.raises(ValueError, match="required and must be non-empty"):
         _ask(qbase, **{field: "  "})
@@ -193,6 +219,7 @@ def test_list_and_open_ids(qbase):
     a = _ask(qbase)
     b = decisions.ask(
         "Second question entirely?",
+        background="Different feature, same day.",
         why="Also a real product call.",
         context="Evidence gathered.",
         options=["A — x", "B — y"],
@@ -217,9 +244,11 @@ def test_cli_ask_answer_resolve_roundtrip(qbase, capsys):
     rc = decisions.main([
         "--queue-dir", str(qbase), "ask",
         "--question", "Should exports include archived rows?",
+        "--background", "Exports predate archiving; both behaviors have users.",
         "--why", "Two defensible user-facing behaviors.",
         "--context", "Read spec + PRs; no precedent.",
-        "--option", "A — strict", "--option", "B — lenient",
+        "--option", "A — strict", "--option-cost", "low -- ships today",
+        "--option", "B — lenient", "--option-cost", "high -- pipeline refactor",
         "--json",
     ])
     assert rc == 0
@@ -242,7 +271,7 @@ def test_cli_ask_answer_resolve_roundtrip(qbase, capsys):
 def test_cli_ask_missing_options_fails(qbase, capsys):
     rc = decisions.main([
         "--queue-dir", str(qbase), "ask",
-        "--question", "Q?", "--why", "w", "--context", "c",
+        "--question", "Q?", "--background", "b", "--why", "w", "--context", "c",
         "--option", "only one",
     ])
     assert rc == 1

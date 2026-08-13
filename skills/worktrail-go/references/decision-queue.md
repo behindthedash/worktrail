@@ -45,16 +45,31 @@ decision **before** finishing the run record, then release the brief and termina
 ```bash
 DECISION=$(worktrail-decision ask \
   --question "<the single decision, phrased so it can be answered in one sentence>" \
+  --background "<plain English for a reader with no context: what the problem is, why it exists, how this run got here>" \
   --why "<why this is a product call, not an engineering one>" \
   --context "<what was attempted, what evidence was gathered>" \
-  --option "<option A — its tradeoff>" \
-  --option "<option B — its tradeoff>" \
-  --recommendation "<which option you would take and why>" \
+  --option "<option 1 — your preferred/priority option, with its tradeoff>" \
+  --option-cost "low -- <e.g. config-only, ships today>" \
+  --option "<option 2 — the alternative, with its tradeoff>" \
+  --option-cost "high -- <e.g. better long-term architecture, ~3 days>" \
+  --recommendation "<which option and why; condition it on product priority when it genuinely depends, e.g. 'quick to production: option 1; long-term architecture: option 2'>" \
   --repo "$REPO" --brief "$BRIEF_ID" --release --json \
   | python3 -c "import sys, json; print(json.load(sys.stdin)['id'])")
 worktrail-run-record finish "$RUN" --status blocked_product_decision --merge-result \
   "<site's own one-line block summary> -- decision $DECISION filed; brief released awaiting the answer."
 ```
+
+Write the record so a product owner can answer it from their phone without opening the repo:
+
+- **Background is the story, not a log line** — what the situation is, why the tension exists,
+  and how the run arrived at it, in plain English. Assume zero prior context.
+- **Options in priority order** (your preference first), each a complete sentence with its
+  tradeoff. One `--option-cost` per option labels the cost/effort axis so the human can weigh
+  quick-to-production against the better long-term solution at a glance.
+- **Condition the recommendation when it genuinely depends** on a product priority you cannot
+  know ("if speed to production matters most: option 1; if the long-term architecture matters
+  most: option 2 at higher cost"). When one option is simply right, say so plainly instead of
+  manufacturing a condition.
 
 `--brief --release` stamps `awaiting-decision: $DECISION` on the brief and returns it to
 `queue/`, where `work_queue.py list` reports it `blocked` until the decision is answered — it
