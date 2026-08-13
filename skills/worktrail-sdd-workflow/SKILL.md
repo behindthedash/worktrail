@@ -129,7 +129,10 @@ Step sequence: overlap-check → worktree → brainstorm → spec-check → prec
 Route C closeout: spec PR + implementation-intent transition. Requested intent
 continues into Route D in the same run; planning-only intent finishes as
 `planned_ready_for_implementation`; unknown intent asks once and records the
-decision. Never close a requested Route-C brief or create a follow-up handoff
+decision (`$AUTO_MODE=true`: no ask — take the planning-only default; every ask
+site in route execution follows
+`../worktrail-go/references/subagent-prompts.md#auto-mode-ask-fallbacks`).
+Never close a requested Route-C brief or create a follow-up handoff
 at the spec/task boundary.
 
 ### Pipeline — `implement` (Route D, spec already on base)
