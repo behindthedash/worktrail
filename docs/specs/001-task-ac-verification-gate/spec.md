@@ -1,5 +1,7 @@
 # 001-task-ac-verification-gate
 
+**Status**: Completed
+
 ## Feature Summary
 
 Add a deterministic, code-enforced check to the mandatory pre-PR test gate

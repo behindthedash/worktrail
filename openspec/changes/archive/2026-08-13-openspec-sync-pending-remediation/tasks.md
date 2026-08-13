@@ -23,7 +23,7 @@
 
 - [x] 3.1 [e2e] Run `PYTHONPATH=src pytest -q tests/router/test_dashboard.py
       tests/drain/test_drain.py`.
-- [ ] 3.2 [e2e] Run `PYTHONPATH=src pytest -q` and
+- [x] 3.2 [e2e] Run `PYTHONPATH=src pytest -q` and
       `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`.
 - [x] 3.3 [cleanup] Run `openspec validate
       openspec-sync-pending-remediation --strict` and confirm the change is
