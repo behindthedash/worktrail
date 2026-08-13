@@ -372,7 +372,7 @@ DEFAULT_CODEX_MODEL = "gpt-5.4-mini"
 # gateway serves the same family under "opencode/" against the standard Zen
 # login (verified live 2026-08-13: bare-prefix spawns fail with an opencode
 # "Unexpected server error" at zero tokens on a machine with only Zen auth).
-DEFAULT_OPENCODE_MODEL = "opencode/deepseek-v4-flash"
+DEFAULT_OPENCODE_MODEL = "opencode/deepseek-v4-flash-free"
 
 SUPPORTED_AGENTS = {"claude", "codex", "opencode"}
 

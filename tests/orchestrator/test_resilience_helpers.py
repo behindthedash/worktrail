@@ -193,11 +193,11 @@ class DefaultModelSelection(unittest.TestCase):
         with patch.dict(os.environ, {"GO_MODEL_DEFAULTS_FILE": "/nonexistent-model-defaults.yaml"},
                         clear=True):
             self.assertEqual(
-                spawnlib.default_model_for_agent("opencode"), "opencode/deepseek-v4-flash"
+                spawnlib.default_model_for_agent("opencode"), "opencode/deepseek-v4-flash-free"
             )
             self.assertEqual(
                 live.LiveSpawn("001-x", "docs/specs/001-x/", agent="opencode").model,
-                "opencode/deepseek-v4-flash",
+                "opencode/deepseek-v4-flash-free",
             )
 
     def test_opencode_model_override_remains_supported(self):
