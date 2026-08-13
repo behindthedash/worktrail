@@ -147,6 +147,42 @@ class DeletedDepBranchFallback(unittest.TestCase):
         self.assertIn("origin/main", reconcile[0],
                       "squash reconcile must target origin/<base>")
 
+    def test_deleted_branch_fallback_fetches_base_before_reconcile(self):
+        """Squash-boundary bug: the fallback must fetch the remote base BEFORE computing
+        the merge-base and BEFORE the squash-reconcile merge, so both operations see the
+        dependency's actual just-landed squash-merge tip instead of a stale local
+        origin/<base> ref that predates it (observed live: reconcile merge parented off
+        pre-#176 main instead of the post-squash commit, leaving the PR permanently
+        mergeable=CONFLICTING)."""
+        _result, calls, quarantined = self._run_integrate_one_dep(
+            rev_parse_ok=False, merge_base_sha="deadbeef1234"
+        )
+        self.assertNotIn("feature-1", quarantined)
+
+        fetch_base_calls = [
+            i for i, c in enumerate(calls)
+            if c[:1] == ["fetch"] and "origin" in c and "main" in c
+        ]
+        self.assertTrue(
+            fetch_base_calls,
+            "dep-branch-gone fallback must fetch the remote base before reconciling "
+            "against it, so origin/<base> reflects the dependency's actual merged tip",
+        )
+
+        merge_base_idx = next(i for i, c in enumerate(calls) if c[:1] == ["merge-base"])
+        reconcile_idx = next(
+            i for i, c in enumerate(calls)
+            if c[:2] == ["merge", "--no-edit"] and "-X" in c and "ours" in c
+        )
+        self.assertLess(
+            fetch_base_calls[0], merge_base_idx,
+            "fetch must happen before merge-base is computed from origin/<base>",
+        )
+        self.assertLess(
+            fetch_base_calls[0], reconcile_idx,
+            "fetch must happen before the squash-reconcile merge against origin/<base>",
+        )
+
     def test_deleted_branch_merge_base_failure_falls_back_to_remote_base(self):
         """When merge-base also fails, fall back to origin/<base> without quarantine."""
         result, calls, quarantined = self._run_integrate_one_dep(

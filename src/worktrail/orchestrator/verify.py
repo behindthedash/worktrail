@@ -803,6 +803,11 @@ class Verifier:
         ]
 
     # -- per-stage logic --------------------------------------------------- #
+    # Sentinel `failing` value _block_on_checks returns when the PR turned
+    # CONFLICTING mid-wait -- distinguishes "this will never resolve by
+    # waiting" from an ordinary still-pending-checks poll or a genuine timeout.
+    _CONFLICTING_MID_CI_WAIT = "__conflicting_mid_ci_wait__"
+
     def ensure_mergeable(self, group: Dict[str, Any], gb: str) -> Tuple[bool, str]:
         """Drive the resolve loop until the PR is mergeable or strikes run out."""
         for strike in range(self.max_strikes):
@@ -828,6 +833,19 @@ class Verifier:
             ok, failing = self._block_on_checks(group, gb)
             if ok:
                 return True, ""
+            if failing == [self._CONFLICTING_MID_CI_WAIT]:
+                # GitHub never schedules checks on a CONFLICTING PR, so polling
+                # checks alone would wait out the full budget for something
+                # that can never arrive. Route to the same resolve-worker
+                # mechanism ensure_mergeable uses for this identical signal.
+                if strike >= self.max_strikes:
+                    return False, "still CONFLICTING mid-CI-wait after resolve attempts"
+                self.log(f"    [{group['name']}] became CONFLICTING with {self.base} "
+                         f"mid-CI-wait -- spawning resolve worker (strike {strike + 1}/"
+                         f"{self.max_strikes})")
+                if not self._spawn_group_worker(dispatch.ROLE_RESOLVE, group, gb, {}):
+                    return False, "resolve worker failed"
+                continue
             if failing is None:
                 return False, "CI did not complete within budget"
             if strike >= self.max_strikes:
@@ -858,6 +876,9 @@ class Verifier:
             st = self.pr_status(gb)
             if st is None:
                 return False, ["(pr view unavailable)"]
+            mergeable = (st.get("mergeable") or "").upper()
+            if mergeable == "CONFLICTING":
+                return False, [self._CONFLICTING_MID_CI_WAIT]
             pending, failing = classify_checks(st.get("statusCheckRollup"), required=required)
             if not pending:
                 if failing:
