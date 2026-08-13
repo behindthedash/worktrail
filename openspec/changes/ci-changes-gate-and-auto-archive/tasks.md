@@ -1,6 +1,6 @@
 ## 1. Bookkeeping changes-gate script
 
-- [ ] 1.1 Add `scripts/ci/bookkeeping_gate.sh` (stdlib bash, mirroring
+- [x] 1.1 Add `scripts/ci/bookkeeping_gate.sh` (stdlib bash, mirroring
       `scripts/ci/version_bump_check.sh`'s `--github-output` shape): takes
       `--paths-filter-code <true|false>` (the `dorny/paths-filter` `code`
       output — true means a non-doc/openspec/md path changed),
@@ -46,7 +46,7 @@
 
 ## 3. OpenSpec archive remediation row
 
-- [ ] 3.1 In `src/worktrail/drain/drain.py`, add
+- [x] 3.1 In `src/worktrail/drain/drain.py`, add
       `find_complete_openspec_changes(repos_root, go_repo=None)`: scans
       `dashboard.scan()` results per repo (mirroring
       `find_stale_bookkeeping_specs`'s repo-iteration shape), selecting rows
