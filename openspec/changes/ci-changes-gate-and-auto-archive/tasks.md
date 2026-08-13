@@ -10,7 +10,7 @@
       bookkeeping is `true` outright (already docs/openspec/md-only). If
       `true` only because `pyproject.toml` changed and the diff's only
       changed line matches `version = `, bookkeeping is `true`. Otherwise
-      `false`.
+      `false`. Implements Requirement: Bookkeeping-only diff classification.
 - [ ] 1.2 Add `scripts/ci/test_bookkeeping_gate.sh` (mirroring
       `test_version_bump_check.sh`'s `run_case`/`assert_kv` pattern): cover
       docs-only, docs+openspec, src-alongside-docs (not bookkeeping),
@@ -32,14 +32,17 @@
       via `github.base_ref`) and feed both into
       `scripts/ci/bookkeeping_gate.sh` to produce a job output
       `bookkeeping`.
+      Requirement: "Full suite runs when classification is not bookkeeping-only or is ambiguous" (non-PR fallback branch).
 - [ ] 2.2 Gate `lint-test-build`'s test/build steps (or the whole job) on
       `needs.changes.outputs.bookkeeping == 'false'`.
+      Requirement: "Full suite skipped for bookkeeping-only diffs" and Requirement: "Full suite runs when classification is not bookkeeping-only or is ambiguous" (both sides of the gate).
 - [ ] 2.3 Add a `bookkeeping-bypass` job (`needs: changes`,
       `if: needs.changes.outputs.bookkeeping == 'true'`, `permissions:
       checks: write`) that posts a `success` check named exactly
       `Lint, Test & Build` via `actions/github-script` +
       `github.rest.checks.create`, matching the job `name:` string used
       elsewhere in `ci.yml` and in `.github/rulesets/protect-main.json`.
+      Requirement: "Required status check still resolves for bookkeeping-only diffs".
 
 ## 3. OpenSpec archive remediation row
 
@@ -65,6 +68,7 @@
 - [ ] 3.3 Add a `StageRemediation("openspec_archive", "archive-openspec-change",
       find_complete_openspec_changes, archive_openspec_change)` row to
       `REMEDIATION_TABLE`.
+      Requirement: "OpenSpec change archive remediation".
 - [ ] 3.4 In `tests/drain/test_drain.py`, cover: an OpenSpec change at
       `stage == "complete"` is found and archived; a devkit spec at
       `stage == "complete"` is NOT selected by the finder (the critical
