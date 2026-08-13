@@ -7,6 +7,9 @@
       truthy, log a one-line note that a bounded wait is starting, call
       `self._wait_for_external_merge(group, gb)`, and return its `ok` value. Otherwise return
       `False`. Never call `gh pr merge`, `auto_merge`, or any other merge-arming action.
+      Implements requirement "Live merge recheck before finalizing an ordinary quarantine verdict".
+      Implements requirement "Bounded wait for an externally-armed auto-merge before finalizing quarantine".
+      Implements requirement "Recheck is passive and never arms or attempts its own merge".
 
 ## 2. Wire the recheck into verify_one's quarantine path
 
@@ -19,6 +22,7 @@
       `skip_remote_branch_delete=False`, matching the already-merged path in `auto_merge`), and
       `return` — skipping the existing quarantine/self-merge/regression accumulator writes below
       it. On `False`, fall through to the existing accumulator-write logic unchanged.
+      Gating on `not violation and not is_regression` implements requirement "Self-merge violations and post-merge regressions are unaffected".
 
 ## 3. Tests
 
