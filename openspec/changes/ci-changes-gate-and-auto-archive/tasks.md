@@ -1,6 +1,6 @@
 ## 1. Bookkeeping changes-gate script
 
-- [x] 1.1 Add `scripts/ci/bookkeeping_gate.sh` (stdlib bash, mirroring
+- [ ] 1.1 Add `scripts/ci/bookkeeping_gate.sh` (stdlib bash, mirroring
       `scripts/ci/version_bump_check.sh`'s `--github-output` shape): takes
       `--paths-filter-code <true|false>` (the `dorny/paths-filter` `code`
       output — true means a non-doc/openspec/md path changed),
@@ -11,7 +11,7 @@
       `true` only because `pyproject.toml` changed and the diff's only
       changed line matches `version = `, bookkeeping is `true`. Otherwise
       `false`. Implements Requirement: Bookkeeping-only diff classification.
-- [ ] 1.2 Add `scripts/ci/test_bookkeeping_gate.sh` (mirroring
+- [x] 1.2 Add `scripts/ci/test_bookkeeping_gate.sh` (mirroring
       `test_version_bump_check.sh`'s `run_case`/`assert_kv` pattern): cover
       docs-only, docs+openspec, src-alongside-docs (not bookkeeping),
       pyproject-version-only (bookkeeping), pyproject-with-other-line (not
@@ -46,7 +46,7 @@
 
 ## 3. OpenSpec archive remediation row
 
-- [x] 3.1 In `src/worktrail/drain/drain.py`, add
+- [ ] 3.1 In `src/worktrail/drain/drain.py`, add
       `find_complete_openspec_changes(repos_root, go_repo=None)`: scans
       `dashboard.scan()` results per repo (mirroring
       `find_stale_bookkeeping_specs`'s repo-iteration shape), selecting rows
