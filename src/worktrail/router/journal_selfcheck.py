@@ -17,7 +17,14 @@ production incidents that were only caught by an operator noticing manually:
   checkbox flip, an evidence file) -- the sibling bug class to stranded-tail,
   where the run instead reports full success while real evidence sits on a
   branch a later worktree-cleanup pass deletes with zero trace (reproduced
-  2026-08-12). See `integrate.detect_unreconciled_tail_evidence`.
+  2026-08-12). The orchestrator now attempts reconciliation automatically
+  (`integrate.reconcile_unreconciled_tail_evidence`) before recording each
+  finding, and this finding's message reflects that outcome: entries still
+  awaiting a human (quarantined, or absent for pre-reconciliation journals)
+  get the original manual-triage wording, entries with an open auto-PR get
+  informational wording naming the PR, and entries the auto-reconciliation
+  already merged are dropped from the finding entirely. See
+  `integrate.detect_unreconciled_tail_evidence`.
 - **malformed-journal** — the journal no longer parses as JSON. State files
   are written only by the orchestrator's atomic writer, so a parse failure
   means something else rewrote it (observed 2026-08-08: a worker hand-edited
