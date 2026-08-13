@@ -10,8 +10,14 @@ on:
     # label present passes, the label removed re-fails when a bump is needed.
     types: [opened, synchronize, reopened, labeled, unlabeled]
 
+# The group includes the triggering event action: a `labeled` event fired
+# seconds after `opened` (the eligibility labels are applied right after PR
+# creation) must not cancel the `opened` run — a cancelled run of this
+# required check stays on the head SHA and blocks the merge/auto-merge even
+# after a newer run succeeds (observed on PRs #344-#346, 2026-08-13; each
+# needed a manual re-run to unblock). Same-action storms still dedupe.
 concurrency:
-  group: version-bump-check-${{ github.event.pull_request.number }}
+  group: version-bump-check-${{ github.event.pull_request.number }}-${{ github.event.action }}
   cancel-in-progress: true
 
 jobs:
