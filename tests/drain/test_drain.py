@@ -2099,3 +2099,72 @@ def test_drain_decisionless_block_still_trips_breaker(tmp_path, monkeypatch):
     assert n["spawned"] == 2
     assert summary["stopped"].startswith("circuit_breaker")
     assert summary["decisions_open"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Operator-config agent defaults (CLI > config file > built-in)
+
+
+def _run_main(tmp_path, monkeypatch, argv_extra=(), config_payload=None):
+    home = tmp_path / "wt-home"
+    home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("WORKTRAIL_HOME", str(home))
+    if config_payload is not None:
+        (home / "config.json").write_text(config_payload, encoding="utf-8")
+    wq = tmp_path / "work_queue.py"
+    wq.write_text("# placeholder\n")
+    captured = {}
+
+    def fake_drain(config, **_kw):
+        captured["config"] = config
+        return {"stopped": "queue_empty", "iterations": []}
+
+    monkeypatch.setattr(drain, "drain", fake_drain)
+    rc = drain.main(["--work-queue-py", str(wq), *argv_extra])
+    return rc, captured.get("config")
+
+
+def test_main_defaults_to_claude_without_config(tmp_path, monkeypatch):
+    rc, config = _run_main(tmp_path, monkeypatch)
+    assert rc == 0
+    assert config.agent == "claude"
+    assert config.fallback_agents == []
+
+
+def test_main_honors_operator_config_agents(tmp_path, monkeypatch):
+    rc, config = _run_main(
+        tmp_path, monkeypatch,
+        config_payload='{"drain": {"agent": "opencode", '
+                       '"fallback_agents": ["claude", "codex"]}}')
+    assert rc == 0
+    assert config.agent == "opencode"
+    assert config.fallback_agents == ["claude", "codex"]
+
+
+def test_main_cli_flags_override_operator_config(tmp_path, monkeypatch):
+    rc, config = _run_main(
+        tmp_path, monkeypatch,
+        argv_extra=["--agent", "codex", "--fallback-agent", "claude"],
+        config_payload='{"drain": {"agent": "opencode", '
+                       '"fallback_agents": ["codex"]}}')
+    assert rc == 0
+    assert config.agent == "codex"
+    assert config.fallback_agents == ["claude"]
+
+
+def test_main_rejects_unsupported_config_agent(tmp_path, monkeypatch, capsys):
+    rc, config = _run_main(
+        tmp_path, monkeypatch,
+        config_payload='{"drain": {"agent": "deepseek"}}')
+    assert rc == 2
+    assert config is None
+    err = capsys.readouterr().err
+    assert "deepseek" in err and "config.json" in err
+
+
+def test_main_fails_loud_on_malformed_config(tmp_path, monkeypatch, capsys):
+    rc, config = _run_main(tmp_path, monkeypatch, config_payload="{broken")
+    assert rc == 2
+    assert config is None
+    assert "not valid JSON" in capsys.readouterr().err
+
