@@ -368,7 +368,11 @@ def is_infra_failure(returncode: int, stdout: Optional[str]) -> bool:
 # config file yet).
 DEFAULT_CLAUDE_MODEL = "sonnet"
 DEFAULT_CODEX_MODEL = "gpt-5.4-mini"
-DEFAULT_OPENCODE_MODEL = "deepseek/deepseek-v4-flash"
+# The bare "deepseek/" provider needs its own credential; the OpenCode Zen
+# gateway serves the same family under "opencode/" against the standard Zen
+# login (verified live 2026-08-13: bare-prefix spawns fail with an opencode
+# "Unexpected server error" at zero tokens on a machine with only Zen auth).
+DEFAULT_OPENCODE_MODEL = "opencode/deepseek-v4-flash"
 
 SUPPORTED_AGENTS = {"claude", "codex", "opencode"}
 
