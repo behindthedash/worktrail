@@ -88,7 +88,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
 
+from . import invocation_context
+
 ALLOWED_AGENTS = ("claude", "codex", "opencode")
+
+# Kept in lockstep with invocation_context.resolve()'s decision tree so an
+# audit record can never claim a dispatch mode the resolver cannot produce.
+DISPATCH_MODES = (
+    invocation_context.IN_SESSION_RESUME,
+    invocation_context.NATIVE_SKILL,
+    invocation_context.ADAPTER,
+    invocation_context.BLOCKED,
+)
 
 COMPLETION_STATES = (
     "completed_and_merged",
@@ -129,11 +140,21 @@ def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S%z")
 
 
+_BOOL_LITERALS = {"true": True, "false": False}
+
+
 def _quote(value: str) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
     value = str(value)
     if SECRET_PAT.search(value):
         raise SystemExit("refusing to record what looks like a credential")
-    if re.search(r"[:#\n\"']", value) or value != value.strip() or value == "":
+    # A string that spells a bool literal must round-trip as a string, so the
+    # bare form below is unambiguously a real boolean on the way back in.
+    if (value.lower() in _BOOL_LITERALS
+            or re.search(r"[:#\n\"']", value)
+            or value != value.strip()
+            or value == ""):
         return json.dumps(value.replace("\n", " "))
     return value
 
@@ -206,6 +227,8 @@ def _load(path: Path) -> Dict[str, Any]:
                 current = None
                 if value == "null":
                     record[key] = None
+                elif value in _BOOL_LITERALS:
+                    record[key] = _BOOL_LITERALS[value]
                 elif value.startswith('"'):
                     parsed = json.loads(value)
                     if isinstance(parsed, str) and parsed.lstrip().startswith("{"):
@@ -276,6 +299,10 @@ def cmd_start(args: argparse.Namespace) -> int:
         "risk_level": args.risk,
         **({"gates": gates} if gates is not None else {}),
         "agent": agent if agent else None,
+        **({"native_skill_available": args.native_skill_available == "true"}
+           if args.native_skill_available is not None else {}),
+        **({"dispatch_mode": args.dispatch_mode}
+           if args.dispatch_mode is not None else {}),
         "status": "route_selected",
         **({"routing_decision": routing_decision} if routing_decision is not None else {}),
         "epic": None,
@@ -1064,6 +1091,19 @@ def main(argv=None) -> int:
                    choices=["low", "medium", "high", "critical"])
     s.add_argument("--reason", default=None)
     s.add_argument("--agent", default=None)
+    s.add_argument(
+        "--native-skill-available",
+        default=None,
+        choices=["true", "false"],
+        help="resolved native-Skill host capability (invocation_context.py); "
+             "omit to record no field at all (predates capability persistence)",
+    )
+    s.add_argument(
+        "--dispatch-mode",
+        default=None,
+        choices=list(DISPATCH_MODES),
+        help="dispatch path the invocation context selected (invocation_context.py)",
+    )
     s.add_argument(
         "--routing-decision",
         default=None,

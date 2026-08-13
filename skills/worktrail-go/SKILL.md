@@ -60,41 +60,57 @@ New spec format: `/go new` uses OpenSpec by default. Set
 ### Invocation Context (Mandatory — Resolve Once, Carry Explicitly)
 
 The Go front door resolves a durable **invocation context** before any dispatch. This
-context is the single source of truth for agent CLI selection — every downstream stage
-(sdd-workflow, parallel orchestrator, headless workers) consumes the resolved value
+context is the single source of truth for dispatch selection — every downstream stage
+(sdd-workflow, parallel orchestrator, headless workers) consumes the resolved values
 instead of re-detecting the host from ambient environment variables.
 
-Resolve the agent CLI once:
+The context carries **two independent values**. Do not derive either from the other:
+
+- **`agent_cli`** — which provider CLI a child process would be launched as.
+- **`native_skill_available`** — whether *this* host exposes a native `Skill(...)` tool.
+
+They are independent facts about different things. An embedded Codex host resolves
+`agent_cli: codex` and exposes **no** `Skill(...)`; a Claude Code session resolves
+`agent_cli: claude` and does. Treating the provider as a proxy for the capability picks
+the wrong dispatch path for exactly the hosts that need the adapter.
+
+**Only you can observe your own tool surface**, so supply the capability explicitly:
+pass `--native-skill` when `Skill` is among your available tools and
+`--no-native-skill` when it is not. Never omit the flag to mean "probably yes" — an
+omitted signal resolves to `false`, deliberately, because assuming the capability is
+present is a speculative `Skill(...)` call you cannot retry out of.
 
 ```bash
-INVOCATION_CONTEXT_AGENT="${AGENT_CLI:-}"
-if [ -z "$INVOCATION_CONTEXT_AGENT" ]; then
-  POLICY_DATA=$(worktrail-policy --repo "$PWD" --json 2>/dev/null || echo '{}')
-  POLICY_AGENT=$(echo "$POLICY_DATA" | python3 -c "import json,sys; print(json.load(sys.stdin).get('agent_cli') or '')")
-  if [ -n "$POLICY_AGENT" ]; then
-    INVOCATION_CONTEXT_AGENT="$POLICY_AGENT"
-  elif [ -n "${GO_AGENT_CLI:-}" ]; then
-    INVOCATION_CONTEXT_AGENT="$GO_AGENT_CLI"
-  elif [ -n "${ORCH_AGENT:-}" ]; then
-    INVOCATION_CONTEXT_AGENT="$ORCH_AGENT"
-  elif [ -n "${OPENCODE_PARENT:-}" ]; then
-    INVOCATION_CONTEXT_AGENT="opencode"
-  elif [ -n "${CODEX_CI:-}" ] || [ -n "${CODEX_THREAD_ID:-}" ]; then
-    INVOCATION_CONTEXT_AGENT="codex"
-  else
-    INVOCATION_CONTEXT_AGENT="claude"
-  fi
-fi
+POLICY_AGENT=$(worktrail-policy --repo "$PWD" --json 2>/dev/null \
+  | python3 -c "import json,sys; print(json.load(sys.stdin).get('agent_cli') or '')" 2>/dev/null)
+
+# Substitute --no-native-skill when this host exposes no Skill tool.
+CONTEXT_JSON=$(worktrail-invocation-context \
+  ${AGENT_CLI:+--agent "$AGENT_CLI"} \
+  ${POLICY_AGENT:+--policy-agent "$POLICY_AGENT"} \
+  --native-skill --json)
+
+INVOCATION_CONTEXT_AGENT=$(echo "$CONTEXT_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin)['agent_cli'])")
+INVOCATION_CONTEXT_NATIVE_SKILL=$(echo "$CONTEXT_JSON" | python3 -c "import json,sys; print(str(json.load(sys.stdin)['native_skill_available']).lower())")
+INVOCATION_CONTEXT_DISPATCH_MODE=$(echo "$CONTEXT_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin)['dispatch_mode'])")
 ```
+
+Exit 2 means `dispatch_mode: blocked` — neither capability is available. Stop and
+report the `blocked_reason` verbatim; do not fall back to a different provider.
+
+`agent_cli` precedence is unchanged: explicit invocation > repository policy >
+machine-wide env > detected host > `claude`.
 
 Every downstream consumer (go_seed.py `--agent`, `live.py full-real --agent`,
 sdd-workflow seed prompt `Agent CLI:`) MUST use `$INVOCATION_CONTEXT_AGENT`.
 Do NOT re-detect the host or re-read env vars in child processes — the resolved
-value is the durable per-invocation identity.
+values are the durable per-invocation identity.
 
-Hold `$INVOCATION_CONTEXT_AGENT` for the entire session. When the policy
-`run_record_dir` is set, pass `--agent "$INVOCATION_CONTEXT_AGENT"` to every
-`worktrail-run-record` call so the run record captures the resolved agent.
+Hold all three values for the entire session. When the policy `run_record_dir` is set,
+pass `--agent "$INVOCATION_CONTEXT_AGENT"` to every `worktrail-run-record` call, and on
+the `start` call also pass `--native-skill-available "$INVOCATION_CONTEXT_NATIVE_SKILL"`
+and `--dispatch-mode "$INVOCATION_CONTEXT_DISPATCH_MODE"` so the audit record captures
+which path was taken and why.
 
 ### Phase 1 — Classify the Invocation, Then Show the Orientation Dashboard
 
@@ -511,7 +527,21 @@ Dispatch policy is simple:
   code change required. No `routing.purpose_tiers` table configured → `compile.py` never asks
   for `purpose` at all, identical to today's output.
 - Record the resolved routing decision at dispatch time with `worktrail-run-record start ... --routing-decision "$ROUTING_JSON"` so the audit trail captures the exact route/risk-derived policy.
-- Codex / in-session host: call `Skill("worktrail-sdd-workflow", ...)` directly.
+- **Branch on `$INVOCATION_CONTEXT_DISPATCH_MODE`, never on the provider name.** The
+  invocation context already applied the decision tree; do not re-derive it here, and do
+  not read `agent_cli` as evidence about `Skill(...)`:
+
+  | `dispatch_mode` | action |
+  |---|---|
+  | `in-session-resume` | continue the route in this session (see the Route E bullet below) |
+  | `native-skill` | call `Skill("worktrail-sdd-workflow", ...)` directly |
+  | `adapter` | run `worktrail-skill-dispatch` with `$INVOCATION_CONTEXT_AGENT` (see the adapter section below) |
+  | `blocked` | stop; report the resolver's `blocked_reason` verbatim |
+
+  Never call `Skill(...)` speculatively and fall back after an exception — that is the
+  failure the capability value exists to prevent. Never substitute a different provider
+  than the one resolved; a provider whose CLI is missing resolves to `blocked`, which is
+  an actionable stop, not a licence to switch.
 - **Active-run resume (Route E) stays in-session — never spawn a nested worker.** If the
   resolved dispatch is a Route E continue/resume (the dashboard/classifier resolved
   `action: resume`, or the route is E), first check whether the run is **already active**:
@@ -529,7 +559,9 @@ Dispatch policy is simple:
   and machine-wide provider overrides still win.
 - Other hosts with a working headless CLI: use the seeded subprocess path from
   `references/subagent-prompts.md#subprocess-dispatch`.
-- If subprocess dispatch is unavailable: fall back to the direct Skill call and say so.
+- If subprocess dispatch is unavailable and `native_skill_available` is true, call
+  `Skill(...)` directly and say so. If it is false, that combination is `blocked` —
+  report it rather than attempting either path.
 
 **Pinning a role to a specific agent/model.** `routing.roles` overrides one JUDGMENT_ROLE
 (`review`/`resolve`/`ci-fix`/`assembly-resolve`) or task role (`implement`/`fix`/`cleanup`)
@@ -556,9 +588,11 @@ the orchestrator invocation. For `review`/`resolve`/`ci-fix`/`assembly-resolve` 
 guarantee, 13.3). No `routing.roles` entry for a role → unchanged pre-spec behavior for that
 role.
 
-**Native Skill capability fallback.** `Skill(...)` is a host capability, not a shell
-command. If the current host does not expose it (for example, an embedded Codex
-session), run `worktrail-skill-dispatch` with the resolved `--agent`, `--skill`,
+**Adapter dispatch (`dispatch_mode: adapter`).** `Skill(...)` is a host capability, not a
+shell command, and `native_skill_available` — not the provider name — is what says
+whether this host has it. An embedded Codex session resolves `agent_cli: codex` with no
+`Skill(...)` at all, which is exactly this branch. On it,
+run `worktrail-skill-dispatch` with the resolved `--agent`, `--skill`,
 `--args`, `--cwd "$REPO"`, and — for any route that will author, edit, or commit
 files (D/F/G/H) — `--write` values. Without `--write`, a headless claude/opencode
 child has no channel to answer the permission prompts sdd-workflow's own file
