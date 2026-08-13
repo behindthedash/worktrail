@@ -111,6 +111,11 @@ from ..router.policy import load_policy
 from ..router.policy_selfcheck import discover_repo_names
 from ..router.pr_labels import ensure_pr_risk_label
 from ..shared.homedir import worktrail_home
+from ..shared.operator_config import (
+    OperatorConfigError,
+    config_path as operator_config_path,
+    drain_config as operator_drain_config,
+)
 from ..taskformats.devkit.schema import set_status_completed
 from ..workqueue import decisions as decisions_mod
 from ..workqueue import seed_backlog as seed_backlog_mod
@@ -1450,7 +1455,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                         help="iteration ceiling (0 = until queue empty)")
     parser.add_argument("--budget-minutes", type=int, default=0,
                         help="wall-clock budget (0 = none)")
-    parser.add_argument("--agent", default="claude", choices=SUPPORTED_AGENTS)
+    parser.add_argument("--agent", default=None, choices=SUPPORTED_AGENTS,
+                        help="one-shot provider; when omitted, falls back to the "
+                             "operator config's drain.agent "
+                             "(worktrail_home()/config.json), then to claude")
     parser.add_argument("--fallback-agent", action="append", default=[],
                         dest="fallback_agents", choices=SUPPORTED_AGENTS, metavar="AGENT",
                         help="additional agent to try, in priority order, when a "
@@ -1502,13 +1510,31 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.work_queue_py is None or not Path(args.work_queue_py).is_file():
         print("error: work_queue.py not found; pass --work-queue-py", file=sys.stderr)
         return 2
+    # CLI > operator config (worktrail_home()/config.json, "drain" section) >
+    # built-in default. Explicit automation (the nightly drain script passes
+    # --agent/--fallback-agent itself) is never affected by the config file;
+    # a config-less manual `worktrail-drain` picks up the operator's stated
+    # provider preference instead of silently defaulting to claude.
+    try:
+        operator_drain = operator_drain_config()
+    except OperatorConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    agent = args.agent or operator_drain["agent"] or "claude"
+    fallback_agents = list(args.fallback_agents) or list(operator_drain["fallback_agents"])
+    invalid = [a for a in [agent, *fallback_agents] if a not in SUPPORTED_AGENTS]
+    if invalid:
+        print(f"error: unsupported agent(s) {', '.join(sorted(set(invalid)))} "
+              f"from {operator_config_path()}; supported: "
+              f"{', '.join(SUPPORTED_AGENTS)}", file=sys.stderr)
+        return 2
     config = DrainConfig(
         work_queue_py=Path(args.work_queue_py),
         runs_dir=args.runs_dir,
         capacity_cache=args.capacity_cache,
         lock_file=args.lock_file,
-        agent=args.agent,
-        fallback_agents=list(args.fallback_agents),
+        agent=agent,
+        fallback_agents=fallback_agents,
         transcript_dir=args.transcript_dir,
         agent_cmd=args.agent_cmd,
         go_repo=args.go_repo,
