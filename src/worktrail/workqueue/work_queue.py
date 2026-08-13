@@ -436,9 +436,9 @@ def _awaiting_decision_info(path: Path) -> Dict[str, Any]:
 def list_queue() -> Dict[str, Any]:
     """Queue briefs newest-first:
 
-    {"briefs": [{filename, path, focus, blocked, not_yet_due, recently_released,
-    recently_released_by, recently_released_at, related, awaiting_decision,
-    decision_status, unparsable}, ...]}.
+    {"briefs": [{filename, path, focus, repo, blocked, not_yet_due,
+    recently_released, recently_released_by, recently_released_at, related,
+    awaiting_decision, decision_status, unparsable}, ...]}.
 
     A brief awaiting a still-open decision reports `blocked: True` — every
     ready-count and auto-pick consumer already keys on that flag, so the brief
@@ -455,6 +455,7 @@ def list_queue() -> Dict[str, Any]:
             "filename": f.name,
             "path": str(f),
             "focus": _focus_of(f),
+            "repo": fm.get("repo"),
             "blocked": _is_blocked(f) or awaiting["decision_status"] == "open",
             "not_yet_due": _is_not_yet_due(f),
             "awaiting_decision": awaiting["awaiting_decision"],

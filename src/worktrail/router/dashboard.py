@@ -2162,6 +2162,7 @@ def render_dashboard(
     postmerge_check_failures: Optional[Dict[str, Any]] = None,
     recent_runs: Optional[List[Dict[str, Any]]] = None,
     staleness_warnings: Optional[List[Dict[str, Any]]] = None,
+    queue_repo: Optional[str] = None,
 ) -> str:
     """The compact, category-grouped, deterministic dashboard the conductor prints
     verbatim (no LLM rendering). Active specs are grouped by work-category in
@@ -2187,6 +2188,28 @@ def render_dashboard(
     def _clip(s: str, n: int = 60) -> str:
         s = (s or "").strip()
         return (s[:n] + "…") if len(s) > n else s
+
+    def _queue_repo_match(brief_repo: Optional[str]) -> bool:
+        """Same comparison auto_pick_brief applies for its repo_filter: exact
+        (trailing-slash-insensitive) or basename equality, so a brief whose
+        `repo:` is a path still matches a bare repo name and vice versa. A
+        brief with no repo at all does NOT match a repo-scoped view -- it is
+        not this repo's work any more than another repo's is."""
+        rf = str(queue_repo).rstrip("/")
+        r = str(brief_repo or "").rstrip("/")
+        return bool(r) and (r == rf or Path(r).name == Path(rf).name)
+
+    if queue_repo:
+        # A repo-scoped dashboard (e.g. `/go devops`) must not render other
+        # repos' queued/in-flight briefs as if they were claimable here
+        # (observed live 2026-08-13: `worktrail-go devops` listed datalena
+        # briefs). Hidden counts are still surfaced -- never silently.
+        inflight_hidden = sum(1 for b in inflight if not _queue_repo_match(b.get("repo")))
+        inflight = [b for b in inflight if _queue_repo_match(b.get("repo"))]
+        queue_hidden = sum(1 for b in queue_briefs if not _queue_repo_match(b.get("repo")))
+        queue_briefs = [b for b in queue_briefs if _queue_repo_match(b.get("repo"))]
+    else:
+        inflight_hidden = queue_hidden = 0
 
     actives: List[Dict[str, Any]] = []
     backlog: List[str] = []
@@ -2260,7 +2283,8 @@ def render_dashboard(
 
     if inflight:
         ordered = sorted(inflight, key=lambda b: b.get("claimed_at") or "", reverse=True)
-        lines.append(f"🛠️  Stalled in-flight ({len(ordered)}) — claimed long ago, likely abandoned")
+        inflight_note = f", +{inflight_hidden} in other repos" if inflight_hidden else ""
+        lines.append(f"🛠️  Stalled in-flight ({len(ordered)}{inflight_note}) — claimed long ago, likely abandoned")
         for b in ordered[:3]:
             bid = b["filename"].replace(".md", "")
             batched = b.get("batched") or 0
@@ -2283,7 +2307,8 @@ def render_dashboard(
         )
         n_blockers = sum(1 for b in queue_briefs if b.get("triage") == "blocker")
         blocker_note = f", {n_blockers} blocker" + ("s" if n_blockers != 1 else "") if n_blockers else ""
-        lines.append(f"📥 Queued handoffs ({len(ordered_q)}{blocker_note})")
+        hidden_note = f", +{queue_hidden} in other repos" if queue_hidden else ""
+        lines.append(f"📥 Queued handoffs ({len(ordered_q)}{blocker_note}{hidden_note})")
         for b in ordered_q[:3]:
             label = _clip(b.get("focus") or b["filename"].replace(".md", ""))
             if b.get("blocked"):
@@ -2302,6 +2327,10 @@ def render_dashboard(
             lines.append(f"    • {label}{tag}")
         if len(ordered_q) > 3:
             lines.append(f"    … +{len(ordered_q) - 3} more")
+    elif queue_hidden:
+        # Every queued brief belongs to other repos: keep the queue visible as
+        # a count so the repo-scoped view never implies the queue is empty.
+        lines.append(f"📥 Queued handoffs: none for this repo (+{queue_hidden} in other repos)")
 
     if backlog:
         head = ", ".join(backlog[:2])
@@ -2691,6 +2720,11 @@ def main(argv=None) -> int:
         cluster_precision=cluster_precision, capacity=capacity,
         postmerge_check_failures=postmerge_check_failures, recent_runs=recent_runs,
         staleness_warnings=staleness_warnings,
+        # Single-repo mode IS the repo-scoped view: rendering other repos'
+        # queued/in-flight briefs here misleads (`/go devops` listed datalena
+        # briefs, observed 2026-08-13). The multi-repo overview above stays
+        # unfiltered by design.
+        queue_repo=repo_dir.name,
     )
     if args.json:
         print(

@@ -3343,3 +3343,52 @@ class AutoPickReleaseTriage(unittest.TestCase):
         briefs = [self._brief("20260701-000000-untriaged.md")]
         result = dashboard.auto_pick_brief(briefs)
         self.assertEqual(result["pick"]["id"], "20260701-000000-untriaged")
+
+
+class RepoScopedQueueRender(unittest.TestCase):
+    """A repo-scoped (single-repo) dashboard must not render other repos'
+    queued/in-flight briefs as if they were claimable here (observed live
+    2026-08-13: `worktrail-go devops` listed datalena briefs)."""
+
+    BRIEFS = [
+        {"filename": "a.md", "focus": "devops thing", "repo": "devops"},
+        {"filename": "b.md", "focus": "datalena thing", "repo": "datalena"},
+        {"filename": "c.md", "focus": "path-repo thing",
+         "repo": "/home/x/projects/devops/"},
+        {"filename": "d.md", "focus": "unattributed thing", "repo": None},
+    ]
+
+    def test_queue_repo_filters_and_counts_hidden(self):
+        out = dashboard.render_dashboard(
+            None, [], inflight=[], queue_briefs=list(self.BRIEFS),
+            queue_repo="devops")
+        self.assertIn("📥 Queued handoffs (2, +2 in other repos)", out)
+        self.assertIn("devops thing", out)
+        self.assertIn("path-repo thing", out)  # basename match on a path repo
+        self.assertNotIn("datalena thing", out)
+        self.assertNotIn("unattributed thing", out)
+
+    def test_no_filter_without_queue_repo(self):
+        out = dashboard.render_dashboard(
+            None, [], inflight=[], queue_briefs=list(self.BRIEFS))
+        self.assertIn("📥 Queued handoffs (4)", out)
+        self.assertIn("datalena thing", out)
+
+    def test_all_hidden_still_surfaces_a_count(self):
+        out = dashboard.render_dashboard(
+            None, [], inflight=[],
+            queue_briefs=[{"filename": "b.md", "focus": "x", "repo": "datalena"}],
+            queue_repo="devops")
+        self.assertIn("📥 Queued handoffs: none for this repo (+1 in other repos)", out)
+        self.assertNotIn("• x", out)
+
+    def test_inflight_filtered_with_note(self):
+        inflight = [
+            {"filename": "p1.md", "focus": "ours", "repo": "devops", "claimed_at": "t"},
+            {"filename": "p2.md", "focus": "theirs", "repo": "datalena", "claimed_at": "t"},
+        ]
+        out = dashboard.render_dashboard(
+            None, [], inflight=inflight, queue_briefs=[], queue_repo="devops")
+        self.assertIn("Stalled in-flight (1, +1 in other repos)", out)
+        self.assertIn("ours", out)
+        self.assertNotIn("theirs", out)
