@@ -29,4 +29,4 @@
 
 - [ ] 5.1 [cleanup] Run `PYTHONPATH=src pytest -q` and confirm the full suite is green, including the new/updated tests from section 4.
 - [ ] 5.2 [cleanup] Run `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` (golden record/replay regression) and confirm it stays green.
-- [ ] 5.3 [cleanup] Re-read `proposal.md` and `specs/tail-task-auto-reconciliation/spec.md`'s scenarios against the implementation and confirm each scenario has a corresponding test from section 4 (not just narrative coverage).
+- [x] 5.3 [cleanup] Re-read `proposal.md` and `specs/tail-task-auto-reconciliation/spec.md`'s scenarios against the implementation and confirm each scenario has a corresponding test from section 4 (not just narrative coverage).
