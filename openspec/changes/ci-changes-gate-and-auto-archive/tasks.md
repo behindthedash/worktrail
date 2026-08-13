@@ -11,7 +11,7 @@
       `true` only because `pyproject.toml` changed and the diff's only
       changed line matches `version = `, bookkeeping is `true`. Otherwise
       `false`. Implements Requirement: Bookkeeping-only diff classification.
-- [ ] 1.2 Add `scripts/ci/test_bookkeeping_gate.sh` (mirroring
+- [x] 1.2 Add `scripts/ci/test_bookkeeping_gate.sh` (mirroring
       `test_version_bump_check.sh`'s `run_case`/`assert_kv` pattern): cover
       docs-only, docs+openspec, src-alongside-docs (not bookkeeping),
       pyproject-version-only (bookkeeping), pyproject-with-other-line (not
