@@ -152,6 +152,64 @@ def _pr_label_args(pr_labels: Optional[list[str]]) -> list[str]:
 # second attempt with identical input is unlikely to succeed differently.
 ASSEMBLY_RESOLVE_STRIKES = 1
 
+# `gh` calls in the integrate tail run AFTER implement/review/merge/smoke all
+# succeeded, so a single transient GitHub failure (HTTP 5xx, GraphQL "Something
+# went wrong", timeouts, connection errors) must not quarantine a finished
+# group -- recovery from that is fully manual (brief 20260724-142000 item 1;
+# the datalena 097-app-shell run lost a 10-task group to one GraphQL 500 on
+# `gh pr create`). Retry transient failures a bounded number of times with a
+# short linear backoff; deterministic failures (validation errors, 422,
+# "already exists", auth, unresolvable labels) keep the existing single-shot
+# behavior.
+GH_TRANSIENT_ATTEMPTS = 3
+GH_TRANSIENT_BACKOFF_S = 5
+
+# Substrings (lowercased match) that mark a gh failure as transient. GraphQL
+# 5xx responses surface as "Something went wrong while executing your query";
+# the rest cover plain HTTP 5xx, timeouts, and network-level errors.
+_GH_TRANSIENT_PATTERNS = (
+    "something went wrong",
+    "http 500", "http 502", "http 503", "http 504",
+    "500 internal server error", "502 bad gateway",
+    "503 service unavailable", "504 gateway",
+    "timeout", "timed out",
+    "connection refused", "connection reset", "could not resolve host",
+    "no such host", "unexpected eof", "tls handshake",
+    "temporarily unavailable",
+)
+
+# Injectable sleep seam so unit tests can assert backoff without real waits.
+_retry_sleep = time.sleep
+
+
+def _gh_error_is_transient(text: str) -> bool:
+    t = (text or "").lower()
+    return any(p in t for p in _GH_TRANSIENT_PATTERNS)
+
+
+def _run_gh_with_retry(cmd: list, cwd) -> subprocess.CompletedProcess:
+    """Run a gh command, retrying only transient failures (bounded, short backoff).
+
+    Returns the last CompletedProcess either way -- callers keep their existing
+    returncode/output handling, so a deterministic failure (or a transient one
+    that persists through every attempt) flows into the same quarantine/fallback
+    paths as before.
+    """
+    r = subprocess.run(cmd, capture_output=True, text=True, cwd=str(cwd))
+    for attempt in range(1, GH_TRANSIENT_ATTEMPTS):
+        if r.returncode == 0:
+            return r
+        err = ((r.stderr or "") + "\n" + (r.stdout or "")).strip()
+        if not _gh_error_is_transient(err):
+            return r
+        wait = GH_TRANSIENT_BACKOFF_S * attempt
+        detail = (err or "(no output)").splitlines()[-1][:160]
+        print(f"  RETRY gh {' '.join(cmd[1:3])} transient failure "
+              f"(attempt {attempt}/{GH_TRANSIENT_ATTEMPTS - 1}, waiting {wait}s): {detail}")
+        _retry_sleep(wait)
+        r = subprocess.run(cmd, capture_output=True, text=True, cwd=str(cwd))
+    return r
+
 
 def _git(repo, *args, check=True):
     return live._git(Path(repo), *args, check=check)
@@ -804,7 +862,7 @@ def integrate_one(
             print(f"  SKIP [{name:9}] -- draft PR has no resolvable number or URL")
             return False
         ready_cmd = ["gh", "pr", "ready", pr_ref]
-        ready = subprocess.run(ready_cmd, capture_output=True, text=True, cwd=str(repo))
+        ready = _run_gh_with_retry(ready_cmd, repo)
         if ready.returncode != 0:
             detail = (ready.stderr or ready.stdout or "unable to mark PR ready").strip()
             print(f"  SKIP [{name:9}] -- could not mark draft PR ready: {detail[:240]}")
@@ -893,11 +951,11 @@ def integrate_one(
                   f"start {'pre-squash ' + target[:8] if squash_reconcile_ref else remote_base_ref}")
 
     # Reconcile: MERGED? Skip branch/PR creation and write MERGED record.
-    pr_view = subprocess.run(
+    # Transient-retried: a flaky 5xx here would otherwise read as "no PR",
+    # sending an already-integrated group back down the create path.
+    pr_view = _run_gh_with_retry(
         ["gh", "pr", "view", gb, "--json", "number,state,url,headRefName,isDraft"],
-        capture_output=True,
-        text=True,
-        cwd=str(repo),
+        repo,
     )
     if pr_view.returncode == 0:
         try:
@@ -978,12 +1036,13 @@ def integrate_one(
 
     group_branch[name] = gb
 
-    # Reconcile: PR (reuse OPEN, discover operator PR, or create new)
-    pr_view = subprocess.run(
+    # Reconcile: PR (reuse OPEN, discover operator PR, or create new).
+    # Transient-retried: a flaky 5xx here would otherwise skip the reuse path
+    # and fall through to `gh pr create`, which then fails deterministically
+    # with "already exists" and quarantines a finished group.
+    pr_view = _run_gh_with_retry(
         ["gh", "pr", "view", gb, "--json", "number,state,url,headRefName,isDraft"],
-        capture_output=True,
-        text=True,
-        cwd=str(repo),
+        repo,
     )
     head_branch = gb
 
@@ -1010,14 +1069,12 @@ def integrate_one(
             pass
 
     # No open PR on conventional branch; try operator PR discovery
-    search_result = subprocess.run(
+    search_result = _run_gh_with_retry(
         [
             "gh", "pr", "list", "--search", f"{name} {spec_id}",
             "--json", "number,state,url,headRefName,isDraft", "--state", "open",
         ],
-        capture_output=True,
-        text=True,
-        cwd=str(repo),
+        repo,
     )
     if search_result.returncode == 0:
         try:
@@ -1067,7 +1124,9 @@ def integrate_one(
     ]
     if gh_repo:
         cmd += ["--repo", gh_repo]
-    r = subprocess.run(cmd, capture_output=True, text=True, cwd=str(repo))
+    # Transient-retried (the original defect): one GraphQL 500 on `gh pr create`
+    # must not quarantine a group whose implement/review/merge/smoke all passed.
+    r = _run_gh_with_retry(cmd, repo)
     out = (
         (r.stdout or r.stderr).strip().splitlines()[-1]
         if (r.stdout or r.stderr)
