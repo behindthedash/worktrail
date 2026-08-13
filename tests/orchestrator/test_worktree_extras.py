@@ -106,5 +106,38 @@ class HelperFunctionTests(unittest.TestCase):
         self.assertIn("worktrees", str(base))
 
 
+class HasTaskWorktreesTests(unittest.TestCase):
+    """`compile.py`'s force-vs-active-worktrees guard is built on this check."""
+
+    def setUp(self):
+        import tempfile
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.repo = Path(self._tmp.name) / "repo"
+        self.repo.mkdir()
+
+    def test_false_when_the_worktree_base_does_not_exist(self):
+        self.assertFalse(worktree.has_task_worktrees(self.repo, "003-payments"))
+
+    def test_false_when_the_base_exists_but_has_no_matching_task_dirs(self):
+        base = worktree.default_worktree_base(self.repo)
+        (base / "runplans").mkdir(parents=True)
+        (base / "004-other-task-001").mkdir()
+        self.assertFalse(worktree.has_task_worktrees(self.repo, "003-payments"))
+
+    def test_true_when_a_matching_task_worktree_dir_exists(self):
+        base = worktree.default_worktree_base(self.repo)
+        base.mkdir(parents=True)
+        (base / "003-payments-task-001").mkdir()
+        self.assertTrue(worktree.has_task_worktrees(self.repo, "003-payments"))
+
+    def test_a_file_with_a_matching_name_does_not_count(self):
+        base = worktree.default_worktree_base(self.repo)
+        base.mkdir(parents=True)
+        (base / "003-payments-task-001").write_text("not a directory")
+        self.assertFalse(worktree.has_task_worktrees(self.repo, "003-payments"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

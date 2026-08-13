@@ -69,6 +69,24 @@ def worktree_path(base: Path, spec_id: str, task_id: str) -> Path:
     return Path(base) / f"{spec_id}-{task_id.lower()}"
 
 
+def has_task_worktrees(
+    repo_root: "str | Path", spec_id: str, worktree_base: "str | Path | None" = None
+) -> bool:
+    """Whether any per-task worktree already exists on disk for this spec.
+
+    A cheap directory-listing check against the `worktree_path` naming
+    convention, not a `git worktree list` call. Used as a guard before an
+    operation (a forced RunPlan recompile) that would silently change the
+    plan a live run's worktrees were already fanned out under -- see
+    `conductor/compile.py`'s `force` handling.
+    """
+    base = Path(worktree_base) if worktree_base else default_worktree_base(Path(repo_root))
+    if not base.is_dir():
+        return False
+    prefix = f"{spec_id}-"
+    return any(p.is_dir() and p.name.startswith(prefix) for p in base.iterdir())
+
+
 # --------------------------------------------------------------------------- #
 # Manager
 # --------------------------------------------------------------------------- #

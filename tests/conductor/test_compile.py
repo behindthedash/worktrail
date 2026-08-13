@@ -122,6 +122,96 @@ def test_force_recompiles_over_a_cache_hit(change, tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# `force` refuses to clobber a plan that active task worktrees were already
+# fanned out under (go-20260812-165021 / 20260812-171538-fix-worktrail-compile-s-non:
+# two `--force` recompiles of byte-identical tasks.md produced two different,
+# each individually valid, dependency graphs -- non-determinism inherent to the
+# model call. Safe before any worktree exists; unsafe once one does, since a
+# resumed run would then disagree with the plan its own worktree was built
+# under. See `compile_run_plan`'s `allow_force_over_active_worktrees`.)
+# --------------------------------------------------------------------------- #
+def test_force_is_refused_when_task_worktrees_already_exist_for_the_spec(change, tmp_path):
+    from worktrail.orchestrator import worktree as wt
+
+    spec_id, tasks = _load(change)
+    repo = change.parents[2]
+    kwargs = dict(spec_id=spec_id, repo=repo, cache_dir=tmp_path / "plans")
+
+    first_spawn = RecordingSpawn(
+        _reply(**{t["id"]: {"files": ["a.py"], "deps": []} for t in tasks})
+    )
+    first = conductor_compile.compile_run_plan(change, tasks, spawn=first_spawn, **kwargs)
+    assert first_spawn.calls == 1
+
+    wt_base = wt.default_worktree_base(repo)
+    (wt_base / f"{spec_id}-{tasks[0]['id'].lower()}").mkdir(parents=True)
+
+    second_spawn = RecordingSpawn(
+        _reply(**{t["id"]: {"files": ["b.py"], "deps": []} for t in tasks})
+    )
+    logs: list[str] = []
+    second = conductor_compile.compile_run_plan(
+        change, tasks, force=True, spawn=second_spawn, log=logs.append, **kwargs
+    )
+    assert second_spawn.calls == 0, "an active-worktree spec must not reach the model on --force"
+    assert second.to_dict() == first.to_dict(), "the plan already backing the worktree must be kept"
+    assert any("refused" in line for line in logs)
+
+
+def test_allow_force_over_active_worktrees_overrides_the_guard(change, tmp_path):
+    from worktrail.orchestrator import worktree as wt
+
+    spec_id, tasks = _load(change)
+    repo = change.parents[2]
+    kwargs = dict(spec_id=spec_id, repo=repo, cache_dir=tmp_path / "plans")
+
+    conductor_compile.compile_run_plan(
+        change,
+        tasks,
+        spawn=RecordingSpawn(_reply(**{t["id"]: {"files": ["a.py"], "deps": []} for t in tasks})),
+        **kwargs,
+    )
+
+    wt_base = wt.default_worktree_base(repo)
+    (wt_base / f"{spec_id}-{tasks[0]['id'].lower()}").mkdir(parents=True)
+
+    second_spawn = RecordingSpawn(
+        _reply(**{t["id"]: {"files": ["b.py"], "deps": []} for t in tasks})
+    )
+    second = conductor_compile.compile_run_plan(
+        change,
+        tasks,
+        force=True,
+        allow_force_over_active_worktrees=True,
+        spawn=second_spawn,
+        **kwargs,
+    )
+    assert second_spawn.calls == 1
+    assert second.by_id()[tasks[0]["id"]].files == ("b.py",)
+
+
+def test_force_still_recompiles_when_no_task_worktrees_exist(change, tmp_path):
+    """The common case (no run has started yet, or none is in progress) must
+    keep working exactly as before this guard: a bare `--force` still reaches
+    the model without needing the override."""
+    spec_id, tasks = _load(change)
+    kwargs = dict(spec_id=spec_id, repo=change.parents[2], cache_dir=tmp_path / "plans")
+
+    conductor_compile.compile_run_plan(
+        change,
+        tasks,
+        spawn=RecordingSpawn(_reply(**{t["id"]: {"files": ["a.py"], "deps": []} for t in tasks})),
+        **kwargs,
+    )
+    second_spawn = RecordingSpawn(
+        _reply(**{t["id"]: {"files": ["b.py"], "deps": []} for t in tasks})
+    )
+    second = conductor_compile.compile_run_plan(change, tasks, force=True, spawn=second_spawn, **kwargs)
+    assert second_spawn.calls == 1
+    assert second.by_id()[tasks[0]["id"]].files == ("b.py",)
+
+
+# --------------------------------------------------------------------------- #
 # Paths that never reach a model
 # --------------------------------------------------------------------------- #
 def test_a_format_that_already_declares_file_scope_is_seeded_not_compiled(tmp_path):
