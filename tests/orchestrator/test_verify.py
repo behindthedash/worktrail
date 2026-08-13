@@ -233,6 +233,108 @@ class CiFixExhaustionPath(unittest.TestCase):
         self.assertFalse(run.find("git", "-C", "/repo", "worktree", "remove"))
 
 
+class LiveMergeRecheckUnit(unittest.TestCase):
+    """Direct unit coverage for `_recheck_merged_before_quarantine`, isolated
+    from the strike loop that would otherwise be needed to reach it."""
+
+    def test_already_merged_returns_true(self):
+        run = FakeRun({"run/feature-1": [view(state="MERGED")]})
+        v = mk(run, FakeSpawn(), "/tmp/x")
+        self.assertTrue(v._recheck_merged_before_quarantine(FEATURE, "run/feature-1"))
+
+    def test_armed_automerge_waits_then_merges(self):
+        run = FakeRun({"run/feature-1": [
+            view(state="OPEN", auto_merge_request={"enabledBy": {"login": "bot"}}),
+            view(state="MERGED"),
+        ]})
+        v = mk(run, FakeSpawn(), "/tmp/x")
+        self.assertTrue(v._recheck_merged_before_quarantine(FEATURE, "run/feature-1"))
+
+    def test_not_merged_not_armed_returns_false(self):
+        run = FakeRun({"run/feature-1": [view(state="OPEN")]})
+        v = mk(run, FakeSpawn(), "/tmp/x")
+        self.assertFalse(v._recheck_merged_before_quarantine(FEATURE, "run/feature-1"))
+
+    def test_pr_unavailable_returns_false(self):
+        run = FakeRun({})   # no view queued -> pr_status returns None
+        v = mk(run, FakeSpawn(), "/tmp/x")
+        self.assertFalse(v._recheck_merged_before_quarantine(FEATURE, "run/feature-1"))
+
+    def test_never_calls_gh_pr_merge(self):
+        run = FakeRun({"run/feature-1": [view(state="MERGED")]})
+        v = mk(run, FakeSpawn(), "/tmp/x")
+        v._recheck_merged_before_quarantine(FEATURE, "run/feature-1")
+        self.assertFalse(run.find("gh", "pr", "merge"))
+
+
+class _FlipsToMergedAfterNViewsRun(FakeRun):
+    """FakeRun that returns `flip_after`-many unmerged `view()`s for a branch,
+    then MERGED forever -- lets a test put the flip exactly at "one call past
+    whatever the strike/poll loop already consumed" without needing the run's
+    own internal call count spelled out inline."""
+
+    def __init__(self, *a, flip_after, unmerged_view=None, **kw):
+        super().__init__(*a, **kw)
+        self.flip_after = flip_after
+        self._unmerged_view = unmerged_view or view(rollup=RED)
+        self._view_calls = 0
+
+    def __call__(self, cmd):
+        if cmd[:3] == ["gh", "pr", "view"]:
+            self._view_calls += 1
+            if self._view_calls > self.flip_after:
+                return Proc(0, json.dumps(view(state="MERGED")), "")
+            return Proc(0, json.dumps(self._unmerged_view), "")
+        return super().__call__(cmd)
+
+
+class LiveMergeRecheckIntegration(unittest.TestCase):
+    """PR #339 shape end-to-end through run_all: wait_and_fix_ci exhausts its
+    3-strike budget exactly as CiFixExhaustionPath does, but by the time the
+    new final recheck runs, the PR has actually merged (e.g. via the repo's
+    own external auto-merge automation catching up moments later)."""
+
+    def test_merges_externally_after_strikes_exhausted_not_quarantined(self):
+        # Empirically: CiFixExhaustionPath's identical (unpatched) scenario
+        # makes exactly 17 `gh pr view` calls before wait_and_fix_ci gives up.
+        # Flipping to MERGED starting at call 18 means every call the strike
+        # loop itself makes still sees the original failing state, and only
+        # this fix's new final recheck call observes the merge.
+        run = _FlipsToMergedAfterNViewsRun(
+            {"run/feature-1": []}, flip_after=17,
+            runs=json.dumps([{"databaseId": 9, "conclusion": "FAILURE",
+                              "headSha": "abc"}]))
+        spawn = FakeSpawn()
+        v = mk(run, spawn, "/tmp/x")
+        res = v.run_all([FEATURE], {"feature-1": "run/feature-1"})
+
+        self.assertEqual(res["merged"], ["feature-1"])
+        self.assertEqual(res["quarantined"], {})
+        self.assertEqual(len(spawn.prompts), 3)               # still 3 ci-fix strikes
+        # cleanup ran as it does for any confirmed merge
+        self.assertTrue(run.find("git", "-C", "/repo", "worktree", "remove"))
+        self.assertTrue(any(c[:5] == ["git", "-C", "/repo", "branch", "-D"]
+                            and c[-1] == "001-x/task-002" for c in run.calls))
+        # the orchestrator itself never attempted a merge -- only observed one
+        self.assertFalse(run.find("gh", "pr", "merge", "run/feature-1"))
+
+    def test_still_quarantines_when_never_merges(self):
+        """Guard against a false-positive recheck: if the PR genuinely never
+        merges, behavior is unchanged from CiFixExhaustionPath."""
+        run = _FlipsToMergedAfterNViewsRun(
+            {"run/feature-1": []}, flip_after=10_000,
+            runs=json.dumps([{"databaseId": 9, "conclusion": "FAILURE",
+                              "headSha": "abc"}]))
+        spawn = FakeSpawn()
+        v = mk(run, spawn, "/tmp/x")
+        res = v.run_all([FEATURE], {"feature-1": "run/feature-1"})
+
+        self.assertEqual(res["merged"], [])
+        self.assertIn("feature-1", res["quarantined"])
+        self.assertIn("CI still failing", res["quarantined"]["feature-1"])
+        self.assertFalse(run.find("git", "-C", "/repo", "worktree", "remove"))
+
+
 def _threads_json(nodes, has_next=False, end_cursor=""):
     return json.dumps({
         "data": {"repository": {"pullRequest": {"reviewThreads": {
@@ -2019,7 +2121,11 @@ class WorkerSelfMergeViolation(unittest.TestCase):
         CONFLICTING PR instead merges it directly. The violation must NOT be
         folded into the ordinary quarantine bucket -- it's surfaced in a
         distinct self_merged accumulator since a landed merge can't be undone
-        by another strike or retry."""
+        by another strike or retry. Also guards LiveMergeRecheckIntegration's
+        gating: the final view here is state=MERGED, the same signal
+        `_recheck_merged_before_quarantine` looks for -- if that recheck were
+        not correctly gated off for a confirmed self-merge violation, this
+        group would wrongly land in `merged` instead of `self_merged`."""
         run = FakeRun({"run/feature-1": [
             view(mergeable="CONFLICTING"),   # ensure_mergeable's initial check
             view(state="OPEN"),              # _spawn_group_worker's pre-spawn status

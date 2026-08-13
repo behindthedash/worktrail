@@ -1004,6 +1004,36 @@ class Verifier:
             self.sleep(min(self.poll_interval_max, self.poll_interval * (1.4 ** poll)))
         return False, "external auto-merge did not complete within poll budget"
 
+    def _recheck_merged_before_quarantine(self, group: Dict[str, Any], gb: str) -> bool:
+        """Last-chance, passive recheck of `gb`'s live PR state before `verify_one`
+        finalizes an ordinary QUARANTINED verdict.
+
+        `ensure_mergeable`/`wait_and_fix_ci`/`resolve_review_threads` can report
+        `ok=False` purely because THIS run's own bounded poll/strike budget ran
+        out -- not because the PR is actually unrecoverable. A repo's own
+        external auto-merge automation (`go-policy.yaml`'s `external_automerge`)
+        keeps acting on the PR independently of this run's poll loop and can
+        land the merge moments after this run's budget already gave up
+        (observed live on worktrail PR #339, run go-20260812-161537).
+
+        Never arms auto-merge or attempts a merge itself -- only observes
+        current GitHub state via the same primitives `auto_merge()` already
+        uses (`pr_status`, `_wait_for_external_merge`).
+        """
+        st = self.pr_status(gb)
+        if st is None:
+            return False
+        if (st.get("state") or "").upper() == "MERGED":
+            self.log(f"    [{group['name']}] {gb} already MERGED on final "
+                     "recheck -- not quarantining")
+            return True
+        if st.get("autoMergeRequest"):
+            self.log(f"    [{group['name']}] {gb} has auto-merge armed -- "
+                     "giving it one last bounded wait before quarantining")
+            ok, _ = self._wait_for_external_merge(group, gb)
+            return ok
+        return False
+
     def _retry_auto_merge_methods(self, gb: str, exclude: Optional[str]
                                   ) -> Tuple[bool, Optional[str], str]:
         """Retry `gh pr merge <gb> --auto --<method> --delete-branch` for each
@@ -1372,6 +1402,14 @@ class Verifier:
         if not ok:
             violation = self._self_merge_violations.get(name)
             is_regression = reason.startswith(self._POST_MERGE_SMOKE_PREFIX)
+            if (not is_regression and not violation
+                    and self._recheck_merged_before_quarantine(group, group_branch)):
+                with lock:
+                    merged.append(name)
+                self.log(f"  MERGED [{name}] -- confirmed on final live recheck "
+                         f"(would otherwise have quarantined: {reason})")
+                self.cleanup_group(group, group_branch, delivered)
+                return
             with lock:
                 if is_regression and post_merge_regressed is not None:
                     post_merge_regressed[name] = reason
