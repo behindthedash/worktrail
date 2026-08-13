@@ -6,9 +6,7 @@ adding a new stall-remediation category is a one-line table entry instead of
 a new hand-written function plus two call sites plus a new summary-dict key.
 Deliberately excludes `orchestrator-stuck` (`fanout_failed`), which stays
 human-recovery-only.
-
 ## Requirements
-
 ### Requirement: Data-driven remediation table
 The system SHALL maintain a `REMEDIATION_TABLE` in `drain.py` that pairs each
 safe, unattended-recoverable `detect_stage()` stage with a finder function
@@ -66,9 +64,10 @@ orchestrator.
 
 ### Requirement: Backward-compatible summary dict
 `drain()`'s returned summary dict SHALL continue to include the
-`resumed_quarantines` and `resumed_verify_pending` keys with their existing
-shape, and SHALL additionally include a `resumed_stale_bookkeeping` key with
-the same list-of-result-dict shape as the other two.
+`resumed_quarantines`, `resumed_verify_pending`, and
+`resumed_stale_bookkeeping` keys with their existing shape, and SHALL
+additionally include a `resumed_sync_pending` key with the same
+list-of-result-dict shape as the other three.
 
 #### Scenario: Summary dict after a sweep with all three categories present
 - **WHEN** `drain()` completes a run in which findings existed for all three
@@ -77,3 +76,42 @@ the same list-of-result-dict shape as the other two.
   `resumed_quarantines`, `resumed_verify_pending`, and
   `resumed_stale_bookkeeping` lists, each shaped like the existing two keys'
   result dicts
+
+#### Scenario: Summary dict after a sweep with all four categories present
+- **WHEN** `drain()` completes a run in which findings existed for all four
+  remediation categories
+- **THEN** the returned summary dict contains non-empty
+  `resumed_quarantines`, `resumed_verify_pending`,
+  `resumed_stale_bookkeeping`, and `resumed_sync_pending` lists, each
+  shaped like the existing three keys' result dicts
+
+### Requirement: Sync-pending remediation
+
+The system SHALL detect devkit specs and active OpenSpec changes in the
+`sync-pending` stage across `--repos-root` and, for each, spawn a headless
+one-shot agent run of `/opsx:sync <spec_id>` to reconcile the spec against
+merged code.
+
+#### Scenario: A spec is in the sync-pending stage
+- **WHEN** `detect_stage()` reports a spec's stage as `sync-pending`
+- **THEN** the sweep spawns a one-shot agent CLI invocation of
+  `/opsx:sync <spec_id>` for that spec and records the spawn's exit code
+
+#### Scenario: No sync-pending specs found
+- **WHEN** no repo under `--repos-root` currently reports the
+  `sync-pending` stage
+- **THEN** the sweep performs no spawn for this remediation category and
+  the summary's `resumed_sync_pending` key is an empty list
+
+#### Scenario: OpenSpec sync-pending finding
+- **WHEN** the common dashboard scan reports an active OpenSpec change as
+  `sync-pending`
+- **THEN** the existing remediation row resolves its path as
+  `openspec/changes/<change-id>` and dispatches `/opsx:sync <change-id>`
+
+#### Scenario: Reconciled OpenSpec change is not repeated
+- **WHEN** a prior sync has made every declared structural delta visible in the
+  canonical capability specs
+- **THEN** the next drain sweep does not return that change as a sync-pending
+  finding
+

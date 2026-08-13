@@ -7,6 +7,17 @@ The system SHALL detect devkit specs and active OpenSpec changes in the
 one-shot agent run of `/opsx:sync <spec_id>` to reconcile the spec against
 merged code.
 
+#### Scenario: A spec is in the sync-pending stage
+- **WHEN** `detect_stage()` reports a spec's stage as `sync-pending`
+- **THEN** the sweep spawns a one-shot agent CLI invocation of
+  `/opsx:sync <spec_id>` for that spec and records the spawn's exit code
+
+#### Scenario: No sync-pending specs found
+- **WHEN** no repo under `--repos-root` currently reports the
+  `sync-pending` stage
+- **THEN** the sweep performs no spawn for this remediation category and
+  the summary's `resumed_sync_pending` key is an empty list
+
 #### Scenario: OpenSpec sync-pending finding
 - **WHEN** the common dashboard scan reports an active OpenSpec change as
   `sync-pending`

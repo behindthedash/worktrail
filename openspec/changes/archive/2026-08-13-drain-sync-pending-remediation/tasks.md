@@ -15,5 +15,5 @@
 
 ## 3. Verification
 
-- [ ] 3.1 [cleanup] `PYTHONPATH=src pytest -q` green.
-- [ ] 3.2 [cleanup] `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` green.
+- [x] 3.1 [cleanup] `PYTHONPATH=src pytest -q` green.
+- [x] 3.2 [cleanup] `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` green.
