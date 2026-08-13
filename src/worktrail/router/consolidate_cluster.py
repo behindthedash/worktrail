@@ -68,7 +68,7 @@ _HERE = Path(__file__).resolve().parent
 _WORK_QUEUE = _HERE.parent / "workqueue" / "work_queue.py"
 
 from . import cluster_telemetry
-from ..shared.brief_frontmatter import validate_brief_text
+from ..shared.brief_frontmatter import split_frontmatter, validate_brief_text
 
 _FM_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 _SUGGESTED_APPROACH_RE = re.compile(r"^##\s+Suggested approach\s*$", re.MULTILINE)
@@ -84,27 +84,25 @@ _BULLET_RE = re.compile(r"^(?:[-*]|\d+[.)])\s+(.*)$")
 
 
 def _parse_frontmatter(text: str) -> Dict[str, str]:
-    """Parse simple scalar frontmatter fields (`key: value`) from `text`.
+    """Parse scalar frontmatter fields from `text`.
 
-    Returns `{}` if there is no well-formed `---`-fenced block. Non-scalar
-    (list) fields are ignored -- callers here only ever read `focus`/`id`.
+    Delegates to the shared YAML reader (`brief_frontmatter.split_frontmatter`)
+    so block scalars parse to their real value: `create_handoff` writes every
+    `focus:` as a literal block scalar (`focus: |-`) precisely because focus
+    text routinely contains `": "` or apostrophes, and the naive line-based
+    parser this replaces returned the literal style marker `|-` for every such
+    field -- which the consolidated-brief builder then joined into
+    `focus: "|- / |-"` queue briefs (observed live 2026-08-13, five briefs).
+    Returns `{}` if there is no well-formed fenced block. Non-scalar
+    (list/dict) fields are dropped -- callers here only ever read
+    `focus`/`id`/`status`-shaped scalars.
     """
-    m = _FM_RE.match(text)
-    if not m:
-        return {}
-    fm: Dict[str, str] = {}
-    for line in m.group(1).splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or stripped.startswith("-"):
-            continue
-        if ":" not in line:
-            continue
-        key, _, value = line.partition(":")
-        key = key.strip()
-        value = value.strip()
-        if value:
-            fm[key] = value.strip('"\'')
-    return fm
+    fm, _body = split_frontmatter(text)
+    return {
+        str(k): str(v).strip()
+        for k, v in fm.items()
+        if isinstance(v, (str, int, float, bool))
+    }
 
 
 def _extract_suggested_approach(text: str) -> List[str]:
@@ -249,7 +247,11 @@ def draft_consolidated_brief(member_ids: List[str], queue_dir: Path) -> Dict[str
                 continue
             text = path.read_text(encoding="utf-8")
             fm = _parse_frontmatter(text)
-            focus = fm.get("focus", "").strip()
+            # A block-scalar focus is legitimately multi-line; composition
+            # surfaces (the " / " join, the summary table, section headings)
+            # are single-line contexts, so collapse internal whitespace. The
+            # member's full original text survives verbatim in `body`.
+            focus = " ".join(fm.get("focus", "").split())
             if focus:
                 focuses.append(focus)
             bullets.extend(_extract_suggested_approach(text))
@@ -343,8 +345,13 @@ def _build_consolidated_brief_content(draft: Dict[str, Any]) -> Tuple[str, str]:
 
     # yaml.safe_dump (not an f-string) so a focus containing a literal `"`
     # (pulled verbatim from a source brief's title/text) round-trips as
-    # valid YAML instead of breaking every downstream reader.
-    focus_scalar = yaml.safe_dump(focus, default_style='"', allow_unicode=True).strip()
+    # valid YAML instead of breaking every downstream reader. width=10**9
+    # stops safe_dump's default ~80-column folding: a folded double-quoted
+    # scalar spans continuation lines that line-oriented frontmatter readers
+    # truncate to the first fragment (observed live 2026-08-13 on a
+    # 15-member consolidation whose own focus: line wrapped across three).
+    focus_scalar = yaml.safe_dump(
+        focus, default_style='"', allow_unicode=True, width=10**9).strip()
     lines = [
         "---",
         f"id: {new_brief_id}",

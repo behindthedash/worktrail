@@ -583,3 +583,99 @@ class MainCliDraftContract(ConsolidateClusterTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# --------------------------------------------------------------------------- #
+# Block-scalar / folded-scalar focus parsing (live incident 2026-08-13: five
+# consolidated briefs shipped with focus: "|- / |-" because the old
+# line-oriented _parse_frontmatter read YAML style markers as values)
+# --------------------------------------------------------------------------- #
+
+
+class BlockScalarFocusParsing(ConsolidateClusterTestCase):
+    BLOCK_FOCUS_1 = ("Verify bridge-health-guard's queue_growth trend "
+                     "reverses: watch history for ~5 days")
+    BLOCK_FOCUS_2 = ("Add a fail-closed datalena PR target guard: reject "
+                     "shared-branch pushes")
+
+    def _write_block_scalar_member(self, filename: str, focus: str) -> str:
+        """Exactly the shape create_handoff emits for any focus containing
+        ': ' or an apostrophe: a literal block scalar."""
+        indented = "\n".join(f"  {line}" for line in focus.split("\n"))
+        path = self.queue_dir / filename
+        path.write_text(
+            "---\n"
+            f"id: {filename[:-3]}\n"
+            f"focus: |-\n{indented}\n"
+            "status: queued\n"
+            "---\n\n"
+            f"## Focus\n\n{focus}\n",
+            encoding="utf-8")
+        return filename[:-3]
+
+    def test_parse_frontmatter_reads_block_scalar_value(self):
+        self._write_block_scalar_member("20260813-100000-m1.md", self.BLOCK_FOCUS_1)
+        fm = cc._parse_frontmatter(
+            (self.queue_dir / "20260813-100000-m1.md").read_text(encoding="utf-8"))
+        self.assertEqual(fm["focus"], self.BLOCK_FOCUS_1)
+
+    def test_parse_frontmatter_reads_folded_quoted_scalar(self):
+        """The old writer's own output: yaml.safe_dump default width folds a
+        long double-quoted focus across continuation lines."""
+        long_focus = "Reconcile ROOT_ORGANIZATION_ID consumers " * 8
+        folded = yaml.safe_dump(long_focus.strip(), default_style='"').strip()
+        self.assertIn("\n", folded)  # the fixture must actually fold
+        path = self.queue_dir / "20260813-100001-m2.md"
+        path.write_text(
+            f"---\nid: m2\nfocus: {folded}\nstatus: queued\n---\n\nbody\n",
+            encoding="utf-8")
+        fm = cc._parse_frontmatter(path.read_text(encoding="utf-8"))
+        self.assertEqual(fm["focus"], long_focus.strip())
+
+    def test_draft_from_block_scalar_members_has_no_style_markers(self):
+        m1 = self._write_block_scalar_member("20260813-100002-m1.md", self.BLOCK_FOCUS_1)
+        m2 = self._write_block_scalar_member("20260813-100003-m2.md", self.BLOCK_FOCUS_2)
+
+        draft = cc.draft_consolidated_brief([m1, m2], self.queue_dir)
+
+        self.assertEqual(draft["focus"],
+                         f"{self.BLOCK_FOCUS_1} / {self.BLOCK_FOCUS_2}")
+        self.assertEqual(draft["title"], f"Consolidated: {self.BLOCK_FOCUS_1}")
+        self.assertNotIn("|-", draft["focus"])
+        for member in draft["members"]:
+            self.assertNotIn("|-", member["focus"])
+
+        _, content = cc._build_consolidated_brief_content(draft)
+        self.assertNotIn("|- / |-", content)
+        raw_yaml = content.split("---", 2)[1]
+        fm = yaml.safe_load(raw_yaml)
+        self.assertEqual(fm["focus"], draft["focus"])
+
+    def test_multiline_block_focus_collapses_to_one_line_in_draft(self):
+        multiline = "First line of the focus\ncontinues on a second line"
+        m1 = self._write_block_scalar_member("20260813-100004-m1.md", multiline)
+        m2 = self._write_block_scalar_member("20260813-100005-m2.md", self.BLOCK_FOCUS_2)
+
+        draft = cc.draft_consolidated_brief([m1, m2], self.queue_dir)
+        self.assertIn("First line of the focus continues on a second line",
+                      draft["focus"])
+        self.assertNotIn("\n", draft["focus"])
+
+    def test_written_focus_frontmatter_never_folds(self):
+        """A very long joined focus must stay a single frontmatter line —
+        folded continuations are exactly what line-oriented readers truncate."""
+        draft = {
+            "title": "Consolidated: long",
+            "focus": "Reconcile every remaining consumer " * 20,
+            "suggested_approach": [],
+            "member_ids": ["m1", "m2"],
+        }
+        _, content = cc._build_consolidated_brief_content(draft)
+        raw_yaml = content.split("---", 2)[1]
+        focus_lines = [ln for ln in raw_yaml.splitlines() if ln.startswith("focus:")]
+        self.assertEqual(len(focus_lines), 1)
+        self.assertEqual(yaml.safe_load(raw_yaml)["focus"], draft["focus"])
+        # every fm line is a key/list line, never a folded continuation
+        for ln in raw_yaml.splitlines():
+            if ln.strip():
+                self.assertRegex(ln, r"^(\S+:|  - )")
