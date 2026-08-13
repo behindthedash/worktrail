@@ -976,6 +976,117 @@ def close_stale_bookkeeping(
     return {"repo": repo_name, "spec_id": spec_id, "task_ids": task_ids, "pr_url": pr_url}
 
 
+# ---------------------------------------------------------------------------
+# OpenSpec archive remediation (complete-stage changes)
+
+
+def _run_openspec_archive(wt: Path, spec_id: str, timeout: int) -> None:
+    """`openspec archive -y <change-id>` in the worktree -- non-interactive
+    (`-y`), so it never blocks on a confirmation prompt. Raises on failure
+    (per D2's per-finding isolation, caught by sweep_remediations)."""
+    result = subprocess.run(
+        ["openspec", "archive", "-y", spec_id],
+        capture_output=True, text=True, cwd=str(wt), timeout=timeout)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"openspec archive -y {spec_id} (in {wt}) failed: "
+            f"{(result.stderr or result.stdout).strip()}")
+
+
+def _open_openspec_archive_pr(
+    repo: Path, wt: Path, repo_name: str, spec_id: str, base: str, branch: str, timeout: int,
+) -> str:
+    """`gh pr create` for the archive-only branch, via the same enforced
+    label-resolution path `_open_stale_bookkeeping_pr` uses (see that
+    docstring) -- labels are sourced from `_refresh_pr_labels`, not
+    hand-rolled. Raises rather than returning a fabricated URL when
+    `gh pr create` fails outright."""
+    labels = _refresh_pr_labels(wt, ["go:risk-low"], base) or ["go:risk-low"]
+    cmd = ["gh", "pr", "create", "--base", base, "--head", branch]
+    for label in labels:
+        cmd += ["--label", label]
+    cmd += [
+        "--title", f"chore({spec_id}): archive completed change",
+        "--body",
+        f"Runs `openspec archive -y {spec_id}` for the completed change "
+        f"`{spec_id}` and commits whatever it moved/wrote.\n\n"
+        "Opened by drain's OpenSpec archive sweep.",
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(wt), timeout=timeout)
+    out = ((result.stdout or result.stderr).strip().splitlines()[-1]
+           if (result.stdout or result.stderr) else "(no output)")
+    if result.returncode != 0 or not out.startswith("http"):
+        raise RuntimeError(f"gh pr create failed for {repo_name} {spec_id}: {out}")
+    return out
+
+
+def archive_openspec_change(
+    finding: Dict[str, Any],
+    agent: str,
+    timeout: int,
+    spawner: Callable[[List[str], int], SpawnOutcome],
+    log: Callable[[str], None],
+) -> Dict[str, Any]:
+    """Archive a `complete`-stage OpenSpec change and open a PR. Reuses
+    `close_stale_bookkeeping`'s fix-branch worktree lifecycle directly
+    (`_existing_stale_bookkeeping_pr`/`_reset_stale_bookkeeping_worktree`
+    are already generic over `repo`/`branch`/`timeout` -- nothing
+    stale-bookkeeping-specific about either): a short-lived worktree off the
+    target repo's base branch, `openspec archive -y <change-id>`, commit,
+    push, `gh pr create`, then tear the worktree down once the PR is open --
+    this does not wait for merge, mirroring `close_stale_bookkeeping`.
+
+    `agent`/`spawner` are unused -- this action never spawns a one-shot --
+    kept only so the signature matches StageRemediation's uniform `action`
+    shape (see design.md D1). `timeout` IS used, as the per-call timeout for
+    every `git`/`gh`/`openspec` subprocess call below.
+
+    Re-entrant across sweeps: an already-open PR for this finding's branch is
+    detected up front and returned as-is rather than re-attempted, and any
+    worktree/branch left behind by a prior run's mid-flight failure is reset
+    before retrying.
+
+    Raises on `openspec archive` failure or `gh pr create` failure (caught by
+    the sweep engine's per-finding try/except, per D2) rather than returning
+    a result dict with no PR."""
+    repo, repo_name, spec_id = finding["repo"], finding["repo_name"], finding["spec_id"]
+
+    base = _base_branch_for(repo)
+    slug = f"archive-{spec_id}"
+    branch = f"chore/{slug}"
+    wt = repo.parent / f"{repo.name}-worktrees" / slug
+
+    existing_pr = _existing_stale_bookkeeping_pr(repo, branch, timeout)
+    if existing_pr:
+        log(f"archive-openspec-change: {repo_name} {spec_id} already has an "
+            f"open PR, skipping: {existing_pr}")
+        return {"repo": repo_name, "spec_id": spec_id, "pr_url": existing_pr}
+
+    _reset_stale_bookkeeping_worktree(repo, branch, wt, timeout)
+    log(f"archive-openspec-change: {repo_name} {spec_id}")
+    _run_git(repo, "worktree", "add", "-b", branch, str(wt), base, timeout=timeout)
+    try:
+        _run_openspec_archive(wt, spec_id, timeout)
+        _run_git(wt, "add", "-A", timeout=timeout)
+        _run_git(wt, "commit", "-m",
+                 f"chore({spec_id}): archive completed change", timeout=timeout)
+        # --force: see close_stale_bookkeeping's identical push -- this
+        # branch is exclusively owned by this action and rebuilt from `base`
+        # on every retry.
+        _run_git(wt, "push", "--force", "-u", "origin", branch, timeout=timeout)
+        pr_url = _open_openspec_archive_pr(
+            repo, wt, repo_name, spec_id, base, branch, timeout)
+    finally:
+        try:
+            subprocess.run(["git", "worktree", "remove", "--force", str(wt)],
+                           capture_output=True, text=True, cwd=str(repo), timeout=timeout)
+        except Exception:
+            pass
+
+    log(f"archive-openspec-change result: {repo_name} {spec_id} -> {pr_url}")
+    return {"repo": repo_name, "spec_id": spec_id, "pr_url": pr_url}
+
+
 @dataclass(frozen=True)
 class StageRemediation:
     """One row of the remediation-sweep table. `finder(repos_root, go_repo)`
@@ -1011,6 +1122,9 @@ REMEDIATION_TABLE: List[StageRemediation] = [
     StageRemediation(
         "sync_pending", "resume-sync-pending",
         find_sync_pending_specs, _run_sync_pending),
+    StageRemediation(
+        "openspec_archive", "archive-openspec-change",
+        find_complete_openspec_changes, archive_openspec_change),
 ]
 
 
@@ -1457,6 +1571,7 @@ def drain(config: DrainConfig,
         "resumed_verify_pending": resumed.get("verify_pending", []),
         "resumed_stale_bookkeeping": resumed.get("stale_bookkeeping", []),
         "resumed_sync_pending": resumed.get("sync_pending", []),
+        "resumed_openspec_archive": resumed.get("openspec_archive", []),
         "seeded_backlog": seeded_backlog,
         "decisions_open": len(decisions_mod.open_decision_ids(config.queue_dir)),
         "elapsed_s": int(clock() - started),
