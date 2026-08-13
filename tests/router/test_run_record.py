@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
+from worktrail.router import run_record
 from worktrail.router.run_record import (
     ALLOWED_AGENTS,
     COMPLETION_STATES,
@@ -122,6 +123,53 @@ class TestLifecycle(unittest.TestCase):
         res = _start(self.tmp)
         rec = _load(Path(res["path"]))
         self.assertIsNone(rec["agent"])
+
+    def _start_with(self, *extra):
+        argv = ["start", "--repo", "/tmp/fake-repo", "--request", "capability",
+                "--route", "F", "--risk", "medium", "--dir", self.tmp, *extra]
+        out = StringIO()
+        with patch("sys.stdout", out):
+            self.assertEqual(main(argv), 0)
+        return _load(Path(json.loads(out.getvalue())["path"]))
+
+    def test_resolved_capability_and_dispatch_mode_are_persisted(self):
+        rec = self._start_with("--native-skill-available", "false",
+                               "--dispatch-mode", "adapter")
+        self.assertIs(rec["native_skill_available"], False)
+        self.assertEqual(rec["dispatch_mode"], "adapter")
+
+    def test_native_skill_true_roundtrips_as_a_boolean_not_a_string(self):
+        rec = self._start_with("--native-skill-available", "true",
+                               "--dispatch-mode", "native-skill")
+        self.assertIs(rec["native_skill_available"], True)
+
+    def test_capability_fields_are_absent_when_not_supplied(self):
+        rec = self._start_with()
+        self.assertNotIn("native_skill_available", rec)
+        self.assertNotIn("dispatch_mode", rec)
+
+    def test_dispatch_mode_rejects_a_value_the_resolver_cannot_produce(self):
+        with self.assertRaises(SystemExit):
+            self._start_with("--dispatch-mode", "speculative-skill")
+
+    def test_a_string_spelling_a_bool_literal_survives_as_a_string(self):
+        # Bare `true`/`false` is now reserved for real booleans, so a request
+        # summary that happens to spell one must not round-trip as a bool.
+        argv = ["start", "--repo", "/tmp/fake-repo", "--request", "true",
+                "--route", "F", "--risk", "medium", "--dir", self.tmp]
+        out = StringIO()
+        with patch("sys.stdout", out):
+            self.assertEqual(main(argv), 0)
+        rec = _load(Path(json.loads(out.getvalue())["path"]))
+        self.assertEqual(rec["request_summary"], "true")
+        self.assertNotIsInstance(rec["request_summary"], bool)
+
+    def test_every_resolver_dispatch_mode_is_accepted_by_the_record(self):
+        for mode in run_record.DISPATCH_MODES:
+            with self.subTest(mode=mode):
+                self.assertEqual(
+                    self._start_with("--dispatch-mode", mode)["dispatch_mode"], mode
+                )
 
     def test_start_with_routing_decision_roundtrips_decision_payload(self):
         routing_decision = {
