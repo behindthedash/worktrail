@@ -33,15 +33,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-from ..shared.homedir import worktrail_home
+from ..shared.homedir import env_setting, worktrail_home
 
 
 def default_log_path() -> Path:
-    """`worktrail_home()/cluster-log.jsonl`, overridable via `GO_CLUSTER_LOG` --
+    """`worktrail_home()/cluster-log.jsonl`, overridable via `WORKTRAIL_CLUSTER_LOG` --
     mirrors `run_record.py`'s `worktrail_home()/runs` default/override pattern.
     Cross-repo by design: cluster detection scans one shared work queue, not a
     per-repo one."""
-    override = os.environ.get("GO_CLUSTER_LOG")
+    override = env_setting("WORKTRAIL_CLUSTER_LOG")
     if override:
         return Path(override).expanduser()
     return worktrail_home() / "cluster-log.jsonl"

@@ -568,7 +568,7 @@ Dispatch policy is simple:
 independently of the run's default agent — for example, to force an independent
 code-reviewer model regardless of which agent implemented the task. Add it under either the
 repo-local policy's `routing:` block or the machine-wide `~/.worktrail/routing.yaml`
-(`GO_ROUTING_FILE`) — same wholesale, block-level fallback as `routing.fallback`: a
+(`WORKTRAIL_ROUTING_FILE`) — same wholesale, block-level fallback as `routing.fallback`: a
 non-empty repo-local `routing:` block is used in full and the machine-wide file is not
 read at all, so it is not merged per-role with the machine-wide file:
 
@@ -643,7 +643,7 @@ the machine-local capacity cache and renders the same blocked status, failure
 class, and retry time for operators returning to the workspace.
 
 **Capacity-cache operator commands.** The machine-local capacity cache
-(`~/.worktrail/agent-capacity.json`, override with `GO_AGENT_CAPACITY_CACHE`) can be
+(`~/.worktrail/agent-capacity.json`, override with `WORKTRAIL_AGENT_CAPACITY_CACHE`) can be
 inspected and explicitly cleared:
 
 ```text

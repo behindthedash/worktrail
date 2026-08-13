@@ -69,7 +69,7 @@ import yaml
 
 from . import agent_capacity
 from ..router.skill_dispatch import prepare_codex_child_environment
-from ..shared.homedir import worktrail_home
+from ..shared.homedir import env_setting, worktrail_home
 
 
 class SpawnResult(NamedTuple):
@@ -378,12 +378,12 @@ DEFAULT_OPENCODE_MODEL = "opencode/deepseek-v4-flash-free"
 
 SUPPORTED_AGENTS = {"claude", "codex", "opencode"}
 
-MODEL_DEFAULTS_FILE_ENV = "GO_MODEL_DEFAULTS_FILE"
+MODEL_DEFAULTS_FILE_ENV = "WORKTRAIL_MODEL_DEFAULTS_FILE"
 
 
 def _model_defaults_file() -> Path:
-    """`$GO_MODEL_DEFAULTS_FILE` if set, else `worktrail_home()/model-defaults.yaml`."""
-    override = os.environ.get(MODEL_DEFAULTS_FILE_ENV)
+    """`$WORKTRAIL_MODEL_DEFAULTS_FILE` if set, else `worktrail_home()/model-defaults.yaml`."""
+    override = env_setting(MODEL_DEFAULTS_FILE_ENV)
     if override:
         return Path(override).expanduser()
     return worktrail_home() / "model-defaults.yaml"

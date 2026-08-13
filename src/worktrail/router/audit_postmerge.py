@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional
 
 from .reconcile_pr_labels import discover_managed_repos
 from ..orchestrator.verify import classify_checks
-from ..shared.homedir import worktrail_home
+from ..shared.homedir import env_setting, worktrail_home
 
 __all__ = [
     "discover_managed_repos", "classify_checks",
@@ -52,8 +52,8 @@ DEFAULT_MAX_PRS = 50
 
 
 def resolve_state_dir(cli_arg: Optional[str] = None) -> Path:
-    """`--state-dir` > `$GO_POSTMERGE_AUDIT_STATE` > `worktrail_home()/postmerge-audit-state`."""
-    raw = cli_arg or os.environ.get("GO_POSTMERGE_AUDIT_STATE")
+    """`--state-dir` > `$WORKTRAIL_POSTMERGE_AUDIT_STATE` > `worktrail_home()/postmerge-audit-state`."""
+    raw = cli_arg or env_setting("WORKTRAIL_POSTMERGE_AUDIT_STATE")
     if raw:
         return Path(raw).expanduser()
     return worktrail_home() / "postmerge-audit-state"
@@ -291,7 +291,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--repo", help="single repo to sweep")
     p.add_argument("--repos-root", help="sweep every go-policy.yaml repo under this directory")
     p.add_argument("--state-dir", help="persisted per-repo marker/flag state directory "
-                    "(default: $GO_POSTMERGE_AUDIT_STATE or ~/.worktrail/postmerge-audit-state)")
+                    "(default: $WORKTRAIL_POSTMERGE_AUDIT_STATE or ~/.worktrail/postmerge-audit-state)")
     p.add_argument("--lookback-days", type=int, default=DEFAULT_LOOKBACK_DAYS,
                     help="first-run window for a repo with no persisted marker")
     p.add_argument("--max-prs", type=int, default=DEFAULT_MAX_PRS,
