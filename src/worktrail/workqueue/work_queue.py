@@ -413,23 +413,52 @@ def _frontmatter_unparsable(path: Path) -> bool:
     return not read_frontmatter(path)
 
 
+def _awaiting_decision_info(path: Path) -> Dict[str, Any]:
+    """`{"awaiting_decision": id|None, "decision_status": str|None}` for a
+    brief's optional `awaiting-decision:` frontmatter link.
+
+    `decision_status` mirrors the decision record's directory (`open` /
+    `answered` / `resolved`), or None when the id resolves to no record —
+    lenient like `_is_blocked`'s stale-ID handling, so a deleted decision can
+    never wedge its brief.
+    """
+    fm = _read_frontmatter(path)
+    dec_id = fm.get("awaiting-decision")
+    if not dec_id:
+        return {"awaiting_decision": None, "decision_status": None}
+    from . import decisions  # function-level: decisions imports this module
+    return {
+        "awaiting_decision": str(dec_id),
+        "decision_status": decisions.decision_status(str(dec_id)),
+    }
+
+
 def list_queue() -> Dict[str, Any]:
     """Queue briefs newest-first:
 
     {"briefs": [{filename, path, focus, blocked, not_yet_due, recently_released,
-    recently_released_by, recently_released_at, related, unparsable}, ...]}.
+    recently_released_by, recently_released_at, related, awaiting_decision,
+    decision_status, unparsable}, ...]}.
+
+    A brief awaiting a still-open decision reports `blocked: True` — every
+    ready-count and auto-pick consumer already keys on that flag, so the brief
+    leaves the eligible pool the moment its decision is filed and re-enters it
+    the moment a human answers.
     """
 
     def _brief_dict(f: Path) -> Dict[str, Any]:
         fm = _read_frontmatter(f)
         related = fm.get("related")
         released = _recently_released_info(f)
+        awaiting = _awaiting_decision_info(f)
         return {
             "filename": f.name,
             "path": str(f),
             "focus": _focus_of(f),
-            "blocked": _is_blocked(f),
+            "blocked": _is_blocked(f) or awaiting["decision_status"] == "open",
             "not_yet_due": _is_not_yet_due(f),
+            "awaiting_decision": awaiting["awaiting_decision"],
+            "decision_status": awaiting["decision_status"],
             "recently_released": released["recently_released"],
             "recently_released_by": released["released_by"],
             "recently_released_at": released["released_at"],
@@ -522,6 +551,11 @@ def _claim_warnings(path: Path) -> List[str]:
             warnings.extend(
                 f"blocked by {dep}" for dep in deps if dep and not _dep_is_done(str(dep))
             )
+    awaiting = _awaiting_decision_info(path)
+    if awaiting["decision_status"] == "open":
+        warnings.append(
+            f"awaiting decision {awaiting['awaiting_decision']} (still open -- "
+            "a human has not answered yet; see worktrail-decision show)")
     drift = _premise_drift_warning(path)
     if drift:
         warnings.append(drift)

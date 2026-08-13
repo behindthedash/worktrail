@@ -177,6 +177,24 @@ This stamps `status: done` in `picked/` (the file stays as a kept log). Tell the
 handoff is complete and check if there are more items in the queue. If a claim is abandoned,
 `worktrail-work-queue release <id>` returns it to `queue/` for someone else.
 
+### Decisions awaiting a human
+
+Unattended runs park genuine product decisions in a sibling queue
+(`$WORK_QUEUE_DIR/decisions/`) instead of stranding their briefs: the brief sits in `queue/`
+with `awaiting-decision: <id>` and stays blocked until the decision is answered. Review and
+answer with:
+
+```bash
+worktrail-decision list                       # open / answered / resolved at a glance
+worktrail-decision show <id>                  # the full structured question
+worktrail-decision answer <id> --answer "..." # unblocks the brief for the next auto pass
+```
+
+Answering by hand also works: edit the record's `## Answer` section and move the file from
+`decisions/open/` to `decisions/answered/` — the directory is the arbiter. Never delete an
+open decision to unblock a brief; answer it (even "proceed, your call") so the resuming
+session has an explicit human answer to act on.
+
 ### Document format
 
 Write the brief per `references/handoff-template.md`, which holds the field rules and a

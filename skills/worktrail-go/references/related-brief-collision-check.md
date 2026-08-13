@@ -98,11 +98,15 @@ worktrail-run-record finish "$RUN" --status blocked_product_decision --merge-res
   "Auto-mode related-brief collision: <id list> actively claimed right now, needs a human to judge whether the overlap is acceptable or this dispatch should wait."
 ```
 
-Do not call `work_queue.py done` or `work_queue.py release` — leave the brief claimed in
-`picked/` exactly as the interactive "Pause and coordinate" outcome does, so it surfaces through
-the existing stalled-in-flight resume path (dashboard `resume` action) with the run record's
-`blocked_product_decision` note giving the resuming session full context instead of a cold
-restart. Stop; do not continue to Phase 6/7 for this dispatch.
+Before the `finish`, file the judgment call as a decision record and release the brief per
+`decision-queue.md#file-a-decision` — question: is the overlap with the actively claimed
+brief(s) acceptable, or should this dispatch wait?; options: "proceed — overlap acceptable" vs
+"wait for <ids> to land first"; context: the claimed ids and what they touch. The human answers
+asynchronously; on "wait", the resuming session can re-release with `--next-check-after`. Do not
+call `work_queue.py done` yourself, and do not release by hand — `worktrail-decision ask
+--brief ... --release` is what stamps `awaiting-decision`. Only if filing fails, fall back to
+leaving the brief claimed in `picked/` for the stalled-in-flight resume path (dashboard
+`resume` action). Stop; do not continue to Phase 6/7 for this dispatch.
 
 **On "proceed"** — continue to Phase 6/7 unchanged. Once Phase 6 has opened the run record,
 record the evidence and the decision on it, so a later session (including whoever lands the

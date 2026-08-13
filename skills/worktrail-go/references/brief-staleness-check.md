@@ -102,11 +102,15 @@ worktrail-run-record finish "$RUN" --status blocked_product_decision --merge-res
   "Auto-mode staleness guard: brief may already be delivered -- $N commit(s)/$M merged PR(s) touched what it names since it was captured ($created). Needs a human to judge whether this closes the brief or is unrelated."
 ```
 
-Do not call `work_queue.py done` or `work_queue.py release` — leave the brief claimed in
-`picked/` exactly as an unresolved interactive ask would, so it surfaces through the existing
-stalled-in-flight resume path (dashboard `resume` action) with the run record's
-`blocked_product_decision` note giving the resuming session the evidence already gathered
-instead of a cold restart. Stop; do not continue to Phase 6/7 for this dispatch.
+Before the `finish`, file the judgment call as a decision record and release the brief per
+`decision-queue.md#file-a-decision` — question: does the cited delivery actually close this
+brief?; options: "close as already-delivered" vs "still open — the commits are unrelated";
+context: the exact commits/PRs found. The human answers asynchronously, the brief unblocks, and
+the next drain pass either closes it (`work_queue.py done`, citing the answer) or proceeds with
+the dispatch. Do not call `work_queue.py done` yourself at this point, and do not release by
+hand — `worktrail-decision ask --brief ... --release` is what stamps `awaiting-decision`. Only
+if filing fails, fall back to leaving the brief claimed in `picked/` for the stalled-in-flight
+resume path (dashboard `resume` action). Stop; do not continue to Phase 6/7 for this dispatch.
 
 **On "close as already-delivered"** — the queue mutation goes through `work_queue.py`, the single
 owner of brief lifecycle, exactly as every other close does. Cite the evidence in the note:

@@ -142,7 +142,9 @@ blocks up to 30 s and returns on a check_run event.)
 
 4. **Product / design / test-logic decision** — failure requires a behaviour change, new
    acceptance criteria, or a test that needs product input to write.
-   Surface a clear summary of what decision is needed.
+   Surface a clear summary of what decision is needed. In auto mode, first file it as a
+   decision record and release the brief per `decision-queue.md#file-a-decision` so a human
+   can answer asynchronously and the next drain pass resumes the CI loop from here.
    `finish("blocked_product_decision")` and stop.
 
 5. **Iteration ceiling** — `PATCH_ITER` reaches 5 without a green run.

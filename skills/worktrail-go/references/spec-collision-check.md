@@ -124,11 +124,15 @@ worktrail-run-record finish "$RUN" --status blocked_product_decision --merge-res
   "Auto-mode spec collision: matches $MATCHED_SPEC_ID ($MATCHED_TITLE, Status: Implemented, files: $VERIFY_FILES all git-tracked on $BASE) -- needs a human to judge whether this is the fix/change's own target spec or a separate duplicate."
 ```
 
-Do not call `work_queue.py done` or `work_queue.py release` — leave the brief claimed in
-`picked/` exactly as an interactive "Separate duplicate — stop" or unresolved ask would, so it
-surfaces through the existing stalled-in-flight resume path (dashboard `resume` action) with the
-run record's `blocked_product_decision` note giving the resuming session full context instead of
-a cold restart. Stop; do not continue to Phase 6/7 for this dispatch.
+Before the `finish`, file the judgment call as a decision record and release the brief per
+`decision-queue.md#file-a-decision` — question: is `$MATCHED_SPEC_ID` this work's own target
+spec, or a separate duplicate?; options: "own target spec — proceed against it" vs "separate
+duplicate — close/redirect the brief"; context: the match evidence already gathered. The human
+answers asynchronously and the next drain pass continues accordingly. Do not call
+`work_queue.py done` yourself, and do not release by hand — `worktrail-decision ask --brief ...
+--release` is what stamps `awaiting-decision`. Only if filing fails, fall back to leaving the
+brief claimed in `picked/` for the stalled-in-flight resume path (dashboard `resume` action).
+Stop; do not continue to Phase 6/7 for this dispatch.
 
 ## Dispatch source 2: brainstorm-sourced (no claimed brief)
 
