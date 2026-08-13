@@ -4122,6 +4122,20 @@ def _pipeline_scheduler(
     unreconciled_tail = integrate_module.detect_unreconciled_tail_evidence(
         repo, remote, base, spec_id, wt_base, (tail_res or {}).get("tasks", tasks)
     )
+    if unreconciled_tail:
+        unreconciled_tail = integrate_module.reconcile_unreconciled_tail_evidence(
+            unreconciled_tail,
+            repo,
+            spec_id,
+            (tail_res or {}).get("tasks", tasks),
+            remote,
+            run_id,
+            base,
+            journal_path,
+            pr_labels=pr_labels,
+            route=route,
+            gates=gates,
+        )
     integrate_module._record_unreconciled_tail_evidence(journal_path, unreconciled_tail)
     unreconciled_note = _format_unreconciled_tail_note(unreconciled_tail)
     if unreconciled_note:
