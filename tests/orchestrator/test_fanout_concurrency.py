@@ -236,13 +236,15 @@ class ConcurrentFanout(unittest.TestCase):
             self.assertEqual(by_id["TASK-CLEANUP"]["status"], "failed")
             self.assertNotIn(("implement", "TASK-CLEANUP"), fake.calls)
             entries = json.loads(Path(journal).read_text())["entries"]
-            self.assertTrue(
-                any(
-                    e["task"] == "TASK-CLEANUP"
-                    and e["role"] == "dependency-gate"
-                    for e in entries
-                )
-            )
+            gates = [
+                e
+                for e in entries
+                if e["task"] == "TASK-CLEANUP" and e["role"] == "dependency-gate"
+            ]
+            self.assertTrue(gates)
+            # Structured blocker ids: clear-task's cascade must not depend on
+            # parsing the free-text notes for newly-written gate entries.
+            self.assertEqual(gates[0]["blocked_by"], ["TASK-E2E"])
 
     def test_review_exempt_task_skips_review_spawn(self):
         with tempfile.TemporaryDirectory() as tmp:

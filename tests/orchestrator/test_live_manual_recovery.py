@@ -228,5 +228,171 @@ class SkipTasksCommand(unittest.TestCase):
             self.assertEqual(live.skip_tasks(repo, "docs/specs/001-x", ["TASK-001"]), 1)
 
 
+def _success_entry(task_id, role, **report_extra):
+    report = {"status": "success", "head_sha": "abc12345", "notes": "ok", **report_extra}
+    return {"task": task_id, "role": role, "report": report}
+
+
+class ClearTasksCommand(unittest.TestCase):
+    """`clear-task`: surgically remove one task's failed/escalated journal entries
+    (cascading to dependency-gate entries it blocked) so a plain resume re-dispatches
+    just that task -- the targeted alternative to `--fresh` discarding the whole
+    journal (brief 20260812-150507)."""
+
+    def _write_journal(self, tmp, entries, **extra):
+        wt = Path(tmp) / "repo-worktrees"
+        wt.mkdir(parents=True, exist_ok=True)
+        jp = wt / "run-001-x.json"
+        journal = {
+            "spec_id": "001-x",
+            "entries": entries,
+            "gitnexus_capability": False,
+            "run_id": "full-1",
+            **extra,
+        }
+        jp.write_text(json.dumps(journal, indent=2, sort_keys=True) + "\n")
+        return Path(tmp) / "repo", jp
+
+    def test_surgical_clear_removes_failed_and_cascaded_gate_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            entries = [
+                _success_entry("TASK-A", "implement"),
+                _success_entry("TASK-A", "cleanup"),
+                _success_entry("TASK-B", "cleanup"),
+                live._journal_failure_entry({"id": "TASK-C"}, "drive", "drive crashed", 1.0, 2.0),
+                live._journal_failure_entry(
+                    {"id": "TASK-D"},
+                    "dependency-gate",
+                    "blocked by failed prerequisite(s): TASK-C",
+                    2.0,
+                    2.0,
+                    blocked_by=["TASK-C"],
+                ),
+            ]
+            repo, jp = self._write_journal(tmp, entries, groups={"base": {"state": "MERGED"}})
+
+            self.assertEqual(live.clear_tasks(repo, "docs/specs/001-x", ["TASK-C"]), 0)
+
+            journal = json.loads(jp.read_text())  # still valid JSON
+            # Original top-level keys survive the atomic rewrite.
+            self.assertEqual(
+                set(journal),
+                {"spec_id", "entries", "gitnexus_capability", "run_id", "groups"},
+            )
+            kept = [(e["task"], e["role"]) for e in journal["entries"]]
+            self.assertEqual(
+                kept,
+                [("TASK-A", "implement"), ("TASK-A", "cleanup"), ("TASK-B", "cleanup")],
+            )
+
+    def test_cleared_task_is_pending_on_replay_merged_stay_done(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            entries = [
+                _success_entry("TASK-A", "cleanup"),
+                live._journal_failure_entry({"id": "TASK-C"}, "drive", "drive crashed", 1.0, 2.0),
+                live._journal_failure_entry(
+                    {"id": "TASK-D"},
+                    "dependency-gate",
+                    "blocked by failed prerequisite(s): TASK-C",
+                    2.0,
+                    2.0,
+                    blocked_by=["TASK-C"],
+                ),
+            ]
+            repo, jp = self._write_journal(tmp, entries)
+            self.assertEqual(live.clear_tasks(repo, "docs/specs/001-x", ["TASK-C"]), 0)
+
+            tasks = [
+                {"id": "TASK-A", "status": "pending", "retry_count": 0},
+                {"id": "TASK-C", "status": "pending", "retry_count": 0},
+                {"id": "TASK-D", "status": "pending", "retry_count": 0},
+            ]
+            live.reconcile_from_journal(tasks, json.loads(jp.read_text()))
+            by_id = {t["id"]: t for t in tasks}
+            self.assertEqual(by_id["TASK-A"]["status"], "done")  # merged work untouched
+            self.assertEqual(by_id["TASK-C"]["status"], "pending")  # re-dispatchable
+            self.assertEqual(by_id["TASK-D"]["status"], "pending")  # gate cleared too
+
+    def test_refuses_to_clear_task_with_completion_record(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            entries = [
+                _success_entry("TASK-A", "implement"),
+                _success_entry("TASK-A", "cleanup"),
+            ]
+            repo, jp = self._write_journal(tmp, entries)
+            before = jp.read_text()
+            self.assertEqual(live.clear_tasks(repo, "docs/specs/001-x", ["TASK-A"]), 1)
+            self.assertEqual(jp.read_text(), before)  # zero file mutation
+
+    def test_refuses_when_nothing_to_clear(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            entries = [_success_entry("TASK-A", "implement")]
+            repo, jp = self._write_journal(tmp, entries)
+            before = jp.read_text()
+            # TASK-B has no entries at all; TASK-A's only entry is a kept success.
+            self.assertEqual(live.clear_tasks(repo, "docs/specs/001-x", ["TASK-B"]), 1)
+            self.assertEqual(jp.read_text(), before)
+
+    def test_cascade_incident_shape_notes_fallback(self):
+        """Regression for the motivating incident: drive-level crashes on 1.1/2.1
+        plus dependency-gate entries for 3.2/4.3 whose blockers live ONLY in the
+        free-text notes (journals written before `blocked_by` existed)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            entries = [
+                live._journal_failure_entry(
+                    {"id": "1.1"},
+                    "drive",
+                    "drive crashed: WorktreeAddError('retained task branch "
+                    "016-x/1.1 is stale against dev')",
+                    1.0,
+                    2.0,
+                ),
+                live._journal_failure_entry(
+                    {"id": "2.1"},
+                    "drive",
+                    "drive crashed: WorktreeAddError('retained task branch "
+                    "016-x/2.1 is stale against dev')",
+                    1.0,
+                    2.0,
+                ),
+                live._journal_failure_entry(
+                    {"id": "3.2"},
+                    "dependency-gate",
+                    "blocked by failed prerequisite(s): 1.1, 2.1",
+                    3.0,
+                    3.0,
+                ),
+                live._journal_failure_entry(
+                    {"id": "4.3"},
+                    "dependency-gate",
+                    "blocked by failed prerequisite(s): 1.1, 2.1",
+                    3.0,
+                    3.0,
+                ),
+            ]
+            repo, jp = self._write_journal(tmp, entries)
+            self.assertEqual(live.clear_tasks(repo, "docs/specs/001-x", ["1.1", "2.1"]), 0)
+            self.assertEqual(json.loads(jp.read_text())["entries"], [])
+
+    def test_gate_blockers_prefers_structured_field(self):
+        entry = live._journal_failure_entry(
+            {"id": "TASK-D"},
+            "dependency-gate",
+            "blocked by failed prerequisite(s): TASK-WRONG",
+            1.0,
+            1.0,
+            blocked_by=["TASK-C"],
+        )
+        self.assertEqual(entry["blocked_by"], ["TASK-C"])
+        self.assertEqual(live._gate_blockers(entry), ["TASK-C"])
+        del entry["blocked_by"]
+        self.assertEqual(live._gate_blockers(entry), ["TASK-WRONG"])  # notes fallback
+
+    def test_clear_without_journal_returns_1(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"  # no worktrees dir / journal created
+            self.assertEqual(live.clear_tasks(repo, "docs/specs/001-x", ["TASK-001"]), 1)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
