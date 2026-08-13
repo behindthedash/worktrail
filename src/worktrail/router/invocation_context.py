@@ -32,11 +32,15 @@ CAPABILITY_ENV = "WORKTRAIL_NATIVE_SKILL"
 _TRUE = frozenset({"1", "true", "yes", "on"})
 _FALSE = frozenset({"0", "false", "no", "off", ""})
 
-# Dispatch modes, in the order the decision tree considers them.
+# Dispatch modes, in the order the decision tree considers them. The tuple is
+# the canonical enumeration: skills/worktrail-go/SKILL.md's dispatch table is
+# pinned to it by tests/test_plugin_surface.py, so adding or renaming a mode
+# without updating the skill doc fails the build instead of drifting silently.
 IN_SESSION_RESUME = "in-session-resume"
 NATIVE_SKILL = "native-skill"
 ADAPTER = "adapter"
 BLOCKED = "blocked"
+DISPATCH_MODES = (IN_SESSION_RESUME, NATIVE_SKILL, ADAPTER, BLOCKED)
 
 
 @dataclass(frozen=True)

@@ -19,20 +19,22 @@ import os
 import sys
 from typing import Optional
 
+from worktrail.router import invocation_context
 
-SUPPORTED_AGENTS = ("claude", "codex", "opencode")
+SUPPORTED_AGENTS = invocation_context.SUPPORTED_AGENTS
 
 
 def detect_default_agent(environ: Optional[dict[str, str]] = None) -> str:
-    """Resolve the worker CLI when the caller did not pass one explicitly."""
-    env = os.environ if environ is None else environ
-    return (
-        env.get("GO_AGENT_CLI")
-        or env.get("ORCH_AGENT")
-        or ("opencode" if env.get("OPENCODE_PARENT") else None)
-        or ("codex" if env.get("CODEX_CI") or env.get("CODEX_THREAD_ID") else None)
-        or "claude"
-    )
+    """Resolve the worker CLI when the caller did not pass one explicitly.
+
+    Delegates to `invocation_context.resolve()` — the single implementation of
+    the provider precedence chain (machine-wide env > detected host > claude) —
+    so this default can never drift from the front door's resolver. Unlike the
+    pre-consolidation copy of the chain, an unsupported provider name in
+    GO_AGENT_CLI / ORCH_AGENT now raises ValueError instead of leaking into the
+    seed prompt, matching the validation `--agent` already applied via choices.
+    """
+    return invocation_context.resolve(environ=environ).agent_cli
 
 
 def validate_path(path: str, name: str) -> str:
@@ -141,9 +143,10 @@ def main(argv: Optional[list] = None) -> int:
     )
     parser.add_argument(
         "--agent",
-        default=detect_default_agent(),
+        default=None,
         choices=SUPPORTED_AGENTS,
-        help="Headless agent CLI to use for downstream SDD workers",
+        help="Headless agent CLI to use for downstream SDD workers "
+             "(default: resolved from the host environment)",
     )
 
     args = parser.parse_args(argv)
@@ -155,7 +158,15 @@ def main(argv: Optional[list] = None) -> int:
     if args.brief:
         brief = validate_path(args.brief, "brief")
 
-    seed = build_seed(repo, args.base, args.route, args.spec, run, brief, args.agent)
+    # Resolve the default only when --agent was omitted, so a malformed
+    # environment marker cannot break an invocation that overrode it.
+    try:
+        agent = args.agent or detect_default_agent()
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    seed = build_seed(repo, args.base, args.route, args.spec, run, brief, agent)
     print(seed)
     return 0
 
@@ -168,11 +179,12 @@ def _run_tests() -> int:
     class TestGoSeed(unittest.TestCase):
         """Inline unit tests for go_seed.py CLI."""
 
-        def _run_cli(self, args: list) -> tuple[int, str, str]:
+        def _run_cli(self, args: list, env_overrides: Optional[dict] = None) -> tuple[int, str, str]:
             """Run the CLI via subprocess and capture stdout/stderr.
 
             Args:
                 args: Command-line arguments (without the script name).
+                env_overrides: Host-marker env vars to set for the subprocess.
 
             Returns:
                 Tuple of (exit_code, stdout, stderr).
@@ -180,6 +192,7 @@ def _run_tests() -> int:
             env = os.environ.copy()
             for key in ("GO_AGENT_CLI", "ORCH_AGENT", "OPENCODE_PARENT", "CODEX_CI", "CODEX_THREAD_ID"):
                 env.pop(key, None)
+            env.update(env_overrides or {})
             result = subprocess.run(
                 [sys.executable, __file__] + args,
                 capture_output=True,
@@ -258,6 +271,39 @@ def _run_tests() -> int:
                 detect_default_agent({"OPENCODE_PARENT": "1", "GO_AGENT_CLI": "claude"}),
                 "claude",
             )
+
+        def test_unsupported_env_agent_is_rejected(self) -> None:
+            """A garbage provider name in the environment must fail cleanly, not
+            leak into the seed prompt (invocation_context validation)."""
+            code, stdout, stderr = self._run_cli(
+                [
+                    "--repo", "/home/user/projects/foo",
+                    "--base", "dev",
+                    "--route", "D",
+                    "--spec", "016-go-subprocess-dispatch",
+                    "--run", "/home/user/.go/runs/test.json",
+                ],
+                env_overrides={"GO_AGENT_CLI": "gpt-cli"},
+            )
+            self.assertEqual(code, 1)
+            self.assertIn("unsupported agent", stderr)
+            self.assertNotIn("gpt-cli", stdout)
+
+        def test_explicit_agent_overrides_malformed_environment(self) -> None:
+            """--agent must win even when the env marker holds a garbage value."""
+            code, stdout, stderr = self._run_cli(
+                [
+                    "--repo", "/home/user/projects/foo",
+                    "--base", "dev",
+                    "--route", "D",
+                    "--spec", "016-go-subprocess-dispatch",
+                    "--run", "/home/user/.go/runs/test.json",
+                    "--agent", "claude",
+                ],
+                env_overrides={"GO_AGENT_CLI": "gpt-cli"},
+            )
+            self.assertEqual(code, 0, f"stderr: {stderr}")
+            self.assertIn("Agent CLI: claude", stdout)
 
         def test_missing_required_arg(self) -> None:
             """Test error when required argument is missing."""
