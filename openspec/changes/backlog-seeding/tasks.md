@@ -6,10 +6,10 @@
       `seed_backlog()` orchestration (deterministic order, cap with logged deferral,
       per-candidate error isolation), and a `main()` CLI (`--repos-root`, `--repo`,
       `--queue-dir`, `--max-seeds`, `--dry-run`, `--json`).
-      Implements "needs-tasks specs are seeded as planning-only Route C briefs", "Epics with
-      unspecced features are seeded by citation gap", "Seed keys are deduplicated against the
-      whole queue and progress-keyed", and "Seeding is bounded, deterministic, and loudly
-      capped".
+      Implements "needs-tasks specs are seeded as planning-only Route C briefs".
+      Implements "Epics with unspecced features are seeded by citation gap".
+      Implements "Seed keys are deduplicated against the whole queue and progress-keyed".
+      Implements "Seeding is bounded, deterministic, and loudly capped".
 - [x] 1.2 Extend `create_handoff()` with an optional `seeded_from` parameter that stamps a
       `seeded-from:` frontmatter key on the created brief.
 - [x] 1.3 Register the `worktrail-seed-backlog` console script in `pyproject.toml`.
