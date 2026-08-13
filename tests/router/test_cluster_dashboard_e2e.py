@@ -545,7 +545,14 @@ class DataIntegrityAndDeterminism(ClusterDashboardE2E):
 
         total_queue_briefs = len(json.loads(qjson)["briefs"])
         self.assertEqual(total_queue_briefs, len(self.ids))
-        self.assertIn(f"📥 Queued handoffs ({total_queue_briefs})", full["rendered"])
+        # Single-repo (--root) rendering is repo-scoped since the 2026-08-13
+        # queue-repo filter: every fixture brief belongs to repo-a..repo-d,
+        # none to this harness repo, so the rendered section is the hidden
+        # count -- while the queue data itself (category pickers) still
+        # carries all briefs, asserted below.
+        self.assertIn(
+            f"📥 Queued handoffs: none for this repo (+{total_queue_briefs} in other repos)",
+            full["rendered"])
         self.assertIn("clusters", full)
         self.assertIsInstance(full["category_actions"], list)
         self.assertIsInstance(full["category_items"], dict)
