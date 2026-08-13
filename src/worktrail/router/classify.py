@@ -284,13 +284,21 @@ def protected_operations(text: str) -> List[str]:
 def classify(request: str,
              state: Optional[Dict[str, Any]] = None,
              handoff_route: Optional[str] = None,
-             pr_states: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+             pr_states: Optional[Dict[str, str]] = None,
+             resumable_state: Optional[bool] = None) -> Dict[str, Any]:
     """Classify a request. `state` keys (all optional): active_specs (int),
     pending_tasks (bool), open_prs (int), handoff_queue (int), worktrees (int).
     `pr_states` (optional): GitHub state per cited PR number string (from
     `cited_pr_states`), used to suppress the pr-repair signal for PRs already
-    MERGED/CLOSED. This function stays pure/deterministic given its inputs --
-    live `gh` lookups happen only in `main()`, never here."""
+    MERGED/CLOSED. `resumable_state` (optional, from `check_resumable_state.py`
+    for a brief-sourced dispatch): `False` means a mechanical check already
+    confirmed no in-flight run record with an existing worktree and no open PR
+    reference this brief -- Route E is disqualified outright, regardless of how
+    strongly its text signals (e.g. a bug report *about* Route E's own
+    false-positive keywords) happen to score. `None` (the default, e.g. a
+    free-text dispatch with no claimed brief) leaves E's scoring unchanged.
+    This function stays pure/deterministic given its inputs -- live `gh`
+    lookups happen only in `main()`/the caller's pre-check, never here."""
     text = (request or "").strip()
     state = state or {}
     reason_parts: List[str] = []
@@ -321,6 +329,15 @@ def classify(request: str,
     if state.get("handoff_queue", 0) > 0 and "handoff" in text.lower():
         scores["E"] += 2
 
+    # A mechanical pre-check already confirmed no resumable state exists for
+    # this specific brief -- disqualify E outright rather than trust text
+    # signals, which can't distinguish "resume this worktree" from "no
+    # worktree exists" (both contain the word "worktree").
+    if resumable_state is False:
+        scores["E"] = -1
+        reason_parts.append("E disqualified: resumable-state check found no in-flight "
+                             "run/worktree or open PR for this brief")
+
     risk, risk_labels = classify_risk(text)
     protected = protected_operations(text)
 
@@ -335,8 +352,11 @@ def classify(request: str,
     else:
         ranked = sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))
         (top_route, top_score), (second_route, second_score) = ranked[0], ranked[1]
-        if top_score == 0:
+        if top_score == 0 and resumable_state is not False:
             # No signals at all: resume/dashboard is the safe default ("go").
+            # Skipped when a mechanical check already ruled E out -- defaulting
+            # to E here would be the same unfounded resume claim, just via the
+            # zero-signal path instead of the text-signal path.
             route = "E"
             confidence = "low"
             no_signal_default = True
@@ -370,7 +390,8 @@ def classify(request: str,
     # never distorted by its own thumb on the scale.
     route_source = "no-signal-default" if no_signal_default else "classifier"
     if (not forced and handoff_route_norm and confidence in ("low", "medium")
-            and route != handoff_route_norm):
+            and route != handoff_route_norm
+            and not (handoff_route_norm == "E" and resumable_state is False)):
         reason_parts.append(
             f"overrode organic route {route} (confidence {confidence}) "
             f"with brief recommended-route {handoff_route_norm}")
@@ -445,6 +466,11 @@ def main(argv=None) -> int:
                    help="JSON object of repo-state signals (active_specs, pending_tasks, ...)")
     p.add_argument("--handoff-route", default=None,
                    help="recommended-route letter from a handoff brief")
+    p.add_argument("--resumable-state", default=None, choices=["true", "false"],
+                   help="result of check_resumable_state.py for a brief-sourced "
+                        "dispatch: 'false' disqualifies Route E outright regardless "
+                        "of text signals. Omit for a free-text dispatch with no "
+                        "claimed brief (leaves E's scoring unchanged).")
     p.add_argument("--repo", default=None,
                    help="repo path for a best-effort gh lookup of cited PR numbers' "
                         "state, so the pr-repair signal doesn't fire for a PR that's "
@@ -454,8 +480,9 @@ def main(argv=None) -> int:
 
     state = json.loads(args.state) if args.state else None
     pr_states = cited_pr_states(args.request, Path(args.repo) if args.repo else None)
+    resumable_state = {"true": True, "false": False}.get(args.resumable_state)
     result = classify(args.request, state=state, handoff_route=args.handoff_route,
-                       pr_states=pr_states)
+                       pr_states=pr_states, resumable_state=resumable_state)
     print(json.dumps(result, indent=2))
     return 0
 

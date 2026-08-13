@@ -170,6 +170,50 @@ class ConflictResolvePath(unittest.TestCase):
         self.assertIn("CONFLICTING", spawn.prompts[0])
 
 
+class ConflictArisesDuringCiWaitPath(unittest.TestCase):
+    """Squash-boundary bug: mergeable can still read MERGEABLE (or UNKNOWN) at
+    ensure_mergeable's single pre-CI-wait check, then settle to CONFLICTING only
+    once wait_and_fix_ci's own poll loop is already underway -- GitHub never runs
+    checks on a CONFLICTING PR, so statusCheckRollup stays empty forever and the
+    required-check-missing-is-pending rule (PR #197) makes _block_on_checks treat
+    that as "still pending" with no ceiling in practice. Observed live: 45+ polls /
+    48+ minutes with 0 failing, never detected as a conflict, never routed to the
+    existing resolve-worker mechanism ensure_mergeable already uses for the
+    same mergeable=CONFLICTING signal."""
+
+    def test_detected_immediately_and_routed_to_resolve_worker(self):
+        run = FakeRun({"run/feature-1": [
+            view(mergeable="MERGEABLE", rollup=[]),        # ensure_mergeable: proceeds
+            _empty_rollup_view(mergeable="CONFLICTING"),    # every poll from here on
+        ]})
+        spawn = FakeSpawn()
+        logs: list = []
+        v = verify.Verifier(
+            Path("/repo"), "origin", "dev", "001-x",
+            run=run, spawn=spawn, log=logs.append, sleep=lambda *_: None,
+            worktree_base=Path("/tmp/x"), max_polls=5)
+        res = v.run_all([FEATURE], {"feature-1": "run/feature-1"})
+
+        self.assertEqual(res["merged"], [])
+        self.assertIn("feature-1", res["quarantined"])
+        self.assertIn("CONFLICTING", res["quarantined"]["feature-1"])
+
+        # Must have spawned the resolve worker (same mechanism ensure_mergeable
+        # uses), not the ci-fix worker -- a merge conflict is not a failing check.
+        self.assertTrue(spawn.prompts, "must attempt resolve, not just time out")
+        self.assertTrue(all("CONFLICTING" in p for p in spawn.prompts))
+
+        # Must detect the conflict on the FIRST poll of each strike's
+        # _block_on_checks call, never falling into the "pending checks
+        # remain" branch that would otherwise poll (and sleep) up to
+        # max_polls times per strike waiting on checks GitHub will never
+        # schedule for a conflicting PR.
+        self.assertFalse(
+            [m for m in logs if "pending checks remain" in m],
+            "conflict must short-circuit before the pending-checks poll branch",
+        )
+
+
 class CiFixExhaustionPath(unittest.TestCase):
     def test_three_strikes_quarantines_and_keeps_worktree(self):
         run = FakeRun({"run/feature-1": [view(rollup=RED)]},

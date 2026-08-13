@@ -869,6 +869,12 @@ def integrate_one(
         ref_ok = _git(repo, "rev-parse", "--verify", target, check=False)
         if ref_ok.returncode != 0:
             remote_base_ref = f"{remote}/{base}"
+            # The dep branch is gone because it was just squash-merged, but this
+            # process's local `remote_base_ref` may still predate that merge — nothing
+            # else in this run guarantees a fetch happened since. Fetch now so both the
+            # merge-base computation below and the squash-reconcile merge further down
+            # see the dependency's actual merged tip, not a stale pre-merge `base`.
+            _git(repo, "fetch", "-q", remote, base, check=False)
             if deliverable:
                 first_task = f"{spec_id}/{deliverable[0].lower()}"
                 mb = _git(repo, "merge-base", first_task, remote_base_ref, check=False)
