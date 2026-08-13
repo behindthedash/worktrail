@@ -38,11 +38,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..shared.brief_frontmatter import read_frontmatter
+from ..shared.homedir import worktrail_home
 from .poll_run import read_run_record
-
-# GO v2 run records live outside the project repo (`run_record.py`'s own
-# default `--dir`) -- operational telemetry, not project state.
-DEFAULT_RUNS_DIR = Path("~/.go/runs")
 
 # Bounded so an unresponsive `gh` never stalls dispatch.
 DEFAULT_GH_TIMEOUT = 10
@@ -139,7 +136,7 @@ def check(
     repo = frontmatter.get("repo")
 
     warnings: List[str] = []
-    resolved_runs_dir = Path(runs_dir).expanduser() if runs_dir is not None else DEFAULT_RUNS_DIR.expanduser()
+    resolved_runs_dir = Path(runs_dir).expanduser() if runs_dir is not None else worktrail_home() / "runs"
 
     if not repo:
         warnings.append("brief has no repo: frontmatter -- resumable-state check skipped")
@@ -168,7 +165,7 @@ def check(
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--brief", required=True, help="path to the claimed brief")
-    p.add_argument("--dir", default=None, help="run records directory (default ~/.go/runs)")
+    p.add_argument("--dir", default=None, help="run records directory (default worktrail_home()/runs)")
     p.add_argument("--no-gh", action="store_true", help="skip the open-PR gh lookup")
     p.add_argument("--gh-timeout", type=int, default=DEFAULT_GH_TIMEOUT)
     p.add_argument("--json", action="store_true")

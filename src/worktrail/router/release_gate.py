@@ -3,7 +3,7 @@
 
 The v1.0 release gate is defined as N consecutive completed orchestrator/front-
 door runs with ZERO manual interventions. Both signals already live in the run
-records (`~/.go/runs/<repo-name>/*.yaml`): `final_status` and `interventions`.
+records (`worktrail_home()/runs/<repo-name>/*.yaml`): `final_status` and `interventions`.
 This command turns them into a deterministic streak readout so "are we ready
 to ship" is a measurement, not a feeling.
 
@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from .run_record import RunRecordFormatError, _load
-from .policy import load_policy
+from .policy import default_run_record_dir, load_policy
 
 DEFAULT_TARGET = 5
 
@@ -46,7 +46,7 @@ CLEAN_STATES = frozenset({
 
 def _runs_dir(repo: Path) -> Path:
     policy = load_policy(repo)
-    base = Path(str(policy.get("run_record_dir") or "~/.go/runs")).expanduser()
+    base = Path(str(policy.get("run_record_dir") or default_run_record_dir())).expanduser()
     return base / repo.name
 
 

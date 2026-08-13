@@ -146,7 +146,7 @@ Existing work is the controlling artifact. **Reconstruct before acting:**
 
 1. Restore state: dashboard (`dashboard.py`), orchestrator run journal,
    `run-<spec>.status.json` heartbeat sidecar, GO run records
-   (`~/.go/runs/<repo>/`), handoff brief (if `sdd-workflow handoff[:id]` —
+   (`~/.worktrail/runs/<repo>/`), handoff brief (if `sdd-workflow handoff[:id]` —
    `#handoff-seed`), branch/worktree status, open PRs + unresolved comments +
    CI results. A `fanout_failed` sidecar phase means the run is stuck — handle
    per `#precheck-gate`.

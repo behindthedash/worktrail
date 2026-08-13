@@ -51,7 +51,7 @@ skipped, not fatal to the rest of the check) and never changes the action on its
 alongside the evidence when prompting; ignore it otherwise.
 
 Each `active` entry's `run_record` field is present only when that match's `claimed-by` is this
-same machine's own agent label *and* a local `~/.go/runs/<repo-name>/*.yaml` run record could be
+same machine's own agent label *and* a local `~/.worktrail/runs/<repo-name>/*.yaml` run record could be
 found referencing the related brief's id — purely informational, never required for the prompt.
 
 ## The operator prompt

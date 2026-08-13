@@ -30,16 +30,15 @@ from typing import Any, Dict, List, Optional
 
 from .reconcile_pr_labels import discover_managed_repos
 from ..orchestrator.verify import classify_checks
+from ..shared.homedir import worktrail_home
 
 __all__ = [
     "discover_managed_repos", "classify_checks",
-    "DEFAULT_STATE_DIR", "DEFAULT_LOOKBACK_DAYS", "DEFAULT_MAX_PRS",
+    "DEFAULT_LOOKBACK_DAYS", "DEFAULT_MAX_PRS",
     "resolve_state_dir", "first_run_lookback", "load_state",
     "read_marker", "write_marker", "effective_since",
     "list_merged_prs", "sweep_repo", "dashboard_snapshot", "main",
 ]
-
-DEFAULT_STATE_DIR = "~/.go/postmerge-audit-state"
 
 # Bounded first-run window: how far back a repo with no (or a corrupt)
 # marker looks for merged PRs, so a brand-new/never-swept repo doesn't pull
@@ -53,9 +52,11 @@ DEFAULT_MAX_PRS = 50
 
 
 def resolve_state_dir(cli_arg: Optional[str] = None) -> Path:
-    """`--state-dir` > `$GO_POSTMERGE_AUDIT_STATE` > `~/.go/postmerge-audit-state`."""
-    raw = cli_arg or os.environ.get("GO_POSTMERGE_AUDIT_STATE") or DEFAULT_STATE_DIR
-    return Path(raw).expanduser()
+    """`--state-dir` > `$GO_POSTMERGE_AUDIT_STATE` > `worktrail_home()/postmerge-audit-state`."""
+    raw = cli_arg or os.environ.get("GO_POSTMERGE_AUDIT_STATE")
+    if raw:
+        return Path(raw).expanduser()
+    return worktrail_home() / "postmerge-audit-state"
 
 
 def first_run_lookback(lookback_days: int = DEFAULT_LOOKBACK_DAYS,
@@ -290,7 +291,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--repo", help="single repo to sweep")
     p.add_argument("--repos-root", help="sweep every go-policy.yaml repo under this directory")
     p.add_argument("--state-dir", help="persisted per-repo marker/flag state directory "
-                    f"(default: $GO_POSTMERGE_AUDIT_STATE or {DEFAULT_STATE_DIR})")
+                    "(default: $GO_POSTMERGE_AUDIT_STATE or ~/.worktrail/postmerge-audit-state)")
     p.add_argument("--lookback-days", type=int, default=DEFAULT_LOOKBACK_DAYS,
                     help="first-run window for a repo with no persisted marker")
     p.add_argument("--max-prs", type=int, default=DEFAULT_MAX_PRS,

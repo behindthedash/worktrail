@@ -268,7 +268,7 @@ had to apply the label by hand before `CI: Auto-merge on open` would arm.
 
 See `docs/design/history/go-v1-design.md` §6 (unchanged in v2): commit the durable SDD
 record (spec, tasks, contracts, KG, epics); gitignore point-in-time scratch
-(reviews, run scratch). Run records live outside the repo (`~/.go/runs`).
+(reviews, run scratch). Run records live outside the repo (`~/.worktrail/runs`).
 
 ## Examples
 

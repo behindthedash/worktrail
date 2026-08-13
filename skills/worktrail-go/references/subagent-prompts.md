@@ -523,7 +523,7 @@ if [ -n "${AGENT_CLI:-}" ]; then :; elif [ -n "$POLICY_AGENT_CLI" ]; then AGENT_
 if [ -n "${AGENT_MODEL:-}" ]; then :; elif [ -n "$POLICY_AGENT_MODEL" ]; then AGENT_MODEL="$POLICY_AGENT_MODEL"; else AGENT_MODEL=""; fi
 # FALLBACK_CHAIN: an explicit env var override wins outright; otherwise derive
 # the ordered chain from the resolved policy's routing.fallback (which already
-# falls through repo-local routing -> the machine-wide ~/.go/routing.yaml ->
+# falls through repo-local routing -> the machine-wide ~/.worktrail/routing.yaml ->
 # the flat fallback_agent_cli key -- see resolve_routing()/policy.py), minus
 # AGENT_CLI itself (already tried first by live.py's own chain walk) and
 # de-duplicated. Empty when nothing is configured anywhere, matching the old
@@ -583,7 +583,7 @@ same repo-policy layer while retaining explicit invocation precedence.
 
 `FALLBACK_CHAIN` is an explicit `FALLBACK_CHAIN`/`FALLBACK_AGENT_CLI` env var, else the resolved
 policy's `routing.fallback` ordered list (repo-local `routing:` block, else the machine-wide
-`~/.go/routing.yaml`, else the flat `fallback_agent_cli` key — see `resolve_routing()` in
+`~/.worktrail/routing.yaml`, else the flat `fallback_agent_cli` key — see `resolve_routing()` in
 `policy.py`), with `AGENT_CLI` itself removed. Passed as `--fallback-chain` (comma-separated) so
 `worktrail-live full-real` re-picks the first non-capacity-gated agent from the whole configured
 set rather than stopping the moment the primary is exhausted.

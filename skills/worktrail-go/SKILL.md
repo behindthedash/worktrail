@@ -446,7 +446,7 @@ persists the same value on the run record itself (comma-joined, possibly empty) 
 way it already self-heals `go:risk-*` labels — not just hold it for this run's own
 Phase 8.
 
-Risk level: **low** (queue items, docs), **medium** (bug fixes, refactors), **high** (major features, spec rewrites). Hold `$RUN` for Phase 8. If the policy sets `run_record_dir`, pass it as `--dir` on every `run_record.py` call.
+Risk level: **low** (queue items, docs), **medium** (bug fixes, refactors), **high** (major features, spec rewrites). Hold `$RUN` for Phase 8. If the policy sets `run_record_dir`, pass it as `--dir` on every `run_record.py` call. By default run records (like the dashboard's other machine-local state) live under the operator state dir — `$WORKTRAIL_HOME` if set, else `~/.worktrail`, with the legacy `~/.go` still honored on not-yet-migrated machines.
 
 ### Phase 7 — Dispatch
 
@@ -461,7 +461,7 @@ Dispatch policy is simple:
 - Explicit invocation flags or caller-supplied `AGENT_CLI` always win over the derived routing values. The routing table slots into the existing precedence at the repository-policy tier: explicit invocation > repository policy (routing table here) > machine-wide env > detected host > `claude`.
 - no routing table → behavior identical to today (flat keys, single fallback). Likewise, no `routing.tiers` → omit `--tier-map` entirely, and no `routing.purpose_tiers` → omit `--purpose-tier-map` entirely (dispatch behavior unchanged, REQ-NR005).
 
-  Example `routing.tiers` in `~/.go/routing.yaml` — a 3-tier complexity fallback keyed by a
+  Example `routing.tiers` in `~/.worktrail/routing.yaml` — a 3-tier complexity fallback keyed by a
   task's `complexity` frontmatter value (`trivial` / `standard` / `hard`), routing each to a
   progressively more capable model on the same CLI:
 
@@ -567,7 +567,7 @@ Dispatch policy is simple:
 (`review`/`resolve`/`ci-fix`/`assembly-resolve`) or task role (`implement`/`fix`/`cleanup`)
 independently of the run's default agent — for example, to force an independent
 code-reviewer model regardless of which agent implemented the task. Add it under either the
-repo-local policy's `routing:` block or the machine-wide `~/.go/routing.yaml`
+repo-local policy's `routing:` block or the machine-wide `~/.worktrail/routing.yaml`
 (`GO_ROUTING_FILE`) — same wholesale, block-level fallback as `routing.fallback`: a
 non-empty repo-local `routing:` block is used in full and the machine-wide file is not
 read at all, so it is not merged per-role with the machine-wide file:
@@ -600,7 +600,7 @@ edits and commits require and stalls or fails partway through; codex needs
 no approval flag beyond `-s workspace-write`, but `workspace-write` is scoped to
 the child `--cwd`. For a Codex child, also pass the policy's run-record directory
 and the sibling-worktree directory as repeatable `--add-dir` values, for example:
-`--add-dir "$HOME/.go/runs" --add-dir "${REPO}-worktrees"`. These are the
+`--add-dir "$HOME/.worktrail/runs" --add-dir "${REPO}-worktrees"`. These are the
 minimum additional roots required for sdd-workflow to claim its run and create
 its sibling worktrees; do not grant a broad home-directory root. It executes that
 same provider without shell interpolation and never silently falls back to a
@@ -643,7 +643,7 @@ the machine-local capacity cache and renders the same blocked status, failure
 class, and retry time for operators returning to the workspace.
 
 **Capacity-cache operator commands.** The machine-local capacity cache
-(`~/.go/agent-capacity.json`, override with `GO_AGENT_CAPACITY_CACHE`) can be
+(`~/.worktrail/agent-capacity.json`, override with `GO_AGENT_CAPACITY_CACHE`) can be
 inspected and explicitly cleared:
 
 ```text

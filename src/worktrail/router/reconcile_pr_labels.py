@@ -38,8 +38,8 @@ as falsely eligible) — such a PR only gets the `go:risk-*` correction, same
 as before this recompute existed.
 
 Usage:
-  reconcile_pr_labels.py --repo /path/to/repo [--dir ~/.go/runs] [--dry-run] [--json]
-  reconcile_pr_labels.py --repos-root ~/projects [--dir ~/.go/runs] [--dry-run] [--json]
+  reconcile_pr_labels.py --repo /path/to/repo [--dir ~/.worktrail/runs] [--dry-run] [--json]
+  reconcile_pr_labels.py --repos-root ~/projects [--dir ~/.worktrail/runs] [--dry-run] [--json]
 """
 from __future__ import annotations
 
@@ -50,6 +50,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from ..shared.homedir import worktrail_home
 from .policy import POLICY_RELPATH, automerge_eligible, load_policy
 from .policy_selfcheck import discover_repo_names
 from .pr_labels import ensure_pr_no_automerge_label, ensure_pr_risk_label
@@ -219,7 +220,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--repo", help="single repo to reconcile")
     p.add_argument("--repos-root", help="sweep every go-policy.yaml repo under this directory")
-    p.add_argument("--dir", default="~/.go/runs", help="GO run records directory")
+    p.add_argument("--dir", default=None,
+                    help="GO run records directory (default worktrail_home()/runs)")
     p.add_argument("--dry-run", action="store_true",
                     help="report drift without editing any PR")
     p.add_argument("--json", action="store_true")
@@ -228,7 +230,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not args.repo and not args.repos_root:
         p.error("one of --repo or --repos-root is required")
 
-    runs_dir = Path(args.dir).expanduser()
+    runs_dir = Path(args.dir).expanduser() if args.dir else worktrail_home() / "runs"
     run_index = load_run_index(runs_dir)
 
     if args.repos_root:
