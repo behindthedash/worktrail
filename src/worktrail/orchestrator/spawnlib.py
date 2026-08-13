@@ -44,6 +44,12 @@ Switching from `--output-format json` to `--output-format stream-json` is
 token-neutral: the flag only changes how the worker serialises its result to stdout
 (JSONL instead of a single JSON envelope). The model's `usage` is identical; the
 stream is parsed by the Python parent, not fed to any LLM.
+
+opencode workers additionally get an isolated, provider-preserving child
+environment (`prepare_opencode_child_environment`): a per-worktree data dir so
+concurrent workers never share one SQLite `opencode.db`, and inline permission
+config so headless tool calls inside the authorized worktree are never
+auto-rejected. See the "opencode headless worker environment" section below.
 """
 
 from __future__ import annotations
@@ -170,7 +176,16 @@ def _parse_stream_json(raw: str) -> tuple[str, Dict, List[str], List[str], str]:
                         same overwrite-on-last-occurrence pattern as claude's "result").
         "tool_use"    — `part.tool` names the tool invoked (e.g. "read", "bash",
                         "write", "todowrite"); no separate skill signal (opencode has
-                        no Skill-tool equivalent).
+                        no Skill-tool equivalent). A headless permission rejection
+                        arrives HERE, not as a top-level error: `part.state.status`
+                        is "error" and `part.state.error` reads "The user rejected
+                        permission to use this specific tool call." (verified live
+                        v1.17.13: `opencode run` auto-rejects any permission that
+                        resolves to "ask" -- stderr shows `! permission requested:
+                        bash (...); auto-rejecting`). These are collected into the
+                        usage dict's `permission_denials` diagnostic field (shape
+                        parity with claude's same-named field) so a missing
+                        report-back can be traced to rejected tool calls.
         "step_finish" — one per step (not one per run); `part.tokens` carries
                         {total, input, output, reasoning, cache: {write, read}} and
                         `part.cost` the step's USD cost. Summed across every
@@ -191,6 +206,7 @@ def _parse_stream_json(raw: str) -> tuple[str, Dict, List[str], List[str], str]:
     skills_seen: set = set()
     session_id: str = ""
     opencode_usage_seen = False
+    opencode_denials: List[Dict] = []
     opencode_totals = {
         "input_tokens": 0,
         "cache_creation_input_tokens": 0,
@@ -265,6 +281,12 @@ def _parse_stream_json(raw: str) -> tuple[str, Dict, List[str], List[str], str]:
             tool_name = part.get("tool") or ""
             if tool_name:
                 tools_seen.add(tool_name)
+            state = part.get("state")
+            if isinstance(state, dict) and state.get("status") == "error":
+                err = str(state.get("error") or "")
+                low = err.lower()
+                if "permission" in low and "reject" in low:
+                    opencode_denials.append({"tool": tool_name, "error": err})
 
         elif event_type == "step_finish":
             part = event.get("part") or {}
@@ -278,17 +300,19 @@ def _parse_stream_json(raw: str) -> tuple[str, Dict, List[str], List[str], str]:
                 opencode_totals["cache_read_input_tokens"] += int(cache.get("read", 0) or 0)
                 opencode_totals["total_cost_usd"] += float(part.get("cost", 0.0) or 0.0)
 
-    if opencode_usage_seen and not usage:
+    if (opencode_usage_seen or opencode_denials) and not usage:
         usage = {
             **opencode_totals,
             # Diagnostic-only fields kept for shape parity with the claude usage
             # dict (see the module docstring) -- opencode's step_finish events
-            # carry no equivalent signal, so these stay at their empty defaults.
+            # carry no equivalent signal, so these stay at their empty defaults
+            # EXCEPT permission_denials, which opencode reports through tool_use
+            # error states (see the module docstring above).
             "subtype": "",
             "is_error": False,
             "stop_reason": "",
             "num_turns": 0,
-            "permission_denials": [],
+            "permission_denials": opencode_denials,
         }
 
     return result_text, usage, sorted(tools_seen), sorted(skills_seen), session_id
@@ -455,6 +479,186 @@ def build_cmd(
     return cmd
 
 
+# --------------------------------------------------------------------------- #
+# opencode headless worker environment
+# --------------------------------------------------------------------------- #
+# opencode keeps ALL of its mutable state -- opencode.db (SQLite) plus log/,
+# repos/, snapshot/ -- under one per-user data dir resolved from XDG_DATA_HOME
+# (verified with `opencode debug paths`, v1.17.13: setting XDG_DATA_HOME moves
+# data/log/repos; config under ~/.config/opencode is unaffected). Concurrent
+# workers sharing ~/.local/share/opencode/opencode.db is the SQLite-contention
+# defect of brief 20260811-220340; pointing each worker's XDG_DATA_HOME into
+# its own worktree scratch gives every spawn a private db/log, and the state is
+# deleted with the worktree by the standard `git worktree remove --force`
+# teardown (the scratch dir self-gitignores so `git add -A` never commits it).
+#
+# Provider identity: auth.json/account.json are read from the DATA dir, so a
+# fresh isolated dir silently drops credentials (verified: `opencode providers
+# list` reports 0 credentials under an XDG_DATA_HOME override). Symlinking the
+# parent's files into the isolated dir preserves identity and lets token
+# refreshes write through to the real store. Env-var-keyed providers
+# (GEMINI_API_KEY etc.) are unaffected either way.
+#
+# Permissions: headless `opencode run` has no channel to answer an "ask" -- it
+# AUTO-REJECTS it (verified live: stderr `! permission requested: bash (...);
+# auto-rejecting`; the JSONL stream records a tool_use error "The user rejected
+# permission to use this specific tool call."). `external_directory` defaults
+# to "ask", and opencode resolves the project root through the git COMMON dir,
+# so inside a linked worktree every file in the worker's OWN cwd counts as
+# external (observed in the shared opencode.log: `evaluated
+# permission=external_directory pattern=<own-worktree>/... action=ask`) -- the
+# exact mechanism that produced zero report-backs in run go-20260811-213553.
+# The fix is OPENCODE_CONFIG_CONTENT (inline config, merged after global and
+# project config -- verified: an inline `"bash": "ask"` overrode the default)
+# scoping allow rules to exactly the worker's cwd and its git common dir.
+# `--auto` is deliberately NOT used: it approves everything not explicitly
+# denied, i.e. broad home access.
+
+
+def opencode_state_root(cwd: "str | Path") -> Path:
+    """Per-worktree opencode scratch, deleted with the worktree on teardown."""
+    return Path(cwd) / ".worktrail" / "opencode"
+
+
+def opencode_data_dir(cwd: "str | Path") -> Path:
+    """The isolated opencode data dir (opencode.db, log/, repos/) for *cwd*."""
+    return opencode_state_root(cwd) / "xdg" / "opencode"
+
+
+def _parent_opencode_data_dir(env: Dict[str, str]) -> Path:
+    """The invoking user's real opencode data dir (credential source)."""
+    xdg = env.get("XDG_DATA_HOME")
+    base = Path(xdg).expanduser() if xdg else Path.home() / ".local" / "share"
+    return base / "opencode"
+
+
+# The real subprocess.run, captured at import: the hermetic spawn tests script
+# `spawnlib.subprocess.run` with fake worker outcomes, and the git probe below
+# must never consume one of those scripted outcomes (or feed its own output
+# into them).
+_REAL_SUBPROCESS_RUN = subprocess.run
+
+
+def _git_common_dir(cwd: "str | Path") -> Optional[str]:
+    """Absolute git common dir for *cwd* (the shared .git a linked worktree's
+    objects live in), or None when cwd is not a git checkout."""
+    try:
+        proc = _REAL_SUBPROCESS_RUN(
+            ["git", "-C", str(cwd), "rev-parse", "--path-format=absolute",
+             "--git-common-dir"],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip() or None
+
+
+def _opencode_permission_config(
+    cwd: "str | Path", existing_content: Optional[str]
+) -> Dict:
+    """Inline opencode config granting a headless worker non-interactive use of
+    its tools inside the authorized roots: the worktree itself plus its git
+    common dir. File access anywhere else still falls through to opencode's
+    built-in external_directory "ask" default, which a headless run
+    auto-rejects -- scoped containment, never a broad home grant.
+
+    `existing_content` (a caller-set $OPENCODE_CONFIG_CONTENT) is merged rather
+    than clobbered: its non-permission keys and unmatched permission rules
+    survive; the worker grants below win on conflict (a headless worker that
+    inherited an interactive-oriented "ask" would silently lose every tool
+    call).
+    """
+    roots: List[str] = []
+    for candidate in (str(cwd), str(Path(cwd).resolve())):
+        if candidate not in roots:
+            roots.append(candidate)
+    common = _git_common_dir(cwd)
+    if common and common not in roots:
+        roots.append(common)
+    external: Dict[str, str] = {}
+    for root in roots:
+        external[root] = "allow"
+        external[root.rstrip("/") + "/**"] = "allow"
+    permission: Dict = {
+        # Parity with claude's --permission-mode bypassPermissions and codex's
+        # -s danger-full-access: tool USE is granted, while file access outside
+        # the roots above is still auto-rejected via external_directory.
+        "read": "allow", "edit": "allow", "glob": "allow", "grep": "allow",
+        "bash": "allow", "webfetch": "allow", "websearch": "allow",
+        "task": "allow", "skill": "allow", "lsp": "allow",
+        "external_directory": external,
+    }
+    config: Dict = {}
+    if existing_content:
+        try:
+            parsed = json.loads(existing_content)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, dict):
+            config = dict(parsed)
+    existing_perm = config.get("permission")
+    if isinstance(existing_perm, dict):
+        existing_ext = existing_perm.get("external_directory")
+        if isinstance(existing_ext, dict):
+            permission["external_directory"] = {**existing_ext, **external}
+        merged = {**existing_perm, **permission}
+        for key, prev in existing_perm.items():
+            if key == "external_directory":
+                continue
+            if prev == "deny":
+                # An explicit operator deny is never widened -- only "ask"
+                # (which a headless run auto-rejects) is upgraded to allow.
+                merged[key] = "deny"
+            elif isinstance(prev, dict) and not isinstance(merged.get(key), dict):
+                # Pattern rules survive under our blanket grant; opencode's
+                # "last matching rule wins" keeps the specific patterns
+                # authoritative over the leading "*" allow.
+                merged[key] = {"*": "allow", **prev}
+        permission = merged
+    config["permission"] = permission
+    return config
+
+
+def prepare_opencode_child_environment(
+    cwd: "str | Path", base_env: Optional[Dict[str, str]] = None
+) -> "tuple[Dict[str, str], Path]":
+    """Prepare an isolated, provider-preserving, prompt-free environment for a
+    headless opencode worker running in *cwd*.
+
+    Returns `(child_env, data_dir)`: `child_env` carries the per-worktree
+    XDG_DATA_HOME override plus the scoped OPENCODE_CONFIG_CONTENT permission
+    grants; `data_dir` is where this worker's opencode.db and log/ land
+    (inspectable after a failure, deleted with the worktree on teardown).
+    """
+    env: Dict[str, str] = dict(base_env if base_env is not None else os.environ)
+    data_dir = opencode_data_dir(cwd)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    # Self-ignoring scratch: a worker running `git add -A` must never commit
+    # orchestrator state (a .gitignore of "*" ignores its own whole tree).
+    marker = Path(cwd) / ".worktrail" / ".gitignore"
+    if not marker.exists():
+        marker.write_text("*\n", encoding="utf-8")
+    parent_data = _parent_opencode_data_dir(env)
+    for name in ("auth.json", "account.json"):
+        src = parent_data / name
+        dst = data_dir / name
+        if dst.is_symlink():
+            if dst.readlink() == src:
+                continue
+            dst.unlink()
+        elif dst.exists():
+            continue  # a real (operator-provisioned) file is preserved as-is
+        if src.exists():
+            dst.symlink_to(src)
+    env["XDG_DATA_HOME"] = str(opencode_state_root(cwd) / "xdg")
+    env["OPENCODE_CONFIG_CONTENT"] = json.dumps(
+        _opencode_permission_config(cwd, env.get("OPENCODE_CONFIG_CONTENT"))
+    )
+    return env, data_dir
+
+
 def _normalize_fallback_chain(
     agent: str, fallback_agent: "Optional[str | Sequence[str]]"
 ) -> List[str]:
@@ -588,17 +792,59 @@ def spawn_agent(
         resume_session_id=resume_session_id,
         output_last_message=output_file,
     )
-    child_env = {**os.environ, "CC_HEADLESS": "1"}
-    if agent == "codex":
-        child_env, codex_home, automatic_home = prepare_codex_child_environment()
-        child_env["CC_HEADLESS"] = "1"
-        if automatic_home:
-            log(f"    using automatic Worktrail Codex home: {codex_home}")
-    # Keep the environment marker on the prepared Codex environment too.
-    if "WORKTRAIL_SKILL_DISPATCH_DEPTH" in os.environ:
-        child_env["WORKTRAIL_SKILL_DISPATCH_DEPTH"] = os.environ[
-            "WORKTRAIL_SKILL_DISPATCH_DEPTH"
-        ]
+
+    def build_child_env(current_agent: str) -> "tuple[Dict[str, str], Optional[Path]]":
+        """Agent-specific child environment. Rebuilt on every fallback hop
+        switch so a codex-prepared env (CODEX_HOME) never leaks into an
+        opencode hop and vice versa."""
+        env: Dict[str, str] = {**os.environ, "CC_HEADLESS": "1"}
+        oc_data_dir: Optional[Path] = None
+        if current_agent == "codex":
+            env, codex_home, automatic_home = prepare_codex_child_environment()
+            env["CC_HEADLESS"] = "1"
+            if automatic_home:
+                log(f"    using automatic Worktrail Codex home: {codex_home}")
+        elif current_agent == "opencode":
+            env, oc_data_dir = prepare_opencode_child_environment(cwd, env)
+            log(f"    opencode state isolated at {oc_data_dir} "
+                "(db + log; removed with the worktree)")
+        # Keep the environment marker on the prepared environment too.
+        if "WORKTRAIL_SKILL_DISPATCH_DEPTH" in os.environ:
+            env["WORKTRAIL_SKILL_DISPATCH_DEPTH"] = os.environ[
+                "WORKTRAIL_SKILL_DISPATCH_DEPTH"
+            ]
+        return env, oc_data_dir
+
+    child_env, opencode_dir = build_child_env(agent)
+
+    def finish(raw: str) -> SpawnResult:
+        """Parse the final raw output and return the SpawnResult, attaching the
+        opencode diagnostics the report-back contract needs when the worker
+        produced nothing parseable: the session id, whether headless permission
+        auto-rejections occurred, and where the isolated state/logs live."""
+        text, usage, tools_used, skills_used, sid = _parse_stream_json(raw)
+        if agent == "opencode":
+            usage = dict(usage) if usage else {}
+            denials = usage.get("permission_denials") or []
+            usage.setdefault("permission_denials", denials)
+            usage["opencode_data_dir"] = str(opencode_dir) if opencode_dir else ""
+            log(
+                f"    opencode diagnostics: session={sid or 'none'} "
+                f"permission_denials={len(denials)} state={opencode_dir}"
+            )
+            if denials:
+                first = denials[0]
+                log(
+                    f"    opencode auto-rejected {len(denials)} tool call(s) on a "
+                    f"headless 'ask' (first: {first.get('tool') or '?'}) -- a missing "
+                    f"report-back is explained by this; inspect {opencode_dir}/log "
+                    f"and session {sid or '?'} in {opencode_dir}/opencode.db"
+                )
+        cleanup_output_file()
+        return SpawnResult(
+            text=text, usage=usage, tools_used=tools_used, skills_used=skills_used,
+            paused_s=paused_s_total, session_id=sid,
+        )
     attempts = max(1, retries + 1)
     waits_left = max(0, session_limit_waits)
     last_raw = ""
@@ -649,6 +895,7 @@ def spawn_agent(
                 resume_session_id=None,
                 output_last_message=output_file,
             )
+            child_env, opencode_dir = build_child_env(agent)
             log(f"    session limit hit on {previous_agent}; switching once to {agent}")
             attempt -= 1
             continue
@@ -695,31 +942,16 @@ def spawn_agent(
             )
 
         if not is_infra_failure(proc.returncode, last_raw):
-            text, usage, tools_used, skills_used, sid = _parse_stream_json(last_raw)
-            cleanup_output_file()
-            return SpawnResult(
-                text=text, usage=usage, tools_used=tools_used, skills_used=skills_used,
-                paused_s=paused_s_total, session_id=sid,
-            )
+            return finish(last_raw)
         if proc.returncode != 0:
             sys.stderr.write(f"[{agent} worker exit {proc.returncode}] {(proc.stderr or '')[-400:]}\n")
         if attempt >= attempts:
             log(f"    spawn still failing after {attempts} attempt(s); giving up to caller")
-            text, usage, tools_used, skills_used, sid = _parse_stream_json(last_raw)
-            cleanup_output_file()
-            return SpawnResult(
-                text=text, usage=usage, tools_used=tools_used, skills_used=skills_used,
-                paused_s=paused_s_total, session_id=sid,
-            )
+            return finish(last_raw)
         backoff = min(30.0, 5.0 * attempt)
         log(f"    spawn infra failure (attempt {attempt}/{attempts}); retrying in {backoff:.0f}s")
         sleep(backoff)
-    text, usage, tools_used, skills_used, sid = _parse_stream_json(last_raw)
-    cleanup_output_file()
-    return SpawnResult(
-        text=text, usage=usage, tools_used=tools_used, skills_used=skills_used,
-        paused_s=paused_s_total, session_id=sid,
-    )
+    return finish(last_raw)
 
 
 def spawn_claude_p(

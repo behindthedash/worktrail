@@ -728,13 +728,14 @@ class OpenCodeSpawn(unittest.TestCase):
             )
 
         spawnlib.subprocess.run = fake_run
-        with tempfile.TemporaryDirectory() as cache_dir:
+        with tempfile.TemporaryDirectory() as cache_dir, \
+                tempfile.TemporaryDirectory() as cwd:
             with patch.dict(
                 os.environ,
                 {"GO_AGENT_CAPACITY_CACHE": os.path.join(cache_dir, "capacity.json")},
                 clear=True,
             ):
-                out = spawnlib.spawn_agent("prompt", "/tmp", agent="opencode")
+                out = spawnlib.spawn_agent("prompt", cwd, agent="opencode")
         self.assertEqual(out.text, "opencode final report")
         self.assertEqual(out.session_id, "ses_abc123")
         self.assertEqual(seen["cmd"][:2], ["opencode", "run"])
@@ -764,7 +765,8 @@ class OpenCodeSpawn(unittest.TestCase):
             return Proc(0, raw, "")
 
         spawnlib.subprocess.run = fake_run
-        out = spawnlib.spawn_agent("prompt", "/tmp", agent="opencode")
+        with tempfile.TemporaryDirectory() as cwd:
+            out = spawnlib.spawn_agent("prompt", cwd, agent="opencode")
         self.assertEqual(out.text, "opencode report")
         self.assertEqual(out.usage["input_tokens"], 60)
         self.assertEqual(out.usage["output_tokens"], 20)
@@ -793,11 +795,221 @@ class OpenCodeSpawn(unittest.TestCase):
         })
         fr = FakeRun([Proc(0, error_line, ""), Proc(0, success_line, "")])
         spawnlib.subprocess.run = fr
-        out = spawnlib.spawn_agent(
-            "prompt", "/tmp", agent="opencode", retries=2, sleep=lambda *_: None
-        )
+        with tempfile.TemporaryDirectory() as cwd:
+            out = spawnlib.spawn_agent(
+                "prompt", cwd, agent="opencode", retries=2, sleep=lambda *_: None
+            )
         self.assertEqual(out.text, "opencode retried report")
         self.assertEqual(fr.calls, 2)
+
+
+class OpencodeHeadlessEnvironment(unittest.TestCase):
+    """Brief 20260811-220340: concurrent opencode workers must never share one
+    SQLite opencode.db; a headless worker's tool calls inside its authorized
+    worktree (+ git common dir) must not be auto-rejected on an "ask"; provider
+    identity (auth.json in the data dir) must survive the isolation; and a
+    spawn that produces no report-back must surface actionable diagnostics
+    (session id, denials, isolated-state location)."""
+
+    def setUp(self):
+        self._orig = spawnlib.subprocess.run
+
+    def tearDown(self):
+        spawnlib.subprocess.run = self._orig
+
+    # -- prepare_opencode_child_environment ---------------------------------- #
+
+    def test_state_dirs_are_distinct_per_worktree(self):
+        with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
+            env_a, data_a = spawnlib.prepare_opencode_child_environment(a, {})
+            env_b, data_b = spawnlib.prepare_opencode_child_environment(b, {})
+            self.assertNotEqual(env_a["XDG_DATA_HOME"], env_b["XDG_DATA_HOME"])
+            self.assertTrue(env_a["XDG_DATA_HOME"].startswith(a))
+            self.assertTrue(env_b["XDG_DATA_HOME"].startswith(b))
+            self.assertNotEqual(data_a, data_b)
+            self.assertTrue(data_a.is_dir())
+            self.assertTrue(data_b.is_dir())
+
+    def test_scratch_self_gitignores_so_workers_never_commit_it(self):
+        with tempfile.TemporaryDirectory() as cwd:
+            spawnlib.prepare_opencode_child_environment(cwd, {})
+            with open(os.path.join(cwd, ".worktrail", ".gitignore")) as fh:
+                self.assertEqual(fh.read().strip(), "*")
+
+    def test_auth_symlinked_from_parent_data_dir(self):
+        with tempfile.TemporaryDirectory() as parent_xdg, \
+                tempfile.TemporaryDirectory() as cwd:
+            parent_data = os.path.join(parent_xdg, "opencode")
+            os.makedirs(parent_data)
+            auth = os.path.join(parent_data, "auth.json")
+            with open(auth, "w") as fh:
+                fh.write("{}")
+            env, data_dir = spawnlib.prepare_opencode_child_environment(
+                cwd, {"XDG_DATA_HOME": parent_xdg}
+            )
+            link = data_dir / "auth.json"
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(os.path.realpath(link), os.path.realpath(auth))
+            # the child's data dir is isolated, not the parent store
+            self.assertNotEqual(env["XDG_DATA_HOME"], parent_xdg)
+            self.assertTrue(env["XDG_DATA_HOME"].startswith(cwd))
+
+    def test_permission_config_scopes_cwd_and_git_common_dir_only(self):
+        with tempfile.TemporaryDirectory() as cwd:
+            subprocess.run(["git", "init", "-q", cwd], check=True,
+                           capture_output=True)
+            env, _ = spawnlib.prepare_opencode_child_environment(cwd, {})
+            config = json.loads(env["OPENCODE_CONFIG_CONTENT"])
+            perm = config["permission"]
+            ext = perm["external_directory"]
+            resolved = str(spawnlib.Path(cwd).resolve())
+            self.assertEqual(ext.get(resolved + "/**"), "allow")
+            common = spawnlib._git_common_dir(cwd)
+            self.assertTrue(common and common.endswith(".git"))
+            self.assertEqual(ext.get(common + "/**"), "allow")
+            # scoped containment: no catch-all and no home-wide grant
+            self.assertNotIn("*", ext)
+            self.assertNotIn("**", ext)
+            self.assertNotIn(str(spawnlib.Path.home()) + "/**", ext)
+            # headless workers never hit an interactive "ask" on their tools
+            for tool in ("read", "edit", "glob", "grep", "bash"):
+                self.assertEqual(perm[tool], "allow")
+
+    def test_existing_config_content_is_merged_not_clobbered(self):
+        base = {
+            "OPENCODE_CONFIG_CONTENT": json.dumps({
+                "model": "x/y",
+                "permission": {
+                    "webfetch": "deny",
+                    "edit": "ask",
+                    "bash": {"rm -rf *": "deny"},
+                },
+            })
+        }
+        with tempfile.TemporaryDirectory() as cwd:
+            env, _ = spawnlib.prepare_opencode_child_environment(cwd, base)
+        config = json.loads(env["OPENCODE_CONFIG_CONTENT"])
+        perm = config["permission"]
+        self.assertEqual(config["model"], "x/y")       # non-permission key kept
+        self.assertEqual(perm["webfetch"], "deny")     # explicit deny never widened
+        self.assertEqual(perm["edit"], "allow")        # headless "ask" upgraded
+        self.assertEqual(perm["bash"], {"*": "allow", "rm -rf *": "deny"})
+
+    # -- spawn_agent wiring --------------------------------------------------- #
+
+    def test_spawn_env_isolation_reaches_subprocess(self):
+        seen = {}
+
+        def fake_run(cmd, **kwargs):
+            seen["env"] = kwargs["env"]
+            return Proc(0, json.dumps({
+                "type": "text", "sessionID": "ses_iso",
+                "part": {"type": "text", "text": "done"},
+            }) + "\n", "")
+
+        spawnlib.subprocess.run = fake_run
+        with tempfile.TemporaryDirectory() as cwd:
+            out = spawnlib.spawn_agent("p", cwd, agent="opencode")
+            self.assertTrue(seen["env"]["XDG_DATA_HOME"].startswith(cwd))
+        self.assertEqual(seen["env"]["CC_HEADLESS"], "1")
+        self.assertIn("OPENCODE_CONFIG_CONTENT", seen["env"])
+        self.assertEqual(out.text, "done")
+
+    def test_permission_denials_parsed_and_diagnostic_logged(self):
+        # Event shapes captured from a live v1.17.13 reproduction: a headless
+        # "ask" is auto-rejected and surfaces as a tool_use error state.
+        events = [
+            {"type": "step_start", "sessionID": "ses_deny",
+             "part": {"type": "step-start"}},
+            {"type": "tool_use", "sessionID": "ses_deny", "part": {
+                "type": "tool", "tool": "bash", "callID": "call_1",
+                "state": {"status": "error",
+                          "input": {"command": "echo hi"},
+                          "error": "The user rejected permission to use "
+                                   "this specific tool call."}}},
+            {"type": "step_finish", "sessionID": "ses_deny", "part": {
+                "type": "step-finish",
+                "tokens": {"total": 10, "input": 5, "output": 5, "reasoning": 0,
+                           "cache": {"write": 0, "read": 0}},
+                "cost": 0}},
+        ]
+        raw = "\n".join(json.dumps(e) for e in events) + "\n"
+        logs = []
+        spawnlib.subprocess.run = lambda cmd, **kw: Proc(0, raw, "")
+        with tempfile.TemporaryDirectory() as cwd:
+            out = spawnlib.spawn_agent("p", cwd, agent="opencode", log=logs.append)
+            data_dir = str(spawnlib.opencode_data_dir(cwd))
+        self.assertEqual(out.usage["permission_denials"], [{
+            "tool": "bash",
+            "error": "The user rejected permission to use this specific tool call.",
+        }])
+        self.assertEqual(out.usage["opencode_data_dir"], data_dir)
+        joined = "\n".join(logs)
+        self.assertIn("ses_deny", joined)
+        self.assertIn(data_dir, joined)
+        self.assertIn("permission_denials=1", joined)
+
+    def test_denials_reach_usage_even_without_step_finish(self):
+        line = json.dumps({"type": "tool_use", "sessionID": "ses_d2", "part": {
+            "type": "tool", "tool": "edit",
+            "state": {"status": "error",
+                      "error": "The user rejected permission to use "
+                               "this specific tool call."}}})
+        _, usage, _, _, sid = spawnlib._parse_stream_json(line + "\n")
+        self.assertEqual(sid, "ses_d2")
+        self.assertEqual(len(usage["permission_denials"]), 1)
+        self.assertEqual(usage["permission_denials"][0]["tool"], "edit")
+
+    def test_happy_path_report_back_has_no_denials(self):
+        report = '```json\n{"task":"T1","step":"implement","status":"success"}\n```'
+        events = [
+            {"type": "tool_use", "sessionID": "ses_ok", "part": {
+                "type": "tool", "tool": "bash",
+                "state": {"status": "completed",
+                          "input": {"command": "echo hi"}}}},
+            {"type": "step_finish", "sessionID": "ses_ok", "part": {
+                "type": "step-finish",
+                "tokens": {"total": 10, "input": 5, "output": 5, "reasoning": 0,
+                           "cache": {"write": 0, "read": 0}},
+                "cost": 0.002}},
+            {"type": "text", "sessionID": "ses_ok",
+             "part": {"type": "text", "text": report}},
+        ]
+        raw = "\n".join(json.dumps(e) for e in events) + "\n"
+        spawnlib.subprocess.run = lambda cmd, **kw: Proc(0, raw, "")
+        with tempfile.TemporaryDirectory() as cwd:
+            out = spawnlib.spawn_agent("p", cwd, agent="opencode")
+        self.assertEqual(out.text, report)
+        self.assertEqual(out.usage["permission_denials"], [])
+        self.assertEqual(out.session_id, "ses_ok")
+
+    def test_fallback_hop_to_opencode_rebuilds_child_env(self):
+        # claude primary hits a session limit; the opencode hop must get the
+        # isolated opencode environment, not the env prepared for claude.
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs["env"]))
+            if len(calls) == 1:
+                return Proc(0, "You've hit your session limit. "
+                               "Your limit resets at 11:59pm.", "")
+            return Proc(0, json.dumps({
+                "type": "text", "sessionID": "ses_hop",
+                "part": {"type": "text", "text": "hopped"},
+            }) + "\n", "")
+
+        spawnlib.agent_capacity.save({"version": 1, "providers": {}})
+        spawnlib.subprocess.run = fake_run
+        with tempfile.TemporaryDirectory() as cwd:
+            out = spawnlib.spawn_agent(
+                "p", cwd, agent="claude", fallback_agent="opencode",
+                sleep=lambda *_: None,
+            )
+            claude_env, opencode_env = calls[0][1], calls[1][1]
+            self.assertFalse(claude_env.get("XDG_DATA_HOME", "").startswith(cwd))
+            self.assertTrue(opencode_env["XDG_DATA_HOME"].startswith(cwd))
+            self.assertIn("OPENCODE_CONFIG_CONTENT", opencode_env)
+        self.assertEqual(out.text, "hopped")
 
 
 class SessionLimitFallback(unittest.TestCase):
@@ -817,11 +1029,12 @@ class SessionLimitFallback(unittest.TestCase):
         original = spawnlib.subprocess.run
         spawnlib.subprocess.run = fake_run
         try:
-            out = spawnlib.spawn_agent(
-                "prompt", "/tmp", agent="claude", fallback_agent="opencode",
-                extra_args=["--append-system-prompt", "claude-only"],
-                sleep=lambda seconds: sleeps.append(seconds),
-            )
+            with tempfile.TemporaryDirectory() as cwd:
+                out = spawnlib.spawn_agent(
+                    "prompt", cwd, agent="claude", fallback_agent="opencode",
+                    extra_args=["--append-system-prompt", "claude-only"],
+                    sleep=lambda seconds: sleeps.append(seconds),
+                )
         finally:
             spawnlib.subprocess.run = original
         self.assertEqual(out.text, "done")
@@ -854,10 +1067,11 @@ class SpawnClaudePFallback(unittest.TestCase):
         original = spawnlib.subprocess.run
         spawnlib.subprocess.run = fake_run
         try:
-            out = spawnlib.spawn_claude_p(
-                "prompt", "/tmp", fallback_agent="opencode",
-                sleep=lambda seconds: sleeps.append(seconds),
-            )
+            with tempfile.TemporaryDirectory() as cwd:
+                out = spawnlib.spawn_claude_p(
+                    "prompt", cwd, fallback_agent="opencode",
+                    sleep=lambda seconds: sleeps.append(seconds),
+                )
         finally:
             spawnlib.subprocess.run = original
         self.assertEqual(out.text, "done")
