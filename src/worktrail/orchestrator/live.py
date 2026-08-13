@@ -799,8 +799,9 @@ def _journal_failure_entry(
     t0: float,
     t1: float,
     terminal_status: str = "failed",
+    blocked_by: list | None = None,
 ) -> dict:
-    return {
+    entry = {
         "task": task["id"],
         "role": role,
         "report": {
@@ -817,6 +818,11 @@ def _journal_failure_entry(
         "ended_at": round(t1, 3),
         "duration_s": round(t1 - t0, 1),
     }
+    if blocked_by:
+        # Structured blocker ids for dependency-gate entries, so `clear_tasks`'
+        # cascade never has to parse them back out of the free-text notes.
+        entry["blocked_by"] = [str(b) for b in blocked_by]
+    return entry
 
 
 def _clear_integration_state(journal: dict) -> bool:
@@ -867,6 +873,129 @@ def skip_tasks(repo: Path, spec_rel: str, task_ids: list, reason: str = "manuall
         str(journal_path), json.dumps(journal, indent=2, sort_keys=True) + "\n"
     )
     print(f"{_ts()} SKIP: marked {', '.join(task_ids)} escalated ({reason}) in {journal_path}")
+    return 0
+
+
+_NON_RETRYABLE_TERMINAL = ("failed", "escalated")
+_GATE_NOTES_PREFIX = "blocked by failed prerequisite(s): "
+
+
+def _gate_blockers(entry: dict) -> list:
+    """Blocker task ids recorded on a `dependency-gate` journal entry.
+
+    Prefers the structured `blocked_by` field (written by `_journal_failure_entry`
+    since clear-task landed); falls back to parsing the known notes format for
+    journals written before the field existed."""
+    structured = entry.get("blocked_by")
+    if structured:
+        return [str(b) for b in structured]
+    notes = (entry.get("report") or {}).get("notes") or ""
+    if _GATE_NOTES_PREFIX in notes:
+        tail = notes.split(_GATE_NOTES_PREFIX, 1)[1]
+        return [part.strip() for part in tail.split(",") if part.strip()]
+    return []
+
+
+def clear_tasks(repo: Path, spec_rel: str, task_ids: list) -> int:
+    """Surgically remove failed/escalated journal entries for *task_ids* so the next
+    `full-real` resume re-dispatches just those tasks as pending.
+
+    This is the targeted alternative to `--fresh` for a hand-fixed task: replay bakes
+    any non-"retryable" terminal_status back into task status on every resume, and
+    `--fresh` discards the ENTIRE journal -- forcing every other task, including
+    already-merged work, to re-run. Semantics:
+
+    - Only entries whose `report.terminal_status` is non-retryable ("failed" /
+      "escalated") are removed. A task's earlier successful role entries
+      (implement/review) are kept, so a task that broke mid-flight resumes from
+      where it broke rather than from scratch.
+    - Cascades to `dependency-gate` entries blocked by a cleared task (see
+      `_gate_blockers`), transitively, so downstream tasks that only failed by
+      inheritance also become pending again.
+    - REFUSES (exit 1, journal untouched) when a targeted task has a completion
+      entry -- a successful cleanup is the per-task record that carried it to
+      "done" (`dispatch.apply_report`), and a merged group PR implies exactly that
+      record for each of its tasks -- or when a targeted task has nothing to clear
+      (guards against id typos silently no-opping).
+
+    Returns 0 on success, 1 on refusal or when there is no journal.
+    """
+    journal_path = journal_path_for(repo, spec_rel)
+    if not journal_path.exists():
+        print(f"{_ts()} CLEAR-TASK: no run journal at {journal_path} -- nothing to clear")
+        return 1
+    journal = json.loads(journal_path.read_text())
+    entries = journal.get("entries", [])
+    targets = set(task_ids)
+
+    def _terminal_failure(entry: dict) -> bool:
+        return (
+            not entry.get("event")
+            and (entry.get("report") or {}).get("terminal_status") in _NON_RETRYABLE_TERMINAL
+        )
+
+    # Guardrail: never discard completed work. Refuse the whole operation (zero
+    # file mutation) if any targeted task has a completion record.
+    for entry in entries:
+        if entry.get("event") or entry.get("task") not in targets:
+            continue
+        report = entry.get("report") or {}
+        completed = report.get("terminal_status") == "done" or (
+            entry.get("role") == dispatch.ROLE_CLEANUP
+            and report.get("status") != "failed"
+            and report.get("terminal_status") not in _NON_RETRYABLE_TERMINAL
+        )
+        if completed:
+            print(
+                f"{_ts()} CLEAR-TASK: refusing -- {entry.get('task')} has a "
+                f"success/completion entry (role {entry.get('role')!r}); clearing it "
+                f"would discard completed work. Journal left unchanged."
+            )
+            return 1
+    uncleared = sorted(
+        t for t in targets if not any(_terminal_failure(e) and e.get("task") == t for e in entries)
+    )
+    if uncleared:
+        print(
+            f"{_ts()} CLEAR-TASK: refusing -- no failed/escalated journal entries for "
+            f"{', '.join(uncleared)}; nothing to clear. Journal left unchanged."
+        )
+        return 1
+
+    cleared = set(targets)
+    remove = {id(e) for e in entries if _terminal_failure(e) and e.get("task") in targets}
+    # Cascade to fixpoint: a gate blocked by a cleared task is removed, and ITS
+    # task then counts as cleared for gates further downstream.
+    changed = True
+    while changed:
+        changed = False
+        for entry in entries:
+            if id(entry) in remove or not _terminal_failure(entry):
+                continue
+            if entry.get("role") != "dependency-gate":
+                continue
+            if cleared.intersection(_gate_blockers(entry)):
+                remove.add(id(entry))
+                cleared.add(entry.get("task"))
+                changed = True
+
+    direct = [e for e in entries if id(e) in remove and e.get("task") in targets]
+    cascaded = [e for e in entries if id(e) in remove and e.get("task") not in targets]
+    journal["entries"] = [e for e in entries if id(e) not in remove]
+    progress.atomic_write_text(
+        str(journal_path), json.dumps(journal, indent=2, sort_keys=True) + "\n"
+    )
+    msg = (
+        f"CLEAR-TASK: removed {len(direct)} entr{'y' if len(direct) == 1 else 'ies'} "
+        f"for task(s) {', '.join(sorted(targets))}"
+    )
+    if cascaded:
+        casc_ids = sorted({e.get("task") for e in cascaded})
+        msg += (
+            f" (cascaded: {len(cascaded)} dependency-gate "
+            f"entr{'y' if len(cascaded) == 1 else 'ies'} for {', '.join(casc_ids)})"
+        )
+    print(f"{_ts()} {msg}")
     return 0
 
 
@@ -3086,7 +3215,9 @@ def live_run_real(
                     with state_lock:
                         task["status"] = "failed"
                         entries.append(
-                            _journal_failure_entry(task, "dependency-gate", reason, now, now)
+                            _journal_failure_entry(
+                                task, "dependency-gate", reason, now, now, blocked_by=failed
+                            )
                         )
                         record()
                     print(f"{_ts()}   !! {task['id']} TAIL BLOCKED -- {reason}")
@@ -5353,6 +5484,17 @@ def main(argv=None) -> int:
     )
     sk.add_argument("--tasks", required=True, help="Comma-separated task IDs to skip")
     sk.add_argument("--reason", default="manually skipped", help="Note recorded on each skip")
+    ct = sub.add_parser(
+        "clear-task",
+        help="Surgically remove a task's failed/escalated journal entries (cascading to "
+        "dependency-gate entries it blocked) so the next full-real resume re-dispatches "
+        "just that task -- without --fresh discarding every other task's completed work",
+    )
+    ct.add_argument("--repo", required=True, help="Absolute path to the real git repo")
+    ct.add_argument(
+        "--spec", required=True, help="Spec folder relative to repo root, e.g. docs/specs/008-foo"
+    )
+    ct.add_argument("--tasks", required=True, help="Comma-separated task IDs to clear")
 
     args = p.parse_args(argv)
     if getattr(args, "model", None) is None:
@@ -5515,6 +5657,12 @@ def main(argv=None) -> int:
             print("skip: --tasks must list at least one task ID")
             return 1
         return skip_tasks(Path(args.repo).resolve(), args.spec, task_ids, args.reason)
+    if args.cmd == "clear-task":
+        task_ids = [s.strip() for s in args.tasks.split(",") if s.strip()]
+        if not task_ids:
+            print("clear-task: --tasks must list at least one task ID")
+            return 1
+        return clear_tasks(Path(args.repo).resolve(), args.spec, task_ids)
     return 0
 
 
