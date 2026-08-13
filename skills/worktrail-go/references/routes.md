@@ -50,6 +50,11 @@ explicit decision** (`no_implementation_without_approval` gate).
 4. Output: a discovery note at `docs/specs/research/<slug>.md` (or seed a spec
    folder if the user converts it) + an epic/feature proposal.
 5. Ask the decision: proceed to Route B/C/D, defer (handoff brief), or stop.
+   `$AUTO_MODE=true`: no ask — stop at the discovery note
+   (`investigation_complete`) and leave any claimed brief in `picked/` for the
+   human decision; unattended runs never continue past the
+   `no_implementation_without_approval` gate
+   (`subagent-prompts.md#auto-mode-ask-fallbacks`).
 
 Completion: `investigation_complete` (note only) or
 `planned_ready_for_implementation` (proposal accepted).
@@ -99,7 +104,10 @@ armed — before asking the implementation-intent question.
 `implementation-intent:`. `requested` continues as Route D (orchestrator →
 sync) in the same session without a new `/go`; `planning-only` stops with an
 explicit planning-only completion; missing/`unknown` asks once — "Proceed to
-implementation now, or stop for review?". A Route-C brief must not be marked
+implementation now, or stop for review?" (`$AUTO_MODE=true`: no ask — take the
+planning-only default, finish `planned_ready_for_implementation`, record the
+decision, and leave the brief claimed in `picked/`; see
+`subagent-prompts.md#auto-mode-ask-fallbacks`). A Route-C brief must not be marked
 done without an explicit `--planning-only` or `--implementation-complete`
 completion mode. If implementation is requested, do not create a follow-up
 handoff at this boundary.

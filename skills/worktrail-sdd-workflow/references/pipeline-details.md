@@ -89,7 +89,8 @@ orchestrator, sync, or monitoring. Each stage's output is committed — hand lat
 Route C closeout (routes.md §C, after step 3's scope-check passes): spec PR
 plus the implementation-intent transition. Requested intent continues into Route D in the same run;
 planning-only intent finishes with `planned_ready_for_implementation`; unknown
-intent asks once and records the decision. A requested Route-C brief must not
+intent asks once and records the decision (`$AUTO_MODE=true`: no ask — take the
+planning-only default per routes.md §C). A requested Route-C brief must not
 be closed or handed off at the spec/task boundary.
 
 Route D (and Route C continuing inline) continues:
@@ -123,7 +124,10 @@ after sync completes).
 
 Route D, spec already on base branch.
 
-Pick a `ready-to-implement` spec (ask if several; else route to its actual next action).
+Pick a `ready-to-implement` spec (ask if several; else route to its actual next
+action). `$AUTO_MODE=true`: no ask — use the brief's `target-spec`/`$ARG_SPEC`;
+still ambiguous → finish `blocked_product_decision` per
+`../../worktrail-go/references/subagent-prompts.md#auto-mode-ask-fallbacks`.
 
 1a. Run `../../worktrail-go/references/subagent-prompts.md#active-conflicts-scan`
     (`SPEC_ID`=the picked spec's id, `REPO=$REPO`). On a hit, stop per that

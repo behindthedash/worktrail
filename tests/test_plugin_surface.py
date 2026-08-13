@@ -410,3 +410,93 @@ def test_modify_pipeline_runs_scope_check_before_uncommitted_output_guard():
         "written after the guard's commit checkpoint and every group PR fails "
         "CI: Scope check"
     )
+
+
+def _h2_sections(text: str) -> dict[str, str]:
+    """Split a markdown body into h2-delimited sections, keyed by heading line.
+
+    YAML frontmatter is stripped first so an `allowed-tools:` mention of a tool
+    doesn't count as a call site. Text before the first `## ` heading lands in a
+    `"(preamble)"` pseudo-section.
+    """
+    if text.startswith("---"):
+        end = text.index("\n---", 3)
+        text = text[end + len("\n---"):]
+    sections: dict[str, str] = {}
+    current = "(preamble)"
+    lines: list[str] = []
+    for line in text.splitlines():
+        if line.startswith("## "):
+            sections[current] = "\n".join(lines)
+            current, lines = line, []
+        else:
+            lines.append(line)
+    sections[current] = "\n".join(lines)
+    return sections
+
+
+def test_route_execution_ask_sites_carry_auto_mode_fallbacks():
+    """PR #290 gave go's three Phase 5.5 asks an $AUTO_MODE=true fallback
+    (AskUserQuestion is not a registered tool in the headless one-shots
+    `worktrail-go drain` spawns), but sdd-workflow's route execution still
+    assumed an interactive parent one layer deeper — the "Interactive routes
+    stay in-session" doctrine dispatched Route C/I in-session on the premise a
+    human could answer mid-flow asks. Brief 20260810-114713. This pins:
+
+    1. the doctrine no longer asserts an interactive parent is always present;
+    2. a shared route-execution fallback contract exists and prescribes PR
+       #290's pattern (blocked_product_decision, brief left claimed in picked/);
+    3. structurally, every h2 section of the route-execution surface that
+       mentions AskUserQuestion also documents an AUTO_MODE branch — so a
+       future edit can't reintroduce an unconditional ask without tripping here;
+    4. the prose ask sites (routes.md §A/§C, the implement-pipeline spec pick,
+       Route C closeout) carry their documented defaults.
+    """
+    subagent = (SKILLS_DIR / "worktrail-go" / "references" / "subagent-prompts.md").read_text()
+    routes = (SKILLS_DIR / "worktrail-go" / "references" / "routes.md").read_text()
+    automode = (SKILLS_DIR / "worktrail-go" / "references" / "auto-mode.md").read_text()
+    pipeline_doc = SKILLS_DIR / "worktrail-sdd-workflow" / "references" / "pipeline-details.md"
+    sdd_skill_doc = SKILLS_DIR / "worktrail-sdd-workflow" / "SKILL.md"
+
+    # 1. Doctrine: the unconditional interactive-parent premise is gone.
+    assert "Routes that need `AskUserQuestion` mid-flow (C, I)" not in subagent, (
+        "the 'Interactive routes stay in-session' doctrine reverted to asserting "
+        "an interactive parent is always present")
+    assert "In-session does not mean interactive" in subagent
+
+    # 2. Shared contract, consistent with PR #290's Phase 5.5 pattern.
+    assert "{#auto-mode-ask-fallbacks}" in subagent
+    fallbacks = _h2_sections(subagent)[
+        "## Auto-mode ask fallbacks (route execution) {#auto-mode-ask-fallbacks}"]
+    assert "blocked_product_decision" in fallbacks
+    assert "picked/" in fallbacks, "the contract must leave the brief claimed, like PR #290"
+    assert "work_queue.py done" in fallbacks, (
+        "the contract must forbid closing the brief on an unattended block")
+
+    # 3. Structural invariant over the route-execution surface.
+    surface = {
+        "worktrail-go/references/subagent-prompts.md": subagent,
+        "worktrail-sdd-workflow/references/pipeline-details.md": pipeline_doc.read_text(),
+        "worktrail-sdd-workflow/SKILL.md": sdd_skill_doc.read_text(),
+    }
+    offenders = []
+    for name, text in surface.items():
+        for heading, body in _h2_sections(text).items():
+            if "AskUserQuestion" in body and "AUTO_MODE" not in body:
+                offenders.append(f"{name} :: {heading}")
+    assert not offenders, (
+        "route-execution sections mention AskUserQuestion with no AUTO_MODE "
+        f"fallback documented in the same section: {offenders}")
+
+    # 4. Prose ask sites (no AskUserQuestion literal) carry their defaults.
+    route_a = routes[routes.index("## Route A"):routes.index("## Route B")]
+    assert "$AUTO_MODE=true" in route_a and "investigation_complete" in route_a
+    route_c = routes[routes.index("## Route C"):routes.index("## Route D")]
+    assert "$AUTO_MODE=true" in route_c and "planning-only default" in route_c
+    implement = _h2_sections(surface["worktrail-sdd-workflow/references/pipeline-details.md"])[
+        "## `implement` pipeline {#implement-pipeline}"]
+    assert "$AUTO_MODE=true" in implement and "blocked_product_decision" in implement
+    assert "planning-only default" in surface["worktrail-sdd-workflow/SKILL.md"]
+
+    # auto-mode.md indexes the route-execution fallbacks alongside Phase 5.5's.
+    assert "auto-mode-ask-fallbacks" in automode

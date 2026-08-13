@@ -103,9 +103,19 @@ The subprocess attaches to the parent run record as usual but does NOT call `wor
 
 ### Interactive routes stay in-session
 
-Routes that need `AskUserQuestion` mid-flow (C, I) use the in-session
-`Skill("worktrail-sdd-workflow", args="...")` call, never a subprocess —
-a headless worker cannot surface interactive prompts to the parent session.
+Routes with mid-flow ask sites (C; Route I is grouped here for its decision
+points even though its playbook currently defines no `AskUserQuestion` call)
+use the in-session `Skill("worktrail-sdd-workflow", args="...")` call, never a
+subprocess — a headless worker cannot surface interactive prompts to the parent
+session. **In-session does not mean interactive.** When the parent is itself a
+headless one-shot (a `worktrail-go drain`/`auto` spawn), there is no human at
+any layer and `AskUserQuestion` is not a registered tool in the process at all
+(verified 2026-08-10 via a direct `claude -p` probe — see auto-mode.md Phase
+5.5). The in-session call still applies — spawning another layer cannot recover
+interactivity — but every ask site reachable from route execution must take its
+documented `$AUTO_MODE=true` branch: a safe documented default where one
+exists, otherwise finish the run `blocked_product_decision` and leave any
+claimed brief in `picked/`. Per-site index: `#auto-mode-ask-fallbacks`.
 Subprocess dispatch applies to the background routes (D/F/G/H) with the bounded
 poll below only for an attended parent session.
 
@@ -196,6 +206,54 @@ own `subprocess.Popen` spawns still have no live repro either way.
 
 ---
 
+## Auto-mode ask fallbacks (route execution) {#auto-mode-ask-fallbacks}
+
+Phase 5.5's three pre-dispatch asks carry their own `$AUTO_MODE=true` branches
+(auto-mode.md Phase 5.5, PR #290). This section is the same contract for ask
+sites *inside* route execution (sdd-workflow Phase 7), where the run record
+already exists — so a blocked site finishes `$RUN` directly instead of opening
+a minimal one:
+
+```bash
+worktrail-run-record finish "$RUN" --status blocked_product_decision --merge-result \
+  "<one-line summary of the decision that needed a human>"
+```
+
+Do not call `work_queue.py done` or `work_queue.py release` — leave the brief
+claimed in `picked/` for the existing stalled-in-flight resume path, exactly as
+the Phase 5.5 fallbacks do. Sites with a safe documented default take it
+silently and record it (`worktrail-run-record append "$RUN" decisions "..."`)
+instead of blocking. Never guess an answer to a product question, and never
+attempt the `AskUserQuestion` call — the tool is absent, not merely unanswered.
+
+Per-site branches (`$AUTO_MODE=true`):
+
+- `#overlap-menu` (Route C, and Route D with no spec): no ask — which existing
+  spec owns a capability is a product call; finish `blocked_product_decision`.
+- Slug confirms (`#spec-worktree-setup`, `#fix-branch-worktree-setup`): safe
+  default — derive the slug from the brief focus / request text; never ask.
+- `#stage-result-handling`: `failure` → retry once (existing counter), then
+  finish with a failure state — no retry/skip/abort offer; `needs-clarification`
+  → finish `blocked_product_decision` quoting MARKERS + SUMMARY.
+- `#precheck-gate`: no ask — never flip task statuses or proceed-anyway
+  unattended; finish `blocked_product_decision` quoting the precheck output.
+- Route C implementation-intent question (routes.md §C): safe default — take
+  the planning-only stop (`planned_ready_for_implementation`); the brief stays
+  claimed, never marked done without an explicit completion mode.
+- Route A decision point (routes.md §A): safe default — stop at the discovery
+  note (`investigation_complete`); the brief stays claimed for the human
+  decision (`no_implementation_without_approval` binds absolutely unattended).
+- Route D spec pick (`pipeline-details.md#implement-pipeline`): use the brief's
+  `target-spec`/`$ARG_SPEC`; still ambiguous → finish `blocked_product_decision`.
+- `#openspec-propose`: the authoring child is headless for every caller — pass
+  the request verbatim so its own clarification asks never fire; if it stalls
+  or writes nothing, treat as `needs-clarification` above.
+- `#handoff-seed` step 2b/2c pickers and claim `none`/`ambiguous`: unreachable
+  in auto mode by construction (go claims the brief itself and dispatches
+  `handoff:<id> route:<X>`); if hit anyway, stop and report — never ask.
+
+Route I defines no ask sites in its playbook — nothing to branch there.
+
 ## Repo resolution {#repo-resolution}
 
 Run:
@@ -207,7 +265,7 @@ Act on `mode`:
 - **in-repo** → use `repo` as `$REPO`
 - **derived** → use `repo`, state the pick ("Using `<name>`")
 - **single-candidate** → use it, state the pick
-- **ambiguous** or **none** → run the multi-repo overview: `worktrail-dashboard --repos "$PWD"`. It lists every candidate with active-spec count. Present via `AskUserQuestion` — lead with repos that have active specs, labelled with them (e.g. "gracefully-giving-back — 1 active: 003-payments"). If no git repos found, ask for the path and stop.
+- **ambiguous** or **none** → run the multi-repo overview: `worktrail-dashboard --repos "$PWD"`. It lists every candidate with active-spec count. Present via `AskUserQuestion` — lead with repos that have active specs, labelled with them (e.g. "gracefully-giving-back — 1 active: 003-payments"). If no git repos found, ask for the path and stop. (`$AUTO_MODE=true` never reaches this ask — auto_pick already skips briefs whose repo is missing on this machine; if reached anyway, stop and report rather than asking.)
 
 Pull the base branch once `$REPO` is known:
 ```bash
@@ -242,6 +300,8 @@ core capability — the actor + capability + primary domain — is the same or i
 sub-set/extension of an existing spec.
 
 **If overlap is found:** Present `AskUserQuestion` before continuing (see `#overlap-menu`).
+`$AUTO_MODE=true`: no ask — finish `blocked_product_decision` per
+`#auto-mode-ask-fallbacks` naming the overlapping `{spec_id}`; do not proceed to step 0.
 **If no overlap or no existing specs:** Proceed silently to step 0.
 **If neither `docs/specs/` nor `openspec/` exists:** Skip this step entirely.
 
@@ -271,6 +331,9 @@ AskUserQuestion(
   }]
 )
 ```
+
+This menu is interactive-only — under `$AUTO_MODE=true` the overlap branch above
+never presents it (see `#auto-mode-ask-fallbacks`).
 
 **After selection:**
 - **Extend** → route to `implement` or `continue` pipeline for `{spec_id}`. Do NOT create a new spec.
@@ -323,6 +386,16 @@ root is hardcoded with no setting to widen it. Every worktrail `$WT` is
 `$REPO-worktrees/…`, so it always tripped the prompt. Relocating also pinned the
 session: `EnterWorktree`'s isolation guard blocked later `git -C <other-path>`
 calls against `$REPO`, breaking steps like `#sync-before-teardown`.
+
+**The child is headless for every caller — its own asks can never fire.** The
+bundled `openspec-propose` skill asks via `AskUserQuestion` only when it gets no
+clear input or hits unclear artifact context; passing the request verbatim (as
+required above) removes the first, and the tool is absent inside the spawned
+child regardless of `$AUTO_MODE`, so a genuinely human-needing gap surfaces as a
+stall or missing artifacts, caught by the verification step below. Interactive
+parents then handle it per `#stage-result-handling`'s clarification path;
+`$AUTO_MODE=true` finishes `blocked_product_decision` per
+`#auto-mode-ask-fallbacks`.
 
 **Verify the artifacts — a zero exit code is not proof.** Two failure modes
 observed live on 2026-08-09 both **exit 0 and write nothing**: a claude spawn
@@ -420,6 +493,11 @@ Track `dispatch_attempt_count` per stage (starts at 1).
   `clarifications` field containing the user's answers. If = 3, escalate: "Stage cannot
   self-resolve after 2 re-dispatch attempts. Spec file is at [spec_file path]. You can
   manually edit it and retry, or abort." Offer: manually edit then retry, or abort.
+
+`$AUTO_MODE=true`: no offers and no asks. `failure` → retry once (same counter), then
+finish with a failure state quoting SUMMARY; `needs-clarification` → finish
+`blocked_product_decision` quoting MARKERS + SUMMARY per `#auto-mode-ask-fallbacks` —
+requirement ambiguity is a product call, never guessed unattended.
 
 ---
 
@@ -867,7 +945,8 @@ if [ "$FORMAT" = "devkit" ]; then
     NEXT_FROM_REMOTE=$((10#$REMOTE_MAX + 1))
     [ "$NEXT_FROM_REMOTE" -gt "$NNN" ] && NNN="$NEXT_FROM_REMOTE"
   fi
-  # SPEC_ID="$NNN-$slug"  (slug confirmed via AskUserQuestion if unclear)
+  # SPEC_ID="$NNN-$slug"  (slug confirmed via AskUserQuestion if unclear;
+  # $AUTO_MODE=true: derive from the brief focus/request text — never ask)
 else
   # OpenSpec has no numeric-prefix convention — `openspec new change` rejects
   # any name that doesn't start with a letter (verified against 1.6.0: "Error:
@@ -877,7 +956,8 @@ else
   # convention still requires an NNN- prefix, do not apply it yet — see
   # #openspec-nnn-prefix; the prefix is added by a post-validate rename, never
   # at worktree-setup time.
-  # SPEC_ID="$slug"  (slug confirmed via AskUserQuestion if unclear)
+  # SPEC_ID="$slug"  (slug confirmed via AskUserQuestion if unclear;
+  # $AUTO_MODE=true: derive from the brief focus/request text — never ask)
 fi
 SIBLING_WT_GLOB="$SPEC_ID-spec"
 SIBLING_REF_GLOB="refs/heads/spec/$SPEC_ID"
@@ -950,7 +1030,8 @@ instead.)
 
 ```bash
 # $SLUG is a short fix descriptor (e.g. "cache-header-null-check"), confirmed
-# via AskUserQuestion if unclear
+# via AskUserQuestion if unclear ($AUTO_MODE=true: derive from the brief
+# focus/request text — never ask)
 WT="$REPO-worktrees/fix-$SLUG"
 git -C "$REPO" worktree add -b "fix/$SLUG" "$WT" "$BASE"
 ```
@@ -1068,6 +1149,10 @@ that filename. No → stop; brief stays in `queue/` (not claimed).
 **2c — Multiple briefs, unnamed** — present the newest-first `briefs` list
 (`filename — focus`) via `AskUserQuestion` ("Which handoff brief should seed the
 pipeline?"). Proceed to Step 3 only with the user's pick.
+
+(`$AUTO_MODE=true` never reaches 2b/2c: go claims the brief itself and always
+dispatches named — `handoff:<id> route:<X>`. If an unnamed handoff seed somehow
+runs unattended, stop and report — never ask, never pick a brief silently.)
 
 ---
 
@@ -1246,6 +1331,11 @@ proceed?", options:
 1. **Proceed anyway** — the flagged tasks need re-implementation; launch the orchestrator.
 2. **Mark flagged tasks completed and sync first** — stop; flip the statuses, run sync, retry.
 3. **Abort** — stop for manual investigation.
+
+`$AUTO_MODE=true`: no ask. Judging whether flagged tasks need re-implementation
+or a status flip is a call about prior work no unattended run may make — never
+pick option 1 or 2 silently. Finish `blocked_product_decision` quoting the
+precheck output, per `#auto-mode-ask-fallbacks`.
 
 `live.py precheck` also checks `run-<spec>.status.json`. If the prior run is
 `fanout_failed`, do not silently re-launch `full-real`: surface the failed or

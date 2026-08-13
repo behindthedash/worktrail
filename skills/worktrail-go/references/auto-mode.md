@@ -62,6 +62,18 @@ in the first place.) `drain.py` already classifies `blocked_product_decision` as
 outcome — see `references/drain.md` and `classify_outcome()` in `drain.py` — so this fits the
 existing stop conditions without any driver-loop change.
 
+## Phase 7 — route-execution asks have no ask either
+
+The same tool absence applies one layer deeper, inside `worktrail-sdd-workflow`'s
+route execution: an auto/drain dispatch routed to C (or any route sharing the
+pipeline anchors) reaches ask sites there too. Every such site carries a
+documented `$AUTO_MODE=true` branch — a safe default where one exists (slug
+derivation, Route C's planning-only stop, Route A's stop-at-note), otherwise
+finish the run `blocked_product_decision` and leave the brief claimed in
+`picked/`. The per-site index lives at
+`references/subagent-prompts.md#auto-mode-ask-fallbacks`; Route I defines no ask
+sites.
+
 ## Draining many items
 
 Auto mode picks and runs ONE brief per invocation. To work through the whole queue
