@@ -80,6 +80,29 @@ jobs:
       - name: Build
         run: pip install build && python3 -m build
 
+  bookkeeping-bypass:
+    name: Bookkeeping bypass
+    needs: changes
+    if: needs.changes.outputs.bookkeeping == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      checks: write
+    steps:
+      - name: Post passing check for skipped Lint, Test & Build
+        uses: actions/github-script@v8
+        with:
+          script: |
+            await github.rest.checks.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: "Lint, Test & Build",
+              head_sha: context.payload.pull_request
+                ? context.payload.pull_request.head.sha
+                : context.sha,
+              status: "completed",
+              conclusion: "success",
+            });
+
   installed-package-drain-smoke:
     name: "Installed drain smoke (${{ matrix.agent }})"
     runs-on: ubuntu-latest
