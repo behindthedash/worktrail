@@ -302,6 +302,27 @@ def _needs_tasks_brief_kwargs(finding: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _ready_brief_kwargs(finding: Dict[str, Any]) -> Dict[str, Any]:
+    spec_id, repo_name = finding["id"], finding["repo_name"]
+    return {
+        "focus": (
+            f"Spec {spec_id} in {repo_name} is ready to implement (dashboard "
+            f"stage: ready-to-implement). Run the orchestrator against its "
+            f"existing, complete task DAG at {finding['spec_rel']} — do not "
+            f"re-plan or re-author the tasks."
+        ),
+        "context": (
+            f"Seeded automatically by the backlog seeder: the dashboard scan "
+            f"reported stage=ready-to-implement for {finding['spec_rel']}. "
+            f"The spec's task DAG is already complete, so this is an "
+            f"implementation pass, not a planning pass."
+        ),
+        "recommended_route": "D",
+        "implementation_intent": "requested",
+        "target_spec": spec_id,
+    }
+
+
 def _epic_brief_kwargs(finding: Dict[str, Any]) -> Dict[str, Any]:
     epic_id, repo_name = finding["id"], finding["repo_name"]
     cited = finding["cited"]
