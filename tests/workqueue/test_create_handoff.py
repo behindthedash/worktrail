@@ -82,6 +82,44 @@ def test_create_handoff_auto_links_high_confidence_candidate(tmp_path: Path):
     assert "20260101-000001-auth" in read_frontmatter(new_path)["related"]
 
 
+def test_create_handoff_normalizes_bare_repo_name_against_projects_home(
+    tmp_path: Path, monkeypatch
+):
+    """A bare `--repo devops` must be captured as an absolute path -- a bare
+    or `owner/name` value that survives to the queue file makes
+    dashboard.py's auto_pick_brief() permanently skip the brief as
+    repo-missing (bug: it only ever checked the literal value's is_dir())."""
+    projects = tmp_path / "home" / "projects"
+    (projects / "devops").mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+
+    result = create_handoff("Fix the thing", queue_base=tmp_path / "queue", repo="devops")
+
+    assert read_frontmatter(Path(result["path"]))["repo"] == str((projects / "devops").resolve())
+
+
+def test_create_handoff_normalizes_owner_slash_name_repo(tmp_path: Path, monkeypatch):
+    projects = tmp_path / "home" / "projects"
+    (projects / "devops").mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+
+    result = create_handoff(
+        "Fix the thing", queue_base=tmp_path / "queue", repo="behindthedash/devops"
+    )
+
+    assert read_frontmatter(Path(result["path"]))["repo"] == str((projects / "devops").resolve())
+
+
+def test_create_handoff_leaves_unresolvable_repo_value_unchanged(tmp_path: Path, monkeypatch):
+    """No matching checkout anywhere -- normalization must not fabricate a
+    path; leave the value as given (same as today) rather than guess wrong."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+
+    result = create_handoff("Fix the thing", queue_base=tmp_path / "queue", repo="nonexistent-repo")
+
+    assert read_frontmatter(Path(result["path"]))["repo"] == "nonexistent-repo"
+
+
 def test_cli_emits_json_and_accepts_structured_fields(tmp_path: Path, capsys):
     assert main([
         "--focus", "Create a new OpenSpec handoff",

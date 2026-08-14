@@ -46,6 +46,32 @@ def _clean_lines(values: Optional[Iterable[str]]) -> list[str]:
     return [value.strip() for value in (values or []) if value and value.strip()]
 
 
+def _normalize_repo(repo: Optional[str]) -> Optional[str]:
+    """Resolve a `--repo` value to an absolute path at capture time.
+
+    A bare or `owner/name` value (e.g. 'devops', 'behindthedash/devops') has
+    no filesystem meaning by itself, and dashboard.py's `auto_pick_brief()`
+    only resolves such values by basename when a `repos_root` is supplied at
+    read time -- capturing the absolute path here fixes it at the source
+    instead of relying on every future reader to do that resolution.
+
+    Tries, in order: the value as given (absolute or cwd-relative), then its
+    basename under `~/projects` (the same default the /go front door and
+    dashboard.py's own auto-pick resolution use). Returns the value
+    unchanged when neither exists -- fabricating a wrong absolute path would
+    be worse than leaving a value a reader can still recognize by basename.
+    """
+    if not repo:
+        return repo
+    direct = Path(repo).expanduser()
+    if direct.is_dir():
+        return str(direct.resolve())
+    projects_candidate = Path.home() / "projects" / Path(repo).name
+    if projects_candidate.is_dir():
+        return str(projects_candidate.resolve())
+    return repo
+
+
 def _section(title: str, value: Optional[str]) -> str:
     value = (value or "").strip()
     return f"\n## {title}\n\n{value}\n" if value else ""
@@ -137,7 +163,7 @@ def create_handoff(
         "id": path.stem,
         "created": now.isoformat(timespec="seconds"),
         "focus": _LiteralStr(focus),
-        "repo": repo or None,
+        "repo": _normalize_repo(repo) or None,
         "remote": remote or None,
         "base-branch": base_branch or None,
         "status": "queued",

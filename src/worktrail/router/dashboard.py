@@ -1279,11 +1279,37 @@ def _runlock_held(lock_path: Path) -> bool:
         fh.close()
 
 
-def _repo_busy_reason(repo: Any) -> Optional[str]:
+def _resolve_repo_dir(repo: Any, repos_root: Optional[Any]) -> Optional[Path]:
+    """Resolve a brief's `repo:` frontmatter value to an on-disk directory.
+
+    Absolute/HOME-relative paths (the normal, intended case) resolve
+    directly. A bare name or `owner/name`-style value (e.g. 'devops',
+    'behindthedash/devops') has no filesystem meaning by itself -- such
+    values can still reach here because `create_handoff.py` writes `repo:`
+    verbatim with no normalization. Resolve it by basename against
+    `repos_root`, mirroring the basename match `auto_pick_brief`'s
+    `repo_filter` already applies just above this check, instead of failing
+    `is_dir()` on the literal string. Returns None when unresolvable.
+    """
+    if not repo:
+        return None
+    p = Path(str(repo)).expanduser()
+    if p.is_dir():
+        return p
+    if repos_root:
+        candidate = Path(str(repos_root)).expanduser() / p.name
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def _repo_busy_reason(repo: Any, repos_root: Optional[Any] = None) -> Optional[str]:
     """Skip-reason string when a brief's repo can't be safely auto-claimed.
 
     - `no-repo`: brief has no repo frontmatter — no collision surface to verify.
-    - `repo-missing`: the checkout doesn't exist on this machine.
+    - `repo-missing`: the checkout doesn't exist on this machine (checked
+      directly, and by basename under `repos_root` when given — see
+      `_resolve_repo_dir`).
     - `orchestrator-run-active:<lock>`: a live orchestrator run holds a RunLock
       somewhere under the repo's sibling `<repo>-worktrees/` dir (another agent
       is actively working this repo, possibly with no corresponding queue
@@ -1299,8 +1325,8 @@ def _repo_busy_reason(repo: Any) -> Optional[str]:
     """
     if not repo or str(repo) in ("null", "~"):
         return "no-repo"
-    p = Path(str(repo)).expanduser()
-    if not p.is_dir():
+    p = _resolve_repo_dir(repo, repos_root)
+    if p is None:
         return "repo-missing"
     worktrees = p.parent / f"{p.name}-worktrees"
     if worktrees.is_dir():
@@ -1310,12 +1336,12 @@ def _repo_busy_reason(repo: Any) -> Optional[str]:
     return None
 
 
-def _remote_spec_branch(repo: Any, target_spec: Any) -> Optional[str]:
+def _remote_spec_branch(repo: Any, target_spec: Any, repos_root: Optional[Any] = None) -> Optional[str]:
     """Return a matching remote branch ref for a queued target spec, if any."""
     if not repo or not target_spec:
         return None
-    repo_path = Path(str(repo)).expanduser()
-    if not repo_path.is_dir():
+    repo_path = _resolve_repo_dir(repo, repos_root)
+    if repo_path is None:
         return None
     spec_id = Path(str(target_spec).rstrip("/")).name
     try:
@@ -1342,7 +1368,9 @@ def _remote_spec_branch(repo: Any, target_spec: Any) -> Optional[str]:
 
 
 def auto_pick_brief(
-    queue_briefs: List[Dict[str, Any]], repo_filter: Optional[str] = None
+    queue_briefs: List[Dict[str, Any]],
+    repo_filter: Optional[str] = None,
+    repos_root: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Deterministically pick the next brief for /go auto (spec 017 REQ-002/003).
 
@@ -1360,6 +1388,11 @@ def auto_pick_brief(
     absent (_repo_busy_reason), or it doesn't match repo_filter. repo_filter
     matches the brief's repo by full path or basename.
 
+    `repos_root`, when given, is also where a bare or `owner/name`-style
+    `repo:` value (e.g. 'devops', 'behindthedash/devops') resolves by
+    basename — see `_resolve_repo_dir`. Without it, such values are only
+    checked as a literal (almost always nonexistent) path, same as before.
+
     Release scoping (feat/release-triage): briefs are ranked blocker-first
     (`triage: blocker` < untriaged < `triage: deferred`), FIFO within each
     tier. When a brief's repo policy sets `release_gate` (the repo is in a
@@ -1374,12 +1407,13 @@ def auto_pick_brief(
     policy_cache: Dict[str, Optional[Dict[str, Any]]] = {}
 
     def _release_gate_for(repo: Any) -> Optional[str]:
-        r = str(repo or "").strip()
-        if not r or not Path(r).expanduser().is_dir():
+        resolved = _resolve_repo_dir(repo, repos_root)
+        if resolved is None:
             return None
-        if r not in policy_cache:
-            policy_cache[r] = _load_dashboard_policy(r)
-        pol = policy_cache[r]
+        key = str(resolved)
+        if key not in policy_cache:
+            policy_cache[key] = _load_dashboard_policy(key)
+        pol = policy_cache[key]
         gate = (pol or {}).get("release_gate")
         return str(gate) if gate else None
 
@@ -1420,11 +1454,11 @@ def auto_pick_brief(
         if gate and b.get("triage") != "blocker":
             skipped.append({"id": stem, "reason": f"release-gate:{gate}"})
             continue
-        busy = _repo_busy_reason(repo)
+        busy = _repo_busy_reason(repo, repos_root)
         if busy:
             skipped.append({"id": stem, "reason": busy})
             continue
-        remote_branch = _remote_spec_branch(repo, fm.get("target-spec"))
+        remote_branch = _remote_spec_branch(repo, fm.get("target-spec"), repos_root)
         if remote_branch:
             skipped.append({"id": stem, "reason": f"remote-spec-branch:{remote_branch}"})
             continue
@@ -2655,7 +2689,17 @@ def main(argv=None) -> int:
     unblocked_queue_total = sum(1 for b in queue_briefs if not b.get("blocked"))
 
     auto_pick = (
-        auto_pick_brief(queue_briefs, repo_filter=args.auto_repo) if args.auto else None
+        auto_pick_brief(
+            queue_briefs,
+            repo_filter=args.auto_repo,
+            # Bare/`owner/name` repo: values (create_handoff.py writes them
+            # verbatim, no normalization) resolve by basename against this
+            # dir. --repos when given; otherwise the same ~/projects default
+            # the /go front door itself uses for multi-repo resolution.
+            repos_root=args.repos or str(Path.home() / "projects"),
+        )
+        if args.auto
+        else None
     )
     if auto_pick is not None:
         log_auto_pick_miss(auto_pick, len(queue_briefs), repo_filter=args.auto_repo)
