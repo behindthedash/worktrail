@@ -180,6 +180,12 @@ DEFAULTS: Dict[str, Any] = {
     # flat agent_cli/agent_model/fallback_agent_cli keys above remain the
     # last-resort default when routing is unset everywhere.
     "routing": None,
+    # Opt-in gate for Route D "ready-to-implement" seeding (seed_backlog.py's
+    # find_ready_specs()): a repo must set this true for its specs to be
+    # auto-seeded as Route D implementation briefs. False by default — a repo
+    # that hasn't reviewed the feature never has its backlog silently drained
+    # into implementation runs.
+    "allow_seeded_implementation": False,
 }
 
 KNOWN_KEYS = set(DEFAULTS) | {"automerge"}
