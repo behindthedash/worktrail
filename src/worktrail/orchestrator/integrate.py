@@ -1072,7 +1072,7 @@ def integrate_one(
     search_result = _run_gh_with_retry(
         [
             "gh", "pr", "list", "--search", f"{name} {spec_id}",
-            "--json", "number,state,url,headRefName,isDraft", "--state", "open",
+            "--json", "number,state,url,headRefName,baseRefName,isDraft", "--state", "open",
         ],
         repo,
     )
