@@ -292,6 +292,63 @@ def plan_groups(
     if migration_patterns:
         base |= {t["id"] for t in impl if _touches_migration(t, migration_patterns)}
 
+    # Absorb pure single-writer continuations of a BASE task INTO base, rather
+    # than leaving them to become their own dependent group.
+    #
+    # A BASE task can qualify purely because it fans out (>=2 transitive
+    # dependents), even when its *immediate* dependent chain is a serial
+    # same-file rewrite with no independent branching of its own (e.g. 1.1 ->
+    # 1.2 -> 1.3, all three touching one file, with a separate task 3.2 as the
+    # actual fan-out consumer of the whole chain). Splitting that chain into
+    # its own stacked group buys no parallelism -- it is still strictly
+    # serialized behind base by the same-file edge -- but does create a race:
+    # the pipeline scheduler's "base merges before dependents start" gate
+    # leaves the chain's own group idle and blocked while base's PR fights a
+    # merge conflict against advancing `main`. If base's resolve strikes
+    # exhaust before the chain's group ever gets to integrate, the chain's
+    # fully-done, reviewed, tested work is orphaned and the whole dependent
+    # group cascades to quarantine with it -- confirmed live on worktrail's
+    # own repo: run go-20260813-194636, group "base" (task 1.1 alone) PR #379
+    # exhausted its conflict-resolve strikes while sibling tasks 1.2/1.3
+    # (group "feature-1", blocked on base's done-event) finished concurrently
+    # on their own task branches, requiring a manual rebuild of the group
+    # branch from task 1.3's commit chain to recover.
+    #
+    # Only a *pure* continuation is absorbed: the dependent must have no other
+    # unmet in-impl dep (a real join point, like a task consuming the whole
+    # chain, is deliberately excluded -- it keeps genuine fan-out value as its
+    # own group) and its own declared files must be a non-empty SUBSET of the
+    # accumulated base file set (an unrelated or partially-overlapping file
+    # set is new scope, not a continuation, and stays governed by the
+    # existing shared-file stacking logic instead). If more than one
+    # dependent of the same predecessor qualifies -- a genuine same-file fork,
+    # not a chain -- none of them are absorbed: there is no safe ordering
+    # between concurrent siblings to prefer, so grouping falls back to its
+    # pre-existing (safe) behavior for that shape.
+    base_files: set = set()
+    for b in base:
+        base_files |= _norm_files(by_id[b].get("files"))
+    frontier = list(base)
+    while frontier:
+        tid = frontier.pop()
+        candidates = []
+        for dep_id in sorted(dependents.get(tid, ())):
+            if dep_id in base:
+                continue
+            dep_task = by_id[dep_id]
+            other_deps = [d for d in dep_task.get("deps", []) if d in ids and d != tid]
+            if other_deps:
+                continue
+            dep_files = _norm_files(dep_task.get("files"))
+            if dep_files and dep_files <= base_files:
+                candidates.append(dep_id)
+        if len(candidates) != 1:
+            continue
+        absorbed_id = candidates[0]
+        base.add(absorbed_id)
+        base_files |= _norm_files(by_id[absorbed_id].get("files"))
+        frontier.append(absorbed_id)
+
     feat = ids - base
     parent = {tid: tid for tid in feat}
 
