@@ -38,7 +38,7 @@
       returns `original-created:`'s value as `since` when the brief carries that field; a brief
       with only `created:` (no `original-created:`) still returns `created:`'s value as `since`,
       unchanged from current behavior.
-- [ ] 3.4 [e2e] Run `PYTHONPATH=src pytest -q tests/router/test_consolidate_cluster.py
+- [x] 3.4 [e2e] Run `PYTHONPATH=src pytest -q tests/router/test_consolidate_cluster.py
       tests/router/test_check_brief_staleness.py`, then the full suite
       (`PYTHONPATH=src pytest -q`) and `PYTHONPATH=src python3 -m
       worktrail.orchestrator.orchestrate check`.
