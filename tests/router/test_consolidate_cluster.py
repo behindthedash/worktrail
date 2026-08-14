@@ -13,6 +13,7 @@ Run with:
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import subprocess
@@ -579,6 +580,131 @@ class MainCliDraftContract(ConsolidateClusterTestCase):
             ]
         )
         self.assertEqual(code, 1)
+
+
+# --------------------------------------------------------------------------- #
+# original_created propagation (stale-brief-precheck-consolidation-original-
+# created): the consolidated draft's original_created tracks the earliest
+# resolvable member's created:/original-created: timestamp, and that value
+# round-trips into the written brief's original-created: frontmatter line.
+# --------------------------------------------------------------------------- #
+
+
+class OriginalCreatedPropagation(ConsolidateClusterTestCase):
+    def _write_created_brief(self, filename: str, *, focus: str, created: str, quoted: bool = True) -> str:
+        """Write a brief whose `created:` line is either a quoted string
+        (parses as `str`) or bare (parses as PyYAML's native `datetime`)."""
+        created_line = f'created: "{created}"' if quoted else f"created: {created}"
+        path = self.queue_dir / filename
+        path.write_text(
+            "---\n"
+            f"id: {filename[:-3]}\n"
+            f'focus: "{focus}"\n'
+            f"{created_line}\n"
+            "status: queued\n"
+            "---\n\n"
+            f"## Focus\n\n{focus}\n",
+            encoding="utf-8",
+        )
+        return path.stem
+
+    def test_draft_original_created_is_earliest_member_timestamp(self):
+        """A multi-member draft whose members have different created:
+        timestamps yields original_created equal to the earliest one."""
+        m1 = self._write_created_brief(
+            "20260701-100000-alpha.md", focus="Alpha work", created="2026-07-05T10:00:00Z"
+        )
+        m2 = self._write_created_brief(
+            "20260701-100100-beta.md", focus="Beta work", created="2026-07-01T09:00:00Z"
+        )
+        m3 = self._write_created_brief(
+            "20260701-100200-gamma.md", focus="Gamma work", created="2026-07-10T12:00:00Z"
+        )
+
+        draft = cc.draft_consolidated_brief([m1, m2, m3], self.queue_dir)
+
+        self.assertEqual(
+            draft["original_created"],
+            datetime.datetime(2026, 7, 1, 9, 0, 0, tzinfo=datetime.timezone.utc).isoformat(),
+        )
+
+    def test_native_pyyaml_datetime_created_contributes_correctly(self):
+        """A member whose created: value is an unquoted (bare) ISO timestamp
+        -- parsed by PyYAML natively as a datetime.datetime, not a str --
+        still contributes to the earliest-timestamp computation."""
+        m1 = self._write_created_brief(
+            "20260701-100000-alpha.md",
+            focus="Alpha work",
+            created="2026-07-01T09:00:00",
+            quoted=False,
+        )
+        m2 = self._write_created_brief(
+            "20260701-100100-beta.md", focus="Beta work", created="2026-07-05T10:00:00Z"
+        )
+
+        draft = cc.draft_consolidated_brief([m1, m2], self.queue_dir)
+
+        self.assertEqual(
+            draft["original_created"],
+            datetime.datetime(2026, 7, 1, 9, 0, 0, tzinfo=datetime.timezone.utc).isoformat(),
+        )
+
+    def test_missing_or_unparseable_created_is_skipped_without_raising(self):
+        """A member with a missing created: field, and a member with an
+        unparseable created: value, are both skipped -- the surviving
+        member's timestamp still wins, and no exception propagates."""
+        m1 = _write_brief(self.queue_dir, "20260701-100000-alpha.md", focus="Alpha work")
+        m2 = self._write_created_brief(
+            "20260701-100100-beta.md", focus="Beta work", created="not-a-real-timestamp"
+        )
+        m3 = self._write_created_brief(
+            "20260701-100200-gamma.md", focus="Gamma work", created="2026-07-03T08:00:00Z"
+        )
+
+        draft = cc.draft_consolidated_brief([m1, m2, m3], self.queue_dir)
+
+        self.assertEqual(sorted(draft["member_ids"]), sorted([m1, m2, m3]))
+        self.assertEqual(
+            draft["original_created"],
+            datetime.datetime(2026, 7, 3, 8, 0, 0, tzinfo=datetime.timezone.utc).isoformat(),
+        )
+
+    def test_written_brief_carries_original_created_when_draft_has_it(self):
+        m1 = self._write_created_brief(
+            "20260701-100000-alpha.md", focus="Alpha work", created="2026-07-01T09:00:00Z"
+        )
+        m2 = self._write_created_brief(
+            "20260701-100100-beta.md", focus="Beta work", created="2026-07-05T10:00:00Z"
+        )
+        draft = cc.draft_consolidated_brief([m1, m2], self.queue_dir)
+        self.assertIn("original_created", draft)
+
+        _, content = cc._build_consolidated_brief_content(draft)
+
+        self.assertIn(f"original-created: {draft['original_created']}", content)
+        raw_yaml = content.split("---", 2)[1]
+        fm = yaml.safe_load(raw_yaml)
+        # written bare (unquoted), so it round-trips as a native datetime --
+        # confirm it parses back to the same instant, not just string-equal.
+        self.assertEqual(fm["original-created"].isoformat(), draft["original_created"])
+
+    def test_written_brief_omits_original_created_when_draft_lacks_it(self):
+        """Unchanged from current behavior: no member's created: parsed (or
+        no members at all), so the field is omitted entirely."""
+        draft = {
+            "title": "Consolidated",
+            "focus": "no timestamps here",
+            "suggested_approach": [],
+            "member_ids": ["m1", "m2"],
+        }
+        self.assertNotIn("original_created", draft)
+
+        _, content = cc._build_consolidated_brief_content(draft)
+
+        raw_yaml = content.split("---", 2)[1]
+        fm = yaml.safe_load(raw_yaml)
+        self.assertNotIn("original-created", fm)
+        self.assertNotIn("original-created:", content)
 
 
 if __name__ == "__main__":
