@@ -666,6 +666,10 @@ def load_policy(repo: Path) -> Dict[str, Any]:
     if not isinstance(policy["automerge"].get("enabled"), bool):
         meta["warnings"].append("automerge.enabled not boolean; forced to false")
         policy["automerge"]["enabled"] = False
+    if not isinstance(policy.get("allow_seeded_implementation"), bool):
+        meta["warnings"].append(
+            "allow_seeded_implementation not boolean; forced to false")
+        policy["allow_seeded_implementation"] = False
     for key in ("agent_cli", "fallback_agent_cli"):
         value = policy.get(key)
         if value is not None and value not in VALID_AGENT_CLIS:
