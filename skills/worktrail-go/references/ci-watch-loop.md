@@ -47,7 +47,8 @@ blocks up to 30 s and returns on a check_run event.)
    can merge the PR within seconds of checks going green, before this loop reacts, which
    makes `completed_pr_open` stale the instant it's written:
    ```bash
-   gh pr view "$PR_NUM" --repo "$OWNER/$REPO_NAME" --json state,mergedAt,autoMergeRequest,headRefOid
+   gh pr view "$PR_NUM" --repo "$OWNER/$REPO_NAME" \
+     --json state,mergedAt,autoMergeRequest,headRefOid,mergeStateStatus,statusCheckRollup
    ```
    - **Stale-head guard (only if this loop pushed a fixup — `$PUSH_SHA` is set, case 3
      below):** `state == "MERGED"` with `headRefOid` != `$PUSH_SHA` means the PR merged a
@@ -63,7 +64,38 @@ blocks up to 30 s and returns on a check_run event.)
      review-thread gate below (no live PR left to act on) —
      `worktrail-run-record finish "$RUN" --status "completed_and_merged" --merge-result "merged externally"`
      and stop.
-   - `state != "MERGED"` — **review-thread gate (mandatory before either branch below):** a
+   - `state != "MERGED"` — **merge-state guard (mandatory before the review-thread gate
+     below):** `gh pr checks --watch` reporting all-green, or `autoMergeRequest` being
+     armed, says nothing about whether GitHub will actually let the merge through — a
+     required-status-check *context* can carry a stray `CANCELLED` run alongside a later
+     `SUCCESS` run of the same context (concurrency-group races across
+     `opened`/`labeled`/`synchronize` events routinely produce this — e.g.
+     `gh pr create --label a --label b` fires one `labeled` webhook per label, and two
+     labels sharing one action-keyed concurrency group cancel each other), which GitHub's
+     branch-protection evaluation can still treat as blocking even though the newer run
+     passed (worktrail PR #393, 2026-08-14: `mergeStateStatus: BLOCKED` with every check
+     green in `gh pr checks` and `autoMergeRequest` armed — this loop finished
+     `completed_pr_open` on that basis and the merge stalled indefinitely until a human
+     noticed and manually re-ran the stray cancelled run). Check `mergeStateStatus` from
+     the query above before finishing on either branch that follows the review-thread gate:
+     - `BLOCKED` — scan `statusCheckRollup` for a `CANCELLED` entry whose `name` also has a
+       `SUCCESS` entry (same `name`, different run). Found: `gh run rerun <the CANCELLED
+       run's databaseId> --repo "$OWNER/$REPO_NAME"`, wait for it
+       (`gh run watch <databaseId> --repo "$OWNER/$REPO_NAME"`), then re-query
+       `mergeStateStatus`. Bounded to 2 rerun attempts total (each targets a fresh
+       `CANCELLED` entry if one remains) — does **not** increment `PATCH_ITER` (no code
+       changed, nothing was actually diagnosed as broken). Still `BLOCKED` after 2 rounds,
+       or no matching cancelled/success pair found: this is not self-healable by this
+       loop — `worktrail-run-record finish "$RUN" --status "blocked_product_decision"
+       --merge-result "mergeStateStatus stuck BLOCKED after merge-state guard; needs
+       manual branch-protection/ruleset inspection: <raw statusCheckRollup summary>"` and
+       stop.
+     - Any other value (`CLEAN`, `HAS_HOOKS`, `UNSTABLE`, `UNKNOWN`) — proceed to the
+       review-thread gate unchanged.
+     - `DIRTY` or `DRAFT` — a real blocker (merge conflict, draft PR), not this guard's
+       target; treat as case 4 below.
+   - **Review-thread gate (mandatory before either branch below, after the merge-state
+     guard above clears):** a
      required check going green only proves check pass/fail, never that reviewer findings
      (e.g. `security-review-llm`'s line comments) were actually resolved — datalena PR #2133
      accumulated 9 unresolved review threads across 4 rounds of findings that were all

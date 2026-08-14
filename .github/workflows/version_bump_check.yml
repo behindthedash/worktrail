@@ -16,8 +16,18 @@ on:
 # required check stays on the head SHA and blocks the merge/auto-merge even
 # after a newer run succeeds (observed on PRs #344-#346, 2026-08-13; each
 # needed a manual re-run to unblock). Same-action storms still dedupe.
+#
+# The group also includes the label name for labeled/unlabeled events: a PR
+# opened with two `gh pr create --label` flags fires two separate `labeled`
+# webhook events (one per label), which previously shared one
+# `...-labeled` group and cancelled each other -- reproducing the exact
+# stuck-merge failure above one layer up (PR #393, 2026-08-14:
+# `mergeStateStatus: BLOCKED` with every check green and auto-merge armed,
+# stalled until a human manually re-ran the stray cancelled run). Empty for
+# opened/synchronize/reopened (no `label` on the event payload), so those
+# keep deduping exactly as before.
 concurrency:
-  group: version-bump-check-${{ github.event.pull_request.number }}-${{ github.event.action }}
+  group: version-bump-check-${{ github.event.pull_request.number }}-${{ github.event.action }}-${{ github.event.label.name || '' }}
   cancel-in-progress: true
 
 jobs:
