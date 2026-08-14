@@ -1,6 +1,7 @@
 """Tests for workqueue/seed_backlog.py — proactive backlog → queue seeding."""
 
 import json
+import subprocess
 from pathlib import Path
 
 from worktrail.shared.brief_frontmatter import split_frontmatter
@@ -49,6 +50,65 @@ def _mk_citing_spec(repo: Path, spec_id: str, epic_id: str) -> None:
     tasks.mkdir()
     (tasks / "TASK-001.md").write_text(
         "---\nid: TASK-001\nstatus: completed\n---\n\nDone.\n", encoding="utf-8")
+
+
+def _opt_in(repo: Path) -> None:
+    specs = repo / "docs" / "specs"
+    specs.mkdir(parents=True, exist_ok=True)
+    (specs / "go-policy.yaml").write_text(
+        "allow_seeded_implementation: true\n", encoding="utf-8")
+
+
+def _mk_ready_spec(repo: Path, spec_id: str, task_id: str = "TASK-001") -> Path:
+    """A spec with one pending impl task carrying no `files:` — reaches the
+    `ready-to-implement` dashboard stage (the stale-bookkeeping/orchestrator-
+    stuck probes both require `files:` or a fanout_failed sidecar to divert
+    it elsewhere)."""
+    spec_dir = repo / "docs" / "specs" / spec_id
+    spec_dir.mkdir(parents=True)
+    (spec_dir / "spec.md").write_text(
+        f"# Spec {spec_id}\n\nApproved spec body, no open questions.\n",
+        encoding="utf-8")
+    tasks = spec_dir / "tasks"
+    tasks.mkdir()
+    (tasks / f"{task_id}.md").write_text(
+        f"---\nid: {task_id}\nstatus: pending\nkind: impl\n---\n\nDo the thing.\n",
+        encoding="utf-8")
+    return spec_dir
+
+
+def _mark_orchestrator_stuck(repos_root: Path, repo_name: str, spec_id: str) -> None:
+    status_dir = repos_root / f"{repo_name}-worktrees"
+    status_dir.mkdir(parents=True, exist_ok=True)
+    (status_dir / f"run-{spec_id}.status.json").write_text(
+        json.dumps({"phase": "fanout_failed"}), encoding="utf-8")
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+
+
+def _mk_stale_bookkeeping_spec(repo: Path, spec_id: str) -> Path:
+    """A spec whose sole pending impl task's `files:` are already committed on
+    the base branch — reaches `stale-bookkeeping`, not `ready-to-implement`."""
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "t@t")
+    _git(repo, "config", "user.name", "t")
+    spec_dir = repo / "docs" / "specs" / spec_id
+    spec_dir.mkdir(parents=True)
+    (spec_dir / "spec.md").write_text(f"# Spec {spec_id}\n", encoding="utf-8")
+    tasks = spec_dir / "tasks"
+    tasks.mkdir()
+    shipped = "src/thing.py"
+    (tasks / "TASK-001.md").write_text(
+        f"---\nid: TASK-001\nstatus: pending\nkind: impl\nfiles: [{shipped}]\n"
+        "dependencies: []\n---\n\nDo it.\n", encoding="utf-8")
+    target = repo / shipped
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("shipped\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "ship")
+    return spec_dir
 
 
 def _queued_briefs(queue_base: Path):
@@ -173,6 +233,149 @@ def test_non_epic_files_in_epics_dir_ignored(tmp_path):
         repos_root, queue_base=tmp_path / "wq", log=lambda _m: None)
     assert summary["seeded"] == []
     assert summary["unparseable_epics"] == []
+
+
+# ---------------------------------------------------------------------------
+# ready-to-implement (Route D) — find_ready_specs / seeded-implementation gate
+
+
+def test_find_ready_specs_without_optin_returns_nothing(tmp_path):
+    repos_root = tmp_path / "projects"
+    repo = _mk_repo(repos_root, "repo-a")
+    _mk_ready_spec(repo, "030-delta")
+
+    assert seed_backlog.find_ready_specs(repos_root) == []
+
+
+def test_ready_spec_without_optin_is_not_seeded(tmp_path):
+    repos_root = tmp_path / "projects"
+    repo = _mk_repo(repos_root, "repo-a")
+    _mk_ready_spec(repo, "030-delta")
+
+    summary = seed_backlog.seed_backlog(
+        repos_root, queue_base=tmp_path / "wq", log=lambda _m: None)
+    assert summary["seeded"] == []
+
+
+def test_ready_spec_optin_seeds_route_d_brief(tmp_path):
+    repos_root = tmp_path / "projects"
+    repo = _mk_repo(repos_root, "repo-a")
+    _opt_in(repo)
+    _mk_ready_spec(repo, "030-delta")
+    qbase = tmp_path / "wq"
+
+    findings = seed_backlog.find_ready_specs(repos_root)
+    assert [f["seed_key"] for f in findings] == ["repo-a:impl:030-delta"]
+    assert findings[0]["kind"] == "ready-to-implement"
+
+    summary = seed_backlog.seed_backlog(repos_root, queue_base=qbase, log=lambda _m: None)
+    assert [s["seed_key"] for s in summary["seeded"]] == ["repo-a:impl:030-delta"]
+    _path, fm = _queued_briefs(qbase)[0]
+    assert fm["seeded-from"] == "repo-a:impl:030-delta"
+    assert fm["recommended-route"] == "D"
+    assert fm["implementation-intent"] == "requested"
+    assert fm["target-spec"] == "030-delta"
+    assert fm["repo"] == "repo-a"
+    assert fm["status"] == "queued"
+
+
+def test_stale_bookkeeping_spec_is_excluded(tmp_path):
+    repos_root = tmp_path / "projects"
+    repo = _mk_repo(repos_root, "repo-a")
+    _opt_in(repo)
+    _mk_stale_bookkeeping_spec(repo, "031-echo")
+
+    assert seed_backlog.find_ready_specs(repos_root) == []
+
+
+def test_orchestrator_stuck_spec_is_excluded(tmp_path):
+    repos_root = tmp_path / "projects"
+    repo = _mk_repo(repos_root, "repo-a")
+    _opt_in(repo)
+    _mk_ready_spec(repo, "032-foxtrot")
+    _mark_orchestrator_stuck(repos_root, "repo-a", "032-foxtrot")
+
+    assert seed_backlog.find_ready_specs(repos_root) == []
+
+
+def test_ready_spec_done_brief_still_blocks_reseed(tmp_path):
+    """The seed key for a ready-to-implement spec is stable (no cited-count
+    suffix like the epic finder), so more pending work never re-arms it."""
+    repos_root = tmp_path / "projects"
+    repo = _mk_repo(repos_root, "repo-a")
+    _opt_in(repo)
+    spec_dir = _mk_ready_spec(repo, "030-delta")
+    qbase = tmp_path / "wq"
+    seed_backlog.seed_backlog(repos_root, queue_base=qbase, log=lambda _m: None)
+
+    picked = qbase / "picked"
+    picked.mkdir()
+    brief = next((qbase / "queue").glob("*.md"))
+    moved = picked / brief.name
+    moved.write_text(
+        brief.read_text(encoding="utf-8").replace(
+            "status: queued", "status: done"),
+        encoding="utf-8")
+    brief.unlink()
+    (spec_dir / "tasks" / "TASK-002.md").write_text(
+        "---\nid: TASK-002\nstatus: pending\nkind: impl\n---\n\nMore.\n",
+        encoding="utf-8")
+
+    again = seed_backlog.seed_backlog(repos_root, queue_base=qbase, log=lambda _m: None)
+    assert again["seeded"] == []
+    assert again["skipped_existing"] == 1
+
+
+def test_ready_spec_dry_run_creates_nothing(tmp_path):
+    repos_root = tmp_path / "projects"
+    repo = _mk_repo(repos_root, "repo-a")
+    _opt_in(repo)
+    _mk_ready_spec(repo, "030-delta")
+    qbase = tmp_path / "wq"
+
+    summary = seed_backlog.seed_backlog(
+        repos_root, queue_base=qbase, dry_run=True, log=lambda _m: None)
+    assert len(summary["seeded"]) == 1
+    assert summary["seeded"][0]["brief_id"] is None
+    assert not (qbase / "queue").is_dir() or not list((qbase / "queue").glob("*.md"))
+
+
+def test_ready_spec_go_repo_restricts_scan(tmp_path):
+    repos_root = tmp_path / "projects"
+    repo_a = _mk_repo(repos_root, "repo-a")
+    _opt_in(repo_a)
+    _mk_ready_spec(repo_a, "030-delta")
+    repo_b = _mk_repo(repos_root, "repo-b")
+    _opt_in(repo_b)
+    _mk_ready_spec(repo_b, "040-echo")
+
+    summary = seed_backlog.seed_backlog(
+        repos_root, go_repo="repo-b", queue_base=tmp_path / "wq",
+        log=lambda _m: None)
+    assert [s["repo"] for s in summary["seeded"]] == ["repo-b"]
+
+
+def test_cap_defers_across_needs_tasks_epic_and_ready(tmp_path):
+    repos_root = tmp_path / "projects"
+    repo = _mk_repo(repos_root, "repo-a")
+    _opt_in(repo)
+    _mk_needs_tasks_spec(repo, "010-alpha")
+    _mk_epic(repo, "001-payments", features=1)
+    _mk_ready_spec(repo, "030-delta")
+    qbase = tmp_path / "wq"
+
+    logs = []
+    summary = seed_backlog.seed_backlog(
+        repos_root, queue_base=qbase, max_seeds=2, log=logs.append)
+    assert len(summary["seeded"]) == 2
+    assert summary["dropped_over_cap"] == 1
+    assert any("deferred to the next sweep" in line for line in logs)
+    # deterministic order: needs-tasks first, then epics, then ready-to-implement
+    assert [s["kind"] for s in summary["seeded"]] == ["needs-tasks", "epic"]
+
+    second = seed_backlog.seed_backlog(repos_root, queue_base=qbase, log=lambda _m: None)
+    assert [s["kind"] for s in second["seeded"]] == ["ready-to-implement"]
+    assert [s["seed_key"] for s in second["seeded"]] == ["repo-a:impl:030-delta"]
 
 
 # ---------------------------------------------------------------------------
