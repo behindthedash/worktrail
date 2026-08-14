@@ -1,8 +1,8 @@
 ## 1. Policy gate
 
-- [ ] 1.1 Add `"allow_seeded_implementation": False` to `policy.py`'s `DEFAULTS`, with a comment
+- [x] 1.1 Add `"allow_seeded_implementation": False` to `policy.py`'s `DEFAULTS`, with a comment
       explaining the opt-in/default-off contract and pointing at this capability.
-- [ ] 1.2 In `load_policy()`, clamp a non-bool `allow_seeded_implementation` value back to
+- [x] 1.2 In `load_policy()`, clamp a non-bool `allow_seeded_implementation` value back to
       `False` with a `_meta.warnings` entry, mirroring the existing `automerge.enabled`
       bool-forcing block.
       Implements "Route D implementation seeding is opt-in per repo".
