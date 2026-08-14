@@ -474,13 +474,28 @@ def list_queue() -> Dict[str, Any]:
 def resolve(identifier: str, folder: Path) -> Dict[str, Any]:
     """Match identifier against .md files in `folder`.
 
-    Forms tried in order: full filename, stem, leading prefix; then stem suffix
-    (e.g. ``handoff-related-field-autodetect`` resolves
+    An identifier that is itself an absolute path to a file directly inside
+    `folder` resolves immediately -- callers throughout worktrail commonly hold
+    a brief's full claimed path rather than its bare id/filename (e.g. the `/go`
+    skill's own `$BRIEF_ID`, which is set from this function's own `candidates[0]`;
+    `decisions.py ask --brief`; the staleness/resumable-state checkers). Without
+    this, passing that same path back in here silently fails to match, since
+    none of the id/filename/prefix/suffix forms below ever equal a full path.
+
+    Otherwise, forms tried in order: full filename, stem, leading prefix; then
+    stem suffix (e.g. ``handoff-related-field-autodetect`` resolves
     ``20260604-113700-handoff-related-field-autodetect.md``); then ``id``
     frontmatter value.  The suffix pass runs only when the prefix pass finds no
     candidates, so a prefix match always takes precedence over a suffix-only match.
     Returns {"status": "match"|"none"|"ambiguous", "candidates": [path, ...]}.
     """
+    direct = Path(identifier)
+    if direct.is_absolute():
+        try:
+            if direct.is_file() and direct.resolve().parent == folder.resolve():
+                return {"status": "match", "candidates": [str(direct.resolve())]}
+        except OSError:
+            pass
     files = _md_files(folder)
     hits: set = set()
     for f in files:

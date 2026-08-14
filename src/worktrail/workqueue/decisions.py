@@ -230,22 +230,39 @@ def ask(
 
     result: Dict[str, Any] = {"status": "created", "id": path.stem,
                               "path": str(path), "brief": brief,
-                              "released": False}
+                              "released": False, "error": None}
     if brief:
         stamped = _stamp_brief(brief, path.stem, base)
         result["brief_stamped"] = stamped
-        if release_brief and stamped:
-            prev = os.environ.get("WORK_QUEUE_DIR")
-            os.environ["WORK_QUEUE_DIR"] = str(base)
-            try:
-                released = work_queue.release(brief)
-            finally:
-                if prev is None:
-                    os.environ.pop("WORK_QUEUE_DIR", None)
-                else:
-                    os.environ["WORK_QUEUE_DIR"] = prev
-            result["released"] = released.get("status") == "released"
-            result["release_detail"] = released.get("status")
+        if release_brief:
+            if not stamped:
+                result["error"] = (
+                    f"could not stamp brief {brief!r} with awaiting-decision: "
+                    f"{path.stem} (not found under queue/ or picked/, or "
+                    f"unwritable) -- the decision record was created at "
+                    f"{path}, but the brief was NOT released and stays "
+                    f"claimed; release it manually or re-file with the "
+                    f"correct --brief value")
+            else:
+                prev = os.environ.get("WORK_QUEUE_DIR")
+                os.environ["WORK_QUEUE_DIR"] = str(base)
+                try:
+                    released = work_queue.release(brief)
+                finally:
+                    if prev is None:
+                        os.environ.pop("WORK_QUEUE_DIR", None)
+                    else:
+                        os.environ["WORK_QUEUE_DIR"] = prev
+                result["released"] = released.get("status") == "released"
+                result["release_detail"] = released.get("status")
+                if not result["released"]:
+                    result["error"] = (
+                        f"brief {brief!r} was stamped with awaiting-decision: "
+                        f"{path.stem} but release failed "
+                        f"(status={released.get('status')!r}) -- it remains "
+                        f"in picked/ instead of being requeued blocked; "
+                        f"release it manually with `worktrail-work-queue "
+                        f"release`")
     work_queue._git_backup(f"decision ask {path.stem}")
     return result
 
@@ -459,6 +476,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
+    if args.cmd == "ask" and result.get("error"):
+        print(f"warning: {result['error']}", file=sys.stderr)
+
     if args.as_json:
         print(json.dumps(result, indent=2))
     elif args.cmd == "list":
@@ -471,8 +491,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                   + (f" — {row['question']}" if row["question"] else ""))
     else:
         print(result.get("path") or result.get("status"))
-    failed = isinstance(result, dict) and result.get("status") in (
-        "not-found", "still-open")
+    failed = isinstance(result, dict) and (
+        result.get("status") in ("not-found", "still-open")
+        or (args.cmd == "ask" and result.get("error")))
     return 1 if failed else 0
 
 
