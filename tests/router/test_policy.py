@@ -70,6 +70,14 @@ class TestDefaults(unittest.TestCase):
         self.assertEqual(pol["agent_model"], "gpt-5.4-mini")
         self.assertEqual(pol["fallback_agent_cli"], "opencode")
 
+    def test_allow_seeded_implementation_defaults_false(self):
+        pol = load_policy(Path(tempfile.mkdtemp()))
+        self.assertFalse(pol["allow_seeded_implementation"])
+
+    def test_allow_seeded_implementation_true_when_set(self):
+        pol = load_policy(_repo_with("allow_seeded_implementation: true\n"))
+        self.assertTrue(pol["allow_seeded_implementation"])
+
 
 class TestYamlSubset(unittest.TestCase):
     def test_scalars_nesting_and_lists(self):
@@ -117,6 +125,12 @@ class TestValidation(unittest.TestCase):
         self.assertFalse(pol["automerge"]["enabled"])
         self.assertEqual(pol["automerge"]["max_risk"], "low")
         self.assertTrue(any("automerge" in w for w in pol["_meta"]["warnings"]))
+
+    def test_allow_seeded_implementation_non_bool_clamped_false(self):
+        pol = load_policy(_repo_with("allow_seeded_implementation: yesplease\n"))
+        self.assertFalse(pol["allow_seeded_implementation"])
+        self.assertTrue(
+            any("allow_seeded_implementation" in w for w in pol["_meta"]["warnings"]))
 
     def test_invalid_agent_override_is_dropped(self):
         pol = load_policy(_repo_with("agent_cli: other\nfallback_agent_cli: invalid\n"))
