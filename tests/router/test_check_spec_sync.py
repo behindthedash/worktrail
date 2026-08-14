@@ -208,6 +208,19 @@ class CheckSpecSyncTests(unittest.TestCase):
         write(self.spec_dir / "user-request.md", "Please build the fixture.\n")
         self.assertEqual(check_spec(self.spec_dir), [])
 
+    def test_brainstorming_notes_never_shadows_parent_spec(self):
+        # Regression fixture for behindthedash spec 001-release-notes-self-audit
+        # (2026-08-14): the same find_parent_spec() lexicographic-last hazard as
+        # user-request.md above, but for brainstorming-notes.md, which carries no
+        # Status header by design and sorts after a dated spec filename (digits
+        # sort before lowercase letters in ASCII). Every PR in behindthedash
+        # false-positived on this until AUX_FILENAMES included it.
+        make_task(self.spec_dir, "TASK-001", "completed")
+        self.task_summary({"TASK-001": "completed"})
+        self.parent_spec("Completed")
+        write(self.spec_dir / "brainstorming-notes.md", "Some brainstorming.\n")
+        self.assertEqual(check_spec(self.spec_dir), [])
+
     def test_ready_to_implement_near_miss_is_flagged(self):
         # Regression fixture for devops PR #184 / spec
         # 102-fleet-dependabot-classifier: "Ready to implement" is a
