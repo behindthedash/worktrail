@@ -271,7 +271,8 @@ def resolvable_members(member_ids: List[str], queue_dir: Path) -> List[str]:
 def draft_consolidated_brief(member_ids: List[str], queue_dir: Path) -> Dict[str, Any]:
     """Draft a consolidated brief merged from the given (resolvable) members.
 
-    Returns `{"title", "focus", "suggested_approach", "member_ids", "members"}`:
+    Returns `{"title", "focus", "suggested_approach", "member_ids", "members"}`,
+    plus `original_created` when at least one member's timestamp parsed:
     `focus` joins each member's frontmatter `focus:` text; `suggested_approach`
     concatenates every "## Suggested approach" bullet found across the
     members' bodies (kept for backward compatibility -- prefer `members` for
@@ -281,13 +282,19 @@ def draft_consolidated_brief(member_ids: List[str], queue_dir: Path) -> Dict[str
     "change_kind", "body"}` per merged member -- `body` is that member's
     FULL content after its frontmatter fence, verbatim, so Key artifacts,
     Open questions, and any other section a flat focus/bullets merge would
-    drop survives into the consolidated brief.
+    drop survives into the consolidated brief. `original_created` is the
+    earliest `_member_created_at()` timestamp across all members (ISO-8601
+    string), so the consolidated brief's staleness search boundary can stay
+    pinned to the oldest member's true capture time rather than resetting to
+    this consolidation's own `created:` -- omitted when no member's
+    timestamp parsed.
     """
     queue_dir = Path(queue_dir)
     focuses: List[str] = []
     bullets: List[str] = []
     merged_ids: List[str] = []
     members: List[Dict[str, str]] = []
+    earliest_created: Optional[datetime.datetime] = None
     for member_id in member_ids:
         try:
             path = _local_resolve(member_id, queue_dir)
@@ -313,6 +320,11 @@ def draft_consolidated_brief(member_ids: List[str], queue_dir: Path) -> Dict[str
                     "body": _extract_body(text),
                 }
             )
+            member_created = _member_created_at(text)
+            if member_created is not None and (
+                earliest_created is None or member_created < earliest_created
+            ):
+                earliest_created = member_created
         except Exception:  # noqa: BLE001 -- degrade, never crash the preview
             continue
 
@@ -321,13 +333,16 @@ def draft_consolidated_brief(member_ids: List[str], queue_dir: Path) -> Dict[str
     else:
         title = f"Consolidated: {len(merged_ids)} related handoffs"
 
-    return {
+    draft: Dict[str, Any] = {
         "title": title,
         "focus": " / ".join(focuses),
         "suggested_approach": bullets,
         "member_ids": merged_ids,
         "members": members,
     }
+    if earliest_created is not None:
+        draft["original_created"] = earliest_created.isoformat()
+    return draft
 
 
 def build_preview(member_ids: List[str], queue_dir: Path) -> Dict[str, Any]:
