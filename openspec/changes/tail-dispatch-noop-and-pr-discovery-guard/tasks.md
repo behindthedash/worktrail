@@ -32,13 +32,13 @@
 
 ## 2. Operator-PR-discovery branch guard (`operator-pr-discovery-branch-guard`)
 
-- [ ] 2.1 Implement requirement: Discovered PR must correspond to the group's own branch.
+- [x] 2.1 Implement requirement: Discovered PR must correspond to the group's own branch.
       In `src/worktrail/orchestrator/integrate.py:integrate_one`,
       extend the `gh pr list --search` call's `--json` fields from
       `number,state,url,headRefName,isDraft` to
       `number,state,url,headRefName,baseRefName,isDraft` (design.md
       Decision 3).
-- [ ] 2.2 After parsing `matches = json.loads(search_result.stdout)`, filter
+- [x] 2.2 After parsing `matches = json.loads(search_result.stdout)`, filter
       to candidates whose `headRefName == gb` or `baseRefName == pr_base`
       before taking `matches[0]`; when no candidate survives the filter,
       fall through to the existing `gh pr create` path exactly as if
