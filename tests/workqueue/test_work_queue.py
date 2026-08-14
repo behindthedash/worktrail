@@ -216,6 +216,30 @@ class TestResolve(QueueTestBase):
         res = q.resolve("middle", self.queue)
         self.assertEqual(res["status"], "none")
 
+    def test_absolute_path_directly_inside_folder_matches(self):
+        """An identifier that is itself resolve()'s own candidates[0] output (a
+        full absolute path) must resolve -- callers throughout worktrail (the
+        `/go` skill's own $BRIEF_ID, decisions.py `ask --brief`, the staleness/
+        resumable-state checkers) commonly hold that path rather than a bare
+        id/filename/prefix. Regression for the 2026-08-14 `worktrail-decision
+        ask --release` silent-failure bug."""
+        p = self.write("20260531-141200-auth.md", focus="auth")
+        res = q.resolve(str(p), self.queue)
+        self.assertEqual(res["status"], "match")
+        self.assertEqual(res["candidates"], [str(p.resolve())])
+
+    def test_absolute_path_in_wrong_folder_does_not_match(self):
+        """An absolute path pointing at a file in a DIFFERENT folder than the
+        one being searched must not match -- direct-path resolution is scoped
+        to `folder`, same as every other match form."""
+        p = self.write("20260531-141200-auth.md", focus="auth")
+        res = q.resolve(str(p), self.picked)  # picked/, not queue/
+        self.assertEqual(res["status"], "none")
+
+    def test_absolute_path_to_nonexistent_file_does_not_match(self):
+        res = q.resolve(str(self.queue / "20260531-999999-nope.md"), self.queue)
+        self.assertEqual(res["status"], "none")
+
 
 class TestClaim(QueueTestBase):
     def test_claim_moves_and_stamps(self):

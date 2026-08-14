@@ -116,6 +116,36 @@ def test_ask_with_brief_release_stamps_and_requeues(qbase):
     assert fm["status"] == "queued"
 
 
+def test_ask_with_brief_as_absolute_path_release_stamps_and_requeues(qbase):
+    """`--brief` is commonly a full claimed-brief path, not a bare id -- the go
+    skill's own `$BRIEF_ID`/`decision-queue.md#file-a-decision` convention holds
+    the resolved path from `work_queue.py resolve`'s own `candidates[0]`, and
+    sibling CLIs (`worktrail-check-brief-staleness --brief`, etc.) already accept
+    a path. Reproduced live 2026-08-14: `ask --release` silently returned
+    `brief_stamped: false, released: false` with no error for exactly this case."""
+    brief_id = _mk_picked_brief(qbase)
+    brief_path = str(qbase / "picked" / f"{brief_id}.md")
+    result = _ask(qbase, brief=brief_path, release_brief=True)
+    assert result["brief_stamped"] is True
+    assert result["released"] is True
+    assert result["error"] is None
+    requeued = qbase / "queue" / f"{brief_id}.md"
+    assert requeued.is_file()
+    fm, _ = split_frontmatter(requeued.read_text(encoding="utf-8"))
+    assert fm["awaiting-decision"] == result["id"]
+    assert fm["status"] == "queued"
+
+
+def test_ask_release_with_unresolvable_brief_reports_error_loudly(qbase):
+    """A brief that cannot be resolved at all must fail loudly -- not return
+    `released: false` with no explanation and exit 0."""
+    result = _ask(qbase, brief="/nonexistent/nope.md", release_brief=True)
+    assert result["brief_stamped"] is False
+    assert result["released"] is False
+    assert result["error"]
+    assert "nope.md" in result["error"]
+
+
 # ---------------------------------------------------------------------------
 # blocking through work_queue.list
 
