@@ -92,25 +92,40 @@ Never default-select, never auto-close, and never infer the answer from the matc
 **`$AUTO_MODE=true`: no ask.** There is no human present to answer, and `AskUserQuestion` is not
 even a callable tool inside the headless one-shot `worktrail-go drain` spawns — do not attempt
 the call above. Phase 6 has not run yet for this dispatch, so open a minimal run record now
-(the same fields Phase 6 would use) purely to record the block, then finish it immediately:
+(the same fields Phase 6 would use) purely to record the block. **Before** finishing it, file
+the judgment call as a decision record and release the brief per
+`decision-queue.md#file-a-decision` — question: does the cited delivery actually close this
+brief?; options: "close as already-delivered" vs "still open — the commits are unrelated";
+context: the exact commits/PRs found:
 
 ```bash
 RUN=$(worktrail-run-record start --repo "$REPO" \
   --request "${BRIEF_FOCUS:-$ARG_INTENT}" --route "$ROUTE" --risk "${RISK_LEVEL:-medium}" \
   --agent "$INVOCATION_CONTEXT_AGENT" | python3 -c "import sys, json; print(json.load(sys.stdin)['path'])")
+DECISION=$(worktrail-decision ask \
+  --question "Does the cited delivery actually close brief $BRIEF_ID?" \
+  --background "The staleness guard found evidence -- $N commit(s)/$M merged PR(s) -- touching what brief $BRIEF_ID names, since it was captured ($created). Auto mode has no one to ask, so the brief is being released back to the queue pending this answer instead of dispatched or stranded." \
+  --why "Whether surfaced evidence is unrelated context or an actual delivery of the brief's own scope is a judgment call only a human can make from the evidence." \
+  --context "Evidence: ${EVIDENCE_SUMMARY}" \
+  --option "Close as already-delivered -- the evidence satisfies this brief" \
+  --option-cost "low -- work_queue.py done on next pass, no dispatch" \
+  --option "Still open -- the evidence is unrelated or only a partial delivery" \
+  --option-cost "medium -- dispatch proceeds on next pass" \
+  --recommendation "Read the evidence: if it plainly matches the brief's own requested scope, close; if it is context/prior-work the brief cites rather than delivers, proceed." \
+  --repo "$REPO" --brief "$BRIEF_ID" --release --json \
+  | python3 -c "import sys, json; print(json.load(sys.stdin)['id'])")
 worktrail-run-record finish "$RUN" --status blocked_product_decision --merge-result \
-  "Auto-mode staleness guard: brief may already be delivered -- $N commit(s)/$M merged PR(s) touched what it names since it was captured ($created). Needs a human to judge whether this closes the brief or is unrelated."
+  "Auto-mode staleness guard: brief may already be delivered -- $N commit(s)/$M merged PR(s) touched what it names since it was captured ($created). Decision $DECISION filed; brief released awaiting the answer."
 ```
 
-Before the `finish`, file the judgment call as a decision record and release the brief per
-`decision-queue.md#file-a-decision` — question: does the cited delivery actually close this
-brief?; options: "close as already-delivered" vs "still open — the commits are unrelated";
-context: the exact commits/PRs found. The human answers asynchronously, the brief unblocks, and
-the next drain pass either closes it (`work_queue.py done`, citing the answer) or proceeds with
-the dispatch. Do not call `work_queue.py done` yourself at this point, and do not release by
-hand — `worktrail-decision ask --brief ... --release` is what stamps `awaiting-decision`. Only
-if filing fails, fall back to leaving the brief claimed in `picked/` for the stalled-in-flight
-resume path (dashboard `resume` action). Stop; do not continue to Phase 6/7 for this dispatch.
+The next drain pass either closes the brief (`work_queue.py done`, citing the answer) or
+proceeds with the dispatch once the decision is answered — see
+`decision-queue.md#resume-from-decision`. Do not call `work_queue.py done` yourself at this
+point, and do not release by hand — `worktrail-decision ask --brief ... --release` above is what
+stamps `awaiting-decision`. Only if `worktrail-decision ask` itself fails (validation refusal
+you cannot satisfy, unwritable queue), fall back to `run-record finish` without a decision and
+leave the brief claimed in `picked/` for the stalled-in-flight resume path (dashboard `resume`
+action). Stop; do not continue to Phase 6/7 for this dispatch.
 
 **On "close as already-delivered"** — the queue mutation goes through `work_queue.py`, the single
 owner of brief lifecycle, exactly as every other close does. Cite the evidence in the note:

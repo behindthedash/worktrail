@@ -533,3 +533,43 @@ def test_route_execution_ask_sites_carry_auto_mode_fallbacks():
 
     # auto-mode.md indexes the route-execution fallbacks alongside Phase 5.5's.
     assert "auto-mode-ask-fallbacks" in automode
+
+
+def test_phase55_auto_mode_blocks_actually_file_a_decision():
+    """Handoff 20260813-104029: `brief-staleness-check.md`'s (and its two
+    siblings') `$AUTO_MODE=true` code block went straight from `run-record
+    start` to `run-record finish --status blocked_product_decision`, even
+    though the prose immediately below the block says to file a decision via
+    `decision-queue.md#file-a-decision` and release the brief *before* that
+    `finish`. An agent that pattern-matches the shown snippet (as the run
+    that produced brief `20260813-103458`'s stranding did -- its recorded
+    `merge_result` is a near-verbatim copy of this block's placeholder text)
+    skips the decision-queue step entirely and leaves the brief stuck in
+    `picked/` instead of released `awaiting-decision`, defeating
+    `human-decision-queue`'s own "punishes decision-less blocks" contract.
+    Each auto-mode code block must call `worktrail-decision ask` (with
+    `--release`) before `run-record finish`, not just say so in prose.
+    """
+    guard_dir = SKILLS_DIR / "worktrail-go" / "references"
+    targets = [
+        guard_dir / "brief-staleness-check.md",
+        guard_dir / "spec-collision-check.md",
+        guard_dir / "related-brief-collision-check.md",
+    ]
+    block_re = re.compile(r"```bash\n(.*?)```", re.DOTALL)
+
+    for path in targets:
+        text = path.read_text()
+        auto_blocks = [
+            b for b in block_re.findall(text) if "blocked_product_decision" in b
+        ]
+        assert auto_blocks, f"{path.name}: no auto-mode blocked_product_decision code block found"
+        for block in auto_blocks:
+            assert "worktrail-decision ask" in block, (
+                f"{path.name}: auto-mode block finishes blocked_product_decision without "
+                "calling `worktrail-decision ask` first -- the brief will be stranded in "
+                "picked/ instead of released awaiting-decision")
+            assert "--release" in block, (
+                f"{path.name}: `worktrail-decision ask` call is missing --release")
+            assert block.index("worktrail-decision ask") < block.index("run-record finish"), (
+                f"{path.name}: `worktrail-decision ask` must run before `run-record finish`")

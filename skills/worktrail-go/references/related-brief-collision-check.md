@@ -87,26 +87,39 @@ already done, so `work_queue.py done` is never called from this branch.
 even a callable tool inside the headless one-shot `worktrail-go drain` spawns — do not attempt
 the call above. Default to the safe side, same as an interactive "Pause and coordinate": do not
 open a worktree and do not start Phase 6/7. Phase 6 has not run yet for this dispatch, so open a
-minimal run record now (the same fields Phase 6 would use) purely to record the block, then
-finish it immediately:
+minimal run record now (the same fields Phase 6 would use) purely to record the block. **Before**
+finishing it, file the judgment call as a decision record and release the brief per
+`decision-queue.md#file-a-decision` — question: is the overlap with the actively claimed
+brief(s) acceptable, or should this dispatch wait?; options: "proceed — overlap acceptable" vs
+"wait for <ids> to land first"; context: the claimed ids and what they touch:
 
 ```bash
 RUN=$(worktrail-run-record start --repo "$REPO" \
   --request "${BRIEF_FOCUS:-$ARG_INTENT}" --route "$ROUTE" --risk "${RISK_LEVEL:-medium}" \
   --agent "$INVOCATION_CONTEXT_AGENT" | python3 -c "import sys, json; print(json.load(sys.stdin)['path'])")
+DECISION=$(worktrail-decision ask \
+  --question "Is the overlap with <id list> (actively claimed right now) acceptable, or should this dispatch wait?" \
+  --background "The related-brief collision check found <id list> actively claimed and in flight right now, named as related: by this brief. Auto mode has no one to ask, so the brief is being released back to the queue pending this answer instead of dispatched or stranded." \
+  --why "Whether the in-flight overlap is acceptable to proceed alongside, or should block this dispatch until it lands, is a judgment call only a human can make from what each brief touches." \
+  --context "Actively claimed related brief(s): <id list>; what they touch: <summary>." \
+  --option "Proceed -- overlap acceptable" \
+  --option-cost "low -- dispatch continues on next pass" \
+  --option "Wait for <ids> to land first" \
+  --option-cost "medium -- re-release with --next-check-after on next pass" \
+  --recommendation "Read what each in-flight brief touches: if the file/module surface is disjoint from this dispatch, proceed; if it overlaps, wait." \
+  --repo "$REPO" --brief "$BRIEF_ID" --release --json \
+  | python3 -c "import sys, json; print(json.load(sys.stdin)['id'])")
 worktrail-run-record finish "$RUN" --status blocked_product_decision --merge-result \
-  "Auto-mode related-brief collision: <id list> actively claimed right now, needs a human to judge whether the overlap is acceptable or this dispatch should wait."
+  "Auto-mode related-brief collision: <id list> actively claimed right now. Decision $DECISION filed; brief released awaiting the answer."
 ```
 
-Before the `finish`, file the judgment call as a decision record and release the brief per
-`decision-queue.md#file-a-decision` — question: is the overlap with the actively claimed
-brief(s) acceptable, or should this dispatch wait?; options: "proceed — overlap acceptable" vs
-"wait for <ids> to land first"; context: the claimed ids and what they touch. The human answers
-asynchronously; on "wait", the resuming session can re-release with `--next-check-after`. Do not
-call `work_queue.py done` yourself, and do not release by hand — `worktrail-decision ask
---brief ... --release` is what stamps `awaiting-decision`. Only if filing fails, fall back to
-leaving the brief claimed in `picked/` for the stalled-in-flight resume path (dashboard
-`resume` action). Stop; do not continue to Phase 6/7 for this dispatch.
+The human answers asynchronously; on "wait", the resuming session can re-release with
+`--next-check-after` — see `decision-queue.md#resume-from-decision`. Do not call
+`work_queue.py done` yourself, and do not release by hand — `worktrail-decision ask --brief ...
+--release` above is what stamps `awaiting-decision`. Only if `worktrail-decision ask` itself
+fails (validation refusal you cannot satisfy, unwritable queue), fall back to `run-record finish`
+without a decision and leave the brief claimed in `picked/` for the stalled-in-flight resume
+path (dashboard `resume` action). Stop; do not continue to Phase 6/7 for this dispatch.
 
 **On "proceed"** — continue to Phase 6/7 unchanged. Once Phase 6 has opened the run record,
 record the evidence and the decision on it, so a later session (including whoever lands the

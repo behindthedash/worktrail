@@ -114,25 +114,39 @@ warranted.
 **`$AUTO_MODE=true`: no ask.** There is no human present to answer, and `AskUserQuestion` is not
 even a callable tool inside the headless one-shot `worktrail-go drain` spawns — do not attempt
 the call above. Phase 6 has not run yet for this dispatch, so open a minimal run record now
-(the same fields Phase 6 would use) purely to record the block, then finish it immediately:
+(the same fields Phase 6 would use) purely to record the block. **Before** finishing it, file
+the judgment call as a decision record and release the brief per
+`decision-queue.md#file-a-decision` — question: is `$MATCHED_SPEC_ID` this work's own target
+spec, or a separate duplicate?; options: "own target spec — proceed against it" vs "separate
+duplicate — close/redirect the brief"; context: the match evidence already gathered:
 
 ```bash
 RUN=$(worktrail-run-record start --repo "$REPO" \
   --request "${BRIEF_FOCUS:-$ARG_INTENT}" --route "$ROUTE" --risk "${RISK_LEVEL:-medium}" \
   --agent "$INVOCATION_CONTEXT_AGENT" | python3 -c "import sys, json; print(json.load(sys.stdin)['path'])")
+DECISION=$(worktrail-decision ask \
+  --question "Is $MATCHED_SPEC_ID this work's own target spec, or a separate duplicate?" \
+  --background "Spec collision check found $MATCHED_SPEC_ID ($MATCHED_TITLE, Status: Implemented, files: $VERIFY_FILES all git-tracked on $BASE) matching this dispatch's request. Auto mode has no one to ask, so the brief is being released back to the queue pending this answer instead of dispatched or stranded." \
+  --why "Whether the matched spec is this work's own target or an unrelated pre-existing duplicate is a judgment call only a human can make from the evidence." \
+  --context "Match evidence: $MATCHED_SPEC_ID -- $MATCHED_TITLE, files: $VERIFY_FILES." \
+  --option "Own target spec -- proceed against it" \
+  --option-cost "low -- dispatch continues against $MATCHED_SPEC_ID on next pass" \
+  --option "Separate duplicate -- close/redirect the brief" \
+  --option-cost "low -- work_queue.py done on next pass, no dispatch" \
+  --recommendation "Read the match: if it plainly is the request's own scope, proceed against it; if it is a distinct pre-existing feature, close/redirect." \
+  --repo "$REPO" --brief "$BRIEF_ID" --release --json \
+  | python3 -c "import sys, json; print(json.load(sys.stdin)['id'])")
 worktrail-run-record finish "$RUN" --status blocked_product_decision --merge-result \
-  "Auto-mode spec collision: matches $MATCHED_SPEC_ID ($MATCHED_TITLE, Status: Implemented, files: $VERIFY_FILES all git-tracked on $BASE) -- needs a human to judge whether this is the fix/change's own target spec or a separate duplicate."
+  "Auto-mode spec collision: matches $MATCHED_SPEC_ID ($MATCHED_TITLE, Status: Implemented, files: $VERIFY_FILES all git-tracked on $BASE). Decision $DECISION filed; brief released awaiting the answer."
 ```
 
-Before the `finish`, file the judgment call as a decision record and release the brief per
-`decision-queue.md#file-a-decision` — question: is `$MATCHED_SPEC_ID` this work's own target
-spec, or a separate duplicate?; options: "own target spec — proceed against it" vs "separate
-duplicate — close/redirect the brief"; context: the match evidence already gathered. The human
-answers asynchronously and the next drain pass continues accordingly. Do not call
-`work_queue.py done` yourself, and do not release by hand — `worktrail-decision ask --brief ...
---release` is what stamps `awaiting-decision`. Only if filing fails, fall back to leaving the
-brief claimed in `picked/` for the stalled-in-flight resume path (dashboard `resume` action).
-Stop; do not continue to Phase 6/7 for this dispatch.
+The human answers asynchronously and the next drain pass continues accordingly — see
+`decision-queue.md#resume-from-decision`. Do not call `work_queue.py done` yourself, and do not
+release by hand — `worktrail-decision ask --brief ... --release` above is what stamps
+`awaiting-decision`. Only if `worktrail-decision ask` itself fails (validation refusal you
+cannot satisfy, unwritable queue), fall back to `run-record finish` without a decision and leave
+the brief claimed in `picked/` for the stalled-in-flight resume path (dashboard `resume`
+action). Stop; do not continue to Phase 6/7 for this dispatch.
 
 ## Dispatch source 2: brainstorm-sourced (no claimed brief)
 
