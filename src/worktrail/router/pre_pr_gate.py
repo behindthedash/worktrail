@@ -209,7 +209,7 @@ def spec_sync_drift(repo: Path) -> List[str]:
     for spec_dir in sorted(
         d for d in specs_root.iterdir() if d.is_dir() and re.match(r"^\d+-", d.name)
     ):
-        failures.extend(check_spec(spec_dir))
+        failures.extend(check_spec(spec_dir, repo=repo))
     return failures
 
 

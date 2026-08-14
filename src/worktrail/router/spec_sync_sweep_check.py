@@ -48,7 +48,7 @@ def check_repo_drift(repo: Path) -> Dict[str, Any]:
                 d for d in specs_root.iterdir() if d.is_dir() and re.match(r"^\d+-", d.name)
             )
             for spec_dir in spec_dirs:
-                for reason in check_spec(spec_dir):
+                for reason in check_spec(spec_dir, repo=repo):
                     findings.append({"spec": spec_dir.name, "reason": reason})
         return {"repo": str(repo), "findings": findings, "error": None}
     except Exception as exc:  # noqa: BLE001 - per-repo isolation is the point

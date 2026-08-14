@@ -13,11 +13,12 @@ parent spec's Status header still described a pre-implementation state).
 
 from __future__ import annotations
 
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
-from worktrail.router.check_spec_sync import check_spec
+from worktrail.router.check_spec_sync import check_spec, fix_spec
 
 
 def write(path: Path, content: str) -> None:
@@ -40,6 +41,40 @@ dependencies: []
 - [x] done
 """,
     )
+
+
+def make_task_with_files(
+    spec_dir: Path, task_id: str, status: str, files: list[str], kind: str | None = None
+) -> None:
+    files_block = "\n".join(f"  - {f}" for f in files)
+    kind_line = f"kind: {kind}\n" if kind is not None else ""
+    write(
+        spec_dir / "tasks" / f"{task_id}.md",
+        f"""---
+id: {task_id}
+title: "Test task"
+spec: docs/specs/000-fixture/fixture.md
+status: {status}
+dependencies: []
+files:
+{files_block}
+{kind_line}---
+
+## Definition of Done
+- [x] done
+""",
+    )
+
+
+def init_git_repo(root: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+
+
+def git_commit_all(root: Path) -> None:
+    subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "test commit"], cwd=root, check=True)
 
 
 class CheckSpecSyncTests(unittest.TestCase):
@@ -247,6 +282,176 @@ class CheckSpecSyncTests(unittest.TestCase):
                 self.task_summary({"TASK-001": "completed"})
                 self.parent_spec(status)
                 self.assertEqual(check_spec(self.spec_dir), [])
+
+
+class FixSpecTests(unittest.TestCase):
+    """--fix / fix_spec(): Check B's STALE_PARENT_STATUSES case only."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.spec_dir = Path(self.tmp.name) / "000-fixture"
+        self.spec_dir.mkdir(parents=True)
+
+    def parent_spec_path(self) -> Path:
+        return self.spec_dir / "2026-01-01--fixture.md"
+
+    def parent_spec(self, status: str, colon_inside_bold: bool = False) -> None:
+        status_line = f"**Status:** {status}" if colon_inside_bold else f"**Status**: {status}"
+        write(
+            self.parent_spec_path(),
+            f"""# Functional Specification: Fixture
+
+**Spec ID**: 000-fixture
+**Date**: 2026-01-01
+{status_line}
+**Version**: 1.0
+""",
+        )
+
+    def test_fix_flips_stale_status_to_implemented(self):
+        make_task(self.spec_dir, "TASK-001", "completed")
+        self.parent_spec("Draft")
+        result = fix_spec(self.spec_dir)
+        self.assertEqual(len(result), 1)
+        self.assertIn("Draft", result[0])
+        self.assertIn("Implemented", result[0])
+        self.assertIn("**Status**: Implemented", self.parent_spec_path().read_text())
+        # Re-running check_spec() confirms the drift is gone post-fix.
+        self.assertEqual(check_spec(self.spec_dir), [])
+
+    def test_fix_preserves_colon_inside_bold_convention(self):
+        make_task(self.spec_dir, "TASK-001", "completed")
+        self.parent_spec("Ready for Implementation", colon_inside_bold=True)
+        result = fix_spec(self.spec_dir)
+        self.assertEqual(len(result), 1)
+        text = self.parent_spec_path().read_text()
+        self.assertIn("**Status:** Implemented", text)
+        self.assertNotIn("**Status**: Implemented", text)
+
+    def test_fix_does_not_touch_missing_status_header(self):
+        make_task(self.spec_dir, "TASK-001", "completed")
+        write(
+            self.parent_spec_path(),
+            "# Functional Specification: Fixture\n\n"
+            "**Spec ID**: 000-fixture\n**Date**: 2026-01-01\n**Version**: 1.0\n",
+        )
+        before = self.parent_spec_path().read_text()
+        self.assertEqual(fix_spec(self.spec_dir), [])
+        self.assertEqual(self.parent_spec_path().read_text(), before)
+        # The missing-header drift is still reported -- never auto-fixed.
+        failures = check_spec(self.spec_dir)
+        self.assertEqual(len(failures), 1)
+        self.assertIn("no Status header", failures[0])
+
+    def test_fix_no_op_when_status_not_stale(self):
+        make_task(self.spec_dir, "TASK-001", "completed")
+        self.parent_spec("Backfill")
+        self.assertEqual(fix_spec(self.spec_dir), [])
+        self.assertIn("**Status**: Backfill", self.parent_spec_path().read_text())
+
+    def test_fix_no_op_when_not_all_terminal(self):
+        make_task(self.spec_dir, "TASK-001", "pending")
+        self.parent_spec("Draft")
+        self.assertEqual(fix_spec(self.spec_dir), [])
+        self.assertIn("**Status**: Draft", self.parent_spec_path().read_text())
+
+    def test_fix_does_not_touch_check_a_summary_drift(self):
+        # Check A (task-plan summary table) is a separate, unrelated file --
+        # --fix must never rewrite it, only the parent spec's Status header.
+        make_task(self.spec_dir, "TASK-001", "completed")
+        summary_path = self.spec_dir / "2026-01-01--fixture--tasks.md"
+        write(
+            summary_path,
+            "# Task Plan: Fixture\n\n"
+            "| Task | Title | Dependencies | Status |\n"
+            "|---|---|---|---|\n"
+            "| TASK-001 | Test | None | pending |\n",
+        )
+        self.parent_spec("Draft")
+        before_summary = summary_path.read_text()
+        result = fix_spec(self.spec_dir)
+        self.assertEqual(len(result), 1)  # only the Status header was fixed
+        self.assertEqual(summary_path.read_text(), before_summary)
+        # Check A drift is still reported after the fix.
+        failures = check_spec(self.spec_dir)
+        self.assertEqual(len(failures), 1)
+        self.assertIn("TASK-001", failures[0])
+        self.assertIn("pending", failures[0])
+
+
+class CheckSpecSyncFilesTrackedTests(unittest.TestCase):
+    """Check C: files: entries for completed impl tasks must be git-tracked."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.repo = Path(self.tmp.name)
+        init_git_repo(self.repo)
+        self.spec_dir = self.repo / "docs" / "specs" / "000-fixture"
+        self.spec_dir.mkdir(parents=True)
+        write(
+            self.spec_dir / "2026-01-01--fixture.md",
+            "# Functional Specification: Fixture\n\n"
+            "**Spec ID**: 000-fixture\n**Date**: 2026-01-01\n"
+            "**Status**: Implemented\n**Version**: 1.0\n",
+        )
+
+    def test_skipped_entirely_without_repo(self):
+        make_task_with_files(
+            self.spec_dir, "TASK-001", "completed", files=["src/does/not/exist.py"]
+        )
+        self.assertEqual(check_spec(self.spec_dir), [])
+
+    def test_passes_when_file_is_git_tracked(self):
+        tracked = self.repo / "src" / "real.py"
+        write(tracked, "# real\n")
+        git_commit_all(self.repo)
+        make_task_with_files(self.spec_dir, "TASK-001", "completed", files=["src/real.py"])
+        self.assertEqual(check_spec(self.spec_dir, repo=self.repo), [])
+
+    def test_flags_untracked_file(self):
+        git_commit_all(self.repo)  # empty commit so the repo isn't a bare unborn HEAD
+        make_task_with_files(
+            self.spec_dir, "TASK-001", "completed", files=["src/never/committed.py"]
+        )
+        failures = check_spec(self.spec_dir, repo=self.repo)
+        self.assertEqual(len(failures), 1)
+        self.assertIn("src/never/committed.py", failures[0])
+        self.assertIn("not git-tracked", failures[0])
+
+    def test_skips_non_repo_relative_entries(self):
+        git_commit_all(self.repo)
+        make_task_with_files(
+            self.spec_dir,
+            "TASK-001",
+            "completed",
+            files=["~/bin/deploy.sh", "/etc/hosts", "crontab (user-level)"],
+        )
+        self.assertEqual(check_spec(self.spec_dir, repo=self.repo), [])
+
+    def test_only_applies_to_completed_impl_tasks(self):
+        git_commit_all(self.repo)
+        make_task_with_files(
+            self.spec_dir, "TASK-001", "pending", files=["src/never/committed.py"]
+        )
+        make_task_with_files(
+            self.spec_dir,
+            "TASK-002",
+            "completed",
+            files=["src/other/missing.py"],
+            kind="tail",
+        )
+        self.assertEqual(check_spec(self.spec_dir, repo=self.repo), [])
+
+    def test_defaults_kind_to_impl_when_omitted(self):
+        git_commit_all(self.repo)
+        make_task_with_files(
+            self.spec_dir, "TASK-001", "completed", files=["src/never/committed.py"]
+        )
+        failures = check_spec(self.spec_dir, repo=self.repo)
+        self.assertEqual(len(failures), 1)
+        self.assertIn("src/never/committed.py", failures[0])
 
 
 if __name__ == "__main__":
