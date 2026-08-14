@@ -125,6 +125,43 @@ def find_needs_tasks_specs(
     return found
 
 
+def find_ready_specs(
+    repos_root: Path, go_repo: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """Every (repo, spec) pair in the `ready-to-implement` dashboard stage, for
+    repos that have opted into Route D implementation seeding.
+
+    Gated per repo by `load_policy(repo)["allow_seeded_implementation"]`: a
+    repo that hasn't opted in never has its `ready-to-implement` specs scanned
+    at all, let alone seeded.
+    """
+    names = discover_repo_names(repos_root)
+    if go_repo:
+        names = [n for n in names if n == go_repo]
+    found: List[Dict[str, Any]] = []
+    for name in names:
+        repo_path = repos_root / name
+        if not load_policy(repo_path).get("allow_seeded_implementation"):
+            continue
+        rows = dashboard.scan(repo_path / "docs" / "specs")
+        for row in sorted(rows, key=lambda r: str(r.get("id") or "")):
+            if row.get("stage") != "ready-to-implement":
+                continue
+            spec_id = row.get("id")
+            if not spec_id:
+                continue
+            spec_rel = resolve_spec_rel(repo_path, spec_id)
+            if spec_rel is None:
+                continue
+            found.append({
+                "kind": "ready-to-implement",
+                "repo": repo_path, "repo_name": name,
+                "id": spec_id, "spec_rel": spec_rel,
+                "seed_key": f"{name}:impl:{spec_id}",
+            })
+    return found
+
+
 def _epic_status(text: str) -> Optional[str]:
     match = _STATUS_LINE_RE.search(text)
     return match.group(1).strip() if match else None
@@ -265,6 +302,27 @@ def _needs_tasks_brief_kwargs(finding: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _ready_brief_kwargs(finding: Dict[str, Any]) -> Dict[str, Any]:
+    spec_id, repo_name = finding["id"], finding["repo_name"]
+    return {
+        "focus": (
+            f"Spec {spec_id} in {repo_name} is ready to implement (dashboard "
+            f"stage: ready-to-implement). Run the orchestrator against its "
+            f"existing, complete task DAG at {finding['spec_rel']} — do not "
+            f"re-plan or re-author the tasks."
+        ),
+        "context": (
+            f"Seeded automatically by the backlog seeder: the dashboard scan "
+            f"reported stage=ready-to-implement for {finding['spec_rel']}. "
+            f"The spec's task DAG is already complete, so this is an "
+            f"implementation pass, not a planning pass."
+        ),
+        "recommended_route": "D",
+        "implementation_intent": "requested",
+        "target_spec": spec_id,
+    }
+
+
 def _epic_brief_kwargs(finding: Dict[str, Any]) -> Dict[str, Any]:
     epic_id, repo_name = finding["id"], finding["repo_name"]
     cited = finding["cited"]
@@ -314,6 +372,7 @@ def seed_backlog(
     epic_findings = find_epic_gaps(repos_root, go_repo)
     unparseable = [f for f in epic_findings if f.get("unparseable")]
     candidates += [f for f in epic_findings if not f.get("unparseable")]
+    candidates += find_ready_specs(repos_root, go_repo)
     for finding in unparseable:
         log(f"seed-backlog: skipping epic {finding['repo_name']} "
             f"{finding['id']}: no '### Feature' decomposition headings found")
@@ -331,6 +390,8 @@ def seed_backlog(
     for finding in to_seed:
         kwargs = (_needs_tasks_brief_kwargs(finding)
                   if finding["kind"] == "needs-tasks"
+                  else _ready_brief_kwargs(finding)
+                  if finding["kind"] == "ready-to-implement"
                   else _epic_brief_kwargs(finding))
         entry = {
             "kind": finding["kind"], "repo": finding["repo_name"],
