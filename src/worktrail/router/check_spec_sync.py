@@ -45,15 +45,33 @@ Both checks are gated so they only fire once a spec's own tasks show it is
 fully done; specs with any task still pending/in_progress/implemented/reviewed
 are treated as in-progress work and skipped entirely.
 
-Exit code: 0 if no spec fails either check, 1 otherwise.
+  Check C -- files: entries not git-tracked (opt-in via --repo/`repo=`)
+    For each TASK-*.md with frontmatter status: completed and kind: impl (the
+    default kind), every `files:` entry that looks repo-relative (does not
+    start with `~` or `/` and contains no whitespace -- real fleet `files:`
+    data also carries `~/bin` deployment paths, `~/.gitnexus` artifact paths,
+    and plain non-file descriptions like "crontab (user-level)", none of
+    which this check can verify) must be git-tracked at the given repo's
+    current index. This check is skipped entirely unless a repo root is
+    supplied -- it has no meaning without one.
+
+--fix rewrites a spec's Status header (Check B's STALE_PARENT_STATUSES case
+only) to "Implemented" in place. Check A drift and a missing Status header
+are never auto-fixed -- there is no single correct value to synthesize for
+either.
+
+Exit code: 0 if no spec fails any check, 1 otherwise.
 """
 
 from __future__ import annotations
 
 import argparse
 import re
+import subprocess
 import sys
 from pathlib import Path
+
+from worktrail.taskformats.devkit.schema import read_task_file
 
 TASK_STATUS_VOCAB = {
     "pending",
@@ -177,8 +195,61 @@ def parent_spec_status(parent_spec: Path) -> str | None:
     return m.group(1).strip() if m else None
 
 
-def check_spec(spec_dir: Path) -> list[str]:
-    """Return a list of failure messages for this spec (empty = pass/skip)."""
+def _rewrite_parent_status(parent_spec: Path, new_status: str) -> bool:
+    """Rewrite the parent spec's Status header value to `new_status` in place,
+    preserving whichever of the "**Status**:"/"**Status:**" conventions the
+    file already uses. Returns True if the file changed."""
+    text = parent_spec.read_text(encoding="utf-8", errors="replace")
+    new_text, n = re.subn(
+        r"(^\*\*Status(?:\*\*:|:\*\*)\s*).+?\s*$",
+        lambda m: m.group(1) + new_status,
+        text,
+        count=1,
+        flags=re.M,
+    )
+    if n and new_text != text:
+        parent_spec.write_text(new_text, encoding="utf-8")
+        return True
+    return False
+
+
+def _git_tracked(repo: Path, paths: list[str]) -> set[str]:
+    """The subset of `paths` git tracks at `repo`'s current index. One batched
+    `git ls-files` call rather than one subprocess per path (mirrors
+    dashboard.py's `_git_tracked`). On any git failure, returns `paths` itself
+    -- "cannot confirm tracking" is treated conservatively as tracked, so a
+    transient git problem never manufactures a false files-tracked failure."""
+    if not paths:
+        return set()
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "ls-files", "-z", "--"] + paths,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=10,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return set(paths)
+    if result.returncode != 0:
+        return set(paths)
+    return {p for p in result.stdout.split("\0") if p}
+
+
+def _looks_repo_relative(entry: str) -> bool:
+    """True for `files:` entries this check can verify: repo-relative source
+    paths. False for `~`-prefixed deployment paths, absolute paths, and
+    plain non-file descriptions (e.g. "crontab (user-level)") -- real fleet
+    `files:` data carries all of these, and naively checking every entry
+    against git would false-positive on them fleet-wide."""
+    return not (entry.startswith("~") or entry.startswith("/") or any(ch.isspace() for ch in entry))
+
+
+def check_spec(spec_dir: Path, repo: Path | None = None) -> list[str]:
+    """Return a list of failure messages for this spec (empty = pass/skip).
+
+    `repo` is optional and enables Check C (files-tracked): when omitted,
+    Check C is skipped entirely, matching prior behavior exactly."""
     tasks_dir = spec_dir / "tasks"
     if not tasks_dir.is_dir():
         return []
@@ -221,7 +292,59 @@ def check_spec(spec_dir: Path) -> list[str]:
                     f"but parent spec Status is still '{status}'"
                 )
 
+    # Check C: files: entries for completed impl tasks not git-tracked on `repo`.
+    if repo is not None:
+        candidates: list[tuple[str, str]] = []
+        for tf in sorted(tasks_dir.glob("TASK-*.md")):
+            frontmatter, error, _body = read_task_file(tf)
+            if error or not isinstance(frontmatter, dict):
+                continue
+            if frontmatter.get("status") != "completed":
+                continue
+            if frontmatter.get("kind", "impl") != "impl":
+                continue
+            for entry in frontmatter.get("files") or []:
+                if isinstance(entry, str) and _looks_repo_relative(entry):
+                    candidates.append((tf.name, entry))
+        if candidates:
+            tracked = _git_tracked(repo, [entry for _, entry in candidates])
+            for tf_name, entry in candidates:
+                if entry not in tracked:
+                    failures.append(
+                        f"{tf_name}: files: entry '{entry}' is not git-tracked on {repo}"
+                    )
+
     return failures
+
+
+def fix_spec(spec_dir: Path) -> list[str]:
+    """Auto-fix mode for Check B's STALE_PARENT_STATUSES case only: when every
+    task is terminal and the parent spec's Status header is a disallow-listed
+    pre-implementation value, rewrite it to 'Implemented' in place. Returns
+    messages describing what was fixed (empty if nothing was fixed).
+
+    Never touches Check A (task-plan summary drift) or Check B's missing-header
+    case -- neither has a single correct value this function can synthesize,
+    so both stay report-only even under --fix."""
+    tasks_dir = spec_dir / "tasks"
+    if not tasks_dir.is_dir():
+        return []
+
+    task_statuses = find_task_statuses(tasks_dir)
+    if not task_statuses or not all(s in TERMINAL_STATUSES for s in task_statuses.values()):
+        return []
+
+    parent_spec = find_parent_spec(spec_dir)
+    if parent_spec is None:
+        return []
+
+    status = parent_spec_status(parent_spec)
+    if status is None or status.strip().lower() not in STALE_PARENT_STATUSES:
+        return []
+
+    if _rewrite_parent_status(parent_spec, "Implemented"):
+        return [f"{parent_spec.name}: Status header updated '{status}' -> 'Implemented'"]
+    return []
 
 
 def main() -> int:
@@ -232,6 +355,19 @@ def main() -> int:
         help="Path to the docs/specs directory (default: docs/specs, relative to cwd)",
     )
     parser.add_argument("--spec", default=None, help="Check only this spec folder name (e.g. 026-authenticated-feedback-capture)")
+    parser.add_argument(
+        "--repo",
+        default=None,
+        help="Repo root to verify files: entries are git-tracked against (enables Check C). "
+        "Omit to skip Check C entirely.",
+    )
+    parser.add_argument(
+        "--fix",
+        action="store_true",
+        help="Rewrite each spec's stale parent Status header to 'Implemented' (Check B's "
+        "STALE_PARENT_STATUSES case only). Check A drift and a missing Status header are "
+        "never auto-fixed and still reported afterward.",
+    )
     args = parser.parse_args()
 
     specs_root = Path(args.specs_root)
@@ -248,10 +384,17 @@ def main() -> int:
             print(f"error: spec not found under {specs_root}: {args.spec}", file=sys.stderr)
             return 2
 
+    repo = Path(args.repo) if args.repo else None
+
+    total_fixed = 0
     total_failures = 0
     checked = 0
     for spec_dir in spec_dirs:
-        failures = check_spec(spec_dir)
+        if args.fix:
+            for msg in fix_spec(spec_dir):
+                print(f"FIXED {spec_dir.name}: {msg}")
+                total_fixed += 1
+        failures = check_spec(spec_dir, repo=repo)
         if failures:
             checked += 1
             total_failures += len(failures)
@@ -261,8 +404,11 @@ def main() -> int:
         # PASS/SKIP specs are silent by default to keep output focused on
         # actionable drift; nothing else to report.
 
+    if total_fixed:
+        print(f"\n{total_fixed} spec(s) auto-fixed.")
+
     if total_failures:
-        print(f"\n{total_failures} drift issue(s) across {checked} spec(s). Run worktrail-check-spec-sync on the affected spec(s) to fix.")
+        print(f"\n{total_failures} drift issue(s) across {checked} spec(s). Run worktrail-check-spec-sync --fix on the affected spec(s) to fix what's fixable, or fix the rest by hand.")
         return 1
 
     print(f"spec sync guard: no drift detected across {len(spec_dirs)} spec(s).")
