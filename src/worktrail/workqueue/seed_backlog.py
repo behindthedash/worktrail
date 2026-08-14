@@ -372,6 +372,7 @@ def seed_backlog(
     epic_findings = find_epic_gaps(repos_root, go_repo)
     unparseable = [f for f in epic_findings if f.get("unparseable")]
     candidates += [f for f in epic_findings if not f.get("unparseable")]
+    candidates += find_ready_specs(repos_root, go_repo)
     for finding in unparseable:
         log(f"seed-backlog: skipping epic {finding['repo_name']} "
             f"{finding['id']}: no '### Feature' decomposition headings found")
@@ -389,6 +390,8 @@ def seed_backlog(
     for finding in to_seed:
         kwargs = (_needs_tasks_brief_kwargs(finding)
                   if finding["kind"] == "needs-tasks"
+                  else _ready_brief_kwargs(finding)
+                  if finding["kind"] == "ready-to-implement"
                   else _epic_brief_kwargs(finding))
         entry = {
             "kind": finding["kind"], "repo": finding["repo_name"],
