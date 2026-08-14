@@ -86,12 +86,19 @@ STALE_PARENT_STATUSES = {
 # verbatim capture artifact that sits beside spec.md in every devkit spec dir;
 # since find_parent_spec() takes the lexicographically last candidate, leaving
 # it in shadows spec.md and flags a phantom missing-Status drift fleet-wide.
+# `brainstorming-notes.md` is the same shadowing hazard: it carries no
+# Status header by design and sorts after a dated spec filename (e.g.
+# `2026-07-24--foo.md`, since digits sort before lowercase letters in
+# ASCII) -- confirmed live against behindthedash spec
+# 001-release-notes-self-audit, which false-positived a "no Status header"
+# drift on every PR in the repo because of exactly this gap.
 AUX_FILENAMES = {
     "data-model.md",
     "decision-log.md",
     "traceability-matrix.md",
     "technical-plan.md",
     "user-request.md",
+    "brainstorming-notes.md",
 }
 
 
