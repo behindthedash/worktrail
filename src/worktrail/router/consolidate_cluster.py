@@ -105,6 +105,54 @@ def _parse_frontmatter(text: str) -> Dict[str, str]:
     }
 
 
+def _member_created_at(text: str) -> Optional[datetime.datetime]:
+    """Read a member's earliest known creation timestamp from its frontmatter.
+
+    Prefers `original-created:` (stamped on a member that was itself already
+    a consolidated brief -- see `_build_consolidated_brief_content`) over
+    `created:`. Reads frontmatter via `split_frontmatter` directly rather
+    than `_parse_frontmatter()`: that helper's scalar-only filter drops
+    PyYAML's native `datetime.datetime`/`datetime.date` parse of a bare
+    (unquoted) ISO timestamp -- exactly how `created:`/`original-created:`
+    are written -- so going through it here would silently lose every such
+    value. Returns a UTC-aware `datetime`, or `None` on a missing or
+    unparseable value; degrades, never raises, matching this module's
+    existing defensive style.
+    """
+    try:
+        fm, _body = split_frontmatter(text)
+        value = fm.get("original-created")
+        if value is None:
+            value = fm.get("created")
+        if value is None:
+            return None
+
+        if isinstance(value, datetime.datetime):
+            dt = value
+        elif isinstance(value, datetime.date):
+            dt = datetime.datetime.combine(value, datetime.time.min)
+        elif isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return None
+            candidate = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
+            try:
+                dt = datetime.datetime.fromisoformat(candidate)
+            except ValueError:
+                try:
+                    dt = datetime.datetime.strptime(raw, "%Y-%m-%d")
+                except ValueError:
+                    return None
+        else:
+            return None
+
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=datetime.timezone.utc)
+        return dt.astimezone(datetime.timezone.utc)
+    except Exception:  # noqa: BLE001 -- degrade, never crash the preview
+        return None
+
+
 def _extract_suggested_approach(text: str) -> List[str]:
     """Return the list-item bullets under a `## Suggested approach` heading.
 
