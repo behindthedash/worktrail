@@ -2355,6 +2355,45 @@ class AutoPick(unittest.TestCase):
         self.assertEqual(result["pick"]["id"], "20260710-000000-mine")
         self.assertEqual(result["skipped"][0]["reason"], "repo-filter")
 
+    def test_bare_repo_name_resolves_against_repos_root(self):
+        """A brief captured with a bare `repo: myapp` (no path) must resolve
+        against `repos_root` instead of failing `Path(...).is_dir()` on the
+        literal string -- a brief that survives capture with a bare name
+        (create_handoff.py does not normalize it) must still be auto-pickable."""
+        briefs = [self._brief("20260701-000000-bare.md", "myapp")]
+        result = dashboard.auto_pick_brief(briefs, repos_root=str(self.root / "projects"))
+        self.assertEqual(result["pick"]["id"], "20260701-000000-bare")
+        self.assertEqual(result["skipped"], [])
+
+    def test_owner_slash_name_repo_resolves_against_repos_root(self):
+        """`owner/name`-style repo values (e.g. 'behindthedash/devops') resolve
+        by basename against repos_root, same as the repo_filter basename match."""
+        briefs = [self._brief("20260701-000000-ownername.md", "behindthedash/myapp")]
+        result = dashboard.auto_pick_brief(briefs, repos_root=str(self.root / "projects"))
+        self.assertEqual(result["pick"]["id"], "20260701-000000-ownername")
+        self.assertEqual(result["skipped"], [])
+
+    def test_repo_scoped_filter_does_not_skip_bare_name_as_repo_missing(self):
+        """Reproduces the live bug: a repo-scoped `/go REPO auto` matches a
+        bare-name brief on repo_filter's basename check, then must NOT turn
+        around and skip it as repo-missing for the same reason the filter
+        just matched it."""
+        briefs = [self._brief("20260701-000000-bare.md", "myapp")]
+        result = dashboard.auto_pick_brief(
+            briefs, repo_filter="myapp", repos_root=str(self.root / "projects")
+        )
+        self.assertEqual(result["pick"]["id"], "20260701-000000-bare")
+        self.assertEqual(result["skipped"], [])
+
+    def test_bare_repo_name_without_repos_root_still_repo_missing(self):
+        """No repos_root supplied -- unresolvable bare name still fails closed,
+        same as today (repos_root is an additional resolution path, not a
+        general bypass of the is_dir() check)."""
+        briefs = [self._brief("20260701-000000-bare.md", "myapp")]
+        result = dashboard.auto_pick_brief(briefs)
+        self.assertIsNone(result["pick"])
+        self.assertEqual(result["skipped"], [{"id": "20260701-000000-bare", "reason": "repo-missing"}])
+
     def test_empty_queue_returns_null_pick(self):
         result = dashboard.auto_pick_brief([])
         self.assertIsNone(result["pick"])
