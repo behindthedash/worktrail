@@ -32,7 +32,7 @@
       `finding["kind"] == "ready-to-implement"`.
       Implements "Seeding is bounded, deterministic, and loudly capped" (MODIFIED).
       Implements "Route D seed keys are deduplicated against the whole queue, never re-armed".
-- [ ] 3.2 [e2e] Confirm (no code change expected) that `existing_seed_keys()` and the shared
+- [x] 3.2 [e2e] Confirm (no code change expected) that `existing_seed_keys()` and the shared
       `max_seeds`/cap/deferred-logging path in `seed_backlog()` already apply uniformly across
       all three candidate kinds, and that `worktrail-drain`'s `seeded_backlog` summary key
       surfaces the new finder's entries via the existing merged `seeded` list — no drain code
