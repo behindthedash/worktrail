@@ -422,6 +422,9 @@ def _build_consolidated_brief_content(draft: Dict[str, Any]) -> Tuple[str, str]:
         f"focus: {focus_scalar}",
         "status: queued",
     ]
+    original_created = draft.get("original_created")
+    if original_created:
+        lines.append(f"original-created: {original_created}")
     if member_ids:
         lines.append("related:")
         lines.extend(f"  - {m}" for m in member_ids)
