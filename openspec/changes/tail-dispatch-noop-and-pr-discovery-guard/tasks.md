@@ -1,6 +1,7 @@
 ## 1. Zero-file tail-task no-op dispatch (`tail-task-noop-dispatch`)
 
-- [ ] 1.1 In `src/worktrail/orchestrator/dispatch.py:build_worker_prompt`,
+- [ ] 1.1 Implement requirement: Explicit no-op instruction for zero-file tail tasks.
+      In `src/worktrail/orchestrator/dispatch.py:build_worker_prompt`,
       after the existing `scope = ", ".join(task.get("files", [])) or "(see
       task file)"` line, compute `is_noop_tail = task.get("kind") in ("e2e",
       "cleanup") and not task.get("files")` and, when true, use an explicit
@@ -18,7 +19,8 @@
       changes; (b) the same `kind` with a non-empty `files` list renders
       the files list unchanged; (c) a non-tail `kind` with empty `files`
       still renders the pre-existing `"(see task file)"` fallback.
-- [ ] 1.3 Add a regression test against
+- [ ] 1.3 Pin requirement: No PR is opened for a tail task that made no commits.
+      Regression test against
       `integrate.detect_unreconciled_tail_evidence` (in
       `tests/orchestrator/test_live_tail_reconciliation.py` or
       `tests/orchestrator/test_integrate_complete.py`, alongside its
@@ -30,7 +32,8 @@
 
 ## 2. Operator-PR-discovery branch guard (`operator-pr-discovery-branch-guard`)
 
-- [ ] 2.1 In `src/worktrail/orchestrator/integrate.py:integrate_one`,
+- [ ] 2.1 Implement requirement: Discovered PR must correspond to the group's own branch.
+      In `src/worktrail/orchestrator/integrate.py:integrate_one`,
       extend the `gh pr list --search` call's `--json` fields from
       `number,state,url,headRefName,isDraft` to
       `number,state,url,headRefName,baseRefName,isDraft` (design.md
@@ -52,7 +55,9 @@
 
 ## 3. Verification
 
-- [ ] 3.1 Run `PYTHONPATH=src pytest -q` and confirm it is green, including
-      the new tests from sections 1 and 2.
-- [ ] 3.2 Run `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate
+- [ ] 3.1 [cleanup] Run `PYTHONPATH=src pytest -q` and confirm it is green,
+      including the new tests from sections 1 and 2. Verification-only —
+      no file changes expected.
+- [ ] 3.2 [cleanup] Run `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate
       check` (golden record/replay regression) and confirm it is green.
+      Verification-only — no file changes expected.
