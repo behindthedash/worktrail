@@ -48,6 +48,7 @@ def test_instruction_is_worktrail_native_and_value_gated():
 
 
 def test_main_blocks_once_per_session(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("CC_HEADLESS", raising=False)
     transcript = tmp_path / "transcript.jsonl"
     _write_transcript(transcript, "Write")
     monkeypatch.setattr(hook, "STATE_DIR", tmp_path / "state")
