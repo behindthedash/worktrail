@@ -24,7 +24,7 @@
 
 ## 3. Spec and tests
 
-- [ ] 3.1 Confirm `openspec/specs/stale-brief-precheck/spec.md`'s "History Search Is Bounded By
+- [x] 3.1 Confirm `openspec/specs/stale-brief-precheck/spec.md`'s "History Search Is Bounded By
       The Brief's Capture Time" requirement (via this change's delta spec) documents the
       `original-created:`-preferred-over-`created:` boundary computation and the consolidated-
       brief scenario.
