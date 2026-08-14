@@ -1,6 +1,6 @@
 ## 1. Zero-file tail-task no-op dispatch (`tail-task-noop-dispatch`)
 
-- [ ] 1.1 Implement requirement: Explicit no-op instruction for zero-file tail tasks.
+- [x] 1.1 Implement requirement: Explicit no-op instruction for zero-file tail tasks.
       In `src/worktrail/orchestrator/dispatch.py:build_worker_prompt`,
       after the existing `scope = ", ".join(task.get("files", [])) or "(see
       task file)"` line, compute `is_noop_tail = task.get("kind") in ("e2e",
@@ -10,7 +10,7 @@
       Decision 1). Leave the fallback unchanged for every other case
       (non-tail tasks with empty `files`, tail tasks with a non-empty
       `files` list).
-- [ ] 1.2 Add a regression test (alongside the existing `ROLE_CLEANUP`
+- [x] 1.2 Add a regression test (alongside the existing `ROLE_CLEANUP`
       coverage in `tests/orchestrator/test_dependency_fixes.py`, or
       `tests/orchestrator/test_dispatch_extras.py`) asserting: (a) a task
       with `kind: e2e`/`kind: cleanup` and empty `files: []` renders a
