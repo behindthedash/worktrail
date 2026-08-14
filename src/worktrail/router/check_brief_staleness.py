@@ -749,6 +749,10 @@ def _read_brief(path: Path) -> Tuple[Optional[str], Any, Optional[str]]:
     frontmatter + `## Focus` + `## Suggested approach`), rather than
     hand-rolling a second, subtly different parse. `created:` is not part of
     the seed contract, so it comes from `read_frontmatter` directly.
+    `original-created:` (stamped by brief consolidation to preserve the
+    earliest member's capture time) wins over `created:` when present and
+    non-empty, so the staleness search boundary is not reset by
+    consolidation itself.
     """
     try:
         from .handoff_seed import build_seed
@@ -770,7 +774,8 @@ def _read_brief(path: Path) -> Tuple[Optional[str], Any, Optional[str]]:
             f"could not read frontmatter of {path}: {exc!r}"
 
     text = seed.get("feature_idea") or seed.get("focus") or ""
-    return text, fm.get("created"), None
+    since = fm.get("original-created") or fm.get("created")
+    return text, since, None
 
 
 def _format_human(res: Dict[str, object]) -> str:

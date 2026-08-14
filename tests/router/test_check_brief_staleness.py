@@ -485,6 +485,41 @@ class TestCheckFailsOpen(unittest.TestCase):
                 self.assertIn("checked", res)
 
 
+class TestReadBrief(unittest.TestCase):
+    """Task 3.3 -- `_read_brief()` prefers `original-created:` over `created:`
+    for the `since` value it hands back, and still falls back to `created:`
+    unchanged when a brief carries no `original-created:` field."""
+
+    def _write_brief(self, extra_frontmatter: str, focus: str = "Touches src/widget.py.") -> Path:
+        d = tempfile.mkdtemp(prefix="brief-staleness-readbrief-")
+        p = Path(d) / "20260101-000000-some-brief.md"
+        p.write_text(
+            "---\nid: 20260101-000000-some-brief\ncreated: '2026-01-01T00:00:00-07:00'\n"
+            f"{extra_frontmatter}"
+            f"focus: |-\n  {focus}\nrepo: null\nstatus: queued\n---\n\n## Focus\n\n{focus}\n",
+            encoding="utf-8",
+        )
+        return p
+
+    def test_original_created_present_wins_as_since(self):
+        path = self._write_brief("original-created: '2025-11-01T00:00:00-07:00'\n")
+
+        text, since, error = cbs._read_brief(path)
+
+        self.assertIsNone(error)
+        self.assertEqual(since, "2025-11-01T00:00:00-07:00")
+        self.assertIn("src/widget.py", text)
+
+    def test_only_created_present_falls_back_to_created_unchanged(self):
+        path = self._write_brief("")
+
+        text, since, error = cbs._read_brief(path)
+
+        self.assertIsNone(error)
+        self.assertEqual(since, "2026-01-01T00:00:00-07:00")
+        self.assertIn("src/widget.py", text)
+
+
 class TestCli(unittest.TestCase):
     """Task 2.4 -- CLI contract: `--json` shape, `--brief` reading, exit 0 on
     every path including unanswerable ones."""
