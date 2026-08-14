@@ -125,6 +125,43 @@ def find_needs_tasks_specs(
     return found
 
 
+def find_ready_specs(
+    repos_root: Path, go_repo: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """Every (repo, spec) pair in the `ready-to-implement` dashboard stage, for
+    repos that have opted into Route D implementation seeding.
+
+    Gated per repo by `load_policy(repo)["allow_seeded_implementation"]`: a
+    repo that hasn't opted in never has its `ready-to-implement` specs scanned
+    at all, let alone seeded.
+    """
+    names = discover_repo_names(repos_root)
+    if go_repo:
+        names = [n for n in names if n == go_repo]
+    found: List[Dict[str, Any]] = []
+    for name in names:
+        repo_path = repos_root / name
+        if not load_policy(repo_path).get("allow_seeded_implementation"):
+            continue
+        rows = dashboard.scan(repo_path / "docs" / "specs")
+        for row in sorted(rows, key=lambda r: str(r.get("id") or "")):
+            if row.get("stage") != "ready-to-implement":
+                continue
+            spec_id = row.get("id")
+            if not spec_id:
+                continue
+            spec_rel = resolve_spec_rel(repo_path, spec_id)
+            if spec_rel is None:
+                continue
+            found.append({
+                "kind": "ready-to-implement",
+                "repo": repo_path, "repo_name": name,
+                "id": spec_id, "spec_rel": spec_rel,
+                "seed_key": f"{name}:impl:{spec_id}",
+            })
+    return found
+
+
 def _epic_status(text: str) -> Optional[str]:
     match = _STATUS_LINE_RE.search(text)
     return match.group(1).strip() if match else None
