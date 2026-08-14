@@ -19,7 +19,7 @@
       changes; (b) the same `kind` with a non-empty `files` list renders
       the files list unchanged; (c) a non-tail `kind` with empty `files`
       still renders the pre-existing `"(see task file)"` fallback.
-- [ ] 1.3 Pin requirement: No PR is opened for a tail task that made no commits.
+- [x] 1.3 Pin requirement: No PR is opened for a tail task that made no commits.
       Regression test against
       `integrate.detect_unreconciled_tail_evidence` (in
       `tests/orchestrator/test_live_tail_reconciliation.py` or
