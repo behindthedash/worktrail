@@ -40,7 +40,7 @@
 
 ## 4. Tests
 
-- [ ] 4.1 `tests/router/test_policy.py`: `allow_seeded_implementation` defaults to `False` when
+- [x] 4.1 `tests/router/test_policy.py`: `allow_seeded_implementation` defaults to `False` when
       unset, is `True` when the policy file sets it, and a non-bool value is clamped to `False`
       with a warning.
 - [ ] 4.2 `tests/workqueue/test_seed_backlog.py`: `find_ready_specs` returns nothing for a repo
