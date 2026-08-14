@@ -1079,6 +1079,10 @@ def integrate_one(
     if search_result.returncode == 0:
         try:
             matches = json.loads(search_result.stdout)
+            matches = [
+                m for m in matches
+                if m.get("headRefName") == gb or m.get("baseRefName") == pr_base
+            ]
             if matches:
                 match = matches[0]
                 if not _ensure_pr_ready(match):

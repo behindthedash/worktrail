@@ -698,7 +698,8 @@ class TransientGhFailureRetry(unittest.TestCase):
                     return Proc(0, json.dumps([{
                         "number": 7, "state": "OPEN",
                         "url": "https://github.com/owner/repo/pull/7",
-                        "headRefName": "operator/base", "isDraft": False,
+                        "headRefName": "operator/base", "baseRefName": "main",
+                        "isDraft": False,
                     }]), "")
                 return run(*args, **kwargs)
 

@@ -350,6 +350,7 @@ class OperatorPRDiscovery(unittest.TestCase):
                         "state": "OPEN",
                         "url": "https://github.com/owner/repo/pull/88",
                         "headRefName": "operator-custom-branch",
+                        "baseRefName": "main",
                     }
                 ]
             }
@@ -495,6 +496,7 @@ class MultipleGroupsWithOperatorPR(unittest.TestCase):
                         "state": "OPEN",
                         "url": "https://github.com/owner/repo/pull/20",
                         "headRefName": "operator-feature-1",
+                        "baseRefName": "full-mixed/base",
                     }
                 ]
             }
