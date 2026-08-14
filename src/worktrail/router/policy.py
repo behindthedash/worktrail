@@ -180,6 +180,12 @@ DEFAULTS: Dict[str, Any] = {
     # flat agent_cli/agent_model/fallback_agent_cli keys above remain the
     # last-resort default when routing is unset everywhere.
     "routing": None,
+    # Opt-in gate for Route D "ready-to-implement" seeding (seed_backlog.py's
+    # find_ready_specs()): a repo must set this true for its specs to be
+    # auto-seeded as Route D implementation briefs. False by default — a repo
+    # that hasn't reviewed the feature never has its backlog silently drained
+    # into implementation runs.
+    "allow_seeded_implementation": False,
 }
 
 KNOWN_KEYS = set(DEFAULTS) | {"automerge"}
@@ -660,6 +666,10 @@ def load_policy(repo: Path) -> Dict[str, Any]:
     if not isinstance(policy["automerge"].get("enabled"), bool):
         meta["warnings"].append("automerge.enabled not boolean; forced to false")
         policy["automerge"]["enabled"] = False
+    if not isinstance(policy.get("allow_seeded_implementation"), bool):
+        meta["warnings"].append(
+            "allow_seeded_implementation not boolean; forced to false")
+        policy["allow_seeded_implementation"] = False
     for key in ("agent_cli", "fallback_agent_cli"):
         value = policy.get(key)
         if value is not None and value not in VALID_AGENT_CLIS:
