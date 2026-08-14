@@ -6,11 +6,11 @@
       `datetime.datetime`/`datetime.date` value is not dropped, and returns a UTC-aware
       `datetime` (or `None` on missing/unparseable input) — degrade, never raise, matching this
       module's existing defensive style.
-- [ ] 1.2 In `draft_consolidated_brief()`, call that helper for each resolvable member while
+- [x] 1.2 In `draft_consolidated_brief()`, call that helper for each resolvable member while
       building `members`, track the earliest parsed timestamp across all members, and include
       it on the returned dict as `original_created` (an ISO-8601 string, or omitted/`None` when
       no member's timestamp parsed).
-- [ ] 1.3 In `_build_consolidated_brief_content()`, when `draft.get("original_created")` is
+- [x] 1.3 In `_build_consolidated_brief_content()`, when `draft.get("original_created")` is
       present, write it as an additional `original-created:` frontmatter line alongside the
       existing `created:` line (which continues to record true consolidation time via
       `now.isoformat(...)`).
@@ -28,7 +28,7 @@
       The Brief's Capture Time" requirement (via this change's delta spec) documents the
       `original-created:`-preferred-over-`created:` boundary computation and the consolidated-
       brief scenario.
-- [ ] 3.2 Add unit tests in `tests/router/test_consolidate_cluster.py` covering: a multi-member
+- [x] 3.2 Add unit tests in `tests/router/test_consolidate_cluster.py` covering: a multi-member
       draft whose members have different `created:` timestamps yields `original_created` equal
       to the earliest one; a member with a native-PyYAML-datetime `created:` value contributes
       correctly; a member with a missing/unparseable `created:` is skipped without raising; the
