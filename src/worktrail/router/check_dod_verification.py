@@ -116,15 +116,19 @@ def derive_dod_checks(frontmatter: dict, body: str, task_relpath: str) -> list[d
 
 def check_task_file(repo: Path, task_path: Path) -> list[str]:
     """Run every `dod-checks` entry for one task file. Empty list means pass,
-    not-completed, or no `dod-checks` declared."""
-    frontmatter, error, _body = read_task_file(task_path)
+    not-completed, no `dod-checks` declared and derivation yields nothing, or
+    an explicit `dod-checks` that all pass."""
+    frontmatter, error, body = read_task_file(task_path)
     if error or not frontmatter:
         return []
     if frontmatter.get("status") != "completed":
         return []
     checks = frontmatter.get("dod-checks")
     if not checks:
-        return []
+        task_relpath = str(task_path.resolve().relative_to(repo.resolve()))
+        checks = derive_dod_checks(frontmatter, body, task_relpath)
+        if not checks:
+            return []
 
     failures: list[str] = []
     for check in checks:
