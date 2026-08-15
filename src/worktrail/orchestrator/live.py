@@ -333,7 +333,48 @@ def apply_run_plan(
     merged, notes = _runplan.apply_to_tasks(tasks, plan)
     for n in notes:
         print(f"{_ts()} {n}")
+    _record_plan_fingerprint(repo, spec_rel, plan)
     return merged
+
+
+def _record_plan_fingerprint(repo: "Path", spec_rel: str, plan) -> None:
+    """Stamp which compiled RunPlan this run is executing, into the journal.
+
+    Group membership is derived from each task's `deps`/`files`
+    (`coordinator.plan_groups`), so two compiles of the same change that infer
+    different values produce different groups for what is nominally the same
+    run. That happened in run full-1786812908: two plans 108s apart disagreed on
+    `deps`, `files`, and `kind`, giving `base = [1.1, 1.2, 1.3, 1.4, 2.1, ...]`
+    under one and `base = [1.1, 1.2, 1.3]` under the other.
+
+    Nothing recorded which plan any phase actually used, so the drift was only
+    reconstructable by noticing two files in `runplans/` after the fact. Stamping
+    the fingerprint makes it a first-class journal fact instead. Best-effort:
+    observability must never take a run down.
+    """
+    fp = getattr(plan, "fingerprint", None)
+    if not fp:
+        return
+    print(f"{_ts()} run plan: fingerprint={fp[:12]} source={getattr(plan, 'source', '?')}")
+    try:
+        jp = journal_path_for(repo, spec_rel)
+        journal = json.loads(jp.read_text()) if jp.exists() else {}
+        seen = journal.get("plan_fingerprints") or []
+        if fp not in seen:
+            seen.append(fp)
+        journal["plan_fingerprints"] = seen
+        journal["plan_fingerprint"] = fp
+        if len(seen) > 1:
+            print(
+                f"{_ts()}   !! PLAN DRIFT: this spec has compiled to "
+                f"{len(seen)} distinct run plans in this journal "
+                f"({', '.join(f[:12] for f in seen)}) -- group membership may "
+                f"differ between phases; see brief 20260815-115257"
+            )
+        jp.parent.mkdir(parents=True, exist_ok=True)
+        jp.write_text(json.dumps(journal, indent=2))
+    except Exception as exc:  # best-effort: observability never takes a run down
+        print(f"{_ts()} run plan: could not record fingerprint ({exc})")
 
 
 def journal_path_for(repo: "Path", spec_rel: str) -> Path:
@@ -576,6 +617,36 @@ def journal_foreign_task_ids(entries: list, tasks: list) -> set[str]:
         if task_id and task_id not in task_ids:
             foreign.add(task_id)
     return foreign
+
+
+def group_is_terminal(g: dict, by_id: dict, terminal_statuses: set) -> bool:
+    """True only when EVERY task this group claims has reached a terminal status.
+
+    Fails **closed** on membership drift. The previous form filtered the
+    comprehension with `if tid in by_id`, so a group member absent from `by_id`
+    was silently skipped -- and `all()` over the surviving subset returns True.
+    A group could therefore be declared terminal, and handed to the
+    integrate/verify pool, while tasks it nominally owns were still running;
+    their commits then never reach the group PR and nothing reports it
+    (brief 20260815-115257).
+
+    Membership drift is real, not theoretical: `plan_groups()` derives grouping
+    from each task's `deps`/`files`, and compiling the same spec twice can yield
+    different values for both (see `conductor/compile.py`'s inference pass), so
+    `groups` and `by_id` can legitimately disagree about who owns what. Treat an
+    unknown member as not-terminal and say so, rather than quietly shipping the
+    group without it.
+    """
+    unknown = [tid for tid in g["tasks"] if tid not in by_id]
+    if unknown:
+        print(
+            f"{_ts()}   !! GROUP [{g.get('name', '?')}] not terminal: "
+            f"{len(unknown)} member(s) missing from the run's task table "
+            f"({', '.join(sorted(unknown))}) -- plan drift between grouping and "
+            f"fan-out; refusing to integrate a group whose membership is unresolved"
+        )
+        return False
+    return all(by_id[tid].get("status") in terminal_statuses for tid in g["tasks"])
 
 
 def validate_task_metadata(tasks: list) -> None:
@@ -3616,9 +3687,7 @@ def _pipeline_scheduler(
     terminal_statuses = coordinator.DONE | coordinator.FAILED_STATUSES
 
     def _group_is_terminal(g: dict) -> bool:
-        return all(
-            by_id[tid].get("status") in terminal_statuses for tid in g["tasks"] if tid in by_id
-        )
+        return group_is_terminal(g, by_id, terminal_statuses)
 
     def _integrate_verify_group(g: dict) -> None:
         """Background IV worker: integrate then verify one group.
@@ -4263,7 +4332,7 @@ def _pipeline_scheduler(
             integrate_module._mark_integrate_complete_if_terminal(
                 journal_path, groups, tail_res["tasks"]
             )
-    unreconciled_tail = integrate_module.detect_unreconciled_tail_evidence(
+    unreconciled_tail = integrate_module.detect_unreconciled_evidence(
         repo, remote, base, spec_id, wt_base, (tail_res or {}).get("tasks", tasks)
     )
     if unreconciled_tail:

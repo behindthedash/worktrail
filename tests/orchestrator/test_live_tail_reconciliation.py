@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Integration coverage: `_pipeline_scheduler`'s tail-dispatch block must run
 `integrate.reconcile_unreconciled_tail_evidence` over
-`integrate.detect_unreconciled_tail_evidence`'s findings before calling
+`integrate.detect_unreconciled_evidence`'s findings before calling
 `integrate._record_unreconciled_tail_evidence`, and must skip reconciliation
 entirely (leaving only the existing clear-when-empty journal write) when
 there are no findings.
@@ -60,7 +60,7 @@ class PipelineSchedulerReconciliationTest(unittest.TestCase):
             integrate_one, _ = _make_integrate_one()
 
             with unittest.mock.patch.object(
-                integrate, "detect_unreconciled_tail_evidence", return_value=[_finding()]
+                integrate, "detect_unreconciled_evidence", return_value=[_finding()]
             ), unittest.mock.patch.object(
                 integrate, "reconcile_unreconciled_tail_evidence", side_effect=fake_reconcile
             ) as reconcile_mock, unittest.mock.patch.object(
@@ -84,7 +84,7 @@ class PipelineSchedulerReconciliationTest(unittest.TestCase):
             integrate_one, _ = _make_integrate_one()
 
             with unittest.mock.patch.object(
-                integrate, "detect_unreconciled_tail_evidence", return_value=[]
+                integrate, "detect_unreconciled_evidence", return_value=[]
             ), unittest.mock.patch.object(
                 integrate, "reconcile_unreconciled_tail_evidence"
             ) as reconcile_mock, unittest.mock.patch.object(
