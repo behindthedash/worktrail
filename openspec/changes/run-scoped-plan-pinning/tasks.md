@@ -63,7 +63,7 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [cleanup] Run `PYTHONPATH=src pytest -q` and confirm the full suite is green,
+- [x] 2.1 [cleanup] Run `PYTHONPATH=src pytest -q` and confirm the full suite is green,
       including the new and existing `test_apply_run_plan_autocompile.py` /
       `test_plan_fingerprint_record.py` cases. Tagged `[cleanup]` (tail kind): this needs
       the implementation and test task above merged first, not fanned out alongside it.
