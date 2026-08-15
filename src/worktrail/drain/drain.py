@@ -443,15 +443,16 @@ def record_capacity_gate(cache_path: Path, agent: str, failure_class: str,
     "agent:model" keys -- drain.py has no model concept of its own, and
     capacity_gated() already matches a bare key by exact agent-name equality.
     """
-    data = agent_capacity.load(cache_path)
-    data.setdefault("providers", {})[agent] = {
-        "status": "unavailable",
-        "failure_class": failure_class,
-        "checked_at": datetime.now(timezone.utc).isoformat(),
-        "retry_after": retry_after.isoformat(),
-        "source": "drain",
-    }
-    agent_capacity.save(data, cache_path)
+    with agent_capacity.write_lock(cache_path):
+        data = agent_capacity.load(cache_path)
+        data.setdefault("providers", {})[agent] = {
+            "status": "unavailable",
+            "failure_class": failure_class,
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+            "retry_after": retry_after.isoformat(),
+            "source": "drain",
+        }
+        agent_capacity.save(data, cache_path)
 
 
 # ---------------------------------------------------------------------------
