@@ -273,6 +273,27 @@ class CheckTaskFileTests(unittest.TestCase):
         failures = check_task_file(self.repo, task)
         self.assertEqual(len(failures), 2)
 
+    def test_explicit_dod_checks_skip_derivation_even_when_files_would_fail_derived_checks(
+        self,
+    ) -> None:
+        # files: points at a file containing a stub marker (would fail a
+        # derived no_stub_markers check), and the body has an unchecked AC
+        # box (would fail a derived ac_checkboxes_complete check) -- but the
+        # task declares explicit dod-checks that all pass, so derivation
+        # must never run and neither failure should surface.
+        (self.repo / "src").mkdir()
+        (self.repo / "src" / "foo.py").write_text("# TODO: fix later\n", encoding="utf-8")
+        task = self.repo / "docs" / "specs" / "000-fixture" / "tasks" / "TASK-001.md"
+        task.parent.mkdir(parents=True, exist_ok=True)
+        task.write_text(
+            "---\nid: TASK-001\ntitle: Fixture\nspec: 000-fixture\n"
+            "status: completed\nfiles:\n  - src/foo.py\n"
+            "dod-checks:\n  - type: file_exists\n    path: src/foo.py\n"
+            "---\n\n## Acceptance Criteria\n\n- [ ] not actually checked\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(check_task_file(self.repo, task), [])
+
 
 class CheckChangedSpecsTests(unittest.TestCase):
     def setUp(self) -> None:

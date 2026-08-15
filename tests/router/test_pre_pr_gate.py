@@ -10,6 +10,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from worktrail.router.check_dod_verification import audit_all_specs
 from worktrail.router.policy import load_policy
 from worktrail.router.pre_pr_gate import (
     CLARIFICATION_INTEGRITY_DRIFT_EXIT, DOD_VERIFICATION_DRIFT_EXIT,
@@ -624,6 +625,32 @@ class TestDodVerificationDerivationGate(unittest.TestCase):
             "## Acceptance Criteria\n\n- [x] does the thing\n",
         )
         self._commit(repo, "add task")
+        self.assertEqual(main(["--repo", repo]), 0)
+
+    def test_all_flag_reports_pre_existing_backlog_drift_diff_scoped_gate_unaffected(
+        self,
+    ) -> None:
+        # A completed task that predates this feature (committed on the base
+        # branch itself, never touched in the current diff) has an unchecked
+        # AC box -- audit_all_specs (--all) must surface it, but the ordinary
+        # diff-scoped gate must not fail the current PR on account of it.
+        repo = self._init_repo()
+        self._write(
+            repo, "docs/specs/098-fixture/tasks/TASK-001.md",
+            "---\nid: TASK-001\ntitle: Pre-existing\nspec: 098-fixture\n"
+            "status: completed\n---\n\n"
+            "## Acceptance Criteria\n\n- [ ] never verified\n",
+        )
+        self._commit(repo, "pre-existing completed task with drift")
+
+        self._git(repo, "checkout", "-q", "-b", "feature")
+        self._write(repo, "src/unrelated.py", "def unrelated(): return 1\n")
+        self._commit(repo, "unrelated feature work")
+
+        failures = audit_all_specs(Path(repo))
+        self.assertEqual(len(failures), 1)
+        self.assertIn("098-fixture/tasks/TASK-001.md", failures[0])
+
         self.assertEqual(main(["--repo", repo]), 0)
 
 
