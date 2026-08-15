@@ -27,6 +27,7 @@ exposes `spawn-one` (single worker) before the full fan-out loop is wired.
 from __future__ import annotations
 
 import argparse
+import copy
 import inspect
 import json
 import os
@@ -3422,18 +3423,67 @@ def _pipeline_scheduler(
     role_models = _effective_role_models(agent, role_models)
     spec_id, tasks = taskformats.load_spec(str(repo / spec_rel))
     tasks = apply_run_plan(repo, spec_rel, spec_id, tasks)
+    pre_only_done = {t["id"] for t in tasks if t.get("status") in coordinator.DONE}
+    if only and resume and Path(journal_path).exists():
+        # A task can be genuinely already-done purely via a PRIOR run's journal
+        # (frontmatter status alone won't show it -- frontmatter isn't rewritten
+        # by run completion). Peek the journal the same way the real resume
+        # block below does (reconcile_from_journal), but on a throwaway copy of
+        # `tasks` so this doesn't affect or duplicate the real reconciliation
+        # that happens later once the fan-out infrastructure is set up.
+        try:
+            _peek_journal = json.loads(Path(journal_path).read_text())
+            _peek_tasks = copy.deepcopy(tasks)
+            reconcile_from_journal(_peek_tasks, _peek_journal)
+            pre_only_done |= {t["id"] for t in _peek_tasks if t.get("status") in coordinator.DONE}
+        except (OSError, json.JSONDecodeError):
+            pass  # best-effort; the real resume block's own error handling still applies
     for t in tasks:
         t.setdefault("retry_count", 0)
         if t.get("status") in coordinator.DONE:
             continue
         t["status"] = "pending"
+
+    # Groups are computed from deps/files only (plan_groups never reads status),
+    # so this is safe to call before the --only status override below and reused
+    # unchanged afterward -- no behavior change for callers without --only.
+    groups = coordinator.plan_groups(tasks, migration_patterns=migration_patterns or ())
+
     if only:
         keep = set(only)
+        # --only's "mark excluded tasks completed" is meant for tasks ALREADY
+        # integrated on a prior partial run (their worktree branch may no
+        # longer exist -- see the identical live_run_real comment at ~2636).
+        # Silently applying the same fake-"completed" to a task that never
+        # actually ran is unsafe when that task shares a GROUP with an
+        # --only-included task: deliverable_subset() treats "completed" as
+        # ALREADY_INTEGRATED and drops it from the group's PR, so the group
+        # gets judged integration-ready and merged/re-attempted with that
+        # task's real, still-needed work silently missing -- no error, no
+        # quarantine, just an incomplete PR (confirmed via
+        # tests/orchestrator/test_pipeline_budget_partial_group.py,
+        # ResumeWithOnlyExcludingPendingSiblingTest). Refuse instead: a task
+        # that genuinely already finished before this invocation (in
+        # `pre_only_done`) is still safely excludable either way.
+        task_group = {tid: g["name"] for g in groups for tid in g["tasks"]}
+        included_groups = {task_group[tid] for tid in keep if tid in task_group}
         for t in tasks:
-            if t["id"] not in keep:
+            tid = t["id"]
+            if tid in keep:
+                continue
+            if tid in pre_only_done:
                 t["status"] = "completed"
+                continue
+            if task_group.get(tid) in included_groups:
+                raise RuntimeError(
+                    f"--only excludes task {tid!r}, which has not completed and "
+                    f"shares group {task_group[tid]!r} with a task named in --only. "
+                    "Faking it as already-integrated would silently drop its real "
+                    "work from that group's PR. Add it to --only too, or wait for "
+                    "it to finish on a plain resume first."
+                )
+            t["status"] = "completed"
 
-    groups = coordinator.plan_groups(tasks, migration_patterns=migration_patterns or ())
     by_id = {t["id"]: t for t in tasks}
 
     # Spec-folder ownership: only the first independent
