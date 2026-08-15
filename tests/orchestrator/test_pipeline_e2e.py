@@ -15,6 +15,8 @@ repo so no real claude -p, gh, or CI is needed.
 Run: python3 scripts/test_pipeline_e2e.py
 """
 
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -601,6 +603,31 @@ class E2EQuarantineTest(unittest.TestCase):
                 _run_pipeline(repo, tmp, FakeSpawn(), integrate_one, FakeVerifier())
             except Exception as exc:
                 self.fail(f"Run aborted by quarantine (should not happen): {exc!r}")
+
+    def test_quarantine_summary_prints_reasons_not_just_names(self):
+        """The printed NOTE line must include each group's reason, not just its name.
+
+        Regression test: the summary was built with `', '.join(quarantined)`, which
+        iterates a {name: reason} dict and yields only the KEYS -- every reason string
+        was silently dropped, making a quarantined run undiagnosable from its log.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _init_repo(Path(tmp))
+            integrate_one, _ = _make_integrate_one(force_quarantine={"base"})
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                result = _run_pipeline(repo, tmp, FakeSpawn(), integrate_one, FakeVerifier())
+            output = buf.getvalue()
+
+            note_lines = [line for line in output.splitlines() if "group(s) quarantined" in line]
+            self.assertTrue(note_lines, f"no quarantine NOTE line found in output:\n{output}")
+            note_line = note_lines[0]
+            for name in result["quarantined"]:
+                reason = result["quarantined"][name]
+                self.assertIn(
+                    reason, note_line,
+                    f"quarantine NOTE line is missing the reason for '{name}': {note_line!r}",
+                )
 
 
 # ---------------------------------------------------------------------------

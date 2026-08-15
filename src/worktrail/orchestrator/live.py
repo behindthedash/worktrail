@@ -2393,9 +2393,8 @@ def full(
                 text=True,
             )
     if quarantined:
-        print(
-            f"NOTE: {len(quarantined)} group(s) quarantined for human review: {', '.join(quarantined)}"
-        )
+        reasons = ", ".join(f"{k}: {v}" for k, v in quarantined.items())
+        print(f"NOTE: {len(quarantined)} group(s) quarantined for human review: {reasons}")
     print("=== FULL RUN COMPLETE ===")
     return {"group_prs": prs, "final": final, "quarantined": quarantined}
 
@@ -4373,10 +4372,8 @@ def _pipeline_scheduler(
     print(f"{_ts()} PIPELINE FAN-OUT DONE: {done_tasks}/{len(tasks)} tasks terminal")
 
     if quarantined:
-        print(
-            f"{_ts()} NOTE: {len(quarantined)} group(s) quarantined for human review "
-            f"(worktrees kept): {', '.join(quarantined)}"
-        )
+        reasons = ", ".join(f"{k}: {v}" for k, v in quarantined.items())
+        print(f"{_ts()} NOTE: {len(quarantined)} group(s) quarantined for human review: {reasons}")
     if post_merge_regressed:
         print(
             f"{_ts()} !! POST-MERGE REGRESSION: {len(post_merge_regressed)} group(s) "
@@ -4687,10 +4684,8 @@ def _full_real_inner(
         )
 
         if quarantined:
-            print(
-                f"NOTE: {len(quarantined)} group(s) quarantined for human review "
-                f"(worktrees kept): {', '.join(quarantined)}"
-            )
+            reasons = ", ".join(f"{k}: {v}" for k, v in quarantined.items())
+            print(f"NOTE: {len(quarantined)} group(s) quarantined for human review: {reasons}")
         if self_merged:
             print(
                 f"!! SELF-MERGE VIOLATION: {len(self_merged)} group(s) merged by a worker "
