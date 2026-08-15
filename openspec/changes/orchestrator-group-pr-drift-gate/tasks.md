@@ -10,7 +10,7 @@
 - [ ] 1.2 Replace the inlined blocks in `main()` with a call to `run_drift_checks`, kept
   under the same `if not args.print_cmd:` guard, returning its value when non-zero.
   Verify `--print-cmd` behavior is unchanged.
-- [ ] 1.3 [e2e] Run `PYTHONPATH=src pytest -q tests/router/test_pre_pr_gate.py` and confirm
+- [x] 1.3 [e2e] Run `PYTHONPATH=src pytest -q tests/router/test_pre_pr_gate.py` and confirm
   the existing suite (including every `--labels-only` test) passes with no test edits.
 
 ## 2. Add the `--checks-only` gate mode
