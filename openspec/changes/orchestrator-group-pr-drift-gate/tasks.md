@@ -37,7 +37,7 @@ Implements requirement: **A checks-only gate mode runs the drift checks without 
 
 Implements requirement: **Every orchestrator group PR clears the drift gate before it exists**.
 
-- [ ] 3.1 Add `QUARANTINE_PRE_PR_DRIFT = "pre_pr_drift"` alongside the existing constants
+- [x] 3.1 Add `QUARANTINE_PRE_PR_DRIFT = "pre_pr_drift"` alongside the existing constants
   at `src/worktrail/orchestrator/integrate.py:46-50`, with a comment distinguishing it
   from `QUARANTINE_INTEGRATION_ERROR` (spec/task bookkeeping drift vs. a failing merged
   tree — different remediation).
