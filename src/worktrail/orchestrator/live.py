@@ -378,6 +378,44 @@ def _pinned_plan_fingerprint(repo: "Path", spec_rel: str) -> "str | None":
         return None
 
 
+PLAN_PIN_KEYS = ("plan_fingerprint", "plan_fingerprints")
+
+
+def _preserve_plan_pin(path: "str | Path", jdict: dict) -> dict:
+    """Carry the run's plan pin across a wholesale journal rewrite.
+
+    Both schedulers' `record()` build their journal dict from scratch (spec_id,
+    entries, groups, ...) and write it with `atomic_write_text`, so anything
+    written to the journal by a *different* writer is destroyed on the next
+    write. `_record_plan_fingerprint` is exactly such a writer: it does its own
+    read-modify-write of `plan_fingerprint`/`plan_fingerprints`.
+
+    Without this, the pin never survived to be read back. Observed directly in
+    run full-1786825958, whose journal ended with keys
+    `[entries, gitnexus_capability, groups, run_id, spec_id,
+    unreconciled_tail_evidence]` -- precisely `_record()`'s own set -- despite
+    `_record_plan_fingerprint` having logged `fingerprint=214b79dd6933` three
+    times during that run. That silently disabled BOTH the PLAN DRIFT warning
+    (the list was wiped between phases, so a second distinct fingerprint never
+    saw the first) and `apply_run_plan`'s run-scoped pin (`plan_fingerprint`
+    was always absent, so every phase recompiled).
+
+    Only the pin keys are carried over -- this is deliberately not a general
+    merge of the on-disk journal, which would resurrect stale state the
+    rebuilding writer intends to drop.
+    """
+    try:
+        existing = json.loads(Path(path).read_text())
+    except (OSError, ValueError, TypeError):
+        return jdict
+    if not isinstance(existing, dict):
+        return jdict
+    for key in PLAN_PIN_KEYS:
+        if key in existing and key not in jdict:
+            jdict[key] = existing[key]
+    return jdict
+
+
 def _record_plan_fingerprint(repo: "Path", spec_rel: str, plan) -> None:
     """Stamp which compiled RunPlan this run is executing, into the journal.
 
@@ -2853,6 +2891,7 @@ def live_run_real(
                 journal_dict["run_id"] = run_id
             if _budget_stopped_at[0] is not None:
                 journal_dict["budget_stopped_at"] = _budget_stopped_at[0]
+            _preserve_plan_pin(out_cassette, journal_dict)
             progress.atomic_write_text(
                 out_cassette, json.dumps(journal_dict, indent=2, sort_keys=True) + "\n"
             )
@@ -3993,6 +4032,7 @@ def _pipeline_scheduler(
             jdict["groups"] = groups_journal
         if _budget_stopped_at[0] is not None:
             jdict["budget_stopped_at"] = _budget_stopped_at[0]
+        _preserve_plan_pin(journal_path, jdict)
         progress.atomic_write_text(journal_path, json.dumps(jdict, indent=2, sort_keys=True) + "\n")
 
     def _record_group_fn(
