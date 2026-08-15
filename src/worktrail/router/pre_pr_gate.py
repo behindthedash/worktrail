@@ -91,10 +91,22 @@ only after — the pre-print survives shell-output truncation that can occur
 when the test suite exceeds the calling agent's default bash timeout. The
 line is reprinted after a PASS for terminal readers.
 
+`--checks-only` runs just the four deterministic drift checks above (spec
+sync, clarification integrity, DoD verification, req/AC coverage) and
+returns their combined exit code directly, without reaching any of the
+later gate stages (design D2): it skips `pre_pr_cmd`/`integrate_smoke_cmd`
+entirely (there is no test command to run in this mode), the
+`docs_only_paths` bypass (moot with no command to bypass), the unconfigured
+default-deny at exit 2 (an absent `pre_pr_cmd` is not a drift-check
+concern), and scope-completeness review (that check belongs to `--run`'s
+handoff gate, not a checks-only drift pass). This mode is for callers that
+want fast, deterministic drift feedback — e.g. mid-task or CI — without
+paying for the full test suite.
+
 Usage: pre_pr_gate.py [--repo /path/to/worktree] [--print-cmd]
                        [--risk low|medium|high|critical] [--gates G1,G2]
                        [--target-branch BRANCH] [--run RUN_RECORD]
-                       [--labels-only]
+                       [--labels-only] [--checks-only]
 """
 from __future__ import annotations
 
