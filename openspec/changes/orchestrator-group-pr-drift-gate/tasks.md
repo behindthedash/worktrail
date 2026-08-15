@@ -1,6 +1,6 @@
 ## 1. Extract the drift checks into a shared helper
 
-- [ ] 1.1 In `src/worktrail/router/pre_pr_gate.py`, add
+- [x] 1.1 In `src/worktrail/router/pre_pr_gate.py`, add
   `run_drift_checks(repo: Path, policy: Dict[str, Any]) -> int` containing the four
   existing check blocks verbatim — `spec_sync_drift`, `check_changed_specs`
   (clarification-integrity), `check_dod_failures`, and the
