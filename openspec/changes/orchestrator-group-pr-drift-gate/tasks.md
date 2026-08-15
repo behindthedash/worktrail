@@ -27,7 +27,7 @@ Implements requirement: **A checks-only gate mode runs the drift checks without 
   line, describe the mode and which checks it runs, and state explicitly that it skips
   `pre_pr_cmd`, the docs-only bypass, the unconfigured default-deny, and
   scope-completeness review, with the reason for each (design D2).
-- [ ] 2.4 Add `tests/router/test_pre_pr_gate.py` coverage: `--checks-only` on a
+- [x] 2.4 Add `tests/router/test_pre_pr_gate.py` coverage: `--checks-only` on a
   drift-free tree exits 0 and does **not** execute the configured `pre_pr_cmd` (assert via
   a sentinel command whose side effect would be observable); one test per drift class
   asserting its distinct exit code; a repo with no `pre_pr_cmd` configured does not exit
