@@ -3712,8 +3712,18 @@ def _pipeline_scheduler(
             if name in quarantined:
                 return  # quarantined by integrate_one, or resumed head_branch validation above
             if name not in group_branch:
-                return  # MERGED on a prior run (integrate_one returned None), or resumed
-                        # head_branch failed validation above
+                return  # resumed head_branch failed validation above
+            if groups_journal.get(name, {}).get("state") == "MERGED":
+                # integrate_one's own implicit-merge path (every task in this group was
+                # already ALREADY_INTEGRATED) journals MERGED via _record_group_fn -- which
+                # mutates this same groups_journal dict in place -- and sets group_branch so
+                # dependents can stack on it, but opens no PR. Without this check, the group
+                # fell through to verify_one against a branch that was never pushed/opened,
+                # which always fails "no pull requests found" and wrongly quarantines an
+                # already-fully-merged group (and cascades to every dependent group).
+                with iv_lock:
+                    prs.append((name, base, groups_journal[name].get("pr_url", "")))
+                return
 
             # Verify
             with iv_lock:
