@@ -222,20 +222,16 @@ class DeriveDodChecksTests(unittest.TestCase):
             checks, [{"type": "ac_checkboxes_complete", "task_path": "TASK-001.md"}]
         )
 
-    def test_no_body_no_ac_section_and_no_files_is_a_noop_like_today(self) -> None:
-        # No `files:` and an empty body: the only derived check is
-        # ac_checkboxes_complete, and running it against a body with no
-        # checkboxes anywhere vacuously passes per `_all_checkboxes_checked`
-        # semantics -- so, like today's pre-derivation behavior (no
-        # `dod-checks` -> nothing ever fails), the derivation raises no
-        # failures.
+    @unittest.expectedFailure
+    def test_no_body_no_ac_section_and_no_files_derives_empty_list(self) -> None:
+        # Task 4.2's third AC bullet: no body/no AC section and no files ->
+        # empty derivation (matches today's no-op). The landed
+        # derive_dod_checks (44b4eba) always emits ac_checkboxes_complete
+        # regardless of body, so this currently fails; see 4.2-review.md
+        # Major 1 for the discrepancy with tasks 2.1/2.2, which is a
+        # planner decision outside this test-only task's scope.
         checks = derive_dod_checks({}, "", "TASK-001.md")
-        self.assertEqual(
-            checks, [{"type": "ac_checkboxes_complete", "task_path": "TASK-001.md"}]
-        )
-        self._write_task("TASK-001.md", "")
-        for check in checks:
-            self.assertIsNone(run_check(self.repo, check))
+        self.assertEqual(checks, [])
 
 
 class CheckTaskFileTests(unittest.TestCase):
