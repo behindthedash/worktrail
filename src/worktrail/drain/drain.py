@@ -1417,7 +1417,8 @@ def drain(config: DrainConfig,
     agent_env = build_agent_environment()
     if uses_builtin_spawner:
         spawner = functools.partial(run_one_shot, env=agent_env)
-    if not acquire_lock(config.lock_file):
+    slot = acquire_lock_slot(config.lock_file, config.max_workers)
+    if slot is None:
         return {"stopped": "lock_held",
                 "detail": f"another drain owns {config.lock_file}",
                 "iterations": []}
@@ -1583,7 +1584,7 @@ def drain(config: DrainConfig,
             for key, findings in post.items():
                 resumed.setdefault(key, []).extend(findings)
     finally:
-        release_lock(config.lock_file)
+        release_lock_slot(config.lock_file, slot)
     summary: Dict[str, object] = {
         "stopped": decision.reason if not decision.proceed else "dry_run",
         "iterations": iterations,
