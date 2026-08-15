@@ -12,7 +12,7 @@
 - [x] 1.3 Add `max_workers: int = 1` to `DrainConfig` (`drain.py:1341-1360`, default preserves
       today's single-lock behavior for any existing caller that constructs `DrainConfig`
       directly, e.g. tests).
-- [ ] 1.4 In `drain()` (`drain.py:1390`), replace the `acquire_lock(config.lock_file)` call and
+- [x] 1.4 In `drain()` (`drain.py:1390`), replace the `acquire_lock(config.lock_file)` call and
       its `lock_held` early return with `acquire_lock_slot(config.lock_file,
       config.max_workers)`; store the returned slot on `LoopState` (or a new local) for D4/D6 to
       consume; release via `release_lock_slot` in the existing `finally:` block
