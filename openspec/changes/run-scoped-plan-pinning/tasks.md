@@ -67,6 +67,6 @@
       including the new and existing `test_apply_run_plan_autocompile.py` /
       `test_plan_fingerprint_record.py` cases. Tagged `[cleanup]` (tail kind): this needs
       the implementation and test task above merged first, not fanned out alongside it.
-- [ ] 2.2 [cleanup] Run `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate
+- [x] 2.2 [cleanup] Run `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate
       check` (the golden record/replay regression) and confirm it is unaffected. Tagged
       `[cleanup]` for the same reason as 2.1.
