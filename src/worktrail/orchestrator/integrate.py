@@ -666,6 +666,46 @@ def _run_integration_smoke(iw: Path, name: str, smoke_cmd: str) -> tuple:
     return False, f"exit {r.returncode}: {tail}"
 
 
+DRIFT_GATE_TIMEOUT_DEFAULT = int(os.environ.get("ORCH_DRIFT_GATE_TIMEOUT", "300"))
+
+
+def _run_drift_gate(iw: Path, name: str) -> tuple:
+    """Run the deterministic pre-PR drift checks against a group's integrated tree.
+
+    Returns (ok, detail), mirroring `_run_integration_smoke`'s contract.
+
+    `--repo` is the group's integration worktree `iw`, never the canonical
+    checkout. Three of the four checks are diff-scoped through
+    `pre_pr_gate.changed_paths()`, which runs `git merge-base HEAD <base>` and
+    `git diff --name-only` with `cwd` set to `--repo`; pointing this at the
+    canonical repo (whose HEAD is the base branch) would yield an empty diff and
+    silently pass every check. `_refresh_pr_labels` may pass the canonical repo
+    because label resolution is policy-only and reads no diff.
+
+    Fail-closed like the smoke gate: an unresolvable gate script, a timeout, or a
+    spawn error all return failure rather than letting an unchecked group open a PR.
+    """
+    gate_script = _resolve_pre_pr_gate()
+    if gate_script is None:
+        return False, "could not resolve worktrail-pre-pr-gate"
+    print(f"  DRIFT [{name:9}] running pre-PR drift checks against integrated tree")
+    try:
+        r = subprocess.run(
+            [sys.executable, str(gate_script), "--repo", str(iw), "--checks-only"],
+            capture_output=True,
+            text=True,
+            timeout=DRIFT_GATE_TIMEOUT_DEFAULT,
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"timed out after {DRIFT_GATE_TIMEOUT_DEFAULT}s"
+    except OSError as e:
+        return False, f"could not run drift gate: {e}"
+    if r.returncode == 0:
+        return True, "ok"
+    tail = ((r.stderr or "") + (r.stdout or "")).strip()[-300:]
+    return False, f"exit {r.returncode}: {tail}"
+
+
 # Conflicted files we auto-resolve at assembly time without a worker: package
 # `__init__.py` markers that two task branches each ADDED independently (add/add).
 # Every task that creates a new package adds the same `pkg/__init__.py`, so this is a
@@ -1031,6 +1071,20 @@ def integrate_one(
             if strip_spec_folder:
                 _strip_spec_folder_to_base(iw, spec_id, target)
             _write_group_task_status(iw, spec_id, g, status)
+            # Deterministic drift checks, before the smoke command and before the
+            # push. After the status write above, because DoD verification's entire
+            # population is the set of task files that write just stamped
+            # `status: completed`; running earlier would verify nothing. Before the
+            # smoke command, because these checks take seconds while the smoke
+            # command is a full suite -- failing fast saves it on every drift
+            # failure. Both precede the push, so a drifted branch never reaches the
+            # remote, not merely never reaches a PR.
+            ok, detail = _run_drift_gate(iw, name)
+            if not ok:
+                quarantined[name] = f"pre-PR drift gate failed: {detail}"
+                print(f"  SKIP [{name:9}] -- {quarantined[name]}")
+                _do_journal(name, "", gb, "QUARANTINED", QUARANTINE_PRE_PR_DRIFT)
+                return None
             if smoke_cmd:
                 ok, detail = _run_integration_smoke(iw, name, smoke_cmd)
                 if not ok:
