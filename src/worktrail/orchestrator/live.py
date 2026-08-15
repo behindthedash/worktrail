@@ -1576,6 +1576,9 @@ def bootstrap_worktree(
     `bootstrap_cmd` is the repo's documented install command (e.g. "npm ci" or
     "cd app && npm ci"), sourced from go-policy.yaml's `worktree_bootstrap_cmd`.
     None/empty -> skip entirely, so repos without a wired command are unaffected.
+    For Node repos, `worktrail-bootstrap-node-modules` (bootstrap_node_modules.py)
+    is a drop-in `bootstrap_cmd` that hardlink-clones this fan-out's spec worktree
+    node_modules instead of paying a full install per task worktree.
 
     By default a failed install is logged and the caller may let the worker
     self-recover. Orchestrated task creation passes ``required=True`` so a

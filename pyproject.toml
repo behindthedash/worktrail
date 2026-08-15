@@ -20,6 +20,7 @@ dev = [
 ]
 
 [project.scripts]
+worktrail-bootstrap-node-modules = "worktrail.orchestrator.bootstrap_node_modules:main"
 worktrail-compile = "worktrail.conductor.compile:main"
 worktrail-plan-audit = "worktrail.conductor.plan_audit:main"
 worktrail-orchestrate = "worktrail.orchestrator.orchestrate:main"

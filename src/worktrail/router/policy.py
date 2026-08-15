@@ -117,6 +117,12 @@ DEFAULTS: Dict[str, Any] = {
     # rediscovers and reinstalls them mid-task. The sdd-workflow conductor threads it to
     # `live.py full-real` as `--bootstrap-cmd`. A configured command must succeed before
     # a worker is spawned; None = skip, so repos with no install step are unaffected.
+    # For Node repos fanning out many task worktrees from one spec, a plain "npm ci"
+    # here pays the full install cost once per task -- prefer
+    # "worktrail-bootstrap-node-modules --app-dir app" (or --app-dir . when
+    # package.json is at the worktree root), which hardlink-clones the sibling spec
+    # worktree's already-installed node_modules when its lockfile matches byte-for-byte,
+    # falling back to `npm ci` otherwise (orchestrator/bootstrap_node_modules.py).
     "worktree_bootstrap_cmd": None,
     # Optional glob patterns (fnmatch, matched against a task's declared `files`)
     # identifying schema-migration files for this repo (e.g. Alembic revisions,
