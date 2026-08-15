@@ -1,15 +1,15 @@
 ## 1. Worker-slot locking (design.md D1, Requirement: Bounded worker-slot locking)
 
-- [ ] 1.1 In `src/worktrail/drain/drain.py`, add `slot_lock_path(lock_file: Path, slot: int) ->
+- [x] 1.1 In `src/worktrail/drain/drain.py`, add `slot_lock_path(lock_file: Path, slot: int) ->
       Path` (slot 0 returns `lock_file` unchanged; slot N>0 returns
       `lock_file.with_name(f"{lock_file.name}.{slot}")`) and `acquire_lock_slot(lock_file: Path,
       max_workers: int) -> Optional[int]`, which tries slots `0..max_workers-1` in order,
       calling the existing unmodified `acquire_lock()` (`drain.py:1188-1210`) against each
       candidate path, returning the first successfully acquired slot index or `None` if every
       slot is held by a live PID.
-- [ ] 1.2 Add `release_lock_slot(lock_file: Path, slot: int) -> None` calling the existing
+- [x] 1.2 Add `release_lock_slot(lock_file: Path, slot: int) -> None` calling the existing
       `release_lock()` (`drain.py:1223-1224`) against `slot_lock_path(lock_file, slot)`.
-- [ ] 1.3 Add `max_workers: int = 1` to `DrainConfig` (`drain.py:1341-1360`, default preserves
+- [x] 1.3 Add `max_workers: int = 1` to `DrainConfig` (`drain.py:1341-1360`, default preserves
       today's single-lock behavior for any existing caller that constructs `DrainConfig`
       directly, e.g. tests).
 - [ ] 1.4 In `drain()` (`drain.py:1390`), replace the `acquire_lock(config.lock_file)` call and
@@ -31,7 +31,7 @@
 
 ## 2. Capacity-cache write-lock fix (design.md D2, Requirement: Capacity-cache writes are safe under concurrent workers)
 
-- [ ] 2.1 In `src/worktrail/orchestrator/agent_capacity.py`, rename `_write_lock` to
+- [x] 2.1 In `src/worktrail/orchestrator/agent_capacity.py`, rename `_write_lock` to
       `write_lock` (drop the leading underscore; no signature or behavior change) and update its
       three existing internal callers (`configure`, `record`, `cmd_clear`,
       `agent_capacity.py:118-146` and call sites) to the new public name.
@@ -100,7 +100,7 @@
 
 ## 6. `drain.max_workers` operator-config wiring (design.md D3, spec `drain-operator-config`, Requirement: Drain worker count resolves CLI over config over built-in)
 
-- [ ] 6.1 In `src/worktrail/shared/operator_config.py`, extend `drain_config()`'s returned dict
+- [x] 6.1 In `src/worktrail/shared/operator_config.py`, extend `drain_config()`'s returned dict
       with a `max_workers` key: read `section.get("max_workers")`, default `2` when absent,
       raise `OperatorConfigError` naming `config_path()` when present but not a positive int
       (mirrors the existing `agent`/`fallback_agents` shape checks in the same function,
