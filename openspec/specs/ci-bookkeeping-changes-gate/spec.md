@@ -9,7 +9,11 @@ suite while the branch ruleset's required status check still resolves green.
 
 The system SHALL classify a pull request's diff as bookkeeping-only if and
 only if every changed path matches `openspec/**`, `docs/**`, or `**/*.md`, OR
-is `pyproject.toml` with a diff touching only the `version = ` line.
+is `pyproject.toml` or `.codex-plugin/plugin.json` — AND, if `pyproject.toml`
+is among the changed paths, its diff touches only the `version = ` line.
+This is a whole-diff classification: the presence of even one changed path
+outside this allow-list disqualifies the entire diff from bookkeeping-only
+status, regardless of what any individual file's own diff looks like.
 
 #### Scenario: Docs-and-openspec-only diff is bookkeeping-only
 - **WHEN** a PR's diff touches only paths under `openspec/**` and `docs/**`
@@ -25,10 +29,22 @@ is `pyproject.toml` with a diff touching only the `version = ` line.
   exclusively the `version = "X.Y.Z"` line
 - **THEN** the diff is classified bookkeeping-only
 
+#### Scenario: Paired pyproject.toml and plugin manifest bump is bookkeeping-only
+- **WHEN** a PR's diff touches only `pyproject.toml` and
+  `.codex-plugin/plugin.json`, and the `pyproject.toml` diff changes
+  exclusively the `version = "X.Y.Z"` line
+- **THEN** the diff is classified bookkeeping-only
+
 #### Scenario: pyproject.toml non-version change is not bookkeeping-only
 - **WHEN** a PR's diff touches `pyproject.toml` and the diff includes a
   changed line other than `version = `
 - **THEN** the diff is not classified bookkeeping-only
+
+#### Scenario: A version bump alongside an unrelated code change is not bookkeeping-only
+- **WHEN** a PR's diff touches `pyproject.toml` — with a diff that changes
+  only the `version = ` line — AND also touches a `src/**` path
+- **THEN** the diff is not classified bookkeeping-only, even though
+  `pyproject.toml`'s own diff is version-only in isolation
 
 ### Requirement: Full suite skipped for bookkeeping-only diffs
 
