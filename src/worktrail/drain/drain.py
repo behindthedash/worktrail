@@ -1240,6 +1240,10 @@ def acquire_lock_slot(lock_file: Path, max_workers: int) -> Optional[int]:
     return None
 
 
+def release_lock_slot(lock_file: Path, slot: int) -> None:
+    release_lock(slot_lock_path(lock_file, slot))
+
+
 # ---------------------------------------------------------------------------
 # Decision function (pure — the unit-tested core)
 
