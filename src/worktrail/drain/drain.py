@@ -1520,7 +1520,8 @@ def drain(config: DrainConfig,
                     filename = brief.get("filename") or ""
                     brief_id = filename[:-3] if filename.endswith(".md") else filename
                     if brief_id == claimed_id:
-                        repo_filter = brief.get("repo")
+                        repo = brief.get("repo")
+                        repo_filter = Path(repo).name if repo else None
                         break
             record_path = newest_run_record(
                 config.runs_dir, known_records, repo_filter=repo_filter)
