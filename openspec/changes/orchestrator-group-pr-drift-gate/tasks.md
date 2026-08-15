@@ -23,7 +23,7 @@ Implements requirement: **A checks-only gate mode runs the drift checks without 
   branch: call `run_drift_checks(repo, policy)` and return its value directly, so the mode
   never reaches `scope_review_failures`, `is_docs_only`, `resolve_cmd`, or the
   `subprocess.run(["bash","-c",cmd])` execution (design D2).
-- [ ] 2.3 Update `pre_pr_gate.py`'s module docstring: add `--checks-only` to the Usage
+- [x] 2.3 Update `pre_pr_gate.py`'s module docstring: add `--checks-only` to the Usage
   line, describe the mode and which checks it runs, and state explicitly that it skips
   `pre_pr_cmd`, the docs-only bypass, the unconfigured default-deny, and
   scope-completeness review, with the reason for each (design D2).
