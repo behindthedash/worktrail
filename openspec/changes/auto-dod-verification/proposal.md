@@ -32,6 +32,11 @@ without requiring an author to write anything new.
   absent/empty, so the existing diff-scoped `pre_pr_gate.py` wiring
   (`DOD_VERIFICATION_DRIFT_EXIT`) covers derived checks with no changes to
   `pre_pr_gate.py` itself beyond what already calls `check_dod_verification`.
+  (Annotation, `orchestrator-group-pr-drift-gate`: this coverage claim held
+  for one-off `/go` routes only, which already ran `pre_pr_gate.py` per
+  invocation. Orchestrator group PRs did not run `pre_pr_gate.py` at all —
+  and so got none of this derived-check coverage — until
+  `orchestrator-group-pr-drift-gate` landed.)
 - `check_dod_verification.py` gains a standalone, non-blocking `--all` audit
   mode (`audit_all_specs(repo)`) that runs `check_task_file` (explicit or
   derived) against every devkit task file under `docs/specs/` regardless of
@@ -58,6 +63,10 @@ without requiring an author to write anything new.
   Definition-of-Done checks for a devkit task that completes without
   hand-authored `dod-checks:`, plus a standalone audit mode for the
   pre-existing backlog.
+  (Annotation, `orchestrator-group-pr-drift-gate`: "opt-out-free" held for
+  one-off `/go` routes only. Orchestrator group PRs bypassed
+  `pre_pr_gate.py` entirely and so bypassed this derivation too, until
+  `orchestrator-group-pr-drift-gate` landed.)
 
 ### Modified Capabilities
 (none — this repo's `docs/specs/001-task-ac-verification-gate/` predates
@@ -74,6 +83,12 @@ amend.)
 - `src/worktrail/router/pre_pr_gate.py`: no functional change — it already
   imports and calls `check_dod_verification.check_changed_specs`, which now
   transitively derives checks for tasks with no explicit `dod-checks:`.
+  (Annotation, `orchestrator-group-pr-drift-gate`: "no functional change"
+  was true of `pre_pr_gate.py` itself, but that script was never invoked for
+  orchestrator group PRs at the time this proposal was written — so this
+  transitive coverage reached one-off `/go` routes only, not group PRs,
+  until `orchestrator-group-pr-drift-gate` wired the gate into
+  `integrate.py`.)
 - `pyproject.toml`: no new console script (`worktrail-check-dod-verification`
   already exists); its `--all` flag is additive to the existing entry point.
 - `tests/router/test_check_dod_verification.py`,
