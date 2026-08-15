@@ -181,20 +181,6 @@ class FileTrackedTests(unittest.TestCase):
 
 
 class DeriveDodChecksTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.repo = Path(self.tmp.name)
-
-    def _write_task(self, relpath: str, body: str) -> None:
-        path = self.repo / relpath
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            "---\nid: TASK-001\ntitle: Fixture\nspec: 000-fixture\nstatus: completed\n"
-            f"---\n\n{body}",
-            encoding="utf-8",
-        )
-
     def test_files_present_derives_file_tracked_and_no_stub_markers_per_path(self) -> None:
         checks = derive_dod_checks(
             {"files": ["src/foo.py", "src/bar.py"]}, "some body", "TASK-001.md"
@@ -225,11 +211,15 @@ class DeriveDodChecksTests(unittest.TestCase):
     @unittest.expectedFailure
     def test_no_body_no_ac_section_and_no_files_derives_empty_list(self) -> None:
         # Task 4.2's third AC bullet: no body/no AC section and no files ->
-        # empty derivation (matches today's no-op). The landed
-        # derive_dod_checks (44b4eba) always emits ac_checkboxes_complete
-        # regardless of body, so this currently fails; see 4.2-review.md
-        # Major 1 for the discrepancy with tasks 2.1/2.2, which is a
-        # planner decision outside this test-only task's scope.
+        # empty derivation (matches today's no-op). tasks.md 2.1 says
+        # derive_dod_checks "always includes one ac_checkboxes_complete
+        # check", which the landed implementation does regardless of body,
+        # contradicting 2.2's premise that an empty-body result can be []
+        # and this bullet. Resolving that is a planner decision (amend 2.1
+        # to gate on body, or amend this bullet to match landed behavior)
+        # outside this test-only task's scope; xfail keeps the assertion
+        # self-alerting (an unexpected pass fails the build) rather than
+        # silently dropping the case.
         checks = derive_dod_checks({}, "", "TASK-001.md")
         self.assertEqual(checks, [])
 
