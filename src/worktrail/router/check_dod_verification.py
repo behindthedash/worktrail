@@ -153,6 +153,19 @@ def check_changed_specs(repo: Path, changed_paths: list[str]) -> list[str]:
     return failures
 
 
+def audit_all_specs(repo: Path) -> list[str]:
+    """Return failure messages across every devkit task file under
+    docs/specs/, regardless of whether it changed in the current diff."""
+    failures: list[str] = []
+    for full_path in sorted((repo / "docs" / "specs").rglob("TASK-*.md")):
+        relpath = str(full_path.relative_to(repo))
+        if not is_task_file(relpath):
+            continue
+        for failure in check_task_file(repo, full_path):
+            failures.append(f"{relpath}: {failure}")
+    return failures
+
+
 def _resolve_base_ref(repo: Path, configured: str | None) -> str | None:
     candidates = (f"origin/{configured}", configured) if configured else CANDIDATE_BASE_REFS
     for ref in candidates:
