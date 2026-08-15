@@ -24,6 +24,7 @@ from worktrail.drain.drain import (
     SpawnOutcome,
     StageRemediation,
     acquire_lock,
+    acquire_lock_slot,
     archive_openspec_change,
     build_agent_environment,
     build_command,
@@ -49,6 +50,7 @@ from worktrail.drain.drain import (
     resume_sync_pending,
     resume_verify_pending,
     select_available_agent,
+    slot_lock_path,
     sweep_remediations,
     validate_agent_runtime,
     write_iteration_transcript,
@@ -621,6 +623,28 @@ def test_lock_garbage_content_treated_as_stale(tmp_path):
     lock.write_text("not json")
     assert acquire_lock(lock) is True
     release_lock(lock)
+
+
+def test_acquire_lock_slot_returns_distinct_slots_then_none(tmp_path):
+    lock = tmp_path / "drain.lock"
+    assert acquire_lock_slot(lock, max_workers=2) == 0
+    assert acquire_lock_slot(lock, max_workers=2) == 1
+    assert acquire_lock_slot(lock, max_workers=2) is None
+
+
+def test_acquire_lock_slot_single_worker_uses_configured_lock_file_unchanged(tmp_path):
+    lock = tmp_path / "drain.lock"
+    slot = acquire_lock_slot(lock, max_workers=1)
+    assert slot == 0
+    assert slot_lock_path(lock, slot) == lock
+    assert lock.exists()
+
+
+def test_acquire_lock_slot_takes_over_stale_slot(tmp_path):
+    lock = tmp_path / "drain.lock"
+    assert acquire_lock_slot(lock, max_workers=2) == 0  # slot 0 held by our own live pid
+    slot_lock_path(lock, 1).write_text(json.dumps({"pid": 999999999, "started": 0}))
+    assert acquire_lock_slot(lock, max_workers=2) == 1
 
 
 # ---------------------------------------------------------------------------
