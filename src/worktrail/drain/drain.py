@@ -302,7 +302,11 @@ def parse_run_record(text: str) -> Dict[str, Optional[str]]:
     return fields
 
 
-def newest_run_record(runs_dir: Path, known: Iterable[Path] = ()) -> Optional[Path]:
+def newest_run_record(
+    runs_dir: Path,
+    known: Iterable[Path] = (),
+    repo_filter: Optional[str] = None,
+) -> Optional[Path]:
     """The run-record YAML this iteration produced, across repos.
 
     Attribution is by set difference against a before-spawn snapshot (`known`),
@@ -310,11 +314,16 @@ def newest_run_record(runs_dir: Path, known: Iterable[Path] = ()) -> Optional[Pa
     mtime-resolution tick can tie or invert under an mtime `>= since_epoch`
     filter, so a stale record can outrank -- or exclude -- the real one
     depending on directory-iteration order, which Python does not guarantee.
+
+    `repo_filter`, when given, restricts the glob to that repo's subdirectory
+    so an iteration attributed to a single claimed brief can't be misclassified
+    by a newer record landing concurrently in a different repo's directory.
     """
     if not runs_dir.is_dir():
         return None
     known_set = known if isinstance(known, (set, frozenset)) else set(known)
-    candidates = [path for path in runs_dir.glob("*/*.yaml") if path not in known_set]
+    glob_pattern = f"{repo_filter}/*.yaml" if repo_filter is not None else "*/*.yaml"
+    candidates = [path for path in runs_dir.glob(glob_pattern) if path not in known_set]
     if not candidates:
         return None
     def _mtime_ns(path: Path) -> int:
