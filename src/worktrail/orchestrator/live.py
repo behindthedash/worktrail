@@ -292,49 +292,90 @@ class RunLock:
 def apply_run_plan(
     repo: "Path", spec_rel: str, spec_id: str, tasks: list, *, spawn=None
 ) -> list:
-    """Enrich freshly-loaded tasks with a RunPlan, compiling one if none is cached.
+    """Enrich freshly-loaded tasks with a RunPlan, reusing this run's pinned plan
+    (or compiling and pinning one, if this is the run's first compile).
 
-    `compile_run_plan` pays for a model call only when it has to: a cache hit is
-    free, and a format that already declares file scope for every task (devkit
-    frontmatter) takes the free seed path -- no model call, same as before this
-    changed. Only a format that carries no per-task file scope at all (OpenSpec's
-    `tasks.md`) triggers a real compile, and only on the first run of that exact
-    content version; every subsequent run/resume hits the cache this call just
-    populated. That one-time cost is exactly what running `worktrail-compile`
-    by hand beforehand would have paid -- this makes it automatic instead of a
-    required, easy-to-forget separate step (see `docs/design/history/` P3b and
-    the incident that motivated this: a first `full-real` launch against a fresh
-    OpenSpec change used to hard-fail with `RuntimeError: implementation task(s)
-    missing required frontmatter files` unless the operator remembered to compile
-    first).
+    A run pins its plan the first time `_record_plan_fingerprint` stamps
+    `plan_fingerprint` into the journal; every later call for the same
+    (repo, spec) -- a resume, or a later phase of the same run -- resolves
+    that pin from the cache instead of recompiling, so the plan a run
+    executes under can no longer drift mid-run the way it did in
+    full-1786812908 (see `_record_plan_fingerprint`). A pin that no longer
+    resolves (its cache entry deleted) fails the run rather than silently
+    recompiling a possibly-different plan out from under in-progress work;
+    the error names the re-plan escape hatch (clear `plan_fingerprint` from
+    the journal) for a deliberate re-plan.
+
+    When no pin is present yet, `compile_run_plan` pays for a model call only
+    when it has to: a cache hit is free, and a format that already declares
+    file scope for every task (devkit frontmatter) takes the free seed path --
+    no model call, same as before this changed. Only a format that carries no
+    per-task file scope at all (OpenSpec's `tasks.md`) triggers a real
+    compile, and only on the first run of that exact content version; every
+    subsequent run/resume hits the pin (or, failing that, the cache) this
+    call just populated. That one-time cost is exactly what running
+    `worktrail-compile` by hand beforehand would have paid -- this makes it
+    automatic instead of a required, easy-to-forget separate step (see
+    `docs/design/history/` P3b and the incident that motivated this: a first
+    `full-real` launch against a fresh OpenSpec change used to hard-fail with
+    `RuntimeError: implementation task(s) missing required frontmatter files`
+    unless the operator remembered to compile first).
 
     `spawn` is the same injectable compile seam `compile_run_plan` exposes,
     threaded through for tests; production callers never pass it (falls back to
     the real headless-agent spawn).
     """
     from ..conductor import compile as conductor_compile
-
-    try:
-        spec_dir = repo / spec_rel
-        plan = conductor_compile.compile_run_plan(
-            spec_dir,
-            tasks,
-            spec_id=spec_id,
-            repo=repo,
-            spawn=spawn,
-            log=lambda m: print(f"{_ts()} {m}"),
-        )
-    except OSError as exc:  # an unreadable/unwritable cache must never take a run down
-        print(f"{_ts()} run plan: cache unreadable ({exc}); using the spec's own deps")
-        return tasks
-
     from ..conductor import runplan as _runplan
+
+    pinned = _pinned_plan_fingerprint(repo, spec_rel)
+    if pinned is not None:
+        plan = _runplan.load_cached(conductor_compile.default_cache_dir(repo), spec_id, pinned)
+        if plan is None:
+            jp = journal_path_for(repo, spec_rel)
+            raise RuntimeError(
+                f"run plan: pinned plan {pinned[:12]} for {spec_id} is no longer cached "
+                "and cannot be resolved; refusing to recompile a possibly-different plan "
+                f"mid-run. To deliberately re-plan, clear plan_fingerprint from {jp}."
+            )
+        print(f"{_ts()} run plan: reusing pinned plan {pinned[:12]}")
+    else:
+        try:
+            spec_dir = repo / spec_rel
+            plan = conductor_compile.compile_run_plan(
+                spec_dir,
+                tasks,
+                spec_id=spec_id,
+                repo=repo,
+                spawn=spawn,
+                log=lambda m: print(f"{_ts()} {m}"),
+            )
+        except OSError as exc:  # an unreadable/unwritable cache must never take a run down
+            print(f"{_ts()} run plan: cache unreadable ({exc}); using the spec's own deps")
+            return tasks
 
     merged, notes = _runplan.apply_to_tasks(tasks, plan)
     for n in notes:
         print(f"{_ts()} {n}")
     _record_plan_fingerprint(repo, spec_rel, plan)
     return merged
+
+
+def _pinned_plan_fingerprint(repo: "Path", spec_rel: str) -> "str | None":
+    """This run's pinned plan fingerprint, if `_record_plan_fingerprint` has
+    already stamped one into the journal -- None on a fresh run, or on any
+    journal I/O failure (DEC-004: journal I/O never takes a run down; same
+    best-effort contract `_record_plan_fingerprint` already applies to its own
+    journal read/write)."""
+    try:
+        jp = journal_path_for(repo, spec_rel)
+        journal = json.loads(jp.read_text()) if jp.exists() else {}
+        if not isinstance(journal, dict):
+            return None
+        fp = journal.get("plan_fingerprint")
+        return fp if isinstance(fp, str) and fp else None
+    except (OSError, ValueError, TypeError):
+        return None
 
 
 def _record_plan_fingerprint(repo: "Path", spec_rel: str, plan) -> None:
@@ -349,8 +390,13 @@ def _record_plan_fingerprint(repo: "Path", spec_rel: str, plan) -> None:
 
     Nothing recorded which plan any phase actually used, so the drift was only
     reconstructable by noticing two files in `runplans/` after the fact. Stamping
-    the fingerprint makes it a first-class journal fact instead. Best-effort:
-    observability must never take a run down.
+    the fingerprint makes it a first-class journal fact instead -- and, since
+    `apply_run_plan` now reads that same stamp back as this run's pin
+    (`_pinned_plan_fingerprint`) before ever recompiling, the drift this
+    docstring describes can no longer happen for a single run's phases;
+    `plan_fingerprints` growing past one entry (and the PLAN DRIFT log below)
+    is retained purely as defense-in-depth against a future caller that
+    bypasses the pin. Best-effort: observability must never take a run down.
     """
     fp = getattr(plan, "fingerprint", None)
     if not fp:

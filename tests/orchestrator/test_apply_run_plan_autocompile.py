@@ -90,6 +90,184 @@ def test_openspec_change_auto_compiles_without_a_manual_worktrail_compile_step(t
     assert spawn.calls == 1, "a re-run of the same content must reuse the cached plan"
 
 
+class RaisingSpawn:
+    """A spawn that fails the test the moment it is invoked -- used to prove a
+    pinned run never reaches the compile seam at all."""
+
+    def __call__(self, prompt, cwd, timeout, log):
+        raise AssertionError("spawn must not be called for a pinned run")
+
+
+def test_pinned_run_reuses_cached_plan_without_calling_spawn(tmp_path):
+    repo = _init_repo(tmp_path)
+    change = repo / "openspec" / "changes" / "add-thing"
+    change.mkdir(parents=True)
+    (change / "proposal.md").write_text("## Why\nBecause.\n")
+    (change / "tasks.md").write_text(
+        "## 1. Core\n\n- [ ] 1.1 Add the parser\n- [ ] 1.2 Wire the endpoint\n"
+    )
+
+    from worktrail.taskformats import resolve
+
+    spec_rel = str(change.relative_to(repo))
+    spec_id, tasks = resolve.load_spec(str(change))
+
+    spawn = RecordingSpawn(
+        _reply(**{
+            "1.1": {"files": ["src/parser.py"], "deps": []},
+            "1.2": {"files": ["src/api.py"], "deps": ["1.1"]},
+        })
+    )
+    live.apply_run_plan(repo, spec_rel, spec_id, tasks, spawn=spawn)
+    assert spawn.calls == 1, "the first call establishes the pin via a real compile"
+
+    _, tasks_again = resolve.load_spec(str(change))
+    second_spawn = RecordingSpawn(_reply(**{"1.1": {"files": []}, "1.2": {"files": []}}))
+    merged = live.apply_run_plan(repo, spec_rel, spec_id, tasks_again, spawn=second_spawn)
+    assert second_spawn.calls == 0, "a pinned run must never reach the compile seam"
+    by_id = {t["id"]: t for t in merged}
+    assert by_id["1.1"]["files"] == ["src/parser.py"]
+    assert by_id["1.1"]["deps"] == []
+    assert by_id["1.2"]["files"] == ["src/api.py"]
+    assert by_id["1.2"]["deps"] == ["1.1"]
+
+
+def test_pinned_run_reuses_plan_even_if_change_content_since_changed(tmp_path):
+    repo = _init_repo(tmp_path)
+    change = repo / "openspec" / "changes" / "add-thing"
+    change.mkdir(parents=True)
+    (change / "proposal.md").write_text("## Why\nBecause.\n")
+    (change / "tasks.md").write_text(
+        "## 1. Core\n\n- [ ] 1.1 Add the parser\n- [ ] 1.2 Wire the endpoint\n"
+    )
+
+    from worktrail.taskformats import resolve
+
+    spec_rel = str(change.relative_to(repo))
+    spec_id, tasks = resolve.load_spec(str(change))
+
+    spawn = RecordingSpawn(
+        _reply(**{
+            "1.1": {"files": ["src/parser.py"], "deps": []},
+            "1.2": {"files": ["src/api.py"], "deps": ["1.1"]},
+        })
+    )
+    live.apply_run_plan(repo, spec_rel, spec_id, tasks, spawn=spawn)
+    assert spawn.calls == 1
+
+    # Content changes (would recompute a different fingerprint) but the task
+    # set (ids) is unchanged -- the pin must still resolve without compiling.
+    (change / "proposal.md").write_text("## Why\nBecause, revised.\n")
+    _, tasks_again = resolve.load_spec(str(change))
+    merged = live.apply_run_plan(repo, spec_rel, spec_id, tasks_again, spawn=RaisingSpawn())
+    by_id = {t["id"]: t for t in merged}
+    assert by_id["1.1"]["files"] == ["src/parser.py"]
+    assert by_id["1.2"]["files"] == ["src/api.py"]
+
+
+def test_run_with_no_pin_compiles_and_records_matching_fingerprint(tmp_path):
+    repo = _init_repo(tmp_path)
+    change = repo / "openspec" / "changes" / "add-thing"
+    change.mkdir(parents=True)
+    (change / "proposal.md").write_text("## Why\nBecause.\n")
+    (change / "tasks.md").write_text(
+        "## 1. Core\n\n- [ ] 1.1 Add the parser\n- [ ] 1.2 Wire the endpoint\n"
+    )
+
+    from worktrail.taskformats import resolve
+
+    spec_rel = str(change.relative_to(repo))
+    spec_id, tasks = resolve.load_spec(str(change))
+
+    spawn = RecordingSpawn(
+        _reply(**{
+            "1.1": {"files": ["src/parser.py"], "deps": []},
+            "1.2": {"files": ["src/api.py"], "deps": ["1.1"]},
+        })
+    )
+    merged = live.apply_run_plan(repo, spec_rel, spec_id, tasks, spawn=spawn)
+    assert spawn.calls == 1
+
+    from worktrail.conductor import runplan as conductor_runplan
+
+    fp = conductor_runplan.fingerprint(change, tasks)
+    journal = json.loads(live.journal_path_for(repo, spec_rel).read_text())
+    assert journal["plan_fingerprint"] == fp
+    by_id = {t["id"]: t for t in merged}
+    assert by_id["1.1"]["files"] == ["src/parser.py"]
+
+
+def test_unresolvable_pin_raises_and_never_compiles(tmp_path):
+    repo = _init_repo(tmp_path)
+    change = repo / "openspec" / "changes" / "add-thing"
+    change.mkdir(parents=True)
+    (change / "proposal.md").write_text("## Why\nBecause.\n")
+    (change / "tasks.md").write_text(
+        "## 1. Core\n\n- [ ] 1.1 Add the parser\n- [ ] 1.2 Wire the endpoint\n"
+    )
+
+    from worktrail.taskformats import resolve
+    from worktrail.conductor import compile as conductor_compile
+
+    spec_rel = str(change.relative_to(repo))
+    spec_id, tasks = resolve.load_spec(str(change))
+
+    spawn = RecordingSpawn(
+        _reply(**{
+            "1.1": {"files": ["src/parser.py"], "deps": []},
+            "1.2": {"files": ["src/api.py"], "deps": ["1.1"]},
+        })
+    )
+    live.apply_run_plan(repo, spec_rel, spec_id, tasks, spawn=spawn)
+    assert spawn.calls == 1
+
+    journal_path = live.journal_path_for(repo, spec_rel)
+    pinned_fp = json.loads(journal_path.read_text())["plan_fingerprint"]
+    cache_dir = conductor_compile.default_cache_dir(repo)
+    for f in cache_dir.iterdir():
+        f.unlink()
+
+    _, tasks_again = resolve.load_spec(str(change))
+    try:
+        live.apply_run_plan(repo, spec_rel, spec_id, tasks_again, spawn=RaisingSpawn())
+        assert False, "expected a RuntimeError for an unresolvable pin"
+    except RuntimeError as exc:
+        msg = str(exc)
+        assert spec_id in msg
+        assert pinned_fp[:12] in msg
+        assert str(journal_path) in msg
+
+
+def test_unreadable_journal_is_treated_as_no_pin(tmp_path):
+    repo = _init_repo(tmp_path)
+    change = repo / "openspec" / "changes" / "add-thing"
+    change.mkdir(parents=True)
+    (change / "proposal.md").write_text("## Why\nBecause.\n")
+    (change / "tasks.md").write_text(
+        "## 1. Core\n\n- [ ] 1.1 Add the parser\n- [ ] 1.2 Wire the endpoint\n"
+    )
+
+    from worktrail.taskformats import resolve
+
+    spec_rel = str(change.relative_to(repo))
+    spec_id, tasks = resolve.load_spec(str(change))
+
+    journal_path = live.journal_path_for(repo, spec_rel)
+    journal_path.parent.mkdir(parents=True, exist_ok=True)
+    journal_path.write_text("{ this is not json")
+
+    spawn = RecordingSpawn(
+        _reply(**{
+            "1.1": {"files": ["src/parser.py"], "deps": []},
+            "1.2": {"files": ["src/api.py"], "deps": ["1.1"]},
+        })
+    )
+    merged = live.apply_run_plan(repo, spec_rel, spec_id, tasks, spawn=spawn)
+    assert spawn.calls == 1, "a malformed journal must be treated as no pin, not an error"
+    by_id = {t["id"]: t for t in merged}
+    assert by_id["1.1"]["files"] == ["src/parser.py"]
+
+
 def test_devkit_spec_never_reaches_the_model(tmp_path):
     """A devkit spec already declares file scope in its own frontmatter --
     `needs_compile` sees no gaps, so `compile_run_plan` must take the free
