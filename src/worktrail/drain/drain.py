@@ -81,7 +81,7 @@ Usage:
            [--fallback-agent AGENT]... [--transcript-dir DIR]
            [--agent-cmd TEMPLATE] [--permission-arg FLAG]...
            [--consecutive-failures N] [--iteration-timeout-minutes M]
-           [--queue-dir DIR] [--runs-dir DIR] [--repos-root DIR]
+           [--max-workers N] [--queue-dir DIR] [--runs-dir DIR] [--repos-root DIR]
            [--capacity-cache PATH] [--lock-file PATH] [--dry-run] [--json]
 
 Exit codes: 0 = drained/stopped cleanly with a reported reason; 2 = refused to
