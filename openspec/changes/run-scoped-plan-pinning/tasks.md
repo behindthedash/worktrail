@@ -1,6 +1,6 @@
 ## 1. Pin read, fail-closed path, and their regression tests
 
-- [ ] 1.1 One atomic task across the affected files — the orchestrator groups PRs by
+- [x] 1.1 One atomic task across the affected files — the orchestrator groups PRs by
       shared file, not by `deps` edges, so splitting the `live.py` change from the tests
       that cover it would let them land in separate groups whose smoke tests each fail in
       isolation (this is the same reason `runplan-collision-auto-repair` kept its work in
