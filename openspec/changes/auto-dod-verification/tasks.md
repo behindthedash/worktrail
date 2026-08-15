@@ -14,7 +14,7 @@
 - [ ] 1.4 Keep every existing `run_check` branch (`file_exists`, `grep`,
       `command`, unrecognized-type) behaviorally unchanged.
 
-## 2. Derivation
+## 2. Derivation (implements Requirement: Derived Check Fallback)
 
 - [ ] 2.1 Implement `derive_dod_checks(frontmatter, body, task_relpath) ->
       list[dict]`: always includes one `ac_checkboxes_complete` check (with
@@ -40,7 +40,7 @@
       same failure-list format labeled as an audit report, and return
       `1` if any failures were found else `0` (informational exit code —
       not wired into `pre_pr_gate.py`).
-- [ ] 3.3 Confirm `pre_pr_gate.py` is unchanged apart from transitively
+- [ ] 3.3 [cleanup] Confirm `pre_pr_gate.py` is unchanged apart from transitively
       picking up derived checks through its existing
       `check_dod_failures(repo, changed_paths(...))` call.
 
@@ -82,8 +82,8 @@
 
 ## 6. Verification
 
-- [ ] 6.1 `PYTHONPATH=src pytest -q` passes.
-- [ ] 6.2 `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`
+- [ ] 6.1 [cleanup] `PYTHONPATH=src pytest -q` passes.
+- [ ] 6.2 [cleanup] `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`
       passes.
-- [ ] 6.3 `tests/test_plugin_surface.py` passes unchanged (no new console
+- [ ] 6.3 [cleanup] `tests/test_plugin_surface.py` passes unchanged (no new console
       script, no new skill).
