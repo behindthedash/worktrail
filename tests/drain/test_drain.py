@@ -50,10 +50,12 @@ from worktrail.drain.drain import (
     resume_quarantined_budget_exhausted,
     resume_sync_pending,
     resume_verify_pending,
+    run_one_shot,
     select_available_agent,
     slot_lock_path,
     sweep_remediations,
     validate_agent_runtime,
+    worker_scratch_dir,
     write_iteration_transcript,
 )
 
@@ -755,6 +757,48 @@ def test_drain_two_briefs_then_empty(tmp_path, monkeypatch):
     assert [i["state"] for i in summary["iterations"]] == [
         "completed_pr_open", "completed_pr_open"]
     assert not config.lock_file.exists()
+
+
+def test_drain_passes_distinct_worker_scratch_dir_as_cwd_per_slot(tmp_path, monkeypatch):
+    """drain()'s built-in spawner path threads worker_scratch_dir(slot) through
+    as run_one_shot's cwd (drain.py task 4.3); two workers configured onto
+    different slots of the same lock_file must resolve to distinct scratch
+    dirs, not share one."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("WORKTRAIL_HOME", str(home))
+    monkeypatch.setattr(drain, "build_agent_environment", lambda *a, **k: {})
+    monkeypatch.setattr(drain, "validate_agent_runtime", lambda *a, **k: None)
+
+    def run_for_slot(expected_slot, run_name):
+        fake = FakeQueue([1, 0])
+        install_fake_queue(monkeypatch, fake)
+        config = make_config(tmp_path, max_workers=2,
+                            lock_file=tmp_path / "drain.lock")
+        calls = []
+
+        def fake_run_one_shot(cmd, timeout, env=None, cwd=None):
+            calls.append(cwd)
+            write_run_record(config.runs_dir, run_name,
+                             "completed_pr_open", pr=f"https://pr/{run_name}")
+            return SpawnOutcome(0)
+
+        monkeypatch.setattr(drain, "run_one_shot", fake_run_one_shot)
+        drain.drain(config, log=lambda *_: None)
+        assert calls == [worker_scratch_dir(expected_slot, home=home)]
+        assert calls[0].is_dir()
+        return calls[0]
+
+    # Slot 0 held by a live "other worker" for the duration of this call, so
+    # this drain() invocation is forced onto slot 1.
+    assert acquire_lock(tmp_path / "drain.lock") is True
+    try:
+        slot1_cwd = run_for_slot(1, "worker-b")
+    finally:
+        release_lock(tmp_path / "drain.lock")
+
+    slot0_cwd = run_for_slot(0, "worker-a")
+
+    assert slot0_cwd != slot1_cwd
 
 
 def test_drain_attributes_outcome_to_claimed_briefs_own_repo_not_other_repos_newer_record(
