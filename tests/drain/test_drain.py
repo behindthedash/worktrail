@@ -2020,6 +2020,40 @@ def test_drain_sweeps_verify_pending_at_pre_and_post_loop_points(tmp_path, monke
     assert "resumed_openspec_archive" in summary
 
 
+def test_drain_non_leader_slot_never_sweeps_or_seeds_backlog(tmp_path, monkeypatch):
+    # A worker landing on any slot other than 0 must skip both the
+    # sweep_remediations and seed_backlog leader-only blocks entirely (task
+    # 5.1), even with repos_root set, seed_backlog enabled, and ready briefs
+    # in the queue -- those are the exact conditions that trigger both blocks
+    # for a slot-0 worker in the tests above/below.
+    monkeypatch.setattr(drain, "acquire_lock_slot", lambda *a, **k: 1)
+    fake = FakeQueue([1, 0])
+    install_fake_queue(monkeypatch, fake)
+    repos_root = tmp_path / "projects"
+    _make_repo(repos_root, "repo-a")
+    config = make_config(tmp_path, repos_root=repos_root)
+
+    sweep_calls = []
+    monkeypatch.setattr(
+        drain, "sweep_remediations",
+        lambda *a, **k: sweep_calls.append((a, k)) or {})
+    seed_calls = []
+    monkeypatch.setattr(
+        drain.seed_backlog_mod, "seed_backlog",
+        lambda *a, **k: seed_calls.append((a, k)) or {})
+
+    def spawner(cmd, timeout):
+        write_run_record(config.runs_dir, "go-1", "completed_pr_open", pr="https://pr/1")
+        return SpawnOutcome(0)
+
+    summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
+
+    assert sweep_calls == []
+    assert seed_calls == []
+    assert summary["resumed_quarantines"] == []
+    assert summary["seeded_backlog"] == {}
+
+
 # ---------------------------------------------------------------------------
 # sweep_remediations engine
 
