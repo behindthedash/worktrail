@@ -1225,6 +1225,21 @@ def acquire_lock(lock_file: Path) -> bool:
     return True
 
 
+def slot_lock_path(lock_file: Path, slot: int) -> Path:
+    """Per-slot lock file path; slot 0 is the configured lock file unchanged."""
+    if slot == 0:
+        return lock_file
+    return lock_file.with_name(f"{lock_file.name}.{slot}")
+
+
+def acquire_lock_slot(lock_file: Path, max_workers: int) -> Optional[int]:
+    """Try slots 0..max_workers-1 in order; return the first acquired slot or None."""
+    for slot in range(max_workers):
+        if acquire_lock(slot_lock_path(lock_file, slot)):
+            return slot
+    return None
+
+
 def _pid_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)

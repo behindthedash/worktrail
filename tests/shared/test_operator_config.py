@@ -66,8 +66,12 @@ def test_non_object_top_level_raises(tmp_path, monkeypatch):
     {"drain": {"agent": 3}},
     {"drain": {"fallback_agents": "claude"}},
     {"drain": {"fallback_agents": [1]}},
+    {"drain": {"max_workers": 0}},
+    {"drain": {"max_workers": -1}},
+    {"drain": {"max_workers": "2"}},
+    {"drain": {"max_workers": True}},
 ])
 def test_bad_drain_shapes_raise(tmp_path, monkeypatch, section):
-    _write(tmp_path, monkeypatch, section)
-    with pytest.raises(operator_config.OperatorConfigError):
+    path = _write(tmp_path, monkeypatch, section)
+    with pytest.raises(operator_config.OperatorConfigError, match=str(path)):
         operator_config.drain_config()

@@ -166,6 +166,10 @@ class ParseModelMap(unittest.TestCase):
         with patch.dict(os.environ, {"OPENCODE_PARENT": "1", "GO_AGENT_CLI": "claude"}, clear=True):
             self.assertEqual(live._detect_default_agent(), "claude")
 
+    def test_detect_default_agent_rejects_unsupported_override(self):
+        with patch.dict(os.environ, {"GO_AGENT_CLI": "not-a-real-agent"}, clear=True):
+            self.assertEqual(live._detect_default_agent(), "claude")
+
 
 class DefaultModelSelection(unittest.TestCase):
     def test_claude_defaults_to_sonnet(self):

@@ -27,6 +27,7 @@ exposes `spawn-one` (single worker) before the full fan-out loop is wired.
 from __future__ import annotations
 
 import argparse
+import copy
 import inspect
 import json
 import os
@@ -45,6 +46,7 @@ from . import dispatch
 from . import orchestrate
 from . import progress
 from . import spawnlib
+from ..router import invocation_context
 from ..taskformats import resolve as taskformats
 
 
@@ -79,17 +81,25 @@ DEFAULT_DEST = Path("/tmp/orchestrator-live/url-shortener-target")
 # Agent defaults are resolved by CLI so Claude Code, Codex, and OpenCode can each
 # use their own baseline model without affecting explicit --model values.
 def _detect_default_agent() -> str:
-    if os.environ.get("GO_AGENT_CLI"):
-        return os.environ["GO_AGENT_CLI"]
-    if os.environ.get("ORCH_AGENT"):
-        return os.environ["ORCH_AGENT"]
-    # OpenCode supplies this explicit marker to the parent process. Do not
-    # infer the host from process names.
-    if os.environ.get("OPENCODE_PARENT"):
-        return "opencode"
-    if os.environ.get("CODEX_CI") or os.environ.get("CODEX_THREAD_ID"):
-        return "codex"
-    return "claude"
+    """Resolve the default worker CLI via invocation_context.resolve() -- the
+    single implementation of the provider precedence chain (GO_AGENT_CLI >
+    ORCH_AGENT > OPENCODE_PARENT > CODEX_CI/CODEX_THREAD_ID > claude) -- so
+    this module can no longer drift from the front door's resolver (the same
+    drift class PR #338/#348 eliminated for invocation_context.py/go_seed.py).
+
+    An unsupported provider name in GO_AGENT_CLI/ORCH_AGENT now surfaces a
+    warning and falls back to "claude" instead of leaking into DEFAULT_AGENT
+    unvalidated. DEFAULT_AGENT is resolved at import time (see below) and used
+    as the default for many function signatures in this module, so letting
+    resolve()'s ValueError propagate would crash every live.py invocation over
+    one bad env var -- a worse regression than the unvalidated value this
+    replaces.
+    """
+    try:
+        return invocation_context.resolve().agent_cli
+    except ValueError as exc:
+        print(f"warning: {exc}; falling back to 'claude'", file=sys.stderr)
+        return "claude"
 
 
 def _default_smoke_cmd(repo: Path) -> "str | None":
@@ -3121,25 +3131,33 @@ def live_run_real(
         pending_tail = [t for t in tasks if t.get("kind") in ("e2e", "cleanup")]
         while pending_tail:
             progressed = False
+            pending_tail_ids = {t["id"] for t in pending_tail}
             for task in list(pending_tail):
                 unmet = [
                     dep
                     for dep in task.get("deps", [])
                     if dep in by_id and by_id[dep].get("status") not in coordinator.DONE
                 ]
-                failed = [
-                    dep for dep in unmet if by_id[dep].get("status") in coordinator.FAILED_STATUSES
-                ]
-                if unmet and not failed:
+                # An unmet dep still queued in this tail loop may resolve on a
+                # later iteration. Any other unmet dep -- explicitly failed/
+                # escalated, or a non-tail task the main fan-out never
+                # dispatched because ITS OWN prerequisite failed -- has
+                # already had its final say: the fan-out is over, so a
+                # never-dispatched dep's status will never advance past its
+                # initial value. Treat both the same as a blocking failure
+                # instead of waiting forever on a status that cannot change.
+                blocked_by = [dep for dep in unmet if dep not in pending_tail_ids]
+                waiting_on = [dep for dep in unmet if dep in pending_tail_ids]
+                if waiting_on and not blocked_by:
                     continue
-                if failed:
-                    reason = f"blocked by failed prerequisite(s): {', '.join(failed)}"
+                if blocked_by:
+                    reason = f"blocked by failed prerequisite(s): {', '.join(blocked_by)}"
                     now = time.time()
                     with state_lock:
                         task["status"] = "failed"
                         entries.append(
                             _journal_failure_entry(
-                                task, "dependency-gate", reason, now, now, blocked_by=failed
+                                task, "dependency-gate", reason, now, now, blocked_by=blocked_by
                             )
                         )
                         record()
@@ -3274,6 +3292,7 @@ def _dispatch_pending_tail(
     spawn=None,
     remote: str | None = None,
     base: str | None = None,
+    only: list | None = None,
 ) -> dict | None:
     """Dispatch pending e2e/cleanup tail tasks once the impl-group fan-out is
     integrated (`_pipeline_scheduler` reaches this point with every non-tail
@@ -3292,6 +3311,13 @@ def _dispatch_pending_tail(
     (`_dispatch_pending_tail` only fires once every group is integrated/verified/
     merged and cleaned up), so the call site supplies them.
 
+    `only` — the scheduler's own `--only` restriction (list of kept task ids),
+    threaded straight through to `live_run_real`'s pre-mark block. Without this,
+    `live_run_real` reloads every task fresh from the TaskSource with no `only`
+    filter, silently re-driving the FULL fan-out for every non-terminal task
+    (including ones already merged via an earlier group's PR) instead of
+    respecting the run's own scope restriction.
+
     Returns None when there is no tail work outstanding (no-op); otherwise the
     dict `live_run_real` returns for its `with_tail=True` pass.
     """
@@ -3303,6 +3329,7 @@ def _dispatch_pending_tail(
         spec_rel,
         max_workers=max_workers,
         out_cassette=journal_path,
+        only=only,
         with_tail=True,
         agent=agent,
         model=model,
@@ -3396,18 +3423,67 @@ def _pipeline_scheduler(
     role_models = _effective_role_models(agent, role_models)
     spec_id, tasks = taskformats.load_spec(str(repo / spec_rel))
     tasks = apply_run_plan(repo, spec_rel, spec_id, tasks)
+    pre_only_done = {t["id"] for t in tasks if t.get("status") in coordinator.DONE}
+    if only and resume and Path(journal_path).exists():
+        # A task can be genuinely already-done purely via a PRIOR run's journal
+        # (frontmatter status alone won't show it -- frontmatter isn't rewritten
+        # by run completion). Peek the journal the same way the real resume
+        # block below does (reconcile_from_journal), but on a throwaway copy of
+        # `tasks` so this doesn't affect or duplicate the real reconciliation
+        # that happens later once the fan-out infrastructure is set up.
+        try:
+            _peek_journal = json.loads(Path(journal_path).read_text())
+            _peek_tasks = copy.deepcopy(tasks)
+            reconcile_from_journal(_peek_tasks, _peek_journal)
+            pre_only_done |= {t["id"] for t in _peek_tasks if t.get("status") in coordinator.DONE}
+        except (OSError, json.JSONDecodeError):
+            pass  # best-effort; the real resume block's own error handling still applies
     for t in tasks:
         t.setdefault("retry_count", 0)
         if t.get("status") in coordinator.DONE:
             continue
         t["status"] = "pending"
+
+    # Groups are computed from deps/files only (plan_groups never reads status),
+    # so this is safe to call before the --only status override below and reused
+    # unchanged afterward -- no behavior change for callers without --only.
+    groups = coordinator.plan_groups(tasks, migration_patterns=migration_patterns or ())
+
     if only:
         keep = set(only)
+        # --only's "mark excluded tasks completed" is meant for tasks ALREADY
+        # integrated on a prior partial run (their worktree branch may no
+        # longer exist -- see the identical live_run_real comment at ~2636).
+        # Silently applying the same fake-"completed" to a task that never
+        # actually ran is unsafe when that task shares a GROUP with an
+        # --only-included task: deliverable_subset() treats "completed" as
+        # ALREADY_INTEGRATED and drops it from the group's PR, so the group
+        # gets judged integration-ready and merged/re-attempted with that
+        # task's real, still-needed work silently missing -- no error, no
+        # quarantine, just an incomplete PR (confirmed via
+        # tests/orchestrator/test_pipeline_budget_partial_group.py,
+        # ResumeWithOnlyExcludingPendingSiblingTest). Refuse instead: a task
+        # that genuinely already finished before this invocation (in
+        # `pre_only_done`) is still safely excludable either way.
+        task_group = {tid: g["name"] for g in groups for tid in g["tasks"]}
+        included_groups = {task_group[tid] for tid in keep if tid in task_group}
         for t in tasks:
-            if t["id"] not in keep:
+            tid = t["id"]
+            if tid in keep:
+                continue
+            if tid in pre_only_done:
                 t["status"] = "completed"
+                continue
+            if task_group.get(tid) in included_groups:
+                raise RuntimeError(
+                    f"--only excludes task {tid!r}, which has not completed and "
+                    f"shares group {task_group[tid]!r} with a task named in --only. "
+                    "Faking it as already-integrated would silently drop its real "
+                    "work from that group's PR. Add it to --only too, or wait for "
+                    "it to finish on a plain resume first."
+                )
+            t["status"] = "completed"
 
-    groups = coordinator.plan_groups(tasks, migration_patterns=migration_patterns or ())
     by_id = {t["id"]: t for t in tasks}
 
     # Spec-folder ownership: only the first independent
@@ -3636,8 +3712,18 @@ def _pipeline_scheduler(
             if name in quarantined:
                 return  # quarantined by integrate_one, or resumed head_branch validation above
             if name not in group_branch:
-                return  # MERGED on a prior run (integrate_one returned None), or resumed
-                        # head_branch failed validation above
+                return  # resumed head_branch failed validation above
+            if groups_journal.get(name, {}).get("state") == "MERGED":
+                # integrate_one's own implicit-merge path (every task in this group was
+                # already ALREADY_INTEGRATED) journals MERGED via _record_group_fn -- which
+                # mutates this same groups_journal dict in place -- and sets group_branch so
+                # dependents can stack on it, but opens no PR. Without this check, the group
+                # fell through to verify_one against a branch that was never pushed/opened,
+                # which always fails "no pull requests found" and wrongly quarantines an
+                # already-fully-merged group (and cascades to every dependent group).
+                with iv_lock:
+                    prs.append((name, base, groups_journal[name].get("pr_url", "")))
+                return
 
             # Verify
             with iv_lock:
@@ -4171,6 +4257,7 @@ def _pipeline_scheduler(
             spawn=spawn_fn,
             remote=remote,
             base=base,
+            only=only,
         )
         if tail_res is not None:
             integrate_module._mark_integrate_complete_if_terminal(
