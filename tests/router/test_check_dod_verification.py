@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 
 from worktrail.router.check_dod_verification import (
-    check_changed_specs, check_task_file, run_check,
+    check_changed_specs, check_task_file, derive_dod_checks, run_check,
 )
 
 
@@ -178,6 +178,64 @@ class FileTrackedTests(unittest.TestCase):
         (self.repo / "tracked.txt").write_text("hi\n", encoding="utf-8")
         subprocess.run(["git", "add", "tracked.txt"], cwd=self.repo, check=True)
         self.assertIsNone(run_check(self.repo, {"type": "file_tracked", "path": "tracked.txt"}))
+
+
+class DeriveDodChecksTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.repo = Path(self.tmp.name)
+
+    def _write_task(self, relpath: str, body: str) -> None:
+        path = self.repo / relpath
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "---\nid: TASK-001\ntitle: Fixture\nspec: 000-fixture\nstatus: completed\n"
+            f"---\n\n{body}",
+            encoding="utf-8",
+        )
+
+    def test_files_present_derives_file_tracked_and_no_stub_markers_per_path(self) -> None:
+        checks = derive_dod_checks(
+            {"files": ["src/foo.py", "src/bar.py"]}, "some body", "TASK-001.md"
+        )
+        self.assertEqual(
+            checks,
+            [
+                {"type": "ac_checkboxes_complete", "task_path": "TASK-001.md"},
+                {"type": "file_tracked", "path": "src/foo.py"},
+                {"type": "no_stub_markers", "path": "src/foo.py"},
+                {"type": "file_tracked", "path": "src/bar.py"},
+                {"type": "no_stub_markers", "path": "src/bar.py"},
+            ],
+        )
+
+    def test_files_absent_derives_ac_checkboxes_complete_only(self) -> None:
+        checks = derive_dod_checks({}, "some body", "TASK-001.md")
+        self.assertEqual(
+            checks, [{"type": "ac_checkboxes_complete", "task_path": "TASK-001.md"}]
+        )
+
+    def test_files_empty_list_derives_ac_checkboxes_complete_only(self) -> None:
+        checks = derive_dod_checks({"files": []}, "some body", "TASK-001.md")
+        self.assertEqual(
+            checks, [{"type": "ac_checkboxes_complete", "task_path": "TASK-001.md"}]
+        )
+
+    def test_no_body_no_ac_section_and_no_files_is_a_noop_like_today(self) -> None:
+        # No `files:` and an empty body: the only derived check is
+        # ac_checkboxes_complete, and running it against a body with no
+        # checkboxes anywhere vacuously passes per `_all_checkboxes_checked`
+        # semantics -- so, like today's pre-derivation behavior (no
+        # `dod-checks` -> nothing ever fails), the derivation raises no
+        # failures.
+        checks = derive_dod_checks({}, "", "TASK-001.md")
+        self.assertEqual(
+            checks, [{"type": "ac_checkboxes_complete", "task_path": "TASK-001.md"}]
+        )
+        self._write_task("TASK-001.md", "")
+        for check in checks:
+            self.assertIsNone(run_check(self.repo, check))
 
 
 class CheckTaskFileTests(unittest.TestCase):
