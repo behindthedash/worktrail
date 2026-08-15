@@ -84,7 +84,7 @@ Implements requirement: **Every orchestrator group PR clears the drift gate befo
 
 ## 5. Reconcile the auto-dod-verification assertion
 
-- [ ] 5.1 In `openspec/changes/auto-dod-verification/proposal.md`, annotate the claims at
+- [x] 5.1 In `openspec/changes/auto-dod-verification/proposal.md`, annotate the claims at
   lines 31-34 ("the existing diff-scoped `pre_pr_gate.py` wiring … covers derived checks
   with no changes to `pre_pr_gate.py` itself"), line 57 ("opt-out-free"), and lines 74-76
   (`pre_pr_gate.py`: "no functional change") to state that the claim held for one-off
