@@ -431,6 +431,28 @@ def test_concurrent_record_and_configure_both_survive(tmp_path, monkeypatch):
     assert data["providers"]["claude:sonnet"]["status"] == "available"
 
 
+def test_concurrent_record_capacity_gate_calls_both_survive(tmp_path, monkeypatch):
+    # drain.py's record_capacity_gate does its own load-mutate-save under
+    # agent_capacity.write_lock; two workers finishing close together for
+    # different agents must not let one save clobber the other's gate.
+    from worktrail.drain import drain
+
+    path = tmp_path / "capacity.json"
+    now = datetime(2026, 8, 12, 20, 0, tzinfo=timezone.utc)
+    _run_racing_writers(
+        tmp_path,
+        monkeypatch,
+        lambda: drain.record_capacity_gate(path, "claude", "billing", now + timedelta(hours=1)),
+        lambda: drain.record_capacity_gate(path, "codex", "transport", now + timedelta(minutes=5)),
+    )
+
+    providers = json.loads(path.read_text(encoding="utf-8"))["providers"]
+    assert providers["claude"]["status"] == "unavailable"
+    assert providers["claude"]["failure_class"] == "billing"
+    assert providers["codex"]["status"] == "unavailable"
+    assert providers["codex"]["failure_class"] == "transport"
+
+
 def test_preflight_reports_all_providers_gated_without_spawning(tmp_path, monkeypatch):
     path = tmp_path / "capacity.json"
     now = datetime.now(timezone.utc)
