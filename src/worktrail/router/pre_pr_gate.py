@@ -418,6 +418,9 @@ def main(argv=None) -> int:
         print(" ".join(labels))
         return 0
 
+    if args.checks_only:
+        return run_drift_checks(repo, policy)
+
     scope_failures = scope_review_failures(Path(args.run) if args.run else None)
     if scope_failures:
         print("PRE-PR GATE: FAIL — scope completeness review required:", file=sys.stderr)
