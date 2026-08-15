@@ -113,7 +113,7 @@ def save(value: Dict, path: Optional[Path] = None) -> None:
 
 
 @contextmanager
-def _write_lock(path: Path) -> Iterator[None]:
+def write_lock(path: Path) -> Iterator[None]:
     """Serialize a load -> mutate -> save sequence against concurrent writers.
 
     Every writer in this module (``configure``/``record``/``cmd_clear``) holds
@@ -146,7 +146,7 @@ def _write_lock(path: Path) -> Iterator[None]:
 def configure(providers: Iterable[tuple[str, str]], path: Optional[Path] = None) -> None:
     """Remember the provider/model-safe set used by the current dispatch."""
     path = path or cache_path()
-    with _write_lock(path):
+    with write_lock(path):
         data = load(path)
         data["configured_providers"] = sorted(
             {_safe_identifier(provider_key(agent, model)) for agent, model in providers}
@@ -226,7 +226,7 @@ def record(
     }
     if retry_after:
         state["retry_after"] = retry_after.isoformat()
-    with _write_lock(path):
+    with write_lock(path):
         data = load(path)
         data.setdefault("version", 1)
         data.setdefault("providers", {})[key] = state
@@ -365,7 +365,7 @@ def cmd_clear(scope: str, reason: str, path: Optional[Path] = None, now: Optiona
         print(f"error: --reason must be at most {MAX_REASON_LENGTH} characters", file=sys.stderr)
         return 1
 
-    with _write_lock(p):
+    with write_lock(p):
         raw = load(p)
         providers = raw.get("providers", {})
 

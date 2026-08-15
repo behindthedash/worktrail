@@ -302,7 +302,11 @@ def parse_run_record(text: str) -> Dict[str, Optional[str]]:
     return fields
 
 
-def newest_run_record(runs_dir: Path, known: Iterable[Path] = ()) -> Optional[Path]:
+def newest_run_record(
+    runs_dir: Path,
+    known: Iterable[Path] = (),
+    repo_filter: Optional[str] = None,
+) -> Optional[Path]:
     """The run-record YAML this iteration produced, across repos.
 
     Attribution is by set difference against a before-spawn snapshot (`known`),
@@ -310,11 +314,16 @@ def newest_run_record(runs_dir: Path, known: Iterable[Path] = ()) -> Optional[Pa
     mtime-resolution tick can tie or invert under an mtime `>= since_epoch`
     filter, so a stale record can outrank -- or exclude -- the real one
     depending on directory-iteration order, which Python does not guarantee.
+
+    `repo_filter`, when given, restricts the glob to that repo's subdirectory
+    so an iteration attributed to a single claimed brief can't be misclassified
+    by a newer record landing concurrently in a different repo's directory.
     """
     if not runs_dir.is_dir():
         return None
     known_set = known if isinstance(known, (set, frozenset)) else set(known)
-    candidates = [path for path in runs_dir.glob("*/*.yaml") if path not in known_set]
+    glob_pattern = f"{repo_filter}/*.yaml" if repo_filter is not None else "*/*.yaml"
+    candidates = [path for path in runs_dir.glob(glob_pattern) if path not in known_set]
     if not candidates:
         return None
     def _mtime_ns(path: Path) -> int:
@@ -443,15 +452,16 @@ def record_capacity_gate(cache_path: Path, agent: str, failure_class: str,
     "agent:model" keys -- drain.py has no model concept of its own, and
     capacity_gated() already matches a bare key by exact agent-name equality.
     """
-    data = agent_capacity.load(cache_path)
-    data.setdefault("providers", {})[agent] = {
-        "status": "unavailable",
-        "failure_class": failure_class,
-        "checked_at": datetime.now(timezone.utc).isoformat(),
-        "retry_after": retry_after.isoformat(),
-        "source": "drain",
-    }
-    agent_capacity.save(data, cache_path)
+    with agent_capacity.write_lock(cache_path):
+        data = agent_capacity.load(cache_path)
+        data.setdefault("providers", {})[agent] = {
+            "status": "unavailable",
+            "failure_class": failure_class,
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+            "retry_after": retry_after.isoformat(),
+            "source": "drain",
+        }
+        agent_capacity.save(data, cache_path)
 
 
 # ---------------------------------------------------------------------------
@@ -1417,7 +1427,8 @@ def drain(config: DrainConfig,
     agent_env = build_agent_environment()
     if uses_builtin_spawner:
         spawner = functools.partial(run_one_shot, env=agent_env)
-    if not acquire_lock(config.lock_file):
+    slot = acquire_lock_slot(config.lock_file, config.max_workers)
+    if slot is None:
         return {"stopped": "lock_held",
                 "detail": f"another drain owns {config.lock_file}",
                 "iterations": []}
@@ -1583,7 +1594,7 @@ def drain(config: DrainConfig,
             for key, findings in post.items():
                 resumed.setdefault(key, []).extend(findings)
     finally:
-        release_lock(config.lock_file)
+        release_lock_slot(config.lock_file, slot)
     summary: Dict[str, object] = {
         "stopped": decision.reason if not decision.proceed else "dry_run",
         "iterations": iterations,
@@ -1646,6 +1657,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--consecutive-failures", type=int, default=2,
                         help="circuit-breaker threshold (default 2)")
     parser.add_argument("--iteration-timeout-minutes", type=int, default=45)
+    parser.add_argument("--max-workers", type=int, default=None,
+                        help="concurrent drain-worker slots against the same "
+                             "--lock-file; when omitted, falls back to the "
+                             "operator config's drain.max_workers "
+                             "(worktrail_home()/config.json), then to 2")
     parser.add_argument("--queue-dir", type=Path, default=None,
                         help="WORK_QUEUE_DIR override for queue checks")
     parser.add_argument("--runs-dir", type=Path,
