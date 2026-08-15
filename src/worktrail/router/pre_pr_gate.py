@@ -317,6 +317,60 @@ def _warn_orphaned_tests(repo: Path) -> None:
           "a CI job, or delete the dead tests.", file=sys.stderr)
 
 
+def run_drift_checks(repo: Path, policy: Dict[str, Any]) -> int:
+    """Run the four deterministic drift checks in order, stderr-reporting each
+    failure exactly as `main()` does inline. Returns the matching
+    `*_DRIFT_EXIT` constant on the first failure, 0 when all pass."""
+    drift = spec_sync_drift(repo)
+    if drift:
+        print("PRE-PR GATE: FAIL — spec/task drift detected in docs/specs/:",
+              file=sys.stderr)
+        for failure in drift:
+            print(f"  - {failure}", file=sys.stderr)
+        print("  Run worktrail-check-spec-sync on the affected spec(s) to fix.",
+              file=sys.stderr)
+        return SPEC_SYNC_DRIFT_EXIT
+
+    clarification_failures = check_changed_specs(
+        repo, changed_paths(repo, policy) or []
+    )
+    if clarification_failures:
+        print("PRE-PR GATE: FAIL — clarification-integrity issue(s) detected in "
+              "changed docs/specs/ files:", file=sys.stderr)
+        for failure in clarification_failures:
+            print(f"  - {failure}", file=sys.stderr)
+        print("  An owner-escalated marker was resolved by inference and declared "
+              "clean — see Decision Classification in specs.spec-check.md.",
+              file=sys.stderr)
+        return CLARIFICATION_INTEGRITY_DRIFT_EXIT
+
+    dod_failures = check_dod_failures(repo, changed_paths(repo, policy) or [])
+    if dod_failures:
+        print("PRE-PR GATE: FAIL — Definition-of-Done verification failed for "
+              "completed task(s):", file=sys.stderr)
+        for failure in dod_failures:
+            print(f"  - {failure}", file=sys.stderr)
+        print("  Run worktrail-check-dod-verification on the affected task(s) to fix.",
+              file=sys.stderr)
+        return DOD_VERIFICATION_DRIFT_EXIT
+
+    req_coverage_base_ref = _resolve_req_coverage_base_ref(repo, policy.get("base_branch"))
+    if req_coverage_base_ref is not None:
+        req_coverage_failures = check_req_coverage_failures(
+            repo, changed_paths(repo, policy) or [], req_coverage_base_ref
+        )
+        if req_coverage_failures:
+            print("PRE-PR GATE: FAIL — req/AC coverage issue(s) detected in "
+                  "changed docs/specs/ files:", file=sys.stderr)
+            for failure in req_coverage_failures:
+                print(f"  - {failure}", file=sys.stderr)
+            print("  Run worktrail-check-req-coverage on the affected spec(s) to fix.",
+                  file=sys.stderr)
+            return REQ_AC_COVERAGE_DRIFT_EXIT
+
+    return 0
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--repo", default=".",
@@ -338,6 +392,10 @@ def main(argv=None) -> int:
                    help="classified route letter for --risk's require_human_routes check")
     p.add_argument("--labels-only", action="store_true",
                    help="print resolved PR labels without running the test command")
+    p.add_argument("--checks-only", action="store_true",
+                   help="run the four deterministic drift checks (spec sync, "
+                        "clarification integrity, DoD failures, requirement coverage) "
+                        "and do not run the policy test command")
     p.add_argument("--run", default=None, metavar="RUN_RECORD",
                    help="shared go run record; enables mandatory scope completeness review")
     args = p.parse_args(argv)
@@ -360,6 +418,9 @@ def main(argv=None) -> int:
         print(" ".join(labels))
         return 0
 
+    if args.checks_only:
+        return run_drift_checks(repo, policy)
+
     scope_failures = scope_review_failures(Path(args.run) if args.run else None)
     if scope_failures:
         print("PRE-PR GATE: FAIL — scope completeness review required:", file=sys.stderr)
@@ -369,52 +430,9 @@ def main(argv=None) -> int:
         return SCOPE_COMPLETENESS_EXIT
 
     if not args.print_cmd:
-        drift = spec_sync_drift(repo)
-        if drift:
-            print("PRE-PR GATE: FAIL — spec/task drift detected in docs/specs/:",
-                  file=sys.stderr)
-            for failure in drift:
-                print(f"  - {failure}", file=sys.stderr)
-            print("  Run worktrail-check-spec-sync on the affected spec(s) to fix.",
-                  file=sys.stderr)
-            return SPEC_SYNC_DRIFT_EXIT
-
-        clarification_failures = check_changed_specs(
-            repo, changed_paths(repo, policy) or []
-        )
-        if clarification_failures:
-            print("PRE-PR GATE: FAIL — clarification-integrity issue(s) detected in "
-                  "changed docs/specs/ files:", file=sys.stderr)
-            for failure in clarification_failures:
-                print(f"  - {failure}", file=sys.stderr)
-            print("  An owner-escalated marker was resolved by inference and declared "
-                  "clean — see Decision Classification in specs.spec-check.md.",
-                  file=sys.stderr)
-            return CLARIFICATION_INTEGRITY_DRIFT_EXIT
-
-        dod_failures = check_dod_failures(repo, changed_paths(repo, policy) or [])
-        if dod_failures:
-            print("PRE-PR GATE: FAIL — Definition-of-Done verification failed for "
-                  "completed task(s):", file=sys.stderr)
-            for failure in dod_failures:
-                print(f"  - {failure}", file=sys.stderr)
-            print("  Run worktrail-check-dod-verification on the affected task(s) to fix.",
-                  file=sys.stderr)
-            return DOD_VERIFICATION_DRIFT_EXIT
-
-        req_coverage_base_ref = _resolve_req_coverage_base_ref(repo, policy.get("base_branch"))
-        if req_coverage_base_ref is not None:
-            req_coverage_failures = check_req_coverage_failures(
-                repo, changed_paths(repo, policy) or [], req_coverage_base_ref
-            )
-            if req_coverage_failures:
-                print("PRE-PR GATE: FAIL — req/AC coverage issue(s) detected in "
-                      "changed docs/specs/ files:", file=sys.stderr)
-                for failure in req_coverage_failures:
-                    print(f"  - {failure}", file=sys.stderr)
-                print("  Run worktrail-check-req-coverage on the affected spec(s) to fix.",
-                      file=sys.stderr)
-                return REQ_AC_COVERAGE_DRIFT_EXIT
+        drift_exit = run_drift_checks(repo, policy)
+        if drift_exit:
+            return drift_exit
 
     if not args.print_cmd and is_docs_only(repo, policy):
         print("PRE-PR GATE: DOCS-ONLY SKIP — every changed path matched "
