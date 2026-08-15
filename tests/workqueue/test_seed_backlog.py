@@ -52,6 +52,22 @@ def _mk_citing_spec(repo: Path, spec_id: str, epic_id: str) -> None:
         "---\nid: TASK-001\nstatus: completed\n---\n\nDone.\n", encoding="utf-8")
 
 
+def _mk_citing_openspec_spec(repo: Path, slug: str, epic_id: str) -> None:
+    spec_dir = repo / "openspec" / "specs" / slug
+    spec_dir.mkdir(parents=True)
+    (spec_dir / "spec.md").write_text(
+        f"# {slug}\n\nOwning epic: {epic_id}\n\n## Purpose\n", encoding="utf-8")
+
+
+def _mk_citing_openspec_change(repo: Path, slug: str, epic_id: str,
+                                archived: bool = False) -> None:
+    base = repo / "openspec" / "changes"
+    change_dir = (base / "archive" / f"2026-08-12-{slug}") if archived else (base / slug)
+    change_dir.mkdir(parents=True)
+    (change_dir / "proposal.md").write_text(
+        f"# {slug}\n\nOwning epic: {epic_id}\n\n## Why\n", encoding="utf-8")
+
+
 def _opt_in(repo: Path) -> None:
     specs = repo / "docs" / "specs"
     specs.mkdir(parents=True, exist_ok=True)
@@ -184,6 +200,54 @@ def test_epic_with_unspecced_features_seeds_brief(tmp_path):
     _path, fm = _queued_briefs(tmp_path / "wq")[0]
     assert fm["recommended-route"] == "C"
     assert fm["implementation-intent"] == "planning-only"
+
+
+def test_openspec_spec_citation_counts_toward_epic(tmp_path):
+    repos_root = tmp_path / "projects"
+    repo = _mk_repo(repos_root, "repo-a")
+    _mk_epic(repo, "001-payments", features=1)
+    _mk_citing_openspec_spec(repo, "payments-core", "001-payments")
+
+    summary = seed_backlog.seed_backlog(
+        repos_root, queue_base=tmp_path / "wq", log=lambda _m: None)
+    assert summary["seeded"] == []
+
+
+def test_openspec_change_citation_counts_toward_epic(tmp_path):
+    repos_root = tmp_path / "projects"
+    repo = _mk_repo(repos_root, "repo-a")
+    _mk_epic(repo, "001-payments", features=1)
+    _mk_citing_openspec_change(repo, "payments-core", "001-payments")
+
+    summary = seed_backlog.seed_backlog(
+        repos_root, queue_base=tmp_path / "wq", log=lambda _m: None)
+    assert summary["seeded"] == []
+
+
+def test_openspec_archived_change_citation_counts_toward_epic(tmp_path):
+    repos_root = tmp_path / "projects"
+    repo = _mk_repo(repos_root, "repo-a")
+    _mk_epic(repo, "001-payments", features=1)
+    _mk_citing_openspec_change(repo, "payments-core", "001-payments", archived=True)
+
+    summary = seed_backlog.seed_backlog(
+        repos_root, queue_base=tmp_path / "wq", log=lambda _m: None)
+    assert summary["seeded"] == []
+
+
+def test_mixed_format_citations_are_not_undercounted(tmp_path):
+    # Regression for the live 2026-08-15 devops incident: an epic whose
+    # features ship across both spec formats must not be re-seeded just
+    # because the OpenSpec-shipped features are invisible to the scan.
+    repos_root = tmp_path / "projects"
+    repo = _mk_repo(repos_root, "repo-a")
+    _mk_epic(repo, "001-payments", features=2)
+    _mk_citing_spec(repo, "020-payments-core", "001-payments")
+    _mk_citing_openspec_change(repo, "payments-refunds", "001-payments", archived=True)
+
+    summary = seed_backlog.seed_backlog(
+        repos_root, queue_base=tmp_path / "wq", log=lambda _m: None)
+    assert summary["seeded"] == []
 
 
 def test_fully_cited_epic_is_not_seeded(tmp_path):
