@@ -1,4 +1,4 @@
-## 1. Worker-slot locking (design.md D1)
+## 1. Worker-slot locking (design.md D1, Requirement: Bounded worker-slot locking)
 
 - [ ] 1.1 In `src/worktrail/drain/drain.py`, add `slot_lock_path(lock_file: Path, slot: int) ->
       Path` (slot 0 returns `lock_file` unchanged; slot N>0 returns
@@ -29,7 +29,7 @@
       slot (dead PID written to a slot-1 lock file) is taken over exactly like today's
       single-lock stale-takeover test already covers for slot 0.
 
-## 2. Capacity-cache write-lock fix (design.md D2)
+## 2. Capacity-cache write-lock fix (design.md D2, Requirement: Capacity-cache writes are safe under concurrent workers)
 
 - [ ] 2.1 In `src/worktrail/orchestrator/agent_capacity.py`, rename `_write_lock` to
       `write_lock` (drop the leading underscore; no signature or behavior change) and update its
@@ -46,7 +46,7 @@
       `configure()` in this file, mirror its pattern for `record_capacity_gate` rather than
       inventing a new harness.
 
-## 3. Run-record attribution scoping (design.md D5)
+## 3. Run-record attribution scoping (design.md D5, Requirement: Run-record attribution is scoped per worker)
 
 - [ ] 3.1 In `src/worktrail/drain/drain.py`, extend `newest_run_record()`
       (`drain.py:305-325`) with an optional `repo_filter: Optional[str] = None` parameter: when
@@ -68,7 +68,7 @@
       covers spec `drain-concurrent-workers` scenario "Two workers finish overlapping iterations
       against different repos."
 
-## 4. Per-worker cwd isolation (design.md D4)
+## 4. Per-worker cwd isolation (design.md D4, Requirement: Per-worker working-directory isolation)
 
 - [ ] 4.1 In `src/worktrail/drain/drain.py`, add `worker_scratch_dir(slot: int, home: Optional[Path]
       = None) -> Path` returning `(home or worktrail_home()) / "drain-workers" /
@@ -85,7 +85,7 @@
       spawner records the `cwd` each call received (via a fake spawner capturing kwargs) and
       asserts two concurrently-configured slots resolve to distinct `worker_scratch_dir` paths.
 
-## 5. Leader-only remediation sweep and backlog seeding (design.md D6)
+## 5. Leader-only remediation sweep and backlog seeding (design.md D6, Requirement: Repo-wide sweeps run once per drain pass, not once per worker)
 
 - [ ] 5.1 In `drain()` (`drain.py:1420-1435` pre-loop, `drain.py:1554-1563` post-loop), guard
       both the `sweep_remediations(...)` calls and the `seed_backlog_mod.seed_backlog(...)` call
@@ -98,7 +98,7 @@
       slot-0 invocation calls them exactly as today's existing pre/post-sweep tests already
       cover.
 
-## 6. `drain.max_workers` operator-config wiring (design.md D3, spec `drain-operator-config`)
+## 6. `drain.max_workers` operator-config wiring (design.md D3, spec `drain-operator-config`, Requirement: Drain worker count resolves CLI over config over built-in)
 
 - [ ] 6.1 In `src/worktrail/shared/operator_config.py`, extend `drain_config()`'s returned dict
       with a `max_workers` key: read `section.get("max_workers")`, default `2` when absent,
