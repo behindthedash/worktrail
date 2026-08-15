@@ -1239,6 +1239,10 @@ def release_lock(lock_file: Path) -> None:
     lock_file.unlink(missing_ok=True)
 
 
+def release_lock_slot(lock_file: Path, slot: int) -> None:
+    release_lock(slot_lock_path(lock_file, slot))
+
+
 # ---------------------------------------------------------------------------
 # Decision function (pure — the unit-tested core)
 
