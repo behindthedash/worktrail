@@ -1072,13 +1072,17 @@ def integrate_one(
     search_result = _run_gh_with_retry(
         [
             "gh", "pr", "list", "--search", f"{name} {spec_id}",
-            "--json", "number,state,url,headRefName,isDraft", "--state", "open",
+            "--json", "number,state,url,headRefName,baseRefName,isDraft", "--state", "open",
         ],
         repo,
     )
     if search_result.returncode == 0:
         try:
             matches = json.loads(search_result.stdout)
+            matches = [
+                m for m in matches
+                if m.get("headRefName") == gb or m.get("baseRefName") == pr_base
+            ]
             if matches:
                 match = matches[0]
                 if not _ensure_pr_ready(match):
