@@ -126,7 +126,7 @@
 
 - [x] 7.1 [cleanup] Update `drain.py`'s module docstring (the `Usage:` block,
       `drain.py:79-88`) to include `--max-workers` alongside the existing documented flags.
-- [ ] 7.2 [cleanup] Run `PYTHONPATH=src pytest -q` and confirm it is green, including every new
+- [x] 7.2 [cleanup] Run `PYTHONPATH=src pytest -q` and confirm it is green, including every new
       test from sections 1-6. Verification-only — no production file changes expected.
 - [ ] 7.3 [cleanup] Run `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`
       (golden record/replay regression) and confirm it is green. Verification-only — no file
