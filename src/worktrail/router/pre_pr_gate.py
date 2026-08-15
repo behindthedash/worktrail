@@ -392,6 +392,10 @@ def main(argv=None) -> int:
                    help="classified route letter for --risk's require_human_routes check")
     p.add_argument("--labels-only", action="store_true",
                    help="print resolved PR labels without running the test command")
+    p.add_argument("--checks-only", action="store_true",
+                   help="run the four deterministic drift checks (spec sync, "
+                        "clarification integrity, DoD failures, requirement coverage) "
+                        "and do not run the policy test command")
     p.add_argument("--run", default=None, metavar="RUN_RECORD",
                    help="shared go run record; enables mandatory scope completeness review")
     args = p.parse_args(argv)
