@@ -204,9 +204,24 @@ def main() -> int:
         "--base-branch", default=None,
         help="base branch to diff against (default: try origin/main, origin/master, main, master)",
     )
+    parser.add_argument(
+        "--all", action="store_true",
+        help="audit every task file under docs/specs/, not just those changed in the current diff",
+    )
     args = parser.parse_args()
 
     repo = Path(args.repo).resolve()
+
+    if args.all:
+        failures = audit_all_specs(repo)
+        if failures:
+            print(f"FAIL: {len(failures)} DoD-verification issue(s) in audit report")
+            for failure in failures:
+                print(f"  - {failure}")
+            return 1
+        print("DoD verification audit: no drift detected across docs/specs/.")
+        return 0
+
     changed = _changed_paths_via_git(repo, args.base_branch)
     failures = check_changed_specs(repo, changed)
 
