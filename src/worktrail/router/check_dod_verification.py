@@ -26,6 +26,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from worktrail.taskformats.devkit import schema
 from worktrail.taskformats.devkit.schema import is_task_file, read_task_file
 
 CANDIDATE_BASE_REFS = ("origin/main", "origin/master", "main", "master")
@@ -45,6 +46,31 @@ def run_check(repo: Path, check: dict) -> str | None:
             return f"malformed file_exists check (missing 'path'): {check}"
         if not (repo / path).exists():
             return f"file_exists check failed: {path} does not exist"
+        return None
+
+    if check_type == "file_tracked":
+        path = check.get("path")
+        if not path:
+            return f"malformed file_tracked check (missing 'path'): {check}"
+        if not (repo / path).exists():
+            return f"file_tracked check failed: {path} does not exist"
+        result = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", path],
+            cwd=str(repo), capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            return f"file_tracked check failed: {path} is not tracked by git"
+        return None
+
+    if check_type == "ac_checkboxes_complete":
+        task_path = check.get("task_path")
+        if not task_path:
+            return f"malformed ac_checkboxes_complete check (missing 'task_path'): {check}"
+        _frontmatter, error, body = read_task_file(repo / task_path)
+        if error:
+            return f"ac_checkboxes_complete check failed: {task_path} could not be read ({error})"
+        if not schema._all_checkboxes_checked(body, sections=("Acceptance Criteria",)):
+            return f"ac_checkboxes_complete check failed: {task_path} has unchecked Acceptance Criteria checkboxes"
         return None
 
     if check_type == "grep":
