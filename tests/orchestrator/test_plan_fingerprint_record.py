@@ -162,5 +162,82 @@ class PlanFingerprintRecord(unittest.TestCase):
             self.assertIsNone(live._pinned_plan_fingerprint(repo, spec_rel))
 
 
+class PlanPinSurvivesJournalRewrite(unittest.TestCase):
+    """A wholesale journal rewrite must not destroy the run's plan pin.
+
+    Both schedulers' `record()` rebuild the journal dict from scratch and write
+    it with `atomic_write_text`, while `_record_plan_fingerprint` does its own
+    read-modify-write of the pin keys. Before `_preserve_plan_pin`, the rebuild
+    silently dropped them: run full-1786825958's journal ended with exactly
+    `_record()`'s own key set and no `plan_fingerprint`, despite the run having
+    logged `fingerprint=214b79dd6933` three times. That disabled both the PLAN
+    DRIFT warning and `apply_run_plan`'s pin, so every phase recompiled.
+    """
+
+    def test_rebuilt_journal_keeps_the_pin(self):
+        with tempfile.TemporaryDirectory() as td:
+            jp = Path(td) / "run-x.json"
+            jp.write_text(json.dumps({"plan_fingerprint": "a" * 64,
+                                      "plan_fingerprints": ["a" * 64]}))
+            rebuilt = {"spec_id": "x", "entries": [], "run_id": "full-1"}
+            live._preserve_plan_pin(jp, rebuilt)
+            self.assertEqual(rebuilt["plan_fingerprint"], "a" * 64)
+            self.assertEqual(rebuilt["plan_fingerprints"], ["a" * 64])
+
+    def test_pin_survives_a_real_record_then_read_back_cycle(self):
+        """End-to-end: stamp a pin, rebuild the journal the way `record()` does,
+        and confirm `_pinned_plan_fingerprint` still resolves it."""
+        with tempfile.TemporaryDirectory() as td:
+            repo, spec_rel = Path(td), "openspec/changes/x"
+            with contextlib.redirect_stdout(io.StringIO()):
+                live._record_plan_fingerprint(repo, spec_rel, _Plan("b" * 64))
+            jp = live.journal_path_for(repo, spec_rel)
+            rebuilt = {"spec_id": "x", "entries": [], "run_id": "full-1"}
+            live._preserve_plan_pin(jp, rebuilt)
+            jp.write_text(json.dumps(rebuilt))
+            self.assertEqual(live._pinned_plan_fingerprint(repo, spec_rel), "b" * 64)
+
+    def test_rebuilt_journal_wins_when_it_sets_the_key_itself(self):
+        with tempfile.TemporaryDirectory() as td:
+            jp = Path(td) / "run-x.json"
+            jp.write_text(json.dumps({"plan_fingerprint": "a" * 64}))
+            rebuilt = {"plan_fingerprint": "c" * 64}
+            live._preserve_plan_pin(jp, rebuilt)
+            self.assertEqual(rebuilt["plan_fingerprint"], "c" * 64)
+
+    def test_missing_or_unreadable_journal_is_a_no_op(self):
+        with tempfile.TemporaryDirectory() as td:
+            missing = Path(td) / "absent.json"
+            rebuilt: dict = {"spec_id": "x"}
+            live._preserve_plan_pin(missing, rebuilt)
+            self.assertEqual(rebuilt, {"spec_id": "x"})
+
+            bad = Path(td) / "bad.json"
+            bad.write_text("{not json")
+            rebuilt2: dict = {"spec_id": "x"}
+            live._preserve_plan_pin(bad, rebuilt2)
+            self.assertEqual(rebuilt2, {"spec_id": "x"})
+
+            nonobj = Path(td) / "list.json"
+            nonobj.write_text("[1, 2, 3]")
+            rebuilt3: dict = {"spec_id": "x"}
+            live._preserve_plan_pin(nonobj, rebuilt3)
+            self.assertEqual(rebuilt3, {"spec_id": "x"})
+
+    def test_no_unrelated_stale_keys_are_resurrected(self):
+        """Only the pin keys carry over -- a general merge would resurrect state
+        the rebuilding writer deliberately dropped (e.g. cleared group records)."""
+        with tempfile.TemporaryDirectory() as td:
+            jp = Path(td) / "run-x.json"
+            jp.write_text(json.dumps({"plan_fingerprint": "a" * 64,
+                                      "groups": {"stale": {}},
+                                      "integrate_complete": True}))
+            rebuilt = {"spec_id": "x", "entries": []}
+            live._preserve_plan_pin(jp, rebuilt)
+            self.assertEqual(rebuilt["plan_fingerprint"], "a" * 64)
+            self.assertNotIn("groups", rebuilt)
+            self.assertNotIn("integrate_complete", rebuilt)
+
+
 if __name__ == "__main__":
     unittest.main()
