@@ -97,7 +97,7 @@ Implements requirement: **Every orchestrator group PR clears the drift gate befo
 - [x] 6.1 [e2e] Run the full suite: `PYTHONPATH=src pytest -q`.
 - [x] 6.2 [e2e] Run the golden record/replay regression:
   `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`.
-- [ ] 6.3 [cleanup] Apply the `go:no-version-bump` label to this PR rather than bumping the version
+- [x] 6.3 [cleanup] Apply the `go:no-version-bump` label to this PR rather than bumping the version
   inline. `CI: Version Bump Check` fires because this PR touches `src/worktrail/**`, but
   `AGENTS.md` (Versioning) requires the bump to be a standalone
   `chore: bump Worktrail to X.Y.Z` commit touching `pyproject.toml` and
