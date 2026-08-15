@@ -6,7 +6,8 @@ expressible as per-invocation CLI flags. Current schema (all keys optional):
     {
       "drain": {
         "agent": "opencode",
-        "fallback_agents": ["claude", "codex"]
+        "fallback_agents": ["claude", "codex"],
+        "max_workers": 2
       }
     }
 
@@ -76,4 +77,12 @@ def drain_config() -> Dict[str, Any]:
             not isinstance(f, str) for f in fallbacks):
         raise OperatorConfigError(
             f"{config_path()}: drain.fallback_agents must be a list of strings")
-    return {"agent": agent, "fallback_agents": list(fallbacks)}
+    max_workers = section.get("max_workers", 2)
+    if not isinstance(max_workers, int) or isinstance(max_workers, bool) or max_workers < 1:
+        raise OperatorConfigError(
+            f"{config_path()}: drain.max_workers must be a positive integer")
+    return {
+        "agent": agent,
+        "fallback_agents": list(fallbacks),
+        "max_workers": max_workers,
+    }
