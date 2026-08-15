@@ -218,6 +218,11 @@ def build_agent_environment(home: Optional[Path] = None) -> Dict[str, str]:
     return env
 
 
+def worker_scratch_dir(slot: int, home: Optional[Path] = None) -> Path:
+    """Return the per-slot scratch cwd a worker's spawned one-shots run from."""
+    return (home or worktrail_home()) / "drain-workers" / f"worker-{slot}"
+
+
 def validate_agent_runtime(
     agent: str,
     env: Dict[str, str],
