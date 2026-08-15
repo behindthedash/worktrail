@@ -208,20 +208,26 @@ class DeriveDodChecksTests(unittest.TestCase):
             checks, [{"type": "ac_checkboxes_complete", "task_path": "TASK-001.md"}]
         )
 
-    @unittest.expectedFailure
-    def test_no_body_no_ac_section_and_no_files_derives_empty_list(self) -> None:
-        # Task 4.2's third AC bullet: no body/no AC section and no files ->
-        # empty derivation (matches today's no-op). tasks.md 2.1 says
-        # derive_dod_checks "always includes one ac_checkboxes_complete
-        # check", which the landed implementation does regardless of body,
-        # contradicting 2.2's premise that an empty-body result can be []
-        # and this bullet. Resolving that is a planner decision (amend 2.1
-        # to gate on body, or amend this bullet to match landed behavior)
-        # outside this test-only task's scope; xfail keeps the assertion
-        # self-alerting (an unexpected pass fails the build) rather than
-        # silently dropping the case.
+    def test_no_body_no_ac_section_and_no_files_reports_no_failure(self) -> None:
+        # derive_dod_checks always includes ac_checkboxes_complete (per 2.1);
+        # it is never literally []. spec.md's requirement is "SHALL report no
+        # failure" for this case, not "SHALL derive no checks" -- so assert
+        # the derived list is exactly [ac_checkboxes_complete] AND that
+        # running it against a task file with no body reports zero failures.
         checks = derive_dod_checks({}, "", "TASK-001.md")
-        self.assertEqual(checks, [])
+        self.assertEqual(
+            checks, [{"type": "ac_checkboxes_complete", "task_path": "TASK-001.md"}]
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            task_path = repo / "TASK-001.md"
+            task_path.write_text(
+                "---\nid: TASK-001\ntitle: Fixture\nspec: 000-fixture\n"
+                "status: completed\n---\n\n",
+                encoding="utf-8",
+            )
+            failures = [f for c in checks if (f := run_check(repo, c)) is not None]
+        self.assertEqual(failures, [])
 
 
 class CheckTaskFileTests(unittest.TestCase):
