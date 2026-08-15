@@ -92,6 +92,34 @@ class PlanFingerprintRecord(unittest.TestCase):
                 live._record_plan_fingerprint(repo, spec_rel, _Plan(None))
             self.assertFalse(live.journal_path_for(repo, spec_rel).exists())
 
+    def test_pinning_keeps_a_tail_bearing_run_at_one_fingerprint_no_drift(self):
+        """The end-state this change exists to produce: two `apply_run_plan()`
+        calls for the same (repo, spec) -- e.g. a `base` phase followed by a
+        `[cleanup]` tail phase of the same run -- must reuse the pin the first
+        call establishes, so `plan_fingerprints` never grows past one entry
+        and the PLAN DRIFT warning (DEC-006's retained defense-in-depth) never
+        fires for a single run's own phases."""
+        with tempfile.TemporaryDirectory() as td:
+            repo, spec_rel = Path(td), "specs/001-x"
+            tasks = [
+                {
+                    "id": "TASK-001",
+                    "title": "t",
+                    "status": "pending",
+                    "deps": [],
+                    "files": ["a.py"],
+                    "kind": "impl",
+                    "path": "tasks/TASK-001.md",
+                }
+            ]
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                live.apply_run_plan(repo, spec_rel, "001-x", tasks)
+                live.apply_run_plan(repo, spec_rel, "001-x", tasks)
+            j = self._journal(repo, spec_rel)
+            self.assertEqual(len(j["plan_fingerprints"]), 1)
+            self.assertNotIn("PLAN DRIFT", buf.getvalue())
+
     def test_unwritable_journal_never_raises(self):
         """Observability must never take a run down."""
         with tempfile.TemporaryDirectory() as td:
