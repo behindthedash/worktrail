@@ -648,7 +648,12 @@ a role pinned to a different agent falls back to that agent's own default model.
   without it; this is the per-task analogue of the spec worktree's own
   `#spec-worktree-setup` bootstrap step). It is **non-fatal** — a failed install is logged
   and the worker still self-installs — so a flaky registry never quarantines a task. Omit
-  the flag when the policy key is unset (repos with no install step are unaffected).
+  the flag when the policy key is unset (repos with no install step are unaffected). For a
+  Node repo with a multi-task spec fan-out, prefer `worktrail-bootstrap-node-modules
+  --app-dir <dir>` as the configured value over a plain install command — it hardlink-clones
+  the sibling spec worktree's already-installed `node_modules` when its lockfile matches
+  byte-for-byte, falling back to a real install otherwise, instead of paying the full install
+  cost once per task worktree (`orchestrator/bootstrap_node_modules.py`).
 - **Migration-group isolation (opt-in, from policy):** when `migration_path_patterns`
   is set in `docs/specs/go-policy.yaml` (loaded in Phase 4), pass each pattern through
   as a repeated `--migration-pattern "<glob>"`. Any task whose declared files match one
