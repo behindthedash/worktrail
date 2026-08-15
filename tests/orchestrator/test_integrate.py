@@ -1682,5 +1682,164 @@ class ResolvePrePrGateResolution(unittest.TestCase):
         self.assertIsNone(integrate._resolve_pre_pr_gate(self.root))
 
 
+class PrePrDriftGate(unittest.TestCase):
+    """Every orchestrator group PR clears the four deterministic drift checks
+    before its branch is pushed or its PR is opened."""
+
+    def _run_group(self, run, gate=None, smoke_cmd=None, journal_path=None):
+        """Drive integrate_groups for one group with the gate resolution patched.
+
+        `gate` of `None` exercises the unresolvable-script path (4.5).
+        """
+        with patch("worktrail.orchestrator.integrate.coordinator.plan_groups") as mock_groups:
+            with patch("worktrail.orchestrator.integrate._git", side_effect=run):
+                with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
+                    with patch("worktrail.orchestrator.integrate._resolve_pre_pr_gate",
+                               return_value=gate):
+                        mock_groups.return_value = [mock_group("base", ["T001"])]
+                        integrate_groups(
+                            Path("/repo"), "spec-001", [mock_task("T001")], "origin",
+                            "run-drift", "main", cleanup=False,
+                            pr_labels=["go:risk-low"], smoke_cmd=smoke_cmd,
+                            journal_path=journal_path,
+                        )
+
+    @staticmethod
+    def _gate_calls(run):
+        return [c for c in run.calls if "--checks-only" in c]
+
+    def test_gate_receives_integration_worktree_not_canonical_repo(self):
+        """REQUIREMENT: The gate inspects the group's integrated tree, not the
+        canonical checkout.
+
+        pre_pr_gate.changed_paths() runs `git merge-base HEAD <base>` and
+        `git diff --name-only` with cwd set to --repo. The canonical checkout's
+        HEAD is the base branch, so passing it yields an empty diff and every
+        diff-scoped check passes vacuously. Asserted on the recorded argv rather
+        than on the gate's outcome, so this test cannot itself pass vacuously.
+        """
+        run = FakeRun(pr_view_responses={}, ls_remote_responses={})
+        self._run_group(run, gate=Path("/fake/pre_pr_gate.py"))
+
+        gate_calls = self._gate_calls(run)
+        self.assertEqual(len(gate_calls), 1, "drift gate must run exactly once per group")
+        repo_arg = gate_calls[0][gate_calls[0].index("--repo") + 1]
+        self.assertNotEqual(
+            repo_arg, "/repo",
+            "gate must not inspect the canonical checkout -- its HEAD is the base branch",
+        )
+        self.assertIn(
+            "/repo-integrate/", repo_arg,
+            f"gate --repo must be the group's integration worktree, got {repo_arg}",
+        )
+
+    def test_drift_failure_quarantines_and_opens_no_pr(self):
+        """REQUIREMENT: A drift failure quarantines the group instead of opening a PR."""
+        run = FakeRun(pr_view_responses={}, ls_remote_responses={})
+
+        def failing_gate(*args, **kwargs):
+            if args and isinstance(args[0], list) and "--checks-only" in args[0]:
+                run.calls.append(list(args[0]))
+                return Proc(4, "", "PRE-PR GATE: FAIL - DoD verification failed for T001")
+            return run(*args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            journal_path = str(Path(tmpdir) / "journal.json")
+            with patch("worktrail.orchestrator.integrate.coordinator.plan_groups") as mock_groups:
+                with patch("worktrail.orchestrator.integrate._git", side_effect=failing_gate):
+                    with patch("worktrail.orchestrator.integrate.subprocess.run",
+                               side_effect=failing_gate):
+                        with patch("worktrail.orchestrator.integrate._resolve_pre_pr_gate",
+                                   return_value=Path("/fake/pre_pr_gate.py")):
+                            mock_groups.return_value = [mock_group("base", ["T001"])]
+                            integrate_groups(
+                                Path("/repo"), "spec-001", [mock_task("T001")], "origin",
+                                "run-drift-fail", "main", cleanup=False,
+                                pr_labels=["go:risk-low"], journal_path=journal_path,
+                            )
+
+            self.assertEqual(run.find_calls("gh", "pr", "create"), [],
+                             "a drifted group must not open a PR")
+            self.assertEqual(
+                [c for c in run.calls if "push" in c], [],
+                "a drifted group must not push its branch either -- the gate "
+                "runs before the push, not merely before PR creation",
+            )
+            record = json.loads(Path(journal_path).read_text())["groups"]["base"]
+            self.assertEqual(record["state"], "QUARANTINED")
+            self.assertEqual(record["quarantine_reason"], integrate.QUARANTINE_PRE_PR_DRIFT)
+
+    def test_drift_failure_short_circuits_before_smoke_command(self):
+        """The cheap deterministic checks run first, so a drift failure never
+        pays for a full smoke suite."""
+        run = FakeRun(pr_view_responses={}, ls_remote_responses={})
+        smoke_ran = []
+
+        def failing_gate(*args, **kwargs):
+            if args and isinstance(args[0], list) and "--checks-only" in args[0]:
+                run.calls.append(list(args[0]))
+                return Proc(1, "", "spec/task drift detected")
+            if kwargs.get("shell"):
+                smoke_ran.append(args[0])
+                return Proc(0, "", "")
+            return run(*args, **kwargs)
+
+        with patch("worktrail.orchestrator.integrate.coordinator.plan_groups") as mock_groups:
+            with patch("worktrail.orchestrator.integrate._git", side_effect=failing_gate):
+                with patch("worktrail.orchestrator.integrate.subprocess.run",
+                           side_effect=failing_gate):
+                    with patch("worktrail.orchestrator.integrate._resolve_pre_pr_gate",
+                               return_value=Path("/fake/pre_pr_gate.py")):
+                        mock_groups.return_value = [mock_group("base", ["T001"])]
+                        integrate_groups(
+                            Path("/repo"), "spec-001", [mock_task("T001")], "origin",
+                            "run-drift-order", "main", cleanup=False,
+                            pr_labels=["go:risk-low"],
+                            smoke_cmd="pytest -q",
+                        )
+
+        self.assertEqual(smoke_ran, [],
+                         "smoke command must not run after the drift gate fails")
+
+    def test_clean_group_still_pushes_and_opens_its_pr(self):
+        """Happy-path regression: adding the gate must not disturb a clean group."""
+        run = FakeRun(pr_view_responses={}, ls_remote_responses={})
+        self._run_group(run, gate=Path("/fake/pre_pr_gate.py"))
+
+        self.assertEqual(len(self._gate_calls(run)), 1)
+        create_calls = run.find_calls("gh", "pr", "create")
+        self.assertEqual(len(create_calls), 1, "a clean group must still open its PR")
+        labels = create_calls[0][
+            create_calls[0].index("--label"):create_calls[0].index("--title")
+        ]
+        self.assertEqual(labels, ["--label", "go:risk-low"])
+
+    def test_unresolvable_gate_script_fails_closed(self):
+        """Fail-closed: if the gate cannot be resolved the group quarantines
+        rather than sailing through unchecked."""
+        run = FakeRun(pr_view_responses={}, ls_remote_responses={})
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            journal_path = str(Path(tmpdir) / "journal.json")
+            self._run_group(run, gate=None, journal_path=journal_path)
+
+            self.assertEqual(run.find_calls("gh", "pr", "create"), [],
+                             "an unresolvable gate must not open a PR")
+            record = json.loads(Path(journal_path).read_text())["groups"]["base"]
+            self.assertEqual(record["state"], "QUARANTINED")
+            self.assertEqual(record["quarantine_reason"], integrate.QUARANTINE_PRE_PR_DRIFT)
+
+    def test_gate_timeout_fails_closed(self):
+        """A hung gate is a failure, not a pass."""
+        def timing_out(cmd, **kwargs):
+            raise subprocess.TimeoutExpired(cmd, 300)
+
+        with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=timing_out):
+            ok, detail = integrate._run_drift_gate(Path("/repo-integrate/base-abc"), "base")
+
+        self.assertFalse(ok)
+        self.assertIn("timed out", detail)
+
+
 if __name__ == "__main__":
     unittest.main()
