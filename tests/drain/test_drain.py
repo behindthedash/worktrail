@@ -262,6 +262,44 @@ def test_newest_run_record_survives_same_tick_mtime_race(tmp_path):
     assert newest_run_record(tmp_path, known_before_iter2) == new
 
 
+def test_newest_run_record_repo_filter_scopes_to_one_repo(tmp_path):
+    repo_a = tmp_path / "repo-a"
+    repo_a.mkdir()
+    repo_b = tmp_path / "repo-b"
+    repo_b.mkdir()
+    old_a = repo_a / "old.yaml"
+    old_a.write_text("run_id: old-a\n")
+    os.utime(old_a, (1000, 1000))
+    new_a = repo_a / "new.yaml"
+    new_a.write_text("run_id: new-a\n")
+    os.utime(new_a, (1500, 1500))
+    # Newest file overall lives in repo-b -- a repo_filter="repo-a" lookup
+    # must ignore it and return the newest file within repo-a instead.
+    newer_b = repo_b / "newer.yaml"
+    newer_b.write_text("run_id: newer-b\n")
+    os.utime(newer_b, (5000, 5000))
+    assert newest_run_record(tmp_path, repo_filter="repo-a") == new_a
+    assert newest_run_record(tmp_path, repo_filter="repo-b") == newer_b
+    assert newest_run_record(tmp_path) == newer_b
+
+
+def test_newest_run_record_repo_filter_none_matches_unfiltered_default(tmp_path):
+    repo = tmp_path / "repo-a"
+    repo.mkdir()
+    old = repo / "old.yaml"
+    old.write_text("run_id: old\n")
+    os.utime(old, (1000, 1000))
+    new = repo / "new.yaml"
+    new.write_text("run_id: new\n")
+    os.utime(new, (2000, 2000))
+    assert (newest_run_record(tmp_path, repo_filter=None)
+            == newest_run_record(tmp_path))
+    assert (newest_run_record(tmp_path, {old}, repo_filter=None)
+            == newest_run_record(tmp_path, {old}))
+    assert (newest_run_record(tmp_path, {old, new}, repo_filter=None)
+            == newest_run_record(tmp_path, {old, new}))
+
+
 # ---------------------------------------------------------------------------
 # outcome classification
 
@@ -717,6 +755,63 @@ def test_drain_two_briefs_then_empty(tmp_path, monkeypatch):
     assert [i["state"] for i in summary["iterations"]] == [
         "completed_pr_open", "completed_pr_open"]
     assert not config.lock_file.exists()
+
+
+def test_drain_attributes_outcome_to_claimed_briefs_own_repo_not_other_repos_newer_record(
+        tmp_path, monkeypatch):
+    """Two workers finish overlapping iterations against different repos: this
+    worker's iteration claims a repo-a brief, but a concurrently-running
+    worker's repo-b record lands (with a newer mtime) between this
+    iteration's pre-spawn snapshot and its post-spawn read. The single
+    claimed brief must pin attribution to repo-a's own record, not the
+    newer-but-foreign repo-b one (spec `drain-concurrent-workers` scenario
+    "Two workers finish overlapping iterations against different repos").
+    """
+    calls = {"n": 0}
+
+    def fake_list_queue(*_a, **_k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # Pre-spawn snapshot: both briefs still queued.
+            return {"briefs": [
+                {"filename": "b1.md", "blocked": False, "not_yet_due": False,
+                 "repo": "/repos/repo-a"},
+                {"filename": "b2.md", "blocked": False, "not_yet_due": False,
+                 "repo": "/repos/repo-b"},
+            ]}
+        if calls["n"] == 2:
+            # Post-spawn snapshot: only b1 (repo-a) was claimed this iteration.
+            return {"briefs": [
+                {"filename": "b2.md", "blocked": False, "not_yet_due": False,
+                 "repo": "/repos/repo-b"},
+            ]}
+        return {"briefs": []}  # next iteration's pre-spawn snapshot: queue empty
+
+    monkeypatch.setattr(drain, "list_queue", fake_list_queue)
+    config = make_config(tmp_path)
+
+    def spawner(cmd, timeout):
+        repo_a_dir = config.runs_dir / "repo-a"
+        repo_a_dir.mkdir(parents=True, exist_ok=True)
+        own = repo_a_dir / "go-own.yaml"
+        own.write_text(
+            "run_id: own\nfinal_status: completed_pr_open\n"
+            'pull_request: "https://pr/own"\n')
+        os.utime(own, (1000, 1000))
+        # The other worker's overlapping iteration, landing a newer record
+        # in a different repo's run directory during this same window.
+        repo_b_dir = config.runs_dir / "repo-b"
+        repo_b_dir.mkdir(parents=True, exist_ok=True)
+        other = repo_b_dir / "go-other.yaml"
+        other.write_text("run_id: other\nfinal_status: completed_and_merged\n")
+        os.utime(other, (9999, 9999))
+        return SpawnOutcome(0)
+
+    summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
+    assert len(summary["iterations"]) == 1
+    iteration = summary["iterations"][0]
+    assert iteration["state"] == "completed_pr_open"
+    assert iteration["pr"] == "https://pr/own"
 
 
 def test_drain_circuit_breaker_after_two_failures(tmp_path, monkeypatch):
