@@ -1224,6 +1224,22 @@ def release_lock(lock_file: Path) -> None:
     lock_file.unlink(missing_ok=True)
 
 
+def slot_lock_path(lock_file: Path, slot: int) -> Path:
+    """Per-slot lock file path; slot 0 is the unmodified `lock_file`."""
+    if slot == 0:
+        return lock_file
+    return lock_file.with_name(f"{lock_file.name}.{slot}")
+
+
+def acquire_lock_slot(lock_file: Path, max_workers: int) -> Optional[int]:
+    """Try slots 0..max_workers-1 in order, returning the first acquired slot
+    index or None if every slot is held by a live pid."""
+    for slot in range(max_workers):
+        if acquire_lock(slot_lock_path(lock_file, slot)):
+            return slot
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Decision function (pure — the unit-tested core)
 
