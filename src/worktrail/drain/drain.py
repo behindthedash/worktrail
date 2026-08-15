@@ -1432,13 +1432,15 @@ def drain(config: DrainConfig,
     """Run the drain loop. Returns a summary dict (also the --json payload)."""
     uses_builtin_spawner = spawner is None
     agent_env = build_agent_environment()
-    if uses_builtin_spawner:
-        spawner = functools.partial(run_one_shot, env=agent_env)
     slot = acquire_lock_slot(config.lock_file, config.max_workers)
     if slot is None:
         return {"stopped": "lock_held",
                 "detail": f"another drain owns {config.lock_file}",
                 "iterations": []}
+    scratch_dir = worker_scratch_dir(slot)
+    scratch_dir.mkdir(parents=True, exist_ok=True)
+    if uses_builtin_spawner:
+        spawner = functools.partial(run_one_shot, env=agent_env, cwd=scratch_dir)
     started = clock()
     state = LoopState(
         max_items=config.max_items,
