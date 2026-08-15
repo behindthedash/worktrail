@@ -98,6 +98,22 @@ def run_check(repo: Path, check: dict) -> str | None:
     return f"unrecognized dod-checks type: {check_type!r}"
 
 
+def derive_dod_checks(frontmatter: dict, body: str, task_relpath: str) -> list[dict]:
+    """Derive a `dod-checks` list when a task declares none.
+
+    Always includes one `ac_checkboxes_complete` check against the task file
+    itself; for each path in frontmatter `files:` (if present), adds a
+    `file_tracked` check and a `no_stub_markers` check for that path.
+    """
+    checks: list[dict] = [
+        {"type": "ac_checkboxes_complete", "task_path": task_relpath},
+    ]
+    for path in frontmatter.get("files") or []:
+        checks.append({"type": "file_tracked", "path": path})
+        checks.append({"type": "no_stub_markers", "path": path})
+    return checks
+
+
 def check_task_file(repo: Path, task_path: Path) -> list[str]:
     """Run every `dod-checks` entry for one task file. Empty list means pass,
     not-completed, or no `dod-checks` declared."""
