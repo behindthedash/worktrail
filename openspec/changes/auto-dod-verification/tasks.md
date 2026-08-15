@@ -1,9 +1,9 @@
 ## 1. New check types in `run_check`
 
-- [ ] 1.1 Add `file_tracked` check type: fails if `path` doesn't exist under
+- [x] 1.1 Add `file_tracked` check type: fails if `path` doesn't exist under
       `repo`, or exists but `git ls-files --error-unmatch <path>` (cwd=repo)
       exits non-zero; passes otherwise.
-- [ ] 1.2 Add `ac_checkboxes_complete` check type: takes `task_path`
+- [x] 1.2 Add `ac_checkboxes_complete` check type: takes `task_path`
       (repo-relative path to the task file itself), re-reads it via
       `read_task_file`, and fails iff
       `schema._all_checkboxes_checked(body, sections=("Acceptance Criteria",))`
