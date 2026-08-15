@@ -2586,3 +2586,30 @@ def test_main_fails_loud_on_malformed_config(tmp_path, monkeypatch, capsys):
     assert config is None
     assert "not valid JSON" in capsys.readouterr().err
 
+
+# ---------------------------------------------------------------------------
+# Operator-config max_workers defaults (CLI > config file > built-in)
+
+
+def test_main_max_workers_flag_overrides_config(tmp_path, monkeypatch):
+    rc, config = _run_main(
+        tmp_path, monkeypatch,
+        argv_extra=["--max-workers", "4"],
+        config_payload='{"drain": {"max_workers": 3}}')
+    assert rc == 0
+    assert config.max_workers == 4
+
+
+def test_main_max_workers_uses_config_when_flag_omitted(tmp_path, monkeypatch):
+    rc, config = _run_main(
+        tmp_path, monkeypatch,
+        config_payload='{"drain": {"max_workers": 3}}')
+    assert rc == 0
+    assert config.max_workers == 3
+
+
+def test_main_max_workers_builtin_default_when_neither_present(tmp_path, monkeypatch):
+    rc, config = _run_main(tmp_path, monkeypatch)
+    assert rc == 0
+    assert config.max_workers == 2
+
