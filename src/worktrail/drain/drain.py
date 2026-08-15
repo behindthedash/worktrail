@@ -1737,6 +1737,12 @@ def main(argv: Optional[List[str]] = None) -> int:
               f"from {operator_config_path()}; supported: "
               f"{', '.join(SUPPORTED_AGENTS)}", file=sys.stderr)
         return 2
+    max_workers = (args.max_workers if args.max_workers is not None
+                   else operator_drain["max_workers"])
+    if not isinstance(max_workers, int) or isinstance(max_workers, bool) or max_workers < 1:
+        print(f"error: max_workers must be a positive integer, got {max_workers!r} "
+              f"from --max-workers or {operator_config_path()}", file=sys.stderr)
+        return 2
     config = DrainConfig(
         work_queue_py=Path(args.work_queue_py),
         runs_dir=args.runs_dir,
@@ -1756,6 +1762,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         dry_run=args.dry_run,
         repos_root=args.repos_root,
         seed_backlog=not args.no_seed_backlog,
+        max_workers=max_workers,
     )
     try:
         summary = drain(config)
