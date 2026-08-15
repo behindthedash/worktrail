@@ -1,6 +1,6 @@
 ## 1. Zero-file tail-task no-op dispatch (`tail-task-noop-dispatch`)
 
-- [x] 1.1 Implement requirement: Explicit no-op instruction for zero-file tail tasks.
+- [ ] 1.1 Implement requirement: Explicit no-op instruction for zero-file tail tasks.
       In `src/worktrail/orchestrator/dispatch.py:build_worker_prompt`,
       after the existing `scope = ", ".join(task.get("files", [])) or "(see
       task file)"` line, compute `is_noop_tail = task.get("kind") in ("e2e",
@@ -10,7 +10,7 @@
       Decision 1). Leave the fallback unchanged for every other case
       (non-tail tasks with empty `files`, tail tasks with a non-empty
       `files` list).
-- [x] 1.2 Add a regression test (alongside the existing `ROLE_CLEANUP`
+- [ ] 1.2 Add a regression test (alongside the existing `ROLE_CLEANUP`
       coverage in `tests/orchestrator/test_dependency_fixes.py`, or
       `tests/orchestrator/test_dispatch_extras.py`) asserting: (a) a task
       with `kind: e2e`/`kind: cleanup` and empty `files: []` renders a
@@ -19,7 +19,7 @@
       changes; (b) the same `kind` with a non-empty `files` list renders
       the files list unchanged; (c) a non-tail `kind` with empty `files`
       still renders the pre-existing `"(see task file)"` fallback.
-- [x] 1.3 Pin requirement: No PR is opened for a tail task that made no commits.
+- [ ] 1.3 Pin requirement: No PR is opened for a tail task that made no commits.
       Regression test against
       `integrate.detect_unreconciled_tail_evidence` (in
       `tests/orchestrator/test_live_tail_reconciliation.py` or
@@ -32,18 +32,18 @@
 
 ## 2. Operator-PR-discovery branch guard (`operator-pr-discovery-branch-guard`)
 
-- [x] 2.1 Implement requirement: Discovered PR must correspond to the group's own branch.
+- [ ] 2.1 Implement requirement: Discovered PR must correspond to the group's own branch.
       In `src/worktrail/orchestrator/integrate.py:integrate_one`,
       extend the `gh pr list --search` call's `--json` fields from
       `number,state,url,headRefName,isDraft` to
       `number,state,url,headRefName,baseRefName,isDraft` (design.md
       Decision 3).
-- [x] 2.2 After parsing `matches = json.loads(search_result.stdout)`, filter
+- [ ] 2.2 After parsing `matches = json.loads(search_result.stdout)`, filter
       to candidates whose `headRefName == gb` or `baseRefName == pr_base`
       before taking `matches[0]`; when no candidate survives the filter,
       fall through to the existing `gh pr create` path exactly as if
       `matches` were empty.
-- [ ] 2.3 Add a regression test in `tests/orchestrator/test_integrate.py`
+- [x] 2.3 Add a regression test in `tests/orchestrator/test_integrate.py`
       (or `test_integrate_extras.py`, alongside the existing operator-PR
       search coverage) asserting: (a) a search result whose sole match has
       a `headRefName` equal to the group's branch (or `baseRefName` equal
