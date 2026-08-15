@@ -26,6 +26,7 @@ base-advance logic observe a genuinely moved base — the point of the harness.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import subprocess
@@ -95,6 +96,17 @@ def _pr_payload(branch, pr, fields, state):
 
 
 def main(argv) -> int:
+    # Sibling task groups dispatch `gh` concurrently; without this lock a
+    # `_load()` can land inside another process's `write_text()` truncation
+    # window and read an empty state file (JSONDecodeError).
+    lock_path = Path(os.environ["GH_FAKE_STATE"]).with_suffix(".lock")
+    lock_path.touch(exist_ok=True)
+    with open(lock_path, "r+") as lockf:
+        fcntl.flock(lockf, fcntl.LOCK_EX)
+        return _dispatch(argv)
+
+
+def _dispatch(argv) -> int:
     p, state = _load()
     if not argv:
         return 1
