@@ -7,7 +7,7 @@
   `_resolve_req_coverage_base_ref`-guarded `check_req_coverage_failures` — including their
   stderr reporting, in the same order, returning the matching `*_DRIFT_EXIT` constant on
   the first failure and 0 when all pass.
-- [ ] 1.2 Replace the inlined blocks in `main()` with a call to `run_drift_checks`, kept
+- [x] 1.2 Replace the inlined blocks in `main()` with a call to `run_drift_checks`, kept
   under the same `if not args.print_cmd:` guard, returning its value when non-zero.
   Verify `--print-cmd` behavior is unchanged.
 - [ ] 1.3 [e2e] Run `PYTHONPATH=src pytest -q tests/router/test_pre_pr_gate.py` and confirm
