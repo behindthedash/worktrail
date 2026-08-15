@@ -1410,10 +1410,12 @@ class SpawnOutcome:
 
 
 def run_one_shot(cmd: List[str], timeout: int,
-                 env: Optional[Dict[str, str]] = None) -> SpawnOutcome:
+                 env: Optional[Dict[str, str]] = None,
+                 cwd: Optional[Path] = None) -> SpawnOutcome:
     try:
         proc = subprocess.run(
-            cmd, timeout=timeout, capture_output=True, text=True, env=env)
+            cmd, timeout=timeout, capture_output=True, text=True, env=env,
+            cwd=str(cwd) if cwd else None)
         return SpawnOutcome(proc.returncode, proc.stdout or "", proc.stderr or "")
     except subprocess.TimeoutExpired as exc:
         stdout = exc.stdout if isinstance(exc.stdout, str) else ""
