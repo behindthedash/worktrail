@@ -246,6 +246,66 @@ class ConcurrentFanout(unittest.TestCase):
             # parsing the free-text notes for newly-written gate entries.
             self.assertEqual(gates[0]["blocked_by"], ["TASK-E2E"])
 
+    def test_tail_gate_blocks_on_transitively_unreachable_dep(self):
+        """A tail task's only unmet dep can be a task that was never dispatched
+        because ITS OWN prerequisite failed (transitively blocked), rather than
+        a dep that is itself directly `failed`/`escalated`. The never-dispatched
+        dep stays "pending" forever (`runnable_frontier` excludes any task whose
+        deps aren't all `done` -- see `test_run_budget_stops_dispatching_new_tasks`
+        for the same "never dispatched -> stays pending" mechanism), so it is
+        neither `DONE` nor in `FAILED_STATUSES`. Before the fix, the tail loop
+        only recognized a directly-failed dep as blocking; with no directly-failed
+        dep in TASK-TAIL's own list, it waited forever on TASK-B's status
+        changing, stalling `progressed` and raising RuntimeError("tail dependency
+        gate stalled ...") instead of gracefully blocking the tail task --
+        reproduced live on go-20260814-181233 (task 7.1, deps on never-run 6.3/6.4).
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _init_repo(
+                Path(tmp),
+                {
+                    "TASK-A": _fm("TASK-A", "src/a.txt"),
+                    "TASK-B": _fm("TASK-B", "src/b.txt", deps="TASK-A"),
+                    "TASK-TAIL": _fm("TASK-TAIL", "src/tail.txt", deps="TASK-B", kind="e2e"),
+                },
+            )
+            journal = str(Path(tmp) / "run-001-x.json")
+
+            class FailingA(FakeSpawn):
+                def __call__(self, role, task, wt):
+                    if task["id"] == "TASK-A":
+                        with self.lock:
+                            self.calls.append((role, task["id"]))
+                        return spawnlib.SpawnResult(
+                            text=(
+                                f'```json\n{{"task":"{task["id"]}","step":"{role}",'
+                                '"status":"failed","tests":"failed"}\n```'
+                            ),
+                            usage={},
+                        )
+                    return super().__call__(role, task, wt)
+
+            fake = FailingA()
+            result = live.live_run_real(
+                repo,
+                "docs/specs/001-x",
+                out_cassette=journal,
+                run_id="tail-gate-transitive",
+                spawn=fake,
+                with_tail=True,
+            )
+            by_id = {t["id"]: t for t in result["tasks"]}
+            self.assertEqual(by_id["TASK-A"]["status"], "failed")
+            self.assertEqual(by_id["TASK-B"]["status"], "pending")  # never dispatched
+            self.assertEqual(by_id["TASK-TAIL"]["status"], "failed")
+            self.assertNotIn(("implement", "TASK-TAIL"), fake.calls)
+            entries = json.loads(Path(journal).read_text())["entries"]
+            gates = [
+                e for e in entries if e["task"] == "TASK-TAIL" and e["role"] == "dependency-gate"
+            ]
+            self.assertTrue(gates)
+            self.assertEqual(gates[0]["blocked_by"], ["TASK-B"])
+
     def test_review_exempt_task_skips_review_spawn(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = _init_repo(
