@@ -45,14 +45,17 @@ from worktrail.drain.drain import (
     newest_run_record,
     parse_run_record,
     release_lock,
+    release_lock_slot,
     resolve_spec_rel,
     resume_quarantined_budget_exhausted,
     resume_sync_pending,
     resume_verify_pending,
+    run_one_shot,
     select_available_agent,
     slot_lock_path,
     sweep_remediations,
     validate_agent_runtime,
+    worker_scratch_dir,
     write_iteration_transcript,
 )
 
@@ -259,6 +262,44 @@ def test_newest_run_record_survives_same_tick_mtime_race(tmp_path):
     new.write_text("run_id: new\n")
     os.utime(new, (1000, 1000))  # identical tick as `old`
     assert newest_run_record(tmp_path, known_before_iter2) == new
+
+
+def test_newest_run_record_repo_filter_scopes_to_one_repo(tmp_path):
+    repo_a = tmp_path / "repo-a"
+    repo_a.mkdir()
+    repo_b = tmp_path / "repo-b"
+    repo_b.mkdir()
+    old_a = repo_a / "old.yaml"
+    old_a.write_text("run_id: old-a\n")
+    os.utime(old_a, (1000, 1000))
+    new_a = repo_a / "new.yaml"
+    new_a.write_text("run_id: new-a\n")
+    os.utime(new_a, (1500, 1500))
+    # Newest file overall lives in repo-b -- a repo_filter="repo-a" lookup
+    # must ignore it and return the newest file within repo-a instead.
+    newer_b = repo_b / "newer.yaml"
+    newer_b.write_text("run_id: newer-b\n")
+    os.utime(newer_b, (5000, 5000))
+    assert newest_run_record(tmp_path, repo_filter="repo-a") == new_a
+    assert newest_run_record(tmp_path, repo_filter="repo-b") == newer_b
+    assert newest_run_record(tmp_path) == newer_b
+
+
+def test_newest_run_record_repo_filter_none_matches_unfiltered_default(tmp_path):
+    repo = tmp_path / "repo-a"
+    repo.mkdir()
+    old = repo / "old.yaml"
+    old.write_text("run_id: old\n")
+    os.utime(old, (1000, 1000))
+    new = repo / "new.yaml"
+    new.write_text("run_id: new\n")
+    os.utime(new, (2000, 2000))
+    assert (newest_run_record(tmp_path, repo_filter=None)
+            == newest_run_record(tmp_path))
+    assert (newest_run_record(tmp_path, {old}, repo_filter=None)
+            == newest_run_record(tmp_path, {old}))
+    assert (newest_run_record(tmp_path, {old, new}, repo_filter=None)
+            == newest_run_record(tmp_path, {old, new}))
 
 
 # ---------------------------------------------------------------------------
@@ -632,7 +673,7 @@ def test_acquire_lock_slot_returns_distinct_slots_then_none(tmp_path):
     assert acquire_lock_slot(lock, max_workers=2) is None
 
 
-def test_acquire_lock_slot_single_worker_uses_configured_lock_file_unchanged(tmp_path):
+def test_acquire_lock_slot_default_max_workers_acquires_lock_file_unchanged(tmp_path):
     lock = tmp_path / "drain.lock"
     slot = acquire_lock_slot(lock, max_workers=1)
     assert slot == 0
@@ -642,9 +683,12 @@ def test_acquire_lock_slot_single_worker_uses_configured_lock_file_unchanged(tmp
 
 def test_acquire_lock_slot_takes_over_stale_slot(tmp_path):
     lock = tmp_path / "drain.lock"
-    assert acquire_lock_slot(lock, max_workers=2) == 0  # slot 0 held by our own live pid
-    slot_lock_path(lock, 1).write_text(json.dumps({"pid": 999999999, "started": 0}))
+    assert acquire_lock_slot(lock, max_workers=2) == 0  # slot 0 held by our live pid
+    stale_slot_file = slot_lock_path(lock, 1)
+    stale_slot_file.write_text(json.dumps({"pid": 999999999, "started": 0}))
     assert acquire_lock_slot(lock, max_workers=2) == 1
+    release_lock_slot(lock, 0)
+    release_lock_slot(lock, 1)
 
 
 # ---------------------------------------------------------------------------
@@ -713,6 +757,105 @@ def test_drain_two_briefs_then_empty(tmp_path, monkeypatch):
     assert [i["state"] for i in summary["iterations"]] == [
         "completed_pr_open", "completed_pr_open"]
     assert not config.lock_file.exists()
+
+
+def test_drain_passes_distinct_worker_scratch_dir_as_cwd_per_slot(tmp_path, monkeypatch):
+    """drain()'s built-in spawner path threads worker_scratch_dir(slot) through
+    as run_one_shot's cwd (drain.py task 4.3); two workers configured onto
+    different slots of the same lock_file must resolve to distinct scratch
+    dirs, not share one."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("WORKTRAIL_HOME", str(home))
+    monkeypatch.setattr(drain, "build_agent_environment", lambda *a, **k: {})
+    monkeypatch.setattr(drain, "validate_agent_runtime", lambda *a, **k: None)
+
+    def run_for_slot(expected_slot, run_name):
+        fake = FakeQueue([1, 0])
+        install_fake_queue(monkeypatch, fake)
+        config = make_config(tmp_path, max_workers=2,
+                            lock_file=tmp_path / "drain.lock")
+        calls = []
+
+        def fake_run_one_shot(cmd, timeout, env=None, cwd=None):
+            calls.append(cwd)
+            write_run_record(config.runs_dir, run_name,
+                             "completed_pr_open", pr=f"https://pr/{run_name}")
+            return SpawnOutcome(0)
+
+        monkeypatch.setattr(drain, "run_one_shot", fake_run_one_shot)
+        drain.drain(config, log=lambda *_: None)
+        assert calls == [worker_scratch_dir(expected_slot, home=home)]
+        assert calls[0].is_dir()
+        return calls[0]
+
+    # Slot 0 held by a live "other worker" for the duration of this call, so
+    # this drain() invocation is forced onto slot 1.
+    assert acquire_lock(tmp_path / "drain.lock") is True
+    try:
+        slot1_cwd = run_for_slot(1, "worker-b")
+    finally:
+        release_lock(tmp_path / "drain.lock")
+
+    slot0_cwd = run_for_slot(0, "worker-a")
+
+    assert slot0_cwd != slot1_cwd
+
+
+def test_drain_attributes_outcome_to_claimed_briefs_own_repo_not_other_repos_newer_record(
+        tmp_path, monkeypatch):
+    """Two workers finish overlapping iterations against different repos: this
+    worker's iteration claims a repo-a brief, but a concurrently-running
+    worker's repo-b record lands (with a newer mtime) between this
+    iteration's pre-spawn snapshot and its post-spawn read. The single
+    claimed brief must pin attribution to repo-a's own record, not the
+    newer-but-foreign repo-b one (spec `drain-concurrent-workers` scenario
+    "Two workers finish overlapping iterations against different repos").
+    """
+    calls = {"n": 0}
+
+    def fake_list_queue(*_a, **_k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # Pre-spawn snapshot: both briefs still queued.
+            return {"briefs": [
+                {"filename": "b1.md", "blocked": False, "not_yet_due": False,
+                 "repo": "/repos/repo-a"},
+                {"filename": "b2.md", "blocked": False, "not_yet_due": False,
+                 "repo": "/repos/repo-b"},
+            ]}
+        if calls["n"] == 2:
+            # Post-spawn snapshot: only b1 (repo-a) was claimed this iteration.
+            return {"briefs": [
+                {"filename": "b2.md", "blocked": False, "not_yet_due": False,
+                 "repo": "/repos/repo-b"},
+            ]}
+        return {"briefs": []}  # next iteration's pre-spawn snapshot: queue empty
+
+    monkeypatch.setattr(drain, "list_queue", fake_list_queue)
+    config = make_config(tmp_path)
+
+    def spawner(cmd, timeout):
+        repo_a_dir = config.runs_dir / "repo-a"
+        repo_a_dir.mkdir(parents=True, exist_ok=True)
+        own = repo_a_dir / "go-own.yaml"
+        own.write_text(
+            "run_id: own\nfinal_status: completed_pr_open\n"
+            'pull_request: "https://pr/own"\n')
+        os.utime(own, (1000, 1000))
+        # The other worker's overlapping iteration, landing a newer record
+        # in a different repo's run directory during this same window.
+        repo_b_dir = config.runs_dir / "repo-b"
+        repo_b_dir.mkdir(parents=True, exist_ok=True)
+        other = repo_b_dir / "go-other.yaml"
+        other.write_text("run_id: other\nfinal_status: completed_and_merged\n")
+        os.utime(other, (9999, 9999))
+        return SpawnOutcome(0)
+
+    summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
+    assert len(summary["iterations"]) == 1
+    iteration = summary["iterations"][0]
+    assert iteration["state"] == "completed_pr_open"
+    assert iteration["pr"] == "https://pr/own"
 
 
 def test_drain_circuit_breaker_after_two_failures(tmp_path, monkeypatch):
@@ -1877,6 +2020,40 @@ def test_drain_sweeps_verify_pending_at_pre_and_post_loop_points(tmp_path, monke
     assert "resumed_openspec_archive" in summary
 
 
+def test_drain_non_leader_slot_never_sweeps_or_seeds_backlog(tmp_path, monkeypatch):
+    # A worker landing on any slot other than 0 must skip both the
+    # sweep_remediations and seed_backlog leader-only blocks entirely (task
+    # 5.1), even with repos_root set, seed_backlog enabled, and ready briefs
+    # in the queue -- those are the exact conditions that trigger both blocks
+    # for a slot-0 worker in the tests above/below.
+    monkeypatch.setattr(drain, "acquire_lock_slot", lambda *a, **k: 1)
+    fake = FakeQueue([1, 0])
+    install_fake_queue(monkeypatch, fake)
+    repos_root = tmp_path / "projects"
+    _make_repo(repos_root, "repo-a")
+    config = make_config(tmp_path, repos_root=repos_root)
+
+    sweep_calls = []
+    monkeypatch.setattr(
+        drain, "sweep_remediations",
+        lambda *a, **k: sweep_calls.append((a, k)) or {})
+    seed_calls = []
+    monkeypatch.setattr(
+        drain.seed_backlog_mod, "seed_backlog",
+        lambda *a, **k: seed_calls.append((a, k)) or {})
+
+    def spawner(cmd, timeout):
+        write_run_record(config.runs_dir, "go-1", "completed_pr_open", pr="https://pr/1")
+        return SpawnOutcome(0)
+
+    summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
+
+    assert sweep_calls == []
+    assert seed_calls == []
+    assert summary["resumed_quarantines"] == []
+    assert summary["seeded_backlog"] == {}
+
+
 # ---------------------------------------------------------------------------
 # sweep_remediations engine
 
@@ -2408,4 +2585,31 @@ def test_main_fails_loud_on_malformed_config(tmp_path, monkeypatch, capsys):
     assert rc == 2
     assert config is None
     assert "not valid JSON" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# Operator-config max_workers defaults (CLI > config file > built-in)
+
+
+def test_main_max_workers_flag_overrides_config(tmp_path, monkeypatch):
+    rc, config = _run_main(
+        tmp_path, monkeypatch,
+        argv_extra=["--max-workers", "4"],
+        config_payload='{"drain": {"max_workers": 3}}')
+    assert rc == 0
+    assert config.max_workers == 4
+
+
+def test_main_max_workers_uses_config_when_flag_omitted(tmp_path, monkeypatch):
+    rc, config = _run_main(
+        tmp_path, monkeypatch,
+        config_payload='{"drain": {"max_workers": 3}}')
+    assert rc == 0
+    assert config.max_workers == 3
+
+
+def test_main_max_workers_builtin_default_when_neither_present(tmp_path, monkeypatch):
+    rc, config = _run_main(tmp_path, monkeypatch)
+    assert rc == 0
+    assert config.max_workers == 2
 

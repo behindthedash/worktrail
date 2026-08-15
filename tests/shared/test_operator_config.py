@@ -1,6 +1,7 @@
 """Tests for shared/operator_config.py."""
 
 import json
+import re
 
 import pytest
 
@@ -31,14 +32,21 @@ def test_drain_section_round_trip(tmp_path, monkeypatch):
         "agent": "opencode", "fallback_agents": ["claude", "codex"], "max_workers": 2}
 
 
-def test_max_workers_defaults_to_two(tmp_path, monkeypatch):
-    _write(tmp_path, monkeypatch, {"drain": {}})
+def test_max_workers_defaults_to_two_when_absent(tmp_path, monkeypatch):
+    _write(tmp_path, monkeypatch, {"drain": {"agent": "opencode"}})
     assert operator_config.drain_config()["max_workers"] == 2
 
 
-def test_max_workers_configured_value(tmp_path, monkeypatch):
+def test_max_workers_uses_configured_int_when_present(tmp_path, monkeypatch):
     _write(tmp_path, monkeypatch, {"drain": {"max_workers": 5}})
     assert operator_config.drain_config()["max_workers"] == 5
+
+
+@pytest.mark.parametrize("bad_value", [0, -1, "2", 2.0, True])
+def test_max_workers_invalid_raises_naming_config_path(tmp_path, monkeypatch, bad_value):
+    path = _write(tmp_path, monkeypatch, {"drain": {"max_workers": bad_value}})
+    with pytest.raises(operator_config.OperatorConfigError, match=re.escape(str(path))):
+        operator_config.drain_config()
 
 
 def test_malformed_json_raises_not_silently_ignored(tmp_path, monkeypatch):

@@ -77,8 +77,10 @@ def drain_config() -> Dict[str, Any]:
             not isinstance(f, str) for f in fallbacks):
         raise OperatorConfigError(
             f"{config_path()}: drain.fallback_agents must be a list of strings")
-    max_workers = section.get("max_workers", 2)
-    if not isinstance(max_workers, int) or isinstance(max_workers, bool) or max_workers < 1:
+    max_workers = section.get("max_workers")
+    if max_workers is None:
+        max_workers = 2
+    elif not isinstance(max_workers, int) or isinstance(max_workers, bool) or max_workers < 1:
         raise OperatorConfigError(
             f"{config_path()}: drain.max_workers must be a positive integer")
     return {

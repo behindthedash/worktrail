@@ -218,6 +218,11 @@ def build_agent_environment(home: Optional[Path] = None) -> Dict[str, str]:
     return env
 
 
+def worker_scratch_dir(slot: int, home: Optional[Path] = None) -> Path:
+    """Return the per-slot scratch cwd a worker's spawned one-shots run from."""
+    return (home or worktrail_home()) / "drain-workers" / f"worker-{slot}"
+
+
 def validate_agent_runtime(
     agent: str,
     env: Dict[str, str],
@@ -302,7 +307,11 @@ def parse_run_record(text: str) -> Dict[str, Optional[str]]:
     return fields
 
 
-def newest_run_record(runs_dir: Path, known: Iterable[Path] = ()) -> Optional[Path]:
+def newest_run_record(
+    runs_dir: Path,
+    known: Iterable[Path] = (),
+    repo_filter: Optional[str] = None,
+) -> Optional[Path]:
     """The run-record YAML this iteration produced, across repos.
 
     Attribution is by set difference against a before-spawn snapshot (`known`),
@@ -310,11 +319,16 @@ def newest_run_record(runs_dir: Path, known: Iterable[Path] = ()) -> Optional[Pa
     mtime-resolution tick can tie or invert under an mtime `>= since_epoch`
     filter, so a stale record can outrank -- or exclude -- the real one
     depending on directory-iteration order, which Python does not guarantee.
+
+    `repo_filter`, when given, restricts the glob to that repo's subdirectory
+    so an iteration attributed to a single claimed brief can't be misclassified
+    by a newer record landing concurrently in a different repo's directory.
     """
     if not runs_dir.is_dir():
         return None
     known_set = known if isinstance(known, (set, frozenset)) else set(known)
-    candidates = [path for path in runs_dir.glob("*/*.yaml") if path not in known_set]
+    glob_pattern = f"{repo_filter}/*.yaml" if repo_filter is not None else "*/*.yaml"
+    candidates = [path for path in runs_dir.glob(glob_pattern) if path not in known_set]
     if not candidates:
         return None
     def _mtime_ns(path: Path) -> int:
@@ -443,15 +457,16 @@ def record_capacity_gate(cache_path: Path, agent: str, failure_class: str,
     "agent:model" keys -- drain.py has no model concept of its own, and
     capacity_gated() already matches a bare key by exact agent-name equality.
     """
-    data = agent_capacity.load(cache_path)
-    data.setdefault("providers", {})[agent] = {
-        "status": "unavailable",
-        "failure_class": failure_class,
-        "checked_at": datetime.now(timezone.utc).isoformat(),
-        "retry_after": retry_after.isoformat(),
-        "source": "drain",
-    }
-    agent_capacity.save(data, cache_path)
+    with agent_capacity.write_lock(cache_path):
+        data = agent_capacity.load(cache_path)
+        data.setdefault("providers", {})[agent] = {
+            "status": "unavailable",
+            "failure_class": failure_class,
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+            "retry_after": retry_after.isoformat(),
+            "source": "drain",
+        }
+        agent_capacity.save(data, cache_path)
 
 
 # ---------------------------------------------------------------------------
@@ -1239,6 +1254,22 @@ def release_lock(lock_file: Path) -> None:
     lock_file.unlink(missing_ok=True)
 
 
+def slot_lock_path(lock_file: Path, slot: int) -> Path:
+    """Per-slot lock file path; slot 0 is the unmodified `lock_file`."""
+    if slot == 0:
+        return lock_file
+    return lock_file.with_name(f"{lock_file.name}.{slot}")
+
+
+def acquire_lock_slot(lock_file: Path, max_workers: int) -> Optional[int]:
+    """Try slots 0..max_workers-1 in order, returning the first acquired slot
+    index or None if every slot is held by a live pid."""
+    for slot in range(max_workers):
+        if acquire_lock(slot_lock_path(lock_file, slot)):
+            return slot
+    return None
+
+
 def release_lock_slot(lock_file: Path, slot: int) -> None:
     release_lock(slot_lock_path(lock_file, slot))
 
@@ -1394,10 +1425,12 @@ class SpawnOutcome:
 
 
 def run_one_shot(cmd: List[str], timeout: int,
-                 env: Optional[Dict[str, str]] = None) -> SpawnOutcome:
+                 env: Optional[Dict[str, str]] = None,
+                 cwd: Optional[Path] = None) -> SpawnOutcome:
     try:
         proc = subprocess.run(
-            cmd, timeout=timeout, capture_output=True, text=True, env=env)
+            cmd, timeout=timeout, capture_output=True, text=True, env=env,
+            cwd=str(cwd) if cwd else None)
         return SpawnOutcome(proc.returncode, proc.stdout or "", proc.stderr or "")
     except subprocess.TimeoutExpired as exc:
         stdout = exc.stdout if isinstance(exc.stdout, str) else ""
@@ -1414,13 +1447,15 @@ def drain(config: DrainConfig,
     """Run the drain loop. Returns a summary dict (also the --json payload)."""
     uses_builtin_spawner = spawner is None
     agent_env = build_agent_environment()
-    if uses_builtin_spawner:
-        spawner = functools.partial(run_one_shot, env=agent_env)
     slot = acquire_lock_slot(config.lock_file, config.max_workers)
     if slot is None:
         return {"stopped": "lock_held",
                 "detail": f"another drain owns {config.lock_file}",
                 "iterations": []}
+    scratch_dir = worker_scratch_dir(slot)
+    scratch_dir.mkdir(parents=True, exist_ok=True)
+    if uses_builtin_spawner:
+        spawner = functools.partial(run_one_shot, env=agent_env, cwd=scratch_dir)
     started = clock()
     state = LoopState(
         max_items=config.max_items,
@@ -1438,7 +1473,7 @@ def drain(config: DrainConfig,
     active_agent = config.agent
     seeded_backlog: Dict[str, Any] = {}
     try:
-        if config.repos_root is not None and not config.dry_run:
+        if slot == 0 and config.repos_root is not None and not config.dry_run:
             resumed = sweep_remediations(
                 config.repos_root, config.go_repo, active_agent,
                 config.iteration_timeout, spawner, log)
@@ -1493,17 +1528,33 @@ def drain(config: DrainConfig,
                 decisions_mod.open_decision_ids(config.queue_dir))
             spawned = spawner(cmd, config.iteration_timeout)
             exit_code = spawned.exit_code
-            record_path = newest_run_record(config.runs_dir, known_records)
+            queue_after = list_queue(config.work_queue_py, config.queue_dir)
+            ready_after = count_ready_briefs(queue_after)
+            claimed_delta = max(0, ready_before - ready_after)
+            claimed_briefs = claimed_brief_ids(queue, queue_after)
+            # A single claimed brief pins the run-record lookup to that
+            # brief's own repo, so a concurrently-running worker's record
+            # landing in a different repo's run directory can't be
+            # misattributed to this iteration; an ambiguous multi-claim (or
+            # no-claim) iteration keeps today's unfiltered lookup.
+            repo_filter = None
+            if len(claimed_briefs) == 1:
+                claimed_id = claimed_briefs[0]
+                for brief in queue.get("briefs") or []:
+                    filename = brief.get("filename") or ""
+                    brief_id = filename[:-3] if filename.endswith(".md") else filename
+                    if brief_id == claimed_id:
+                        repo = brief.get("repo")
+                        repo_filter = Path(repo).name if repo else None
+                        break
+            record_path = newest_run_record(
+                config.runs_dir, known_records, repo_filter=repo_filter)
             fields = None
             if record_path is not None:
                 try:
                     fields = parse_run_record(record_path.read_text(encoding="utf-8"))
                 except OSError:
                     fields = None
-            queue_after = list_queue(config.work_queue_py, config.queue_dir)
-            ready_after = count_ready_briefs(queue_after)
-            claimed_delta = max(0, ready_before - ready_after)
-            claimed_briefs = claimed_brief_ids(queue, queue_after)
             # classify_outcome only consults failure_class on its record-less
             # fallback path (and there only past the no_pick check), so it is
             # harmless to compute unconditionally whenever no run record
@@ -1572,7 +1623,7 @@ def drain(config: DrainConfig,
                 "decisions_filed": decisions_filed,
                 "transcript": str(transcript_path) if transcript_path else None,
             })
-        if config.repos_root is not None and not config.dry_run and state.iteration > 0:
+        if slot == 0 and config.repos_root is not None and not config.dry_run and state.iteration > 0:
             # Re-swept post-pass, but only when this pass actually ran a queue
             # iteration -- an empty queue means nothing could have changed
             # since the pre-loop sweep above, so re-sweeping would just
@@ -1646,6 +1697,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--consecutive-failures", type=int, default=2,
                         help="circuit-breaker threshold (default 2)")
     parser.add_argument("--iteration-timeout-minutes", type=int, default=45)
+    parser.add_argument("--max-workers", type=int, default=None,
+                        help="concurrent drain-worker slots against the same "
+                             "--lock-file; resolved CLI > config > built-in -- "
+                             "this flag when passed, else the operator config's "
+                             "drain.max_workers (worktrail_home()/config.json), "
+                             "else 2")
     parser.add_argument("--queue-dir", type=Path, default=None,
                         help="WORK_QUEUE_DIR override for queue checks")
     parser.add_argument("--runs-dir", type=Path,
@@ -1696,6 +1753,12 @@ def main(argv: Optional[List[str]] = None) -> int:
               f"from {operator_config_path()}; supported: "
               f"{', '.join(SUPPORTED_AGENTS)}", file=sys.stderr)
         return 2
+    max_workers = (args.max_workers if args.max_workers is not None
+                   else operator_drain["max_workers"])
+    if not isinstance(max_workers, int) or isinstance(max_workers, bool) or max_workers < 1:
+        print(f"error: max_workers must be a positive integer, got {max_workers!r} "
+              f"from --max-workers or {operator_config_path()}", file=sys.stderr)
+        return 2
     config = DrainConfig(
         work_queue_py=Path(args.work_queue_py),
         runs_dir=args.runs_dir,
@@ -1715,6 +1778,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         dry_run=args.dry_run,
         repos_root=args.repos_root,
         seed_backlog=not args.no_seed_backlog,
+        max_workers=max_workers,
     )
     try:
         summary = drain(config)
