@@ -1684,9 +1684,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--iteration-timeout-minutes", type=int, default=45)
     parser.add_argument("--max-workers", type=int, default=None,
                         help="concurrent drain-worker slots against the same "
-                             "--lock-file; when omitted, falls back to the "
-                             "operator config's drain.max_workers "
-                             "(worktrail_home()/config.json), then to 2")
+                             "--lock-file; resolved CLI > config > built-in -- "
+                             "this flag when passed, else the operator config's "
+                             "drain.max_workers (worktrail_home()/config.json), "
+                             "else 2")
     parser.add_argument("--queue-dir", type=Path, default=None,
                         help="WORK_QUEUE_DIR override for queue checks")
     parser.add_argument("--runs-dir", type=Path,
