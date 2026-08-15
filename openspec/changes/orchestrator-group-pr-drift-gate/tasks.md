@@ -41,7 +41,7 @@ Implements requirement: **Every orchestrator group PR clears the drift gate befo
   at `src/worktrail/orchestrator/integrate.py:46-50`, with a comment distinguishing it
   from `QUARANTINE_INTEGRATION_ERROR` (spec/task bookkeeping drift vs. a failing merged
   tree — different remediation).
-- [ ] 3.2 [cleanup] Grep the repo for each existing quarantine reason string
+- [x] 3.2 [cleanup] Grep the repo for each existing quarantine reason string
   (`budget_exhausted`, `task_failure`, `merge_conflict`, `integration_error`,
   `dependency_quarantined`) to confirm no consumer enumerates the full set, and that the
   new code correctly falls through to the "real failure, needs human review" default in
