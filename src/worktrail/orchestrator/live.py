@@ -45,6 +45,7 @@ from . import dispatch
 from . import orchestrate
 from . import progress
 from . import spawnlib
+from ..router import invocation_context
 from ..taskformats import resolve as taskformats
 
 
@@ -79,17 +80,25 @@ DEFAULT_DEST = Path("/tmp/orchestrator-live/url-shortener-target")
 # Agent defaults are resolved by CLI so Claude Code, Codex, and OpenCode can each
 # use their own baseline model without affecting explicit --model values.
 def _detect_default_agent() -> str:
-    if os.environ.get("GO_AGENT_CLI"):
-        return os.environ["GO_AGENT_CLI"]
-    if os.environ.get("ORCH_AGENT"):
-        return os.environ["ORCH_AGENT"]
-    # OpenCode supplies this explicit marker to the parent process. Do not
-    # infer the host from process names.
-    if os.environ.get("OPENCODE_PARENT"):
-        return "opencode"
-    if os.environ.get("CODEX_CI") or os.environ.get("CODEX_THREAD_ID"):
-        return "codex"
-    return "claude"
+    """Resolve the default worker CLI via invocation_context.resolve() -- the
+    single implementation of the provider precedence chain (GO_AGENT_CLI >
+    ORCH_AGENT > OPENCODE_PARENT > CODEX_CI/CODEX_THREAD_ID > claude) -- so
+    this module can no longer drift from the front door's resolver (the same
+    drift class PR #338/#348 eliminated for invocation_context.py/go_seed.py).
+
+    An unsupported provider name in GO_AGENT_CLI/ORCH_AGENT now surfaces a
+    warning and falls back to "claude" instead of leaking into DEFAULT_AGENT
+    unvalidated. DEFAULT_AGENT is resolved at import time (see below) and used
+    as the default for many function signatures in this module, so letting
+    resolve()'s ValueError propagate would crash every live.py invocation over
+    one bad env var -- a worse regression than the unvalidated value this
+    replaces.
+    """
+    try:
+        return invocation_context.resolve().agent_cli
+    except ValueError as exc:
+        print(f"warning: {exc}; falling back to 'claude'", file=sys.stderr)
+        return "claude"
 
 
 def _default_smoke_cmd(repo: Path) -> "str | None":
