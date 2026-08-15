@@ -1377,6 +1377,7 @@ class DrainConfig:
     dry_run: bool = False
     repos_root: Optional[Path] = None
     seed_backlog: bool = True
+    max_workers: int = 1
 
 
 @dataclass
