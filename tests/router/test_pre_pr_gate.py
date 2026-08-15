@@ -768,5 +768,88 @@ class TestOrphanedTestsWarning(unittest.TestCase):
         self.assertNotIn("WARNING", err)
 
 
+class TestChecksOnly(unittest.TestCase):
+    """`--checks-only` runs just the four deterministic drift checks and
+    returns their combined exit code directly, without ever reaching
+    `pre_pr_cmd`/`integrate_smoke_cmd` or the unconfigured default-deny
+    (design D2)."""
+
+    def _git(self, repo: str, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", *args], cwd=repo, capture_output=True,
+                              text=True, check=True)
+
+    def _init_repo(self, policy_yaml: str) -> str:
+        d = tempfile.mkdtemp(prefix="prepr-checksonly-")
+        self._git(d, "init", "-q", "-b", "main")
+        self._git(d, "config", "user.email", "test@example.com")
+        self._git(d, "config", "user.name", "Test")
+        spec = Path(d) / "docs" / "specs"
+        spec.mkdir(parents=True)
+        (spec / "go-policy.yaml").write_text(policy_yaml, encoding="utf-8")
+        self._git(d, "add", ".")
+        self._git(d, "commit", "-q", "-m", "base")
+        return d
+
+    def _write(self, repo: str, relpath: str, content: str) -> None:
+        path = Path(repo) / relpath
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    def _commit(self, repo: str, message: str) -> None:
+        self._git(repo, "add", ".")
+        self._git(repo, "commit", "-q", "-m", message)
+
+    def test_drift_free_tree_passes_without_running_pre_pr_cmd(self) -> None:
+        sentinel = Path(tempfile.mkdtemp()) / "sentinel"
+        repo = self._init_repo(f'pre_pr_cmd: "touch {sentinel}"\n')
+        self.assertEqual(main(["--repo", repo, "--checks-only"]), 0)
+        self.assertFalse(sentinel.exists())
+
+    def test_spec_sync_drift_returns_its_own_exit_code(self) -> None:
+        repo = self._init_repo('pre_pr_cmd: "true"\n')
+        _write_drifted_spec(Path(repo) / "docs" / "specs")
+        self._commit(repo, "add drifted spec")
+        self.assertEqual(main(["--repo", repo, "--checks-only"]), SPEC_SYNC_DRIFT_EXIT)
+
+    def test_clarification_integrity_drift_returns_its_own_exit_code(self) -> None:
+        repo = self._init_repo('pre_pr_cmd: "true"\n')
+        self._git(repo, "checkout", "-q", "-b", "feature")
+        self._write(repo, "docs/specs/098-fixture/spec.md",
+                    TestClarificationIntegrityGate.INFERRED_AND_DECLARED_CLEAN_SPEC)
+        self._commit(repo, "add spec")
+        self.assertEqual(main(["--repo", repo, "--checks-only"]),
+                          CLARIFICATION_INTEGRITY_DRIFT_EXIT)
+
+    def test_dod_verification_drift_returns_its_own_exit_code(self) -> None:
+        repo = self._init_repo('pre_pr_cmd: "true"\n')
+        self._git(repo, "checkout", "-q", "-b", "feature")
+        self._write(
+            repo, "docs/specs/098-fixture/tasks/TASK-001.md",
+            "---\nid: TASK-001\ntitle: Fixture\nspec: 098-fixture\n"
+            "status: completed\ndod-checks:\n  - type: file_exists\n"
+            "    path: nonexistent.txt\n---\n\nbody\n",
+        )
+        self._commit(repo, "add task")
+        self.assertEqual(main(["--repo", repo, "--checks-only"]),
+                          DOD_VERIFICATION_DRIFT_EXIT)
+
+    def test_req_ac_coverage_drift_returns_its_own_exit_code(self) -> None:
+        repo = self._init_repo('pre_pr_cmd: "true"\n')
+        self._git(repo, "checkout", "-q", "-b", "feature")
+        self._write(repo, "docs/specs/098-fixture/spec.md",
+                    TestReqAcCoverageGate._SPEC_WITH_REQ_001)
+        self._commit(repo, "add spec")
+        self.assertEqual(main(["--repo", repo, "--checks-only"]),
+                          REQ_AC_COVERAGE_DRIFT_EXIT)
+
+    def test_unconfigured_pre_pr_cmd_does_not_hit_unconfigured_exit(self) -> None:
+        # No pre_pr_cmd/integrate_smoke_cmd at all -- the ordinary gate would
+        # default-deny at UNCONFIGURED_EXIT, but --checks-only never resolves
+        # a command in the first place, so a drift-free tree still passes.
+        repo = self._init_repo("base_branch: main\n")
+        self.assertNotEqual(main(["--repo", repo, "--checks-only"]), UNCONFIGURED_EXIT)
+        self.assertEqual(main(["--repo", repo, "--checks-only"]), 0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
