@@ -47,6 +47,20 @@ def run_check(repo: Path, check: dict) -> str | None:
             return f"file_exists check failed: {path} does not exist"
         return None
 
+    if check_type == "file_tracked":
+        path = check.get("path")
+        if not path:
+            return f"malformed file_tracked check (missing 'path'): {check}"
+        if not (repo / path).exists():
+            return f"file_tracked check failed: {path} does not exist"
+        result = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", path],
+            cwd=str(repo), capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            return f"file_tracked check failed: {path} is not tracked by git"
+        return None
+
     if check_type == "grep":
         path = check.get("path")
         pattern = check.get("pattern")
