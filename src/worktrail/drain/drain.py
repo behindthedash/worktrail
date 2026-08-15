@@ -1504,17 +1504,32 @@ def drain(config: DrainConfig,
                 decisions_mod.open_decision_ids(config.queue_dir))
             spawned = spawner(cmd, config.iteration_timeout)
             exit_code = spawned.exit_code
-            record_path = newest_run_record(config.runs_dir, known_records)
+            queue_after = list_queue(config.work_queue_py, config.queue_dir)
+            ready_after = count_ready_briefs(queue_after)
+            claimed_delta = max(0, ready_before - ready_after)
+            claimed_briefs = claimed_brief_ids(queue, queue_after)
+            # A single claimed brief pins the run-record lookup to that
+            # brief's own repo, so a concurrently-running worker's record
+            # landing in a different repo's run directory can't be
+            # misattributed to this iteration; an ambiguous multi-claim (or
+            # no-claim) iteration keeps today's unfiltered lookup.
+            repo_filter = None
+            if len(claimed_briefs) == 1:
+                claimed_id = claimed_briefs[0]
+                for brief in queue.get("briefs") or []:
+                    filename = brief.get("filename") or ""
+                    brief_id = filename[:-3] if filename.endswith(".md") else filename
+                    if brief_id == claimed_id:
+                        repo_filter = brief.get("repo")
+                        break
+            record_path = newest_run_record(
+                config.runs_dir, known_records, repo_filter=repo_filter)
             fields = None
             if record_path is not None:
                 try:
                     fields = parse_run_record(record_path.read_text(encoding="utf-8"))
                 except OSError:
                     fields = None
-            queue_after = list_queue(config.work_queue_py, config.queue_dir)
-            ready_after = count_ready_briefs(queue_after)
-            claimed_delta = max(0, ready_before - ready_after)
-            claimed_briefs = claimed_brief_ids(queue, queue_after)
             # classify_outcome only consults failure_class on its record-less
             # fallback path (and there only past the no_pick check), so it is
             # harmless to compute unconditionally whenever no run record
