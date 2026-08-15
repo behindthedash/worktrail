@@ -350,6 +350,7 @@ class OperatorPRDiscovery(unittest.TestCase):
                         "state": "OPEN",
                         "url": "https://github.com/owner/repo/pull/88",
                         "headRefName": "operator-custom-branch",
+                        "baseRefName": "main",
                     }
                 ]
             }
@@ -495,6 +496,7 @@ class MultipleGroupsWithOperatorPR(unittest.TestCase):
                         "state": "OPEN",
                         "url": "https://github.com/owner/repo/pull/20",
                         "headRefName": "operator-feature-1",
+                        "baseRefName": "full-mixed/base",
                     }
                 ]
             }
@@ -712,6 +714,33 @@ class UnreconciledTailEvidence(unittest.TestCase):
                 [_tail_task("T022", "e2e", status="done")],
             )
             self.assertEqual(findings, [])
+
+    def test_no_pr_opened_when_task_made_no_commit(self):
+        """Pins the AC end to end: a terminal tail task whose worktree HEAD
+        never advanced past its stacked base produces no detect finding, and
+        feeding that (empty) finding list into reconcile_unreconciled_tail_evidence
+        opens no reconciliation PR -- locks in existing behavior, no
+        production code changes."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo, wt_base = self._init_repo(tmpdir)
+            self._add_task_worktree(repo, wt_base, "008-x", "T022")
+            # No commit made in the worktree -- HEAD is still base itself.
+            task = _tail_task("T022", "e2e", status="done")
+
+            findings = integrate.detect_unreconciled_tail_evidence(
+                repo, "origin", "main", "008-x", wt_base, [task],
+            )
+            self.assertEqual(findings, [])
+
+            run = FakeRunWithOperator.FakeRunHelper()
+            with patch("worktrail.orchestrator.integrate._git", side_effect=run):
+                with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
+                    result = integrate.reconcile_unreconciled_tail_evidence(
+                        findings, repo, "008-x", [task], "origin", "run-1", "main", None,
+                    )
+
+            self.assertEqual(result, [])
+            self.assertEqual(run.find_calls("gh", "pr", "create"), [])
 
     def test_no_finding_once_the_commit_is_reconciled_onto_base(self):
         with tempfile.TemporaryDirectory() as tmpdir:

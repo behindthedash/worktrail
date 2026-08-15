@@ -698,7 +698,8 @@ class TransientGhFailureRetry(unittest.TestCase):
                     return Proc(0, json.dumps([{
                         "number": 7, "state": "OPEN",
                         "url": "https://github.com/owner/repo/pull/7",
-                        "headRefName": "operator/base", "isDraft": False,
+                        "headRefName": "operator/base", "baseRefName": "main",
+                        "isDraft": False,
                     }]), "")
                 return run(*args, **kwargs)
 
@@ -710,6 +711,63 @@ class TransientGhFailureRetry(unittest.TestCase):
             self.assertEqual(result[2], "https://github.com/owner/repo/pull/7")
             self.assertEqual(run.find_calls("gh", "pr", "create"), [])
             self.assertEqual(sleeps, [integrate.GH_TRANSIENT_BACKOFF_S])
+
+    def test_operator_pr_discovery_accepts_match_on_group_branch(self):
+        """A discovered PR whose `headRefName` equals the group's own branch is
+        still accepted even when its `baseRefName` targets something else
+        (branch-guard filter, design.md Decision 3)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            journal_path = str(Path(tmpdir) / "journal.json")
+            run = FakeRun(pr_view_responses={}, ls_remote_responses={})
+
+            def call(*args, **kwargs):
+                cmd = args[0] if args and not isinstance(args[0], (str, Path)) else list(args[1:])
+                if cmd[:3] == ["gh", "pr", "list"]:
+                    run.calls.append(cmd)
+                    return Proc(0, json.dumps([{
+                        "number": 11, "state": "OPEN",
+                        "url": "https://github.com/owner/repo/pull/11",
+                        "headRefName": "run-tr/base", "baseRefName": "unrelated-base",
+                        "isDraft": False,
+                    }]), "")
+                return run(*args, **kwargs)
+
+            sleeps: list = []
+            result, quarantined = self._integrate(call, journal_path, sleeps)
+
+            self.assertEqual(quarantined, {})
+            self.assertIsNotNone(result)
+            self.assertEqual(result[2], "https://github.com/owner/repo/pull/11")
+            self.assertEqual(run.find_calls("gh", "pr", "create"), [])
+
+    def test_operator_pr_discovery_rejects_unrelated_pr(self):
+        """The incident case: a search match whose `headRefName` and
+        `baseRefName` correspond to neither the group's own branch nor its
+        target must be rejected, falling through to `gh pr create` exactly as
+        if no match had been found (design.md Decision 3)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            journal_path = str(Path(tmpdir) / "journal.json")
+            run = FakeRun(pr_view_responses={}, ls_remote_responses={})
+
+            def call(*args, **kwargs):
+                cmd = args[0] if args and not isinstance(args[0], (str, Path)) else list(args[1:])
+                if cmd[:3] == ["gh", "pr", "list"]:
+                    run.calls.append(cmd)
+                    return Proc(0, json.dumps([{
+                        "number": 99, "state": "OPEN",
+                        "url": "https://github.com/owner/repo/pull/99",
+                        "headRefName": "some-other-branch", "baseRefName": "some-other-target",
+                        "isDraft": False,
+                    }]), "")
+                return run(*args, **kwargs)
+
+            sleeps: list = []
+            result, quarantined = self._integrate(call, journal_path, sleeps)
+
+            self.assertEqual(quarantined, {})
+            self.assertIsNotNone(result)
+            self.assertEqual(result[2], "https://github.com/owner/repo/pull/123")
+            self.assertEqual(len(run.find_calls("gh", "pr", "create")), 1)
 
     def test_pr_ready_transient_failure_retried(self):
         """Marking a reused draft PR ready (`gh pr ready`) retries a transient
