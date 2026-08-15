@@ -171,28 +171,59 @@ def _count_features(text: str) -> int:
     return len(_FEATURE_HEADING_RE.findall(text))
 
 
-def _citing_spec_ids(specs_root: Path, epic_id: str) -> List[str]:
-    """Spec folders whose top-level markdown mentions the epic id.
+def _citing_spec_ids(repo: Path, epic_id: str) -> List[str]:
+    """Spec/change folders whose markdown mentions the epic id.
 
     Route C requires the spec header to cite its owning epic, so a citation
     anywhere in a spec folder's own top-level .md files (spec.md,
     user-request.md, addenda) counts the feature as specced. Archived and
     delivered specs still on disk count too -- shipped features are exactly
     the ones that must not be re-seeded.
+
+    Scans both supported spec formats, since an epic's features can ship as
+    either: `docs/specs/<id>/*.md` (devkit, top-level files only) and
+    `openspec/{specs,changes}/**/*.md` (OpenSpec, recursive -- covers
+    `changes/archive/<date>-<slug>/` and its nested `specs/<slug>/spec.md`
+    copy, both of which sit one level deeper than a live change).
     """
     citing: List[str] = []
-    if not specs_root.is_dir():
-        return citing
-    for spec_dir in sorted(specs_root.iterdir()):
-        if not spec_dir.is_dir() or spec_dir.name.lower() in {"epics"}:
+    seen: set = set()
+
+    def _add(name: str) -> None:
+        if name not in seen:
+            seen.add(name)
+            citing.append(name)
+
+    docs_specs_root = repo / "docs" / "specs"
+    if docs_specs_root.is_dir():
+        for spec_dir in sorted(docs_specs_root.iterdir()):
+            if not spec_dir.is_dir() or spec_dir.name.lower() in {"epics"}:
+                continue
+            for md in spec_dir.glob("*.md"):
+                try:
+                    if epic_id in md.read_text(encoding="utf-8"):
+                        _add(spec_dir.name)
+                        break
+                except OSError:
+                    continue
+
+    openspec_root = repo / "openspec"
+    for sub in ("specs", "changes"):
+        sub_root = openspec_root / sub
+        if not sub_root.is_dir():
             continue
-        for md in spec_dir.glob("*.md"):
+        for md in sorted(sub_root.glob("**/*.md")):
+            rel_parts = md.relative_to(sub_root).parts
+            if sub == "changes" and rel_parts[0] == "archive":
+                rel_parts = rel_parts[1:]
+            if len(rel_parts) < 2:
+                continue  # loose file directly under specs/ or changes/, not a change/spec folder
             try:
                 if epic_id in md.read_text(encoding="utf-8"):
-                    citing.append(spec_dir.name)
-                    break
+                    _add(rel_parts[0])
             except OSError:
                 continue
+
     return citing
 
 
@@ -234,7 +265,7 @@ def find_epic_gaps(
                     "id": epic_id, "unparseable": True,
                 })
                 continue
-            cited = _citing_spec_ids(specs_root, epic_id)
+            cited = _citing_spec_ids(repo_path, epic_id)
             if len(cited) >= features:
                 continue
             found.append({
