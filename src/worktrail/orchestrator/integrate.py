@@ -48,6 +48,11 @@ QUARANTINE_TASK_FAILURE = "task_failure"
 QUARANTINE_MERGE_CONFLICT = "merge_conflict"
 QUARANTINE_INTEGRATION_ERROR = "integration_error"
 QUARANTINE_DEPENDENCY_QUARANTINED = "dependency_quarantined"
+# The merged tree built and passed smoke, but the group's spec/task bookkeeping
+# has drifted from what it actually shipped (see the pre-PR drift gate below) —
+# a documentation-accuracy problem, not a failing merged tree like
+# QUARANTINE_INTEGRATION_ERROR, so remediation is fixing the spec/tasks, not the code.
+QUARANTINE_PRE_PR_DRIFT = "pre_pr_drift"
 
 
 _HERE = Path(__file__).resolve().parent
