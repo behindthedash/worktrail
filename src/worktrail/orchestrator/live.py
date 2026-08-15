@@ -3282,6 +3282,7 @@ def _dispatch_pending_tail(
     spawn=None,
     remote: str | None = None,
     base: str | None = None,
+    only: list | None = None,
 ) -> dict | None:
     """Dispatch pending e2e/cleanup tail tasks once the impl-group fan-out is
     integrated (`_pipeline_scheduler` reaches this point with every non-tail
@@ -3300,6 +3301,13 @@ def _dispatch_pending_tail(
     (`_dispatch_pending_tail` only fires once every group is integrated/verified/
     merged and cleaned up), so the call site supplies them.
 
+    `only` — the scheduler's own `--only` restriction (list of kept task ids),
+    threaded straight through to `live_run_real`'s pre-mark block. Without this,
+    `live_run_real` reloads every task fresh from the TaskSource with no `only`
+    filter, silently re-driving the FULL fan-out for every non-terminal task
+    (including ones already merged via an earlier group's PR) instead of
+    respecting the run's own scope restriction.
+
     Returns None when there is no tail work outstanding (no-op); otherwise the
     dict `live_run_real` returns for its `with_tail=True` pass.
     """
@@ -3311,6 +3319,7 @@ def _dispatch_pending_tail(
         spec_rel,
         max_workers=max_workers,
         out_cassette=journal_path,
+        only=only,
         with_tail=True,
         agent=agent,
         model=model,
@@ -4179,6 +4188,7 @@ def _pipeline_scheduler(
             spawn=spawn_fn,
             remote=remote,
             base=base,
+            only=only,
         )
         if tail_res is not None:
             integrate_module._mark_integrate_complete_if_terminal(
