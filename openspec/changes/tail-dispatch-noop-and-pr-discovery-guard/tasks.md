@@ -43,7 +43,7 @@
       before taking `matches[0]`; when no candidate survives the filter,
       fall through to the existing `gh pr create` path exactly as if
       `matches` were empty.
-- [ ] 2.3 Add a regression test in `tests/orchestrator/test_integrate.py`
+- [x] 2.3 Add a regression test in `tests/orchestrator/test_integrate.py`
       (or `test_integrate_extras.py`, alongside the existing operator-PR
       search coverage) asserting: (a) a search result whose sole match has
       a `headRefName` equal to the group's branch (or `baseRefName` equal
