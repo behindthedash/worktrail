@@ -511,5 +511,45 @@ class CleanupFormatGating(unittest.TestCase):
         self.assertIn("ONLY the files this task changed", p)
 
 
+# --------------------------------------------------------------------------- #
+# tail-dispatch-noop-and-pr-discovery-guard 1.2 -- zero-file tail-task scope
+# --------------------------------------------------------------------------- #
+class TailTaskNoopScope(unittest.TestCase):
+    def _ctx(self):
+        return {
+            "spec_id": "010-feature",
+            "spec_folder": "docs/specs/010-feature/",
+            "worktree_path": "/wt/010-feature-task-002",
+            "branch": "010-feature/task-002",
+        }
+
+    def test_tail_kind_empty_files_gets_explicit_noop_scope(self):
+        for kind in ("e2e", "cleanup"):
+            task = {"id": "TASK-002", "deps": [], "files": [], "kind": kind, "status": "cleaning"}
+            p = dispatch.build_worker_prompt(dispatch.ROLE_CLEANUP, task, self._ctx())
+            self.assertNotIn("(see task file)", p)
+            self.assertIn("verification-only", p)
+            self.assertIn("zero", p)
+
+    def test_tail_kind_nonempty_files_renders_files_unchanged(self):
+        for kind in ("e2e", "cleanup"):
+            task = {
+                "id": "TASK-002",
+                "deps": [],
+                "files": ["src/route.ts", "src/other.ts"],
+                "kind": kind,
+                "status": "cleaning",
+            }
+            p = dispatch.build_worker_prompt(dispatch.ROLE_CLEANUP, task, self._ctx())
+            self.assertIn("src/route.ts, src/other.ts", p)
+            self.assertNotIn("verification-only", p)
+
+    def test_non_tail_kind_empty_files_keeps_existing_fallback(self):
+        task = {"id": "TASK-002", "deps": [], "files": [], "kind": "implement", "status": "cleaning"}
+        p = dispatch.build_worker_prompt(dispatch.ROLE_CLEANUP, task, self._ctx())
+        self.assertIn("(see task file)", p)
+        self.assertNotIn("verification-only", p)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

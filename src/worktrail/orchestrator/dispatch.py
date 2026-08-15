@@ -383,6 +383,11 @@ def build_worker_prompt(
     brief, brief_note, brief_anchor = _task_brief(ctx, tid)
     review_checklist, review_verdict_rule = _review_clauses(brief_anchor)
     scope = ", ".join(task.get("files", [])) or "(see task file)"
+    is_noop_tail = task.get("kind") in ("e2e", "cleanup") and not task.get("files")
+    if is_noop_tail:
+        scope = (
+            "(none — this is a verification-only tail task; expect zero file changes)"
+        )
     action = _ROLE_ACTION[role].format(
         task_id=tid,
         base_commit=ctx.get("base_commit", "HEAD"),
