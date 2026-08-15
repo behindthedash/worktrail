@@ -1,6 +1,6 @@
 ## 1. Pin read, fail-closed path, and their regression tests
 
-- [ ] 1.1 One atomic task across the affected files — the orchestrator groups PRs by
+- [x] 1.1 One atomic task across the affected files — the orchestrator groups PRs by
       shared file, not by `deps` edges, so splitting the `live.py` change from the tests
       that cover it would let them land in separate groups whose smoke tests each fail in
       isolation (this is the same reason `runplan-collision-auto-repair` kept its work in
@@ -63,10 +63,10 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [cleanup] Run `PYTHONPATH=src pytest -q` and confirm the full suite is green,
+- [x] 2.1 [cleanup] Run `PYTHONPATH=src pytest -q` and confirm the full suite is green,
       including the new and existing `test_apply_run_plan_autocompile.py` /
       `test_plan_fingerprint_record.py` cases. Tagged `[cleanup]` (tail kind): this needs
       the implementation and test task above merged first, not fanned out alongside it.
-- [ ] 2.2 [cleanup] Run `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate
+- [x] 2.2 [cleanup] Run `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate
       check` (the golden record/replay regression) and confirm it is unaffected. Tagged
       `[cleanup]` for the same reason as 2.1.
