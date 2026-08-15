@@ -1458,7 +1458,7 @@ def drain(config: DrainConfig,
     active_agent = config.agent
     seeded_backlog: Dict[str, Any] = {}
     try:
-        if config.repos_root is not None and not config.dry_run:
+        if slot == 0 and config.repos_root is not None and not config.dry_run:
             resumed = sweep_remediations(
                 config.repos_root, config.go_repo, active_agent,
                 config.iteration_timeout, spawner, log)
@@ -1608,7 +1608,7 @@ def drain(config: DrainConfig,
                 "decisions_filed": decisions_filed,
                 "transcript": str(transcript_path) if transcript_path else None,
             })
-        if config.repos_root is not None and not config.dry_run and state.iteration > 0:
+        if slot == 0 and config.repos_root is not None and not config.dry_run and state.iteration > 0:
             # Re-swept post-pass, but only when this pass actually ran a queue
             # iteration -- an empty queue means nothing could have changed
             # since the pre-loop sweep above, so re-sweeping would just
