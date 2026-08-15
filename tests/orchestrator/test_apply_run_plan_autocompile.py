@@ -122,7 +122,9 @@ def test_pinned_run_reuses_cached_plan_without_calling_spawn(tmp_path):
     assert spawn.calls == 1, "the first call establishes the pin via a real compile"
 
     _, tasks_again = resolve.load_spec(str(change))
-    merged = live.apply_run_plan(repo, spec_rel, spec_id, tasks_again, spawn=RaisingSpawn())
+    second_spawn = RecordingSpawn(_reply(**{"1.1": {"files": []}, "1.2": {"files": []}}))
+    merged = live.apply_run_plan(repo, spec_rel, spec_id, tasks_again, spawn=second_spawn)
+    assert second_spawn.calls == 0, "a pinned run must never reach the compile seam"
     by_id = {t["id"]: t for t in merged}
     assert by_id["1.1"]["files"] == ["src/parser.py"]
     assert by_id["1.1"]["deps"] == []

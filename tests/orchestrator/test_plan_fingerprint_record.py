@@ -130,6 +130,37 @@ class PlanFingerprintRecord(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()):
                 live._record_plan_fingerprint(repo, spec_rel, _Plan("a" * 64))
 
+    def test_non_object_journal_top_level_is_treated_as_no_pin(self):
+        """A journal whose top-level JSON is valid but not an object (e.g. a
+        bare `null`) must resolve to no pin, not raise out of `.get` -- DEC-004:
+        journal I/O never takes a run down."""
+        with tempfile.TemporaryDirectory() as td:
+            repo, spec_rel = Path(td), "openspec/changes/x"
+            jp = live.journal_path_for(repo, spec_rel)
+            jp.parent.mkdir(parents=True, exist_ok=True)
+            jp.write_text("null")
+            self.assertIsNone(live._pinned_plan_fingerprint(repo, spec_rel))
+
+    def test_non_string_plan_fingerprint_is_treated_as_no_pin(self):
+        """A truncated or hand-edited journal with a non-string
+        `plan_fingerprint` must not flow into `[:12]` slicing or cache lookup."""
+        with tempfile.TemporaryDirectory() as td:
+            repo, spec_rel = Path(td), "openspec/changes/x"
+            jp = live.journal_path_for(repo, spec_rel)
+            jp.parent.mkdir(parents=True, exist_ok=True)
+            jp.write_text(json.dumps({"plan_fingerprint": 12345}))
+            self.assertIsNone(live._pinned_plan_fingerprint(repo, spec_rel))
+
+    def test_non_utf8_journal_is_treated_as_no_pin(self):
+        """A binary/non-UTF-8 journal raises `UnicodeDecodeError` (a `ValueError`
+        subclass) from `read_text()` -- must resolve to no pin, not propagate."""
+        with tempfile.TemporaryDirectory() as td:
+            repo, spec_rel = Path(td), "openspec/changes/x"
+            jp = live.journal_path_for(repo, spec_rel)
+            jp.parent.mkdir(parents=True, exist_ok=True)
+            jp.write_bytes(b"\xff\xfe\x00\x01")
+            self.assertIsNone(live._pinned_plan_fingerprint(repo, spec_rel))
+
 
 if __name__ == "__main__":
     unittest.main()

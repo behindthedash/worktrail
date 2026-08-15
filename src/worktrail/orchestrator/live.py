@@ -370,9 +370,12 @@ def _pinned_plan_fingerprint(repo: "Path", spec_rel: str) -> "str | None":
     try:
         jp = journal_path_for(repo, spec_rel)
         journal = json.loads(jp.read_text()) if jp.exists() else {}
-    except Exception:
+        if not isinstance(journal, dict):
+            return None
+        fp = journal.get("plan_fingerprint")
+        return fp if isinstance(fp, str) and fp else None
+    except (OSError, ValueError, TypeError):
         return None
-    return journal.get("plan_fingerprint") or None
 
 
 def _record_plan_fingerprint(repo: "Path", spec_rel: str, plan) -> None:
