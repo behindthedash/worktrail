@@ -9,13 +9,24 @@ previously verified that those checks actually ran and passed: a task file
 could claim `status: completed` with fabricated or stale Acceptance
 Criteria / Definition of Done checkboxes and nothing would catch it.
 
-This is the deterministic backstop, wired into `pre_pr_gate.py` the same way
-`check_clarification_integrity.py` is: scoped to task files **changed in the
-current diff only** (task files that completed before this check existed
-must not fail every future PR's gate).
+When a `completed` task declares no `dod-checks` at all, `derive_dod_checks`
+synthesizes a fallback in its place — an `ac_checkboxes_complete` check
+against the task file itself, plus a `file_tracked` and `no_stub_markers`
+check for each path in frontmatter `files:` — so an author can't skip
+verification simply by omitting `dod-checks`. An explicit `dod-checks` list
+always wins over derivation.
 
-Exit code: 0 if no changed, completed task file with `dod-checks` fails any
-check, 1 otherwise.
+This is the deterministic backstop, wired into `pre_pr_gate.py` the same way
+`check_clarification_integrity.py` is: scoped by default to task files
+**changed in the current diff only** (task files that completed before this
+check existed must not fail every future PR's gate). Pass `--all` to instead
+audit every devkit task file under `docs/specs/`, regardless of whether it
+changed in the current diff — a backlog report, not a gate; it does not
+affect `pre_pr_gate.py`'s exit code.
+
+Exit code: 0 if no changed, completed task file (explicit or derived
+`dod-checks`) fails any check, 1 otherwise. Under `--all`, exit code reflects
+the full audit instead of the diff-scoped check.
 """
 
 from __future__ import annotations
@@ -30,6 +41,8 @@ from worktrail.taskformats.devkit import schema
 from worktrail.taskformats.devkit.schema import is_task_file, read_task_file
 
 CANDIDATE_BASE_REFS = ("origin/main", "origin/master", "main", "master")
+
+STUB_MARKER_PATTERN = re.compile(r"\b(TODO|FIXME|XXX|NotImplementedError)\b")
 
 
 def run_check(repo: Path, check: dict) -> str | None:
@@ -73,6 +86,19 @@ def run_check(repo: Path, check: dict) -> str | None:
             return f"ac_checkboxes_complete check failed: {task_path} has unchecked Acceptance Criteria checkboxes"
         return None
 
+    if check_type == "no_stub_markers":
+        path = check.get("path")
+        if not path:
+            return f"malformed no_stub_markers check (missing 'path'): {check}"
+        full_path = repo / path
+        if not full_path.is_file():
+            return f"no_stub_markers check failed: {path} does not exist"
+        text = full_path.read_text(encoding="utf-8", errors="replace")
+        match = STUB_MARKER_PATTERN.search(text)
+        if match:
+            return f"no_stub_markers check failed: {path} contains stub marker {match.group(0)!r}"
+        return None
+
     if check_type == "grep":
         path = check.get("path")
         pattern = check.get("pattern")
@@ -98,17 +124,37 @@ def run_check(repo: Path, check: dict) -> str | None:
     return f"unrecognized dod-checks type: {check_type!r}"
 
 
+def derive_dod_checks(frontmatter: dict, body: str, task_relpath: str) -> list[dict]:
+    """Derive a `dod-checks` list when a task declares none.
+
+    Always includes one `ac_checkboxes_complete` check against the task file
+    itself; for each path in frontmatter `files:` (if present), adds a
+    `file_tracked` check and a `no_stub_markers` check for that path.
+    """
+    checks: list[dict] = [
+        {"type": "ac_checkboxes_complete", "task_path": task_relpath},
+    ]
+    for path in frontmatter.get("files") or []:
+        checks.append({"type": "file_tracked", "path": path})
+        checks.append({"type": "no_stub_markers", "path": path})
+    return checks
+
+
 def check_task_file(repo: Path, task_path: Path) -> list[str]:
     """Run every `dod-checks` entry for one task file. Empty list means pass,
-    not-completed, or no `dod-checks` declared."""
-    frontmatter, error, _body = read_task_file(task_path)
+    not-completed, no `dod-checks` declared and derivation yields nothing, or
+    an explicit `dod-checks` that all pass."""
+    frontmatter, error, body = read_task_file(task_path)
     if error or not frontmatter:
         return []
     if frontmatter.get("status") != "completed":
         return []
     checks = frontmatter.get("dod-checks")
     if not checks:
-        return []
+        task_relpath = str(task_path.resolve().relative_to(repo.resolve()))
+        checks = derive_dod_checks(frontmatter, body, task_relpath)
+        if not checks:
+            return []
 
     failures: list[str] = []
     for check in checks:
@@ -127,6 +173,19 @@ def check_changed_specs(repo: Path, changed_paths: list[str]) -> list[str]:
             continue
         full_path = repo / relpath
         if not full_path.is_file():
+            continue
+        for failure in check_task_file(repo, full_path):
+            failures.append(f"{relpath}: {failure}")
+    return failures
+
+
+def audit_all_specs(repo: Path) -> list[str]:
+    """Return failure messages across every devkit task file under
+    docs/specs/, regardless of whether it changed in the current diff."""
+    failures: list[str] = []
+    for full_path in sorted((repo / "docs" / "specs").rglob("TASK-*.md")):
+        relpath = str(full_path.relative_to(repo))
+        if not is_task_file(relpath):
             continue
         for failure in check_task_file(repo, full_path):
             failures.append(f"{relpath}: {failure}")
@@ -171,9 +230,24 @@ def main() -> int:
         "--base-branch", default=None,
         help="base branch to diff against (default: try origin/main, origin/master, main, master)",
     )
+    parser.add_argument(
+        "--all", action="store_true",
+        help="audit every task file under docs/specs/, not just those changed in the current diff",
+    )
     args = parser.parse_args()
 
     repo = Path(args.repo).resolve()
+
+    if args.all:
+        failures = audit_all_specs(repo)
+        if failures:
+            print(f"FAIL: {len(failures)} DoD-verification issue(s) in audit report")
+            for failure in failures:
+                print(f"  - {failure}")
+            return 1
+        print("DoD verification audit: no drift detected across docs/specs/.")
+        return 0
+
     changed = _changed_paths_via_git(repo, args.base_branch)
     failures = check_changed_specs(repo, changed)
 

@@ -3,12 +3,13 @@
 
 from __future__ import annotations
 
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
 from worktrail.router.check_dod_verification import (
-    check_changed_specs, check_task_file, run_check,
+    check_changed_specs, check_task_file, derive_dod_checks, run_check,
 )
 
 
@@ -64,6 +65,169 @@ class RunCheckTests(unittest.TestCase):
         self.assertIsNotNone(run_check(self.repo, {"type": "file_exists"}))
         self.assertIsNotNone(run_check(self.repo, {"type": "grep", "path": "foo.txt"}))
         self.assertIsNotNone(run_check(self.repo, {"type": "command"}))
+        self.assertIsNotNone(run_check(self.repo, {"type": "file_tracked"}))
+        self.assertIsNotNone(run_check(self.repo, {"type": "ac_checkboxes_complete"}))
+        self.assertIsNotNone(run_check(self.repo, {"type": "no_stub_markers"}))
+
+    def test_no_stub_markers_passes_for_clean_file(self) -> None:
+        self._write("clean.txt", "nothing to see here\n")
+        self.assertIsNone(run_check(self.repo, {"type": "no_stub_markers", "path": "clean.txt"}))
+
+    def test_no_stub_markers_fails_when_missing(self) -> None:
+        failure = run_check(self.repo, {"type": "no_stub_markers", "path": "missing.txt"})
+        self.assertIsNotNone(failure)
+        self.assertIn("missing.txt", failure)
+
+    def test_no_stub_markers_fails_for_todo(self) -> None:
+        self._write("stub.txt", "before\nTODO: fix this\nafter\n")
+        failure = run_check(self.repo, {"type": "no_stub_markers", "path": "stub.txt"})
+        self.assertIsNotNone(failure)
+        self.assertIn("TODO", failure)
+
+    def test_no_stub_markers_fails_for_fixme(self) -> None:
+        self._write("stub.txt", "FIXME later\n")
+        failure = run_check(self.repo, {"type": "no_stub_markers", "path": "stub.txt"})
+        self.assertIsNotNone(failure)
+        self.assertIn("FIXME", failure)
+
+    def test_no_stub_markers_fails_for_xxx(self) -> None:
+        self._write("stub.txt", "XXX unsure about this\n")
+        failure = run_check(self.repo, {"type": "no_stub_markers", "path": "stub.txt"})
+        self.assertIsNotNone(failure)
+        self.assertIn("XXX", failure)
+
+    def test_no_stub_markers_fails_for_not_implemented_error(self) -> None:
+        self._write("stub.py", "def f():\n    raise NotImplementedError\n")
+        failure = run_check(self.repo, {"type": "no_stub_markers", "path": "stub.py"})
+        self.assertIsNotNone(failure)
+        self.assertIn("NotImplementedError", failure)
+
+    def _write_task(self, relpath: str, body: str) -> None:
+        path = self.repo / relpath
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "---\nid: TASK-001\ntitle: Fixture\nspec: 000-fixture\nstatus: completed\n"
+            f"---\n\n{body}",
+            encoding="utf-8",
+        )
+
+    def test_ac_checkboxes_complete_passes_when_all_checked(self) -> None:
+        self._write_task(
+            "TASK-001.md",
+            "## Acceptance Criteria\n\n- [x] one\n- [x] two\n",
+        )
+        self.assertIsNone(
+            run_check(self.repo, {"type": "ac_checkboxes_complete", "task_path": "TASK-001.md"})
+        )
+
+    def test_ac_checkboxes_complete_fails_when_some_unchecked(self) -> None:
+        self._write_task(
+            "TASK-001.md",
+            "## Acceptance Criteria\n\n- [x] one\n- [ ] two\n",
+        )
+        failure = run_check(
+            self.repo, {"type": "ac_checkboxes_complete", "task_path": "TASK-001.md"}
+        )
+        self.assertIsNotNone(failure)
+        self.assertIn("TASK-001.md", failure)
+
+    def test_ac_checkboxes_complete_no_ac_section_falls_back_to_whole_body(self) -> None:
+        # No "## Acceptance Criteria" heading: falls back to scanning the
+        # whole body, which has an unchecked box -> fails.
+        self._write_task("TASK-001.md", "- [x] one\n- [ ] two\n")
+        failure = run_check(
+            self.repo, {"type": "ac_checkboxes_complete", "task_path": "TASK-001.md"}
+        )
+        self.assertIsNotNone(failure)
+
+    def test_ac_checkboxes_complete_no_checkboxes_anywhere_passes(self) -> None:
+        # No AC section and no checkboxes at all in the body: vacuously
+        # passes per _all_checkboxes_checked semantics.
+        self._write_task("TASK-001.md", "just some prose, no checklist\n")
+        self.assertIsNone(
+            run_check(self.repo, {"type": "ac_checkboxes_complete", "task_path": "TASK-001.md"})
+        )
+
+    def test_ac_checkboxes_complete_fails_when_task_path_missing_on_disk(self) -> None:
+        failure = run_check(
+            self.repo, {"type": "ac_checkboxes_complete", "task_path": "missing.md"}
+        )
+        self.assertIsNotNone(failure)
+        self.assertIn("missing.md", failure)
+
+
+class FileTrackedTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.repo = Path(self.tmp.name)
+        subprocess.run(["git", "init", "-q"], cwd=self.repo, check=True)
+
+    def test_fails_when_path_missing(self) -> None:
+        failure = run_check(self.repo, {"type": "file_tracked", "path": "missing.txt"})
+        self.assertIsNotNone(failure)
+        self.assertIn("missing.txt", failure)
+
+    def test_fails_when_path_exists_but_untracked(self) -> None:
+        (self.repo / "untracked.txt").write_text("hi\n", encoding="utf-8")
+        failure = run_check(self.repo, {"type": "file_tracked", "path": "untracked.txt"})
+        self.assertIsNotNone(failure)
+        self.assertIn("untracked.txt", failure)
+
+    def test_passes_when_path_is_tracked(self) -> None:
+        (self.repo / "tracked.txt").write_text("hi\n", encoding="utf-8")
+        subprocess.run(["git", "add", "tracked.txt"], cwd=self.repo, check=True)
+        self.assertIsNone(run_check(self.repo, {"type": "file_tracked", "path": "tracked.txt"}))
+
+
+class DeriveDodChecksTests(unittest.TestCase):
+    def test_files_present_derives_file_tracked_and_no_stub_markers_per_path(self) -> None:
+        checks = derive_dod_checks(
+            {"files": ["src/foo.py", "src/bar.py"]}, "some body", "TASK-001.md"
+        )
+        self.assertEqual(
+            checks,
+            [
+                {"type": "ac_checkboxes_complete", "task_path": "TASK-001.md"},
+                {"type": "file_tracked", "path": "src/foo.py"},
+                {"type": "no_stub_markers", "path": "src/foo.py"},
+                {"type": "file_tracked", "path": "src/bar.py"},
+                {"type": "no_stub_markers", "path": "src/bar.py"},
+            ],
+        )
+
+    def test_files_absent_derives_ac_checkboxes_complete_only(self) -> None:
+        checks = derive_dod_checks({}, "some body", "TASK-001.md")
+        self.assertEqual(
+            checks, [{"type": "ac_checkboxes_complete", "task_path": "TASK-001.md"}]
+        )
+
+    def test_files_empty_list_derives_ac_checkboxes_complete_only(self) -> None:
+        checks = derive_dod_checks({"files": []}, "some body", "TASK-001.md")
+        self.assertEqual(
+            checks, [{"type": "ac_checkboxes_complete", "task_path": "TASK-001.md"}]
+        )
+
+    def test_no_body_no_ac_section_and_no_files_reports_no_failure(self) -> None:
+        # derive_dod_checks always includes ac_checkboxes_complete (per 2.1);
+        # it is never literally []. spec.md's requirement is "SHALL report no
+        # failure" for this case, not "SHALL derive no checks" -- so assert
+        # the derived list is exactly [ac_checkboxes_complete] AND that
+        # running it against a task file with no body reports zero failures.
+        checks = derive_dod_checks({}, "", "TASK-001.md")
+        self.assertEqual(
+            checks, [{"type": "ac_checkboxes_complete", "task_path": "TASK-001.md"}]
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            task_path = repo / "TASK-001.md"
+            task_path.write_text(
+                "---\nid: TASK-001\ntitle: Fixture\nspec: 000-fixture\n"
+                "status: completed\n---\n\n",
+                encoding="utf-8",
+            )
+            failures = [f for c in checks if (f := run_check(repo, c)) is not None]
+        self.assertEqual(failures, [])
 
 
 class CheckTaskFileTests(unittest.TestCase):
@@ -108,6 +272,27 @@ class CheckTaskFileTests(unittest.TestCase):
         )
         failures = check_task_file(self.repo, task)
         self.assertEqual(len(failures), 2)
+
+    def test_explicit_dod_checks_skip_derivation_even_when_files_would_fail_derived_checks(
+        self,
+    ) -> None:
+        # files: points at a file containing a stub marker (would fail a
+        # derived no_stub_markers check), and the body has an unchecked AC
+        # box (would fail a derived ac_checkboxes_complete check) -- but the
+        # task declares explicit dod-checks that all pass, so derivation
+        # must never run and neither failure should surface.
+        (self.repo / "src").mkdir()
+        (self.repo / "src" / "foo.py").write_text("# TODO: fix later\n", encoding="utf-8")
+        task = self.repo / "docs" / "specs" / "000-fixture" / "tasks" / "TASK-001.md"
+        task.parent.mkdir(parents=True, exist_ok=True)
+        task.write_text(
+            "---\nid: TASK-001\ntitle: Fixture\nspec: 000-fixture\n"
+            "status: completed\nfiles:\n  - src/foo.py\n"
+            "dod-checks:\n  - type: file_exists\n    path: src/foo.py\n"
+            "---\n\n## Acceptance Criteria\n\n- [ ] not actually checked\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(check_task_file(self.repo, task), [])
 
 
 class CheckChangedSpecsTests(unittest.TestCase):
