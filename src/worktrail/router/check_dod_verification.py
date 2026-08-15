@@ -9,13 +9,24 @@ previously verified that those checks actually ran and passed: a task file
 could claim `status: completed` with fabricated or stale Acceptance
 Criteria / Definition of Done checkboxes and nothing would catch it.
 
-This is the deterministic backstop, wired into `pre_pr_gate.py` the same way
-`check_clarification_integrity.py` is: scoped to task files **changed in the
-current diff only** (task files that completed before this check existed
-must not fail every future PR's gate).
+When a `completed` task declares no `dod-checks` at all, `derive_dod_checks`
+synthesizes a fallback in its place — an `ac_checkboxes_complete` check
+against the task file itself, plus a `file_tracked` and `no_stub_markers`
+check for each path in frontmatter `files:` — so an author can't skip
+verification simply by omitting `dod-checks`. An explicit `dod-checks` list
+always wins over derivation.
 
-Exit code: 0 if no changed, completed task file with `dod-checks` fails any
-check, 1 otherwise.
+This is the deterministic backstop, wired into `pre_pr_gate.py` the same way
+`check_clarification_integrity.py` is: scoped by default to task files
+**changed in the current diff only** (task files that completed before this
+check existed must not fail every future PR's gate). Pass `--all` to instead
+audit every devkit task file under `docs/specs/`, regardless of whether it
+changed in the current diff — a backlog report, not a gate; it does not
+affect `pre_pr_gate.py`'s exit code.
+
+Exit code: 0 if no changed, completed task file (explicit or derived
+`dod-checks`) fails any check, 1 otherwise. Under `--all`, exit code reflects
+the full audit instead of the diff-scoped check.
 """
 
 from __future__ import annotations
