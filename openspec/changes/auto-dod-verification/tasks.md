@@ -1,9 +1,9 @@
 ## 1. New check types in `run_check`
 
-- [x] 1.1 Add `file_tracked` check type: fails if `path` doesn't exist under
+- [ ] 1.1 Add `file_tracked` check type: fails if `path` doesn't exist under
       `repo`, or exists but `git ls-files --error-unmatch <path>` (cwd=repo)
       exits non-zero; passes otherwise.
-- [x] 1.2 Add `ac_checkboxes_complete` check type: takes `task_path`
+- [ ] 1.2 Add `ac_checkboxes_complete` check type: takes `task_path`
       (repo-relative path to the task file itself), re-reads it via
       `read_task_file`, and fails iff
       `schema._all_checkboxes_checked(body, sections=("Acceptance Criteria",))`
@@ -53,8 +53,13 @@
       pass/fail (clean file, file containing each marker keyword).
 - [ ] 4.2 `derive_dod_checks` unit tests: `files:` present → file_tracked +
       no_stub_markers + ac_checkboxes_complete; `files:` absent/empty →
-      ac_checkboxes_complete only; no body/no AC section and no files →
-      empty derivation (matches today's no-op).
+      ac_checkboxes_complete only. `derive_dod_checks` always includes the
+      `ac_checkboxes_complete` check per 2.1 -- it is never literally empty.
+      For the "no AC section and no files" case, assert the derived check
+      list is exactly `[ac_checkboxes_complete]` AND that running it reports
+      zero failures (matching spec.md's Scenario: "Completed task with no
+      files and no Acceptance Criteria drift" -- SHALL report no failure,
+      not SHALL derive no checks). Do NOT assert an empty list here.
 - [ ] 4.3 `check_task_file` unit tests: explicit `dod-checks` present skips
       derivation entirely (assert derived-only failures are not raised when
       explicit checks all pass, even if `files:` content would otherwise

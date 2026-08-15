@@ -42,6 +42,8 @@ from worktrail.taskformats.devkit.schema import is_task_file, read_task_file
 
 CANDIDATE_BASE_REFS = ("origin/main", "origin/master", "main", "master")
 
+STUB_MARKER_PATTERN = re.compile(r"\b(TODO|FIXME|XXX|NotImplementedError)\b")
+
 
 def run_check(repo: Path, check: dict) -> str | None:
     """Run one `dod-checks` entry. Return a failure string, or None on pass.
@@ -82,6 +84,19 @@ def run_check(repo: Path, check: dict) -> str | None:
             return f"ac_checkboxes_complete check failed: {task_path} could not be read ({error})"
         if not schema._all_checkboxes_checked(body, sections=("Acceptance Criteria",)):
             return f"ac_checkboxes_complete check failed: {task_path} has unchecked Acceptance Criteria checkboxes"
+        return None
+
+    if check_type == "no_stub_markers":
+        path = check.get("path")
+        if not path:
+            return f"malformed no_stub_markers check (missing 'path'): {check}"
+        full_path = repo / path
+        if not full_path.is_file():
+            return f"no_stub_markers check failed: {path} does not exist"
+        text = full_path.read_text(encoding="utf-8", errors="replace")
+        match = STUB_MARKER_PATTERN.search(text)
+        if match:
+            return f"no_stub_markers check failed: {path} contains stub marker {match.group(0)!r}"
         return None
 
     if check_type == "grep":
