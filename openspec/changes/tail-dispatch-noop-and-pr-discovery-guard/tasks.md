@@ -55,7 +55,7 @@
 
 ## 3. Verification
 
-- [ ] 3.1 [cleanup] Run `PYTHONPATH=src pytest -q` and confirm it is green,
+- [x] 3.1 [cleanup] Run `PYTHONPATH=src pytest -q` and confirm it is green,
       including the new tests from sections 1 and 2. Verification-only —
       no file changes expected.
 - [ ] 3.2 [cleanup] Run `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate
