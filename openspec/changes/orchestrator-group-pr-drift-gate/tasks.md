@@ -19,7 +19,7 @@ Implements requirement: **A checks-only gate mode runs the drift checks without 
 
 - [ ] 2.1 Add a `--checks-only` argparse flag to `main()` with help text stating it runs
   the four deterministic drift checks and does not run the policy test command.
-- [ ] 2.2 Branch on it after `policy = load_policy(repo)` and after the `--labels-only`
+- [x] 2.2 Branch on it after `policy = load_policy(repo)` and after the `--labels-only`
   branch: call `run_drift_checks(repo, policy)` and return its value directly, so the mode
   never reaches `scope_review_failures`, `is_docs_only`, `resolve_cmd`, or the
   `subprocess.run(["bash","-c",cmd])` execution (design D2).
