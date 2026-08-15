@@ -543,23 +543,38 @@ def _mark_integrate_complete_if_terminal(
         return False
 
 
-def detect_unreconciled_tail_evidence(
+def detect_unreconciled_evidence(
     repo: Path, remote: Optional[str], base: Optional[str], spec_id: str,
     wt_base: Path, tasks: list,
 ) -> list:
-    """Flag terminal tail-kind (e2e/cleanup) tasks whose own worktree branch
-    carries commits that never made it onto the base branch.
+    """Flag any DONE task whose own worktree branch carries commits that never
+    made it onto the base branch -- the delivery-ledger invariant: *every task
+    the run reports DONE must be provably an ancestor of the base branch.*
 
-    Tail tasks are held out of the parallel fan-out's group/PR machinery by
-    design (see PENDING_TAIL_REASON) and each runs in its own stacked
-    per-task worktree (`live.py`'s `ensure_wt`/`_dispatch_pending_tail`).
-    Nothing merges, pushes, or opens a PR for that worktree afterward, so a
-    spawned worker's real commit there (an evidence file, a doc update, the
-    task's own tasks.md checkbox flip) sits on a throwaway branch that a
-    later worktree-cleanup pass deletes with zero trace -- while the task
-    itself still reports DONE and the run claims full completion (reproduced
-    2026-08-12: a fixture-backed dry-run evidence commit sat on an unpushed,
-    unmerged task branch after a 12/12-done run).
+    Originally this covered tail-kind (e2e/cleanup) tasks only. Tail tasks are
+    held out of the parallel fan-out's group/PR machinery by design (see
+    PENDING_TAIL_REASON) and each runs in its own stacked per-task worktree
+    (`live.py`'s `ensure_wt`/`_dispatch_pending_tail`); nothing merges, pushes,
+    or opens a PR for that worktree afterward, so a spawned worker's real commit
+    there sits on a throwaway branch that a later worktree-cleanup pass deletes
+    with zero trace -- while the task itself still reports DONE and the run
+    claims full completion (reproduced 2026-08-12: a fixture-backed dry-run
+    evidence commit sat on an unpushed, unmerged task branch after a 12/12-done
+    run).
+
+    Impl tasks turned out to need exactly the same check. They *do* go through
+    the group/PR machinery, but can still be dropped on the way: in run
+    full-1786812908, task 1.3 was reviewed-PASSED and journal-done, yet
+    `deliverable_subset()` excluded it and PR #419 squash-merged as
+    "base: 1.1, 1.2", silently missing 1.3's entire `no_stub_markers` check
+    type. Downstream tasks then built against code that was never shipped, and
+    the only signal was a human hand-running the suite against origin/main
+    (brief 20260815-115257). Notably this detector fired correctly for tail
+    task 3.3 in that same run -- it simply never looked at 1.3.
+
+    So the kind filter is gone: any task in `coordinator.DONE` is subject to the
+    invariant, regardless of kind. Tasks still in flight are not (they have no
+    delivery obligation yet).
 
     Detection only -- this never merges, pushes, or deletes anything. A task
     with an empty `files:` scope that genuinely made no commits (HEAD never
@@ -571,8 +586,6 @@ def detect_unreconciled_tail_evidence(
     findings: list = []
     remote_base_ref = f"{remote}/{base}"
     for task in tasks:
-        if task.get("kind") not in TAIL:
-            continue
         if task.get("status") not in coordinator.DONE:
             continue
         wt = worktree.worktree_path(wt_base, spec_id, task["id"])
@@ -585,6 +598,11 @@ def detect_unreconciled_tail_evidence(
         if p.returncode != 0:
             findings.append({"task": task["id"], "worktree": str(wt), "head_sha": head[:8]})
     return findings
+
+
+# Pre-widening name. Kept so out-of-tree callers and existing `patch.object(
+# integrate, "detect_unreconciled_tail_evidence", ...)` targets keep resolving.
+detect_unreconciled_tail_evidence = detect_unreconciled_evidence
 
 
 def _record_unreconciled_tail_evidence(journal_path: Optional[str], findings: list) -> None:

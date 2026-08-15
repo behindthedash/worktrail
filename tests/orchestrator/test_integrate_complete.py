@@ -783,7 +783,18 @@ class UnreconciledTailEvidence(unittest.TestCase):
             )
             self.assertEqual(findings, [])
 
-    def test_non_tail_kind_ignored(self):
+    def test_non_tail_kind_also_flagged(self):
+        """INVERTED by brief 20260815-115257. This case previously asserted
+        `findings == []` -- i.e. that a DONE impl task stranded off the base
+        branch was deliberately ignored. That exemption was the defect: in run
+        full-1786812908, impl task 1.3 was reviewed-PASSED and journal-done but
+        its commits never reached PR #419 (merged as "base: 1.1, 1.2"), and this
+        detector was the one component positioned to notice and did not, while
+        catching tail task 3.3 in the same run.
+
+        Kind is now irrelevant: the ancestry check is a delivery-ledger
+        invariant over every task in `coordinator.DONE`. Full coverage lives in
+        `tests/orchestrator/test_delivery_ledger_invariant.py`."""
         with tempfile.TemporaryDirectory() as tmpdir:
             repo, wt_base = self._init_repo(tmpdir)
             wt = self._add_task_worktree(repo, wt_base, "008-x", "T001")
@@ -791,11 +802,11 @@ class UnreconciledTailEvidence(unittest.TestCase):
             _run_git(wt, "add", "code.py")
             _run_git(wt, "commit", "-q", "-m", "impl change")
 
-            findings = integrate.detect_unreconciled_tail_evidence(
+            findings = integrate.detect_unreconciled_evidence(
                 repo, "origin", "main", "008-x", wt_base,
                 [mock_task("T001", status="done")],  # kind="impl"
             )
-            self.assertEqual(findings, [])
+            self.assertEqual([f["task"] for f in findings], ["T001"])
 
     def test_missing_remote_or_base_returns_empty(self):
         with tempfile.TemporaryDirectory() as tmpdir:
