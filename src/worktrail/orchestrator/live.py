@@ -3121,25 +3121,33 @@ def live_run_real(
         pending_tail = [t for t in tasks if t.get("kind") in ("e2e", "cleanup")]
         while pending_tail:
             progressed = False
+            pending_tail_ids = {t["id"] for t in pending_tail}
             for task in list(pending_tail):
                 unmet = [
                     dep
                     for dep in task.get("deps", [])
                     if dep in by_id and by_id[dep].get("status") not in coordinator.DONE
                 ]
-                failed = [
-                    dep for dep in unmet if by_id[dep].get("status") in coordinator.FAILED_STATUSES
-                ]
-                if unmet and not failed:
+                # An unmet dep still queued in this tail loop may resolve on a
+                # later iteration. Any other unmet dep -- explicitly failed/
+                # escalated, or a non-tail task the main fan-out never
+                # dispatched because ITS OWN prerequisite failed -- has
+                # already had its final say: the fan-out is over, so a
+                # never-dispatched dep's status will never advance past its
+                # initial value. Treat both the same as a blocking failure
+                # instead of waiting forever on a status that cannot change.
+                blocked_by = [dep for dep in unmet if dep not in pending_tail_ids]
+                waiting_on = [dep for dep in unmet if dep in pending_tail_ids]
+                if waiting_on and not blocked_by:
                     continue
-                if failed:
-                    reason = f"blocked by failed prerequisite(s): {', '.join(failed)}"
+                if blocked_by:
+                    reason = f"blocked by failed prerequisite(s): {', '.join(blocked_by)}"
                     now = time.time()
                     with state_lock:
                         task["status"] = "failed"
                         entries.append(
                             _journal_failure_entry(
-                                task, "dependency-gate", reason, now, now, blocked_by=failed
+                                task, "dependency-gate", reason, now, now, blocked_by=blocked_by
                             )
                         )
                         record()
