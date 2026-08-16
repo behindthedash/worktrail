@@ -133,6 +133,15 @@ OpenSpec's numbered sections (`## 1. …` → `1.1`, `1.2`) are a **free lane hi
 already group tasks the way they want them shipped. Compile treats section = candidate lane, then
 splits/merges by the file-overlap rule.
 
+**Complementary authoring-time mitigation.** The shared-file union above is a grouping-time
+backstop: it serializes same-file tasks into one lane *after* `tasks.md` is written, however wide
+the fan-in. `skills/openspec-propose/SKILL.md`'s per-phase hot-file ownership bias guidance
+attacks the same wide-fan-in-collapses-to-chain failure mode a step earlier, at decomposition
+time, biasing authors against writing same-phase tasks onto a shared hot file in the first place.
+Neither replaces the other: the authoring-time bias only reduces how often the grouping-time union
+has to fire, and the union still applies unchanged as the backstop for whatever hot-file collision
+the bias doesn't avoid.
+
 ### 4.3 Status leaves git
 
 Delete `cleanup_task_in_python()`'s commit (V5). Status transitions go to the **Ledger** — a
