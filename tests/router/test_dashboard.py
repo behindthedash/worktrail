@@ -3516,3 +3516,106 @@ class RepoScopedQueueRender(unittest.TestCase):
         self.assertIn("Stalled in-flight (1, +1 in other repos)", out)
         self.assertIn("ours", out)
         self.assertNotIn("theirs", out)
+
+
+class DecisionsJsonCLI(unittest.TestCase):
+    """`main()`'s `--decisions-json` flag, end-to-end: valid JSON must reach
+    both the category picker data and the echoed `open_decisions` field;
+    malformed JSON must degrade to an empty list rather than crash, mirroring
+    `--queue-json`'s existing malformed-input behavior."""
+
+    DECISIONS_PAYLOAD = json.dumps(
+        {"decisions": [{"id": "dec-1", "question": "Approach A or B?", "repo": "myrepo"}]}
+    )
+
+    def setUp(self):
+        # Isolate from this machine's real ~/work-queue -- otherwise stray
+        # queue/cluster state there could interfere with the two `main()`
+        # calls under test.
+        self._tmp = tempfile.TemporaryDirectory()
+        work_queue_dir = Path(self._tmp.name) / "work-queue"
+        (work_queue_dir / "queue").mkdir(parents=True)
+        self._env_patch = mock.patch.dict(os.environ, {"WORK_QUEUE_DIR": str(work_queue_dir)})
+        self._env_patch.start()
+
+    def tearDown(self):
+        self._env_patch.stop()
+        self._tmp.cleanup()
+
+    @staticmethod
+    def _run_json(argv):
+        import io
+        from contextlib import redirect_stdout
+
+        f = io.StringIO()
+        with redirect_stdout(f):
+            dashboard.main(argv)
+        return json.loads(f.getvalue())
+
+    def test_valid_decisions_json_surfaces_in_single_repo_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            specs_dir = Path(tmp) / "myrepo" / "docs" / "specs"
+            specs_dir.mkdir(parents=True)
+
+            output = self._run_json([
+                "--root", str(specs_dir),
+                "--decisions-json", self.DECISIONS_PAYLOAD,
+                "--json",
+            ])
+
+            self.assertEqual(
+                output["open_decisions"],
+                [{"id": "dec-1", "question": "Approach A or B?", "repo": "myrepo"}],
+            )
+            decision_cats = [c for c in output["category_actions"] if c["category"] == "decisions"]
+            self.assertEqual(len(decision_cats), 1)
+            self.assertEqual(decision_cats[0]["label"], "Open decisions (1)")
+            self.assertEqual(len(output["category_items"]["decisions"]), 1)
+            self.assertEqual(output["category_items"]["decisions"][0]["id"], "dec-1")
+
+    def test_valid_decisions_json_surfaces_in_multi_repo_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp)
+            (parent / "myrepo" / ".git").mkdir(parents=True)
+
+            output = self._run_json([
+                "--repos", str(parent),
+                "--decisions-json", self.DECISIONS_PAYLOAD,
+                "--json",
+            ])
+
+            self.assertEqual(
+                output["open_decisions"],
+                [{"id": "dec-1", "question": "Approach A or B?", "repo": "myrepo"}],
+            )
+            decision_cats = [c for c in output["category_actions"] if c["category"] == "decisions"]
+            self.assertEqual(len(decision_cats), 1)
+            self.assertEqual(decision_cats[0]["label"], "Open decisions (1)")
+            self.assertEqual(len(output["category_items"]["decisions"]), 1)
+            self.assertEqual(output["category_items"]["decisions"][0]["id"], "dec-1")
+
+    def test_malformed_decisions_json_degrades_to_empty_list(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            specs_dir = Path(tmp) / "myrepo" / "docs" / "specs"
+            specs_dir.mkdir(parents=True)
+
+            output = self._run_json([
+                "--root", str(specs_dir),
+                "--decisions-json", "{not valid json",
+                "--json",
+            ])
+
+            self.assertEqual(output["open_decisions"], [])
+            self.assertNotIn("decisions", output["category_items"])
+            self.assertFalse(
+                any(c["category"] == "decisions" for c in output["category_actions"])
+            )
+
+    def test_absent_decisions_json_defaults_to_empty_list(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            specs_dir = Path(tmp) / "myrepo" / "docs" / "specs"
+            specs_dir.mkdir(parents=True)
+
+            output = self._run_json(["--root", str(specs_dir), "--json"])
+
+            self.assertEqual(output["open_decisions"], [])
