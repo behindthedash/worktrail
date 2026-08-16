@@ -311,3 +311,17 @@ def test_cli_ask_missing_options_fails(qbase, capsys):
 def test_cli_show_unknown_fails(qbase, capsys):
     rc = decisions.main(["--queue-dir", str(qbase), "show", "nope"])
     assert rc == 1
+
+
+def test_cli_show_json_emits_structured_object(qbase, capsys):
+    result = _ask(qbase, repo="repo-a")
+    dec_id = result["id"]
+    capsys.readouterr()
+
+    rc = decisions.main(["--queue-dir", str(qbase), "show", dec_id, "--json"])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["id"] == dec_id
+    assert out["status"] == "open"
+    assert out["repo"] == "repo-a"
+    assert out["question"] == "Should exports include archived rows?"
