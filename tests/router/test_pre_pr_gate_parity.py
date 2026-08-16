@@ -5,10 +5,12 @@ docs/specs/research/go-orchestrator-gate-parity-audit.md found three prior incid
 shape: a check gets wired into `pre_pr_gate.py`'s one-off path (`main()`), and
 `integrate.py`'s separate orchestrator group-PR path silently does not inherit it --
 `require_human_routes`/`gates` threading (brief 20260731-145729, PR #90), the four
-deterministic drift checks (brief 20260815-134144, PR #424/#439), and (found by that same
-audit, not yet fixed) `scope_review_failures()` (brief
-20260815-172721-worktrail-orchestrator-group-pr-path). Nothing structurally stopped a fourth
-recurrence: a new call added directly to `main()` with no orchestrator-path decision.
+deterministic drift checks (brief 20260815-134144, PR #424/#439), and `scope_review_failures()`
+(found by that same audit, fixed by brief 20260815-172721-worktrail-orchestrator-group-pr-path:
+`run_record.py finish()` now code-enforces it directly, unconditional on route, rather than
+depending on `integrate.py` threading `--run` through its per-group `pre_pr_gate.py` calls).
+Nothing structurally stopped a fourth recurrence: a new call added directly to `main()` with no
+orchestrator-path decision.
 
 This test closes the whole failure mode, mirroring `test_gate_enforcement_coverage.py`'s
 AST-registry convention:
@@ -27,11 +29,16 @@ AST-registry convention:
    exists to prevent.
 """
 import ast
+import json
+import tempfile
 import unittest
+from io import StringIO
 from pathlib import Path
+from unittest.mock import patch
 
 import worktrail.router.pre_pr_gate as pre_pr_gate_mod
 import worktrail.orchestrator.integrate as integrate_mod
+from worktrail.router.run_record import main as run_record_main
 
 GATE_SRC = Path(pre_pr_gate_mod.__file__).resolve()
 INTEGRATE_SRC = Path(integrate_mod.__file__).resolve()
@@ -105,6 +112,38 @@ def _proves_resolve_pr_labels_shared():
                 "automerge-eligibility parity broken (was fixed by brief 20260731-145729)")
 
 
+def _proves_scope_review_reaches_orchestrator_via_finish():
+    """`scope_review_failures()` reaches the orchestrator path by a different mechanism than
+    the two proofs above: not by `integrate.py` threading `--run` through its per-group
+    `pre_pr_gate.py` calls (it doesn't, and doesn't need to), but because `run_record.py
+    finish()` now code-enforces `scope_review_failures()` directly
+    (`_enforce_scope_completeness_gate`) for every implementation-completion status,
+    unconditional on route -- and `finish()` runs exactly once per run regardless of how many
+    group PRs the orchestrator created along the way (brief
+    20260815-172721-worktrail-orchestrator-group-pr-path). Prove behaviorally: a run with no
+    scope-review entry cannot reach `completed_pr_open`, for a route (F) that reaches the
+    orchestrator's `modify` pipeline just as readily as C/D."""
+    with tempfile.TemporaryDirectory() as tmp:
+        out = StringIO()
+        with patch("sys.stdout", out):
+            rc = run_record_main([
+                "start", "--repo", "/tmp/fake-repo", "--request", "t",
+                "--route", "F", "--risk", "low", "--dir", tmp,
+            ])
+        if rc != 0:
+            raise AssertionError("run_record.py start failed")
+        run_path = json.loads(out.getvalue())["path"]
+        try:
+            run_record_main(["finish", run_path, "--status", "completed_pr_open"])
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError(
+                "run_record.py finish allowed an implementation-completion status with no "
+                "scope-review entry -- scope_review_failures() is no longer reached by the "
+                "orchestrator path (finish() is the shared mechanism this proof relies on)")
+
+
 # call name (as found directly inside main()) -> (verdict, detail)
 #   "shared":     detail is a zero-arg callable proving the orchestrator path reaches the
 #                 same check -- raises AssertionError on failure.
@@ -115,15 +154,7 @@ def _proves_resolve_pr_labels_shared():
 GATE_PARITY = {
     "run_drift_checks": ("shared", _proves_run_drift_checks_shared),
     "resolve_pr_labels": ("shared", _proves_resolve_pr_labels_shared),
-    "scope_review_failures": (
-        "known-gap",
-        "brief 20260815-172721-worktrail-orchestrator-group-pr-path: neither "
-        "integrate.py's _run_drift_gate() (--checks-only) nor _refresh_pr_labels() "
-        "(--labels-only) passes --run, and both flags return before "
-        "scope_review_failures() is reached in main() -- run-record scope-completeness "
-        "review never happens for orchestrated Route C/D work. See "
-        "docs/specs/research/go-orchestrator-gate-parity-audit.md.",
-    ),
+    "scope_review_failures": ("shared", _proves_scope_review_reaches_orchestrator_via_finish),
     "is_docs_only": (
         "exempt",
         "skip-only mechanism (never fails the gate): the orchestrator's "

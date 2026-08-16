@@ -9,7 +9,14 @@ can never end in vague language. It also code-enforces the
 `no_implementation_without_approval` gate (routes.md §A): a run whose
 `selected_route` is A cannot `finish` on an implementation-completion state
 (completed_and_merged/completed_pr_open/completed_awaiting_human_approval)
-unless a `decisions` entry was recorded first.
+unless a `decisions` entry was recorded first. It also code-enforces
+`pre_pr_gate.py`'s scope-completeness review (`scope_review_failures()`) on
+every implementation-completion `finish`, unconditional on route --
+previously that check only ran when a caller passed `--run` to
+`pre_pr_gate.py` directly, which `integrate.py`'s orchestrator group-PR path
+never did (docs/specs/research/go-orchestrator-gate-parity-audit.md).
+`finish` runs exactly once per run regardless of how many group PRs the
+orchestrator created, so this closes the gap for both paths uniformly.
 
 Subcommands:
   start  --repo R --request "..." --route F --risk medium [--reason "..."]
@@ -41,7 +48,12 @@ finish PATH --status completed_pr_open [--pr URL] [--merge-result ...]
             (`_enforce_review_thread_gate`), a real block rather than a
             best-effort correction, since ci-watch-loop.md documents this gate
             as meant to stop `finish` the same way a failing check does.
-            `checked: false` (gh unavailable/network) still fails open.
+            `checked: false` (gh unavailable/network) still fails open. Also
+            code-enforces `pre_pr_gate.py`'s scope-completeness review
+            (`scope_review_failures`) whenever `--status` is one of the three
+            implementation-completion states, unconditional on route or PR
+            presence -- a real block, not fail-open, since it reads only the
+            local run record (`_enforce_scope_completeness_gate`).
   scope-review PATH --item "..." --status complete|out-of-scope|blocked
                (--evidence "..." | --reason "...")
   active-conflicts --dir DIR --repo REPO --specification SPEC [--exclude PATH]
@@ -449,6 +461,34 @@ def cmd_scope_review(args: argparse.Namespace) -> int:
     return 0
 
 
+def _enforce_scope_completeness_gate(record: Dict[str, Any], path: Path, status: str) -> None:
+    """Code-enforced backstop closing the orchestrator group-PR gate-parity gap
+    (docs/specs/research/go-orchestrator-gate-parity-audit.md): `pre_pr_gate.py`'s
+    `scope_review_failures()` only runs when `--run` is passed, and neither of
+    `integrate.py`'s two orchestrator call sites (`--checks-only`,
+    `--labels-only`) pass it -- so an orchestrated Route C/D run's
+    scope-completeness review was recorded but never actually gated. `finish()`
+    runs exactly once per `$RUN` regardless of how many group PRs the
+    orchestrator created along the way, so enforcing the check here closes the
+    gap uniformly for the one-off and orchestrator paths, mirroring how
+    `_enforce_review_thread_gate` below backstops that gate. Unlike the
+    review-thread gate, this reads only the local run record with no external
+    dependency to fail open against, so any failure here blocks `finish` the
+    same way an unresolved `no_implementation_without_approval` decision does.
+    """
+    from .pre_pr_gate import scope_review_failures
+
+    failures = scope_review_failures(path)
+    if failures:
+        detail = "; ".join(failures)
+        raise SystemExit(
+            f"scope_completeness_gate: cannot finish with '{status}' -- "
+            f"{detail}. Complete in-scope work before finishing, or record a "
+            "different-purpose or user-approved exclusion "
+            f"(run_record.py scope-review {path} --item \"...\" --status "
+            "out-of-scope --reason \"different purpose: ...\").")
+
+
 def _enforce_review_thread_gate(record: Dict[str, Any], path: Path, pr_url: str, status: str) -> None:
     """Code-enforced backstop for `check_review_threads.py`'s own gate.
 
@@ -508,6 +548,8 @@ def cmd_finish(args: argparse.Namespace) -> int:
             "planned_ready_for_implementation; proceeding to implementation "
             "requires an explicit decision entry first "
             f"(run_record.py append {path} decisions \"...\").")
+    if args.status in IMPLEMENTATION_COMPLETION_STATES:
+        _enforce_scope_completeness_gate(record, path, args.status)
     pending_pr_url = args.pr or record.get("pull_request")
     if pending_pr_url and args.status in IMPLEMENTATION_COMPLETION_STATES:
         _enforce_review_thread_gate(record, path, pending_pr_url, args.status)
