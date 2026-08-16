@@ -1623,5 +1623,106 @@ class TestLiveness(unittest.TestCase):
         self.assertEqual(payload["run_id"], res["run_id"])
 
 
+def _find_by_worktree(tmp, **over):
+    argv = ["find-by-worktree",
+            "--dir", tmp,
+            "--repo", over.get("repo", "/tmp/fake-repo"),
+            "--worktree", over["worktree"]]
+    out = StringIO()
+    with patch("sys.stdout", out):
+        rc = main(argv)
+    assert rc == 0
+    return json.loads(out.getvalue())
+
+
+def _set_started_at(path, when):
+    """Directly rewrite `started_at` bypassing `_save()`'s own `updated_at`
+    auto-stamp, so a test can control tie-break ordering without disturbing
+    liveness-relevant fields."""
+    record = _load(Path(path))
+    record["started_at"] = when.strftime("%Y-%m-%dT%H:%M:%S%z")
+    Path(path).write_text(run_record._render(record), encoding="utf-8")
+
+
+class TestFindByWorktree(unittest.TestCase):
+    """`find-by-worktree` resolves a worktree path to its owning non-terminal
+    run record -- the lookup the deletion liveness guard feeds into
+    `liveness` (#worktree-deletion-liveness-guard)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def test_exact_match_returns_the_owning_run(self):
+        res = _start(self.tmp, request="worktree-scoped run")
+        wt = "/home/user/worktrees/foo-1.1"
+        main(["set", res["path"], "worktree", wt])
+
+        result = _find_by_worktree(self.tmp, worktree=wt)
+
+        self.assertEqual(
+            result, {"found": True, "path": res["path"], "run_id": res["run_id"]})
+
+    def test_no_match_returns_found_false(self):
+        res = _start(self.tmp, request="unrelated worktree")
+        main(["set", res["path"], "worktree", "/home/user/worktrees/other"])
+
+        result = _find_by_worktree(self.tmp, worktree="/home/user/worktrees/not-tracked")
+
+        self.assertEqual(result, {"found": False, "path": None, "run_id": None})
+
+    def test_terminal_record_never_matches(self):
+        res = _start(self.tmp, request="finished run")
+        wt = "/home/user/worktrees/finished"
+        main(["set", res["path"], "worktree", wt])
+        _complete_scope_review(res["path"])
+        out = StringIO()
+        with patch("sys.stdout", out):
+            main(["finish", res["path"], "--status", "completed_and_merged"])
+
+        result = _find_by_worktree(self.tmp, worktree=wt)
+
+        self.assertEqual(result, {"found": False, "path": None, "run_id": None})
+
+    def test_malformed_sibling_record_is_skipped_not_fatal(self):
+        """A malformed record among the scanned files (hand-edited, or written
+        by a generic YAML tool) must be skipped with a warning, matching
+        `active-conflicts`' own tolerance policy -- never abort the scan."""
+        wt = "/home/user/worktrees/mixed"
+        res = _start(self.tmp, request="valid run")
+        main(["set", res["path"], "worktree", wt])
+        corrupted = Path(self.tmp) / "fake-repo" / "go-corrupted.yaml"
+        corrupted.write_text(
+            "run_id: go-corrupted\n"
+            "request_summary: fix the thing across a line that\n"
+            "  wraps unexpectedly without quoting\n"
+        )
+
+        out = StringIO()
+        err = StringIO()
+        with patch("sys.stdout", out), patch("sys.stderr", err):
+            rc = main(["find-by-worktree", "--dir", self.tmp, "--repo", "/tmp/fake-repo",
+                       "--worktree", wt])
+
+        self.assertEqual(rc, 0)
+        result = json.loads(out.getvalue())
+        self.assertEqual(
+            result, {"found": True, "path": res["path"], "run_id": res["run_id"]})
+        self.assertIn(str(corrupted), err.getvalue())
+
+    def test_multiple_non_terminal_candidates_resolve_to_most_recently_started(self):
+        wt = "/home/user/worktrees/contested"
+        older = _start(self.tmp, request="older run")
+        main(["set", older["path"], "worktree", wt])
+        _set_started_at(older["path"], datetime.now(timezone.utc) - timedelta(hours=2))
+        newer = _start(self.tmp, request="newer run")
+        main(["set", newer["path"], "worktree", wt])
+        _set_started_at(newer["path"], datetime.now(timezone.utc) - timedelta(minutes=1))
+
+        result = _find_by_worktree(self.tmp, worktree=wt)
+
+        self.assertEqual(
+            result, {"found": True, "path": newer["path"], "run_id": newer["run_id"]})
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
