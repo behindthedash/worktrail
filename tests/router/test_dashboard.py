@@ -1267,6 +1267,53 @@ class CategoryPickerAndRender(unittest.TestCase):
         cats = dashboard.build_category_actions(None, rows, inflight=[brief], queue_briefs=[])
         self.assertLessEqual(len(cats), 4)
 
+    def test_category_actions_decisions_included_with_count(self):
+        decisions = [{"id": "dec-1", "question": "q1"}, {"id": "dec-2", "question": "q2"}]
+        cats = dashboard.build_category_actions(
+            None, [], inflight=[], queue_briefs=[], open_decisions=decisions
+        )
+        decision_cats = [c for c in cats if c["category"] == "decisions"]
+        self.assertEqual(len(decision_cats), 1)
+        self.assertEqual(decision_cats[0]["label"], "Open decisions (2)")
+
+    def test_category_actions_decisions_omitted_when_none_or_empty(self):
+        cats_none = dashboard.build_category_actions(
+            None, [], inflight=[], queue_briefs=[], open_decisions=None
+        )
+        cats_empty = dashboard.build_category_actions(
+            None, [], inflight=[], queue_briefs=[], open_decisions=[]
+        )
+        self.assertFalse(any(c["category"] == "decisions" for c in cats_none))
+        self.assertFalse(any(c["category"] == "decisions" for c in cats_empty))
+
+    def test_category_actions_decisions_ranked_ahead_of_ready(self):
+        rows = [self._spec_row("001", "ready-to-implement", "orchestrator")]
+        decisions = [{"id": "dec-1", "question": "q1"}]
+        cats = dashboard.build_category_actions(
+            None, rows, inflight=[], queue_briefs=[], open_decisions=decisions
+        )
+        categories = [c["category"] for c in cats]
+        self.assertEqual(categories.index("decisions"), 0)
+        self.assertLess(categories.index("decisions"), categories.index("ready"))
+
+    def test_category_actions_decisions_ready_tasks_queue_drop_new_work(self):
+        # decisions + ready + needs-tasks + workqueue all populated simultaneously
+        # must yield exactly these four, in this order -- new-work is the one that
+        # yields its slot to the ≤4 truncation, never one of the pre-existing three.
+        rows = [
+            self._spec_row("001", "ready-to-implement", "orchestrator"),
+            self._spec_row("002", "needs-tasks", "spec-to-tasks"),
+        ]
+        brief = {"filename": "20260617-001.md", "focus": "fix login", "claimed_at": "2026-06-17T00:00:00"}
+        decisions = [{"id": "dec-1", "question": "q1"}]
+        cats = dashboard.build_category_actions(
+            None, rows, inflight=[brief], queue_briefs=[], open_decisions=decisions
+        )
+        self.assertEqual(
+            [c["category"] for c in cats],
+            ["decisions", "ready", "needs-tasks", "workqueue"],
+        )
+
     # --- build_category_items tests ---
 
     def test_category_items_ready_contains_actionable_specs(self):
