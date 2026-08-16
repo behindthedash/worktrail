@@ -30,6 +30,8 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List
 
+import yaml
+
 from ..shared.brief_frontmatter import validate_brief
 
 DRIFT_SOURCE = "checkbox-drift-sweep"
@@ -53,6 +55,18 @@ def _render(repo: Path, hits: List[Dict[str, Any]], brief_id: str) -> str:
         f"across {len(hits)} task file(s)"
     )
 
+    findings = [
+        {
+            "path": hit.get("path", ""),
+            "unchecked_count": hit.get("unchecked_count", 0),
+            "total_count": hit.get("total_count", 0),
+        }
+        for hit in hits
+    ]
+    findings_yaml = yaml.safe_dump(
+        {"drift-findings": findings}, sort_keys=False, default_flow_style=False
+    ).rstrip("\n")
+
     lines = [
         "---",
         f"id: {brief_id}",
@@ -64,6 +78,7 @@ def _render(repo: Path, hits: List[Dict[str, Any]], brief_id: str) -> str:
         "status: queued",
         "suggested-skills: []",
         f"drift-source: {DRIFT_SOURCE}",
+        *findings_yaml.splitlines(),
         "---",
         "",
         "## Focus",
