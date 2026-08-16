@@ -138,6 +138,7 @@ Extract from the arguments: `$ARG_REPO` (first positional arg if it looks like a
 
 ```bash
 QUEUE_JSON=$(worktrail-work-queue list --json 2>/dev/null)
+DECISIONS_JSON=$(worktrail-decision list --status open --json 2>/dev/null)
 AUTO_FLAGS=()
 if [ "$AUTO_MODE" = "true" ]; then
   AUTO_FLAGS=(--auto)
@@ -146,12 +147,14 @@ fi
 if [ "$RESOLVE_MODE" = "in-repo" ]; then
   DASHBOARD_JSON=$(worktrail-dashboard \
     --root "$REPO/docs/specs" --picked-dir "$BASE/picked" \
-    --queue-json "$QUEUE_JSON" "${AUTO_FLAGS[@]}" --json 2>/dev/null)
+    --queue-json "$QUEUE_JSON" --decisions-json "$DECISIONS_JSON" \
+    "${AUTO_FLAGS[@]}" --json 2>/dev/null)
 else
   REPOS_DIR="${HOME}/projects"; [ -d "$REPOS_DIR" ] || REPOS_DIR="$PWD"
   DASHBOARD_JSON=$(worktrail-dashboard \
     --repos "$REPOS_DIR" --picked-dir "$BASE/picked" \
-    --queue-json "$QUEUE_JSON" "${AUTO_FLAGS[@]}" --json 2>/dev/null)
+    --queue-json "$QUEUE_JSON" --decisions-json "$DECISIONS_JSON" \
+    "${AUTO_FLAGS[@]}" --json 2>/dev/null)
 fi
 ```
 
@@ -198,6 +201,7 @@ Resolve the user's choice and dispatch by its `action`:
 | `implement` | active spec → `Skill("worktrail-sdd-workflow", args="<path> route:E <spec_id>")`, where `<path>` is the item's `path` (multi-repo) or `$REPO` (in-repo) |
 | `close-stale` | stale-bookkeeping spec → **do NOT run the orchestrator** (files already merged on base). Confirm the spec's pending impl tasks are truly shipped (their `files:` exist + are git-tracked on the base branch — `next_action` lists the task ids), then flip those `TASK-*.md` `status:` → `completed` and land a docs-only PR (the way the 068 stale-status case was closed). Re-run the dashboard to confirm the spec drops to sync/complete. |
 | `claim` | queue item → batch-claim it plus any related queued briefs (see **Batch consumption** below), then Phase 3 |
+| `answer-decision` | open decision → present it interactively and record the answer — see `references/answer-decision.md` |
 | `consolidate-cluster` | detected brief cluster → run `consolidate_cluster.py preview <members...>` to re-validate + draft a consolidated brief, show the draft via `AskUserQuestion` requiring an explicit confirm (no default-yes), then run `consolidate_cluster.py execute <members...> --draft '<preview JSON>' --confirm` (or `--decline`, which performs zero writes) |
 | `brainstorm` | Route A (new feature) |
 | `see-backlog` | list the unspec'd backlog (from `rendered` / re-scan), let the user pick one → brainstorm it (Route A) |
