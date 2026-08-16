@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Regression tests for dependent-group integration defects.
 
-Four defects fixed:
+Five defects fixed:
   1. Deleted start ref: dep group quarantined when base group's branch was deleted
-     after merge (start ref no longer exists). Fix: fall back to pre-squash merge-base
-     + squash reconcile merge.
+     after merge (start ref no longer exists). Fix: fall back to the live base ref.
   2. Journal state never MERGED: after verify auto-merge succeeds, group stays
      state:OPEN in journal. Fix: stamp MERGED after verify_one succeeds.
   3. Broken MERGED reconcile on --re-integrate: _clear_integration_state wiped
@@ -18,6 +17,15 @@ Four defects fixed:
      scheduler bailed out at "nothing to assemble" BEFORE ever reaching PR#235's
      tail-dispatch call -- so the spec's e2e/cleanup tail tasks never dispatched, even
      on the fixed post-PR#235 code. Fix: populate group_branch[name] on both paths.
+  5. Dep-branch-gone fallback reconstructed a historical pre-squash merge-base and
+     reconciled divergence from the live base with an unconditioned `-X ours` merge --
+     silently discarding live-base content (e.g. a dependency's own tasks.md stamp) on
+     any overlapping line when the reconstructed point predated content the live base
+     actually had (root-caused live: reintroduced duplicate code + reverted tasks.md
+     checkboxes, PR #414). Fix: resolve `target` directly to the freshly-fetched live
+     base ref -- guaranteed to already contain the dependency's content by construction
+     -- instead of reconstructing and reconciling. See
+     docs/specs/research/integrate-one-dep-branch-gone-fallback-root-cause.md.
 
 Run: python3 test_dep_group_integrate.py
 """
@@ -74,23 +82,29 @@ class _GitDispatch:
 
 
 # ---------------------------------------------------------------------------
-# Fix 1: deleted start ref — dep group falls back to merge-base + squash reconcile
+# Fix 1 / Fix 5: deleted or never-real dep branch — fall back to the live base ref
 # ---------------------------------------------------------------------------
 
-class DeletedDepBranchFallback(unittest.TestCase):
-    """integrate_one must not quarantine a dep group when the base group's branch
-    has been deleted (post-merge cleanup). It should detect the missing ref, find the
-    pre-squash merge-base, start the integration worktree from that SHA, merge task
-    branches, and reconcile squash-merge divergence with -X ours."""
+class DepBranchGoneFallback(unittest.TestCase):
+    """integrate_one must not quarantine a dependent group when its dependency's
+    branch ref is gone -- whether because it was squash-merged and cleaned up
+    (a real branch that once existed), or because the dependency was never a real
+    branch at all (verified ALREADY_INTEGRATED from a prior run, recorded only as
+    the synthetic f"{run_id}/{name}" marker integrate_one's implicit-merge early
+    return writes -- integrate.py:963-972). Both situations reach this same
+    fallback and guarantee the dependency's content is already on the live base by
+    construction, so it must resolve `target` directly to the freshly-fetched live
+    base ref -- never reconstruct a historical pre-squash point and reconcile
+    divergence with an unconditioned `-X ours` merge, which can silently discard
+    live-base content the reconstructed point never had (root-caused live:
+    reintroduced duplicate code + reverted tasks.md checkboxes, PR #414 -- see
+    docs/specs/research/integrate-one-dep-branch-gone-fallback-root-cause.md)."""
 
-    def _run_integrate_one_dep(self, rev_parse_ok: bool, merge_base_sha: str | None):
-        """Drive integrate_one for a dep group; return (result, git_calls)."""
-        sha = merge_base_sha or ""
+    def _run_integrate_one_dep(self, rev_parse_ok: bool):
+        """Drive integrate_one for a dep group; return (result, git_calls, quarantined)."""
         git_dispatch = _GitDispatch({
-            # rev-parse --verify <deleted-branch> → fails (branch gone)
-            ("rev-parse", "--verify"): Proc(0 if rev_parse_ok else 1, sha if rev_parse_ok else "", ""),
-            # merge-base task origin/main → returns pre-squash SHA
-            ("merge-base",): Proc(0 if merge_base_sha else 1, merge_base_sha or "", ""),
+            # rev-parse --verify <gone-ref> → fails (branch deleted, or never real)
+            ("rev-parse", "--verify"): Proc(0 if rev_parse_ok else 1, "", ""),
             # worktree ops / ls-remote / push
             ("worktree",): Proc(0, "", ""),
             ("ls-remote",): Proc(1, "", ""),   # branch not yet on remote
@@ -104,7 +118,11 @@ class DeletedDepBranchFallback(unittest.TestCase):
             ("git", "remote"): Proc(0, "https://github.com/o/r.git", ""),
         })
 
-        group_branch = {"base": "full-run/base"}  # stale ref name (branch deleted)
+        # Same shape ("full-run/base") whether it came from a real branch that
+        # was later deleted, or from integrate_one's own gb_implicit marker
+        # (f"{run_id}/{name}") -- the fallback cannot and should not distinguish
+        # the two; both are exercised by this one seed.
+        group_branch = {"base": "full-run/base"}
         quarantined: dict = {}
 
         with patch("worktrail.orchestrator.integrate._git", side_effect=git_dispatch):
@@ -125,38 +143,41 @@ class DeletedDepBranchFallback(unittest.TestCase):
 
         return result, git_dispatch.calls, quarantined
 
-    def test_deleted_branch_uses_merge_base_fallback(self):
-        """When dep branch is deleted and merge-base succeeds, use the SHA as start ref."""
-        result, calls, quarantined = self._run_integrate_one_dep(
-            rev_parse_ok=False, merge_base_sha="deadbeef1234"
-        )
+    def test_gone_branch_resolves_directly_to_live_base(self):
+        """Dep ref gone → resolve target to the freshly-fetched live base ref, with no
+        merge-base reconstruction and no -X ours reconcile merge."""
+        result, calls, quarantined = self._run_integrate_one_dep(rev_parse_ok=False)
 
         self.assertNotIn("feature-1", quarantined,
-                         "dep group must not be quarantined when dep branch is deleted")
+                         "dep group must not be quarantined when dep branch is gone")
         self.assertIsNotNone(result, "dep group must produce a PR tuple, not None")
 
-        # worktree add should have been called with the merge-base SHA (not the deleted branch)
-        wt_add = [c for c in calls if c[:2] == ["worktree", "add"]]
-        self.assertTrue(wt_add, "worktree add must have been called")
-        self.assertIn("deadbeef1234", wt_add[0],
-                      "worktree add must use the merge-base SHA as start ref")
+        wt_add_idx = next(i for i, c in enumerate(calls) if c[:2] == ["worktree", "add"])
+        wt_add = calls[wt_add_idx]
+        self.assertIn("origin/main", wt_add,
+                      "worktree add must start directly from the live base ref")
 
-        # squash reconcile: git merge --no-edit -X ours origin/main
-        reconcile = [c for c in calls if c[:2] == ["merge", "--no-edit"] and "-X" in c and "ours" in c]
-        self.assertTrue(reconcile, "squash reconcile merge must be called after task merges")
-        self.assertIn("origin/main", reconcile[0],
-                      "squash reconcile must target origin/<base>")
+        # No merge-base reconstruction during target resolution (before worktree add) --
+        # the drift gate that runs later, after task branches are merged, legitimately
+        # calls merge-base for its own unrelated changed_paths() computation and is out
+        # of scope for this assertion.
+        mb_calls_before_worktree = [
+            c for c in calls[:wt_add_idx] if c[:1] == ["merge-base"]
+        ]
+        self.assertEqual(mb_calls_before_worktree, [],
+                         "must not reconstruct a historical merge-base point")
 
-    def test_deleted_branch_fallback_fetches_base_before_reconcile(self):
-        """Squash-boundary bug: the fallback must fetch the remote base BEFORE computing
-        the merge-base and BEFORE the squash-reconcile merge, so both operations see the
-        dependency's actual just-landed squash-merge tip instead of a stale local
-        origin/<base> ref that predates it (observed live: reconcile merge parented off
-        pre-#176 main instead of the post-squash commit, leaving the PR permanently
-        mergeable=CONFLICTING)."""
-        _result, calls, quarantined = self._run_integrate_one_dep(
-            rev_parse_ok=False, merge_base_sha="deadbeef1234"
-        )
+        reconcile = [c for c in calls if c[:2] == ["merge", "--no-edit"] and "-X" in c]
+        self.assertEqual(reconcile, [],
+                         "must not run an unconditioned -X ours reconcile merge")
+
+    def test_gone_branch_fallback_fetches_base_before_use(self):
+        """Squash-boundary bug: the fallback must fetch the remote base BEFORE using it
+        as the start ref, so it reflects the dependency's actual just-landed merge tip
+        instead of a stale local origin/<base> ref that predates it (observed live:
+        reconcile merge parented off pre-#176 main instead of the post-squash commit,
+        leaving the PR permanently mergeable=CONFLICTING)."""
+        _result, calls, quarantined = self._run_integrate_one_dep(rev_parse_ok=False)
         self.assertNotIn("feature-1", quarantined)
 
         fetch_base_calls = [
@@ -165,45 +186,23 @@ class DeletedDepBranchFallback(unittest.TestCase):
         ]
         self.assertTrue(
             fetch_base_calls,
-            "dep-branch-gone fallback must fetch the remote base before reconciling "
-            "against it, so origin/<base> reflects the dependency's actual merged tip",
+            "dep-branch-gone fallback must fetch the remote base before using it",
         )
 
-        merge_base_idx = next(i for i, c in enumerate(calls) if c[:1] == ["merge-base"])
-        reconcile_idx = next(
-            i for i, c in enumerate(calls)
-            if c[:2] == ["merge", "--no-edit"] and "-X" in c and "ours" in c
-        )
+        wt_add_idx = next(i for i, c in enumerate(calls) if c[:2] == ["worktree", "add"])
         self.assertLess(
-            fetch_base_calls[0], merge_base_idx,
-            "fetch must happen before merge-base is computed from origin/<base>",
+            fetch_base_calls[0], wt_add_idx,
+            "fetch must happen before the live base ref is used as the start ref",
         )
-        self.assertLess(
-            fetch_base_calls[0], reconcile_idx,
-            "fetch must happen before the squash-reconcile merge against origin/<base>",
-        )
-
-    def test_deleted_branch_merge_base_failure_falls_back_to_remote_base(self):
-        """When merge-base also fails, fall back to origin/<base> without quarantine."""
-        result, calls, quarantined = self._run_integrate_one_dep(
-            rev_parse_ok=False, merge_base_sha=None
-        )
-        self.assertNotIn("feature-1", quarantined)
-        self.assertIsNotNone(result)
-
-        # No squash reconcile when we couldn't find the merge-base
-        reconcile = [c for c in calls if c[:2] == ["merge", "--no-edit"] and "-X" in c]
-        self.assertEqual(len(reconcile), 0, "no squash reconcile when merge-base unavailable")
 
     def test_existing_branch_skips_fallback(self):
         """When the dep branch still exists as a ref, the fallback is never triggered."""
-        _result, calls, quarantined = self._run_integrate_one_dep(
-            rev_parse_ok=True, merge_base_sha=None
-        )
+        _result, calls, quarantined = self._run_integrate_one_dep(rev_parse_ok=True)
         self.assertNotIn("feature-1", quarantined)
-        # rev-parse returned success → no merge-base call
-        mb_calls = [c for c in calls if c[:1] == ["merge-base"]]
-        self.assertEqual(len(mb_calls), 0, "merge-base must not be called when branch still exists")
+        wt_add = [c for c in calls if c[:2] == ["worktree", "add"]]
+        self.assertTrue(wt_add)
+        self.assertNotIn("origin/main", wt_add[0],
+                         "existing branch must be used as start ref, not the live base")
 
     def test_independent_group_skips_fallback(self):
         """A group with no depends_on never hits the ref-validation path."""

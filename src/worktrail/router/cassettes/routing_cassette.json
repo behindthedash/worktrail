@@ -169,6 +169,12 @@
       "expect": {"route": "A", "confidence": "high", "route_source": "classifier"}
     },
     {
+      "id": "handoff-recommended-route-yields-to-broad-organic-agreement",
+      "request": "a small explicit-gh-path-resolution fix to dependabot-pullhook-dispatch.py classifier subprocess call",
+      "handoff_route": "B",
+      "expect": {"route": "J", "confidence": "medium", "route_source": "classifier"}
+    },
+    {
       "id": "existing-ci-is-broken",
       "request": "CI is broken on this branch; fix the failing checks",
       "expect": {"route": "E", "confidence": "high"}

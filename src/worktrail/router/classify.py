@@ -388,18 +388,45 @@ def classify(request: str,
     # (repo state may have drifted since the brief was written). This runs
     # after the pick above (not as a score boost) so the override decision is
     # never distorted by its own thumb on the scale.
+    #
+    # A recommended route absent from organic scores is not, by itself, a
+    # safe reason to distrust it: 20260717-091439 (the
+    # "handoff-recommended-route-overrides-low-signal-guess" cassette
+    # scenario) is exactly that shape (recommended H, organic B=3 from one
+    # spurious keyword hit, H absent) and the *recommendation* was correct
+    # -- the isolated organic hit was the noise. 20260815-114628 has the
+    # identical shape (recommended B, organic J=4/F=2/G=2, B absent) but the
+    # *recommendation* was wrong there. Scores alone can't tell these apart
+    # by presence/absence; what differs is whether the organic pick has
+    # independent corroboration: a lone spike with a zero-score runner-up
+    # (second_score == 0, case 20260717) is plausibly a keyword coincidence,
+    # while a nonzero runner-up (second_score > 0, case 20260815) means at
+    # least two routes independently found signal in the text -- a broader,
+    # more trustworthy organic read that an absent, unscored recommendation
+    # should not silently beat.
     route_source = "no-signal-default" if no_signal_default else "classifier"
+    handoff_route_unsupported = (
+        not forced and not no_signal_default
+        and scores.get(handoff_route_norm or "", 0) <= 0
+        and second_score > 0)
     if (not forced and handoff_route_norm and confidence in ("low", "medium")
             and route != handoff_route_norm
             and not (handoff_route_norm == "E" and resumable_state is False)):
-        reason_parts.append(
-            f"overrode organic route {route} (confidence {confidence}) "
-            f"with brief recommended-route {handoff_route_norm}")
-        route = handoff_route_norm
-        confidence = "medium"
-        ambiguous_between = []
-        question = None
-        route_source = "handoff-recommended-override"
+        if handoff_route_unsupported:
+            reason_parts.append(
+                f"brief recommended-route {handoff_route_norm} ignored: absent from "
+                f"organic scores while runner-up {second_route}={second_score} also "
+                f"scored (broad organic agreement); organic {route} "
+                f"(confidence {confidence}) kept")
+        else:
+            reason_parts.append(
+                f"overrode organic route {route} (confidence {confidence}) "
+                f"with brief recommended-route {handoff_route_norm}")
+            route = handoff_route_norm
+            confidence = "medium"
+            ambiguous_between = []
+            question = None
+            route_source = "handoff-recommended-override"
 
     # Secondary routes.
     secondary: List[str] = []
