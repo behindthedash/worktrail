@@ -2778,12 +2778,16 @@ def main(argv=None) -> int:
                         "active_specs": sum(r.get("active", 0) for r in repo_rows),
                         "handoff_queue": unblocked_queue_total,
                         "inflight": inflight,
-                        "category_actions": build_category_actions(repo_rows, None, inflight, queue_briefs),
+                        "category_actions": build_category_actions(
+                            repo_rows, None, inflight, queue_briefs, open_decisions=open_decisions
+                        ),
                         "category_items": build_category_items(
-                            repo_rows, None, inflight, queue_briefs, backlog_total, clusters=clusters
+                            repo_rows, None, inflight, queue_briefs, backlog_total, clusters=clusters,
+                            open_decisions=open_decisions,
                         ),
                         "auto_pick": auto_pick,
                         "clusters": clusters,
+                        "open_decisions": open_decisions,
                         "cluster_precision": cluster_precision,
                         "capacity": capacity,
                         "postmerge_check_failures": postmerge_check_failures,
@@ -2830,12 +2834,16 @@ def main(argv=None) -> int:
                     "handoff_queue": unblocked_queue_total,
                     "inflight": inflight,
                     "worktrees": worktrees,
-                    "category_actions": build_category_actions(None, rows, inflight, queue_briefs),
+                    "category_actions": build_category_actions(
+                        None, rows, inflight, queue_briefs, open_decisions=open_decisions
+                    ),
                     "category_items": build_category_items(
-                        None, rows, inflight, queue_briefs, backlog_total, clusters=clusters
+                        None, rows, inflight, queue_briefs, backlog_total, clusters=clusters,
+                        open_decisions=open_decisions,
                     ),
                     "auto_pick": auto_pick,
                     "clusters": clusters,
+                    "open_decisions": open_decisions,
                     "cluster_precision": cluster_precision,
                     "capacity": capacity,
                     "postmerge_check_failures": postmerge_check_failures,
