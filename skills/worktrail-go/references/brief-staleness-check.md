@@ -73,6 +73,29 @@ Unlike the probe-based evidence line, there is no commit SHA or PR number to cit
 search never runs on this path — so the still-true task-file paths themselves are the cited
 evidence.
 
+**On `outcome: "resolved"`** — every `drift-findings` entry has resolved, so the brief is already
+delivered and there is nothing left to dispatch: close it now, before Phase 6, exactly as the
+probe-based "close as already-delivered" branch does below (no operator prompt — the predicate
+re-check itself is the evidence, not a human judgment call). The queue mutation goes through
+`work_queue.py`, the single owner of brief lifecycle, using the closure note
+`check_brief_predicate.format_resolved_closure_note` builds from the recheck result:
+
+```bash
+worktrail-work-queue done "$BRIEF_ID" --implementation-complete --note \
+  "Closed as already-delivered: predicate re-check (checkbox-drift-sweep) found the staleness \
+predicate resolved for 2 finding(s): docs/specs/x/tasks/TASK-001.md, \
+docs/specs/x/tasks/TASK-004.md. Surfaced by the Phase 5.5 predicate re-check; closed \
+automatically without an operator prompt."
+```
+
+Then report the closure in the run's status output (e.g. `Brief $BRIEF_ID closed: predicate
+re-check found N finding(s) resolved.`) and **stop** — do not continue to Phase 6's run-record
+start or Phase 7 dispatch. As with the probe-based closure branch, this runs *before* Phase 6, so
+there is no run record to open or finish. Do not open a worktree, and do not create a follow-up
+handoff — nothing was deferred. Unlike that sibling note, there is no commit SHA or PR number to
+cite here — the probe search never runs on this path — so the predicate re-check, named
+explicitly, is the cited evidence.
+
 ## Running it
 
 ```bash
