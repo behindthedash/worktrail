@@ -23,6 +23,7 @@ CHECK_INTERVAL_SECONDS = 24 * 60 * 60
 
 INSTALL_TIMEOUT = 120
 CONFIGURE_TIMEOUT = 120
+RUN_TIMEOUT = 120
 
 
 class AspensAddOn:
@@ -80,7 +81,53 @@ class AspensAddOn:
             pass
 
     def run(self, ctx: Any) -> AddOnResult:
-        raise NotImplementedError
+        """Run `aspens doc sync` (or `--refresh`) and report changed paths to commit.
+
+        Unlike `install`/`configure`, subprocess failures (`TimeoutExpired`,
+        `OSError`) and a non-zero exit are deliberately left to propagate
+        rather than swallowed: this is the one call the shared runner's
+        `required` gate (design D4) needs to be able to catch and fail on,
+        while `install`/`configure` stay best-effort priming that never blocks.
+        """
+        worktree = Path(ctx.worktree)
+        config = getattr(ctx, "config", None) or {}
+        cmd = ["aspens", "doc", "sync"]
+        if config.get("refresh"):
+            cmd.append("--refresh")
+        result = subprocess.run(
+            cmd,
+            cwd=str(worktree),
+            capture_output=True,
+            text=True,
+            timeout=getattr(ctx, "timeout", RUN_TIMEOUT),
+        )
+        if result.returncode != 0:
+            tail = ((result.stderr or "") + (result.stdout or "")).strip()[-300:]
+            raise RuntimeError(f"aspens doc sync failed (exit {result.returncode}): {tail}")
+        paths = self._changed_paths(worktree)
+        if not paths:
+            return AddOnResult(changed=False, detail="no changes", paths=[])
+        return AddOnResult(
+            changed=True, detail=f"synced {len(paths)} path(s)", paths=paths
+        )
+
+    def _changed_paths(self, worktree: Path) -> list[Path]:
+        status = subprocess.run(
+            ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+            cwd=str(worktree),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        paths: list[Path] = []
+        for line in status.stdout.splitlines():
+            if not line.strip():
+                continue
+            entry = line[3:]
+            if " -> " in entry:  # renames: "R  old -> new"
+                entry = entry.split(" -> ", 1)[1]
+            paths.append(Path(entry))
+        return paths
 
     def _marker_is_fresh(self) -> bool:
         try:
