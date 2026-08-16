@@ -68,6 +68,29 @@ def _mk_citing_openspec_change(repo: Path, slug: str, epic_id: str,
         f"# {slug}\n\nOwning epic: {epic_id}\n\n## Why\n", encoding="utf-8")
 
 
+def _mk_openspec_needs_tasks_change(repo: Path, slug: str) -> Path:
+    """An OpenSpec change with a proposal but an empty tasks.md — reaches the
+    `needs-tasks` dashboard stage (dashboard._safe_detect_openspec: `not tasks`)."""
+    change_dir = repo / "openspec" / "changes" / slug
+    change_dir.mkdir(parents=True)
+    (change_dir / "proposal.md").write_text(
+        f"# {slug}\n\n## Why\ntest\n", encoding="utf-8")
+    (change_dir / "tasks.md").write_text("", encoding="utf-8")
+    return change_dir
+
+
+def _mk_openspec_ready_change(repo: Path, slug: str) -> Path:
+    """An OpenSpec change with one pending, non-stale task — reaches the
+    `ready-to-implement` dashboard stage."""
+    change_dir = repo / "openspec" / "changes" / slug
+    change_dir.mkdir(parents=True)
+    (change_dir / "proposal.md").write_text(
+        f"# {slug}\n\n## Why\ntest\n", encoding="utf-8")
+    (change_dir / "tasks.md").write_text(
+        "## 1. Do it\n- [ ] 1.1 step\n", encoding="utf-8")
+    return change_dir
+
+
 def _opt_in(repo: Path) -> None:
     specs = repo / "docs" / "specs"
     specs.mkdir(parents=True, exist_ok=True)
@@ -180,6 +203,27 @@ def test_spec_with_tasks_is_not_seeded(tmp_path):
     summary = seed_backlog.seed_backlog(
         repos_root, queue_base=tmp_path / "wq", log=lambda _m: None)
     assert summary["seeded"] == []
+
+
+def test_openspec_needs_tasks_change_seeds_planning_brief(tmp_path):
+    """`find_needs_tasks_specs` scans openspec/ too: `dashboard.scan(repo /
+    "docs" / "specs")` derives the repo root from that path and folds in
+    OpenSpec change rows (dashboard.py's `scan`), even when `docs/specs`
+    doesn't exist on disk at all."""
+    repos_root = tmp_path / "projects"
+    repo = _mk_repo(repos_root, "repo-a")
+    _mk_openspec_needs_tasks_change(repo, "013-delta-openspec")
+    qbase = tmp_path / "wq"
+
+    findings = seed_backlog.find_needs_tasks_specs(repos_root)
+    assert [f["seed_key"] for f in findings] == ["repo-a:spec:013-delta-openspec"]
+    assert findings[0]["spec_rel"] == "openspec/changes/013-delta-openspec"
+
+    summary = seed_backlog.seed_backlog(repos_root, queue_base=qbase, log=lambda _m: None)
+    assert [s["seed_key"] for s in summary["seeded"]] == ["repo-a:spec:013-delta-openspec"]
+    _path, fm = _queued_briefs(qbase)[0]
+    assert fm["recommended-route"] == "C"
+    assert fm["target-spec"] == "013-delta-openspec"
 
 
 # ---------------------------------------------------------------------------
@@ -341,6 +385,26 @@ def test_ready_spec_optin_seeds_route_d_brief(tmp_path):
     assert fm["target-spec"] == "030-delta"
     assert fm["repo"] == "repo-a"
     assert fm["status"] == "queued"
+
+
+def test_openspec_ready_change_optin_seeds_route_d_brief(tmp_path):
+    """`find_ready_specs` scans openspec/ too, same mechanism as
+    `find_needs_tasks_specs` above."""
+    repos_root = tmp_path / "projects"
+    repo = _mk_repo(repos_root, "repo-a")
+    _opt_in(repo)
+    _mk_openspec_ready_change(repo, "031-echo-openspec")
+    qbase = tmp_path / "wq"
+
+    findings = seed_backlog.find_ready_specs(repos_root)
+    assert [f["seed_key"] for f in findings] == ["repo-a:impl:031-echo-openspec"]
+    assert findings[0]["spec_rel"] == "openspec/changes/031-echo-openspec"
+
+    summary = seed_backlog.seed_backlog(repos_root, queue_base=qbase, log=lambda _m: None)
+    assert [s["seed_key"] for s in summary["seeded"]] == ["repo-a:impl:031-echo-openspec"]
+    _path, fm = _queued_briefs(qbase)[0]
+    assert fm["recommended-route"] == "D"
+    assert fm["target-spec"] == "031-echo-openspec"
 
 
 def test_stale_bookkeeping_spec_is_excluded(tmp_path):
