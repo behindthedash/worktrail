@@ -16,6 +16,7 @@ from worktrail.router import run_record
 from worktrail.router.run_record import (
     ALLOWED_AGENTS,
     COMPLETION_STATES,
+    IMPLEMENTATION_COMPLETION_STATES,
     RemoteClaimError,
     _active_conflicts as _active_conflicts_impl,
     _claim_ref,
@@ -44,6 +45,15 @@ def _start(tmp, **over):
         rc = main(argv)
     assert rc == 0
     return json.loads(out.getvalue())
+
+
+def _complete_scope_review(path, item="implementation", evidence="tests pass"):
+    """Record a passing scope-review entry so `finish` on an implementation-
+    completion state clears the scope-completeness gate (`_enforce_scope_
+    completeness_gate`). Call before any `finish` in these tests whose focus
+    is unrelated to scope-completeness itself."""
+    main(["scope-review", path, "--item", item, "--status", "complete",
+          "--evidence", evidence])
 
 
 def _legacy_record_text():
@@ -261,6 +271,7 @@ class TestLifecycle(unittest.TestCase):
         res = _start(self.tmp)
         with self.assertRaises(SystemExit):
             main(["finish", res["path"], "--status", "done-ish"])
+        _complete_scope_review(res["path"])
         out = StringIO()
         with patch("sys.stdout", out):
             main(["finish", res["path"], "--status", "completed_pr_open",
@@ -273,6 +284,7 @@ class TestLifecycle(unittest.TestCase):
 
     def test_finish_applies_risk_label_correction_when_pr_provided(self):
         res = _start(self.tmp, route="F", risk="high")
+        _complete_scope_review(res["path"])
         seen = []
         with patch("worktrail.router.pr_labels.ensure_pr_risk_label",
                    lambda repo, pr, risk: seen.append((repo, pr, risk))):
@@ -300,6 +312,7 @@ class TestLifecycle(unittest.TestCase):
         resuming a PR opened in an earlier session."""
         res = _start(self.tmp, route="E", risk="medium")
         main(["set", res["path"], "pull_request", "https://github.com/x/y/pull/4"])
+        _complete_scope_review(res["path"])
         seen = []
         with patch("worktrail.router.pr_labels.ensure_pr_risk_label",
                    lambda repo, pr, risk: seen.append((repo, pr, risk))):
@@ -315,6 +328,7 @@ class TestLifecycle(unittest.TestCase):
         labels.py's periodic sweep is the safety net for a correction that
         fails here."""
         res = _start(self.tmp)
+        _complete_scope_review(res["path"])
 
         def boom(*_a, **_k):
             raise FileNotFoundError(2, "No such file or directory", "/tmp/fake-repo")
@@ -336,6 +350,7 @@ class TestLifecycle(unittest.TestCase):
         SKILL.md-prose step could finish with unresolved threads. This proves
         the code-enforced backstop actually blocks."""
         res = _start(self.tmp, route="F")
+        _complete_scope_review(res["path"])
 
         def blocking(*_a, **_k):
             return {"checked": True, "blocking": True, "unresolved_count": 1,
@@ -351,6 +366,7 @@ class TestLifecycle(unittest.TestCase):
 
     def test_finish_proceeds_when_review_threads_clean(self):
         res = _start(self.tmp, route="F")
+        _complete_scope_review(res["path"])
 
         def clean(*_a, **_k):
             return {"checked": True, "blocking": False, "unresolved_count": 0,
@@ -369,6 +385,7 @@ class TestLifecycle(unittest.TestCase):
         owner/repo) is 'no signal', never treated as 'nothing unresolved' --
         finish must not block on it."""
         res = _start(self.tmp, route="F")
+        _complete_scope_review(res["path"])
 
         def unavailable(*_a, **_k):
             return {"checked": False, "blocking": False, "warning": "gh unavailable"}
@@ -398,6 +415,7 @@ class TestLifecycle(unittest.TestCase):
         correction; `checked: false` is the intended 'no signal' path, but an
         outright exception must not escalate into a block either."""
         res = _start(self.tmp, route="F")
+        _complete_scope_review(res["path"])
 
         def boom(*_a, **_k):
             raise FileNotFoundError(2, "No such file or directory", "gh")
@@ -409,6 +427,76 @@ class TestLifecycle(unittest.TestCase):
                            "--pr", "https://github.com/x/y/pull/9"])
         self.assertEqual(rc, 0)
         self.assertEqual(_load(Path(res["path"]))["final_status"], "completed_pr_open")
+
+    def test_finish_blocks_on_missing_scope_review(self):
+        """Closes the orchestrator group-PR gate-parity gap
+        (docs/specs/research/go-orchestrator-gate-parity-audit.md):
+        `scope_review_failures()` previously only ran when a caller passed
+        `--run` to `pre_pr_gate.py` directly, which `integrate.py`'s two
+        orchestrator call sites (`--checks-only`, `--labels-only`) never did.
+        `finish()` runs exactly once per run regardless of route or how many
+        group PRs the orchestrator created, so enforcing the check here closes
+        the gap uniformly."""
+        res = _start(self.tmp, route="F")
+        with self.assertRaises(SystemExit):
+            main(["finish", res["path"], "--status", "completed_pr_open",
+                  "--pr", "https://github.com/x/y/pull/10"])
+        rec = _load(Path(res["path"]))
+        self.assertIsNone(rec["final_status"])
+
+    def test_finish_blocks_on_blocked_scope_item(self):
+        res = _start(self.tmp, route="F")
+        main(["scope-review", res["path"], "--item", "edge case handling",
+              "--status", "blocked", "--reason", "waiting on API access"])
+        with self.assertRaises(SystemExit):
+            main(["finish", res["path"], "--status", "completed_pr_open"])
+        self.assertIsNone(_load(Path(res["path"]))["final_status"])
+
+    def test_finish_blocks_on_out_of_scope_item_without_reason(self):
+        res = _start(self.tmp, route="F")
+        main(["scope-review", res["path"], "--item", "unrelated cleanup",
+              "--status", "out-of-scope", "--reason", "not needed"])
+        with self.assertRaises(SystemExit):
+            main(["finish", res["path"], "--status", "completed_pr_open"])
+        self.assertIsNone(_load(Path(res["path"]))["final_status"])
+
+    def test_finish_proceeds_with_complete_scope_review(self):
+        res = _start(self.tmp, route="F")
+        _complete_scope_review(res["path"])
+        out = StringIO()
+        with patch("sys.stdout", out):
+            rc = main(["finish", res["path"], "--status", "completed_pr_open"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(_load(Path(res["path"]))["final_status"], "completed_pr_open")
+
+    def test_finish_proceeds_with_properly_reasoned_out_of_scope_item(self):
+        res = _start(self.tmp, route="F")
+        main(["scope-review", res["path"], "--item", "unrelated cleanup",
+              "--status", "out-of-scope",
+              "--reason", "different purpose: belongs in its own PR"])
+        out = StringIO()
+        with patch("sys.stdout", out):
+            rc = main(["finish", res["path"], "--status", "completed_pr_open"])
+        self.assertEqual(rc, 0)
+
+    def test_finish_skips_scope_completeness_check_for_non_implementation_states(self):
+        res = _start(self.tmp, route="F")
+        out = StringIO()
+        with patch("sys.stdout", out):
+            rc = main(["finish", res["path"], "--status", "investigation_complete"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            _load(Path(res["path"]))["final_status"], "investigation_complete")
+
+    def test_scope_completeness_gate_unconditional_on_route(self):
+        """Mirrors the label-correction/review-thread gates: this must not be
+        route-specific -- Route F (single-worker orchestrate/`modify` pipeline)
+        is exactly one of the routes that can reach the orchestrator path this
+        gate exists to cover."""
+        for route in ("D", "F", "G", "H"):
+            res = _start(self.tmp, route=route)
+            with self.assertRaises(SystemExit):
+                main(["finish", res["path"], "--status", "completed_pr_open"])
 
     def test_route_a_blocks_implementation_completion_without_decision(self):
         res = _start(self.tmp, route="A")
@@ -422,6 +510,7 @@ class TestLifecycle(unittest.TestCase):
         res = _start(self.tmp, route="A")
         main(["append", res["path"], "decisions",
               "proceeding to Route D per user approval"])
+        _complete_scope_review(res["path"])
         out = StringIO()
         with patch("sys.stdout", out):
             main(["finish", res["path"], "--status", "completed_pr_open",
@@ -439,6 +528,7 @@ class TestLifecycle(unittest.TestCase):
 
     def test_non_route_a_unaffected_by_approval_gate(self):
         res = _start(self.tmp, route="F")
+        _complete_scope_review(res["path"])
         out = StringIO()
         with patch("sys.stdout", out):
             main(["finish", res["path"], "--status", "completed_and_merged"])
@@ -448,6 +538,8 @@ class TestLifecycle(unittest.TestCase):
         self.assertEqual(len(COMPLETION_STATES), 10)
         for state in COMPLETION_STATES:
             res = _start(self.tmp)
+            if state in IMPLEMENTATION_COMPLETION_STATES:
+                _complete_scope_review(res["path"])
             out = StringIO()
             with patch("sys.stdout", out):
                 main(["finish", res["path"], "--status", state])
@@ -632,7 +724,7 @@ class TestActiveConflicts(unittest.TestCase):
         main(["set", finished["path"], "specification", "spec-a"])
         out = StringIO()
         with patch("sys.stdout", out):
-            main(["finish", finished["path"], "--status", "completed_pr_open"])
+            main(["finish", finished["path"], "--status", "investigation_complete"])
 
         results = _active_conflicts(self.tmp, specification="spec-a")
 
@@ -789,7 +881,7 @@ class TestActiveConflictsPartitioning(unittest.TestCase):
         main(["set", terminal["path"], "base_branch", "main"])
         out = StringIO()
         with patch("sys.stdout", out):
-            main(["finish", terminal["path"], "--status", "completed_pr_open"])
+            main(["finish", terminal["path"], "--status", "investigation_complete"])
 
         result = _active_conflicts_impl(self.repo_dir, self.repo_root, "spec-a", None)
 
@@ -887,6 +979,7 @@ class TestReconcile(unittest.TestCase):
         main(["set", res["path"], "base_branch", "main"])
         main(["set", res["path"], "worktree", str(Path(self.tmp) / "worktree-gone")])
         main(["append", res["path"], "files_changed", "tracked.md"])
+        _complete_scope_review(res["path"])
         return res
 
     def test_stale_at_call_time_closes_record_with_default_merge_result(self):
@@ -985,7 +1078,7 @@ class TestClaim(unittest.TestCase):
 
         out = StringIO()
         with patch("sys.stdout", out):
-            main(["finish", session_a["path"], "--status", "completed_pr_open"])
+            main(["finish", session_a["path"], "--status", "investigation_complete"])
 
         session_b = _start(self.tmp, request="session B implement")
         rc_b, out_b = _claim(session_b["path"], specification="spec-race")
@@ -1262,6 +1355,7 @@ class TestRemoteClaim:
         )
         assert pushed.stdout.strip() != ""
 
+        _complete_scope_review(res["path"])
         out = StringIO()
         with patch("sys.stdout", out):
             main(["finish", res["path"], "--status", "completed_pr_open"])
@@ -1293,6 +1387,7 @@ class TestRemoteClaim:
 
         shutil.rmtree(bare_dir)
 
+        _complete_scope_review(res["path"])
         out = StringIO()
         with patch("sys.stdout", out):
             rc = main(["finish", res["path"], "--status", "completed_pr_open"])
@@ -1331,7 +1426,7 @@ class TestPrune(unittest.TestCase):
             if days_ago < 27 else "2020-01-01T00:00:00+0000"
         )
         main(["set", path, "started_at", ts])
-        main(["finish", path, "--status", "completed_pr_open"])
+        main(["finish", path, "--status", "investigation_complete"])
 
     def test_keeps_only_keep_count_most_recent_by_default(self):
         paths = [_start(self.tmp, request=f"run {i}")["path"] for i in range(5)]
@@ -1351,7 +1446,7 @@ class TestPrune(unittest.TestCase):
     def test_keep_days_overrides_keep_count_for_recent_records(self):
         paths = [_start(self.tmp, request=f"run {i}")["path"] for i in range(3)]
         for p in paths:
-            main(["finish", p, "--status", "completed_pr_open"])  # started_at stays "now"
+            main(["finish", p, "--status", "investigation_complete"])  # started_at stays "now"
 
         result = _prune(self.tmp, keep_count=0, keep_days=30)
 

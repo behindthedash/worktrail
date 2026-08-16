@@ -109,6 +109,10 @@ def _proves_run_record_finish_applies_risk_label_unconditionally():
         if rc != 0:
             raise AssertionError("run_record.py start failed")
         run_path = json.loads(out.getvalue())["path"]
+        run_record_main([
+            "scope-review", run_path, "--item", "implementation",
+            "--status", "complete", "--evidence", "tests pass",
+        ])
         with patch("worktrail.router.pr_labels.ensure_pr_risk_label") as mock_ensure:
             run_record_main([
                 "finish", run_path, "--status", "completed_pr_open",
