@@ -82,11 +82,58 @@ def recheck(repo: Path, frontmatter: Dict[str, Any]) -> Dict[str, object]:
      "resolved": [...], "error": str|None}
     """
     drift_source = frontmatter.get("drift-source")
+    if drift_source is None:
+        return {
+            "attempted": False,
+            "drift_source": None,
+            "outcome": "no-predicate",
+            "still_true": [],
+            "resolved": [],
+            "error": None,
+        }
+
+    recheck_fn = PREDICATE_RECHECKS.get(drift_source)
+    if recheck_fn is None:
+        return {
+            "attempted": False,
+            "drift_source": drift_source,
+            "outcome": "unrecognized",
+            "still_true": [],
+            "resolved": [],
+            "error": None,
+        }
+
+    findings = frontmatter.get("drift-findings")
+    if not findings:
+        return {
+            "attempted": True,
+            "drift_source": drift_source,
+            "outcome": "error",
+            "still_true": [],
+            "resolved": [],
+            "error": "drift-findings is missing or empty",
+        }
+
+    try:
+        result = recheck_fn(repo, findings)
+    except Exception as exc:  # noqa: BLE001 - degrade any predicate failure to outcome="error"
+        return {
+            "attempted": True,
+            "drift_source": drift_source,
+            "outcome": "error",
+            "still_true": [],
+            "resolved": [],
+            "error": str(exc),
+        }
+
+    still_true = result.get("still_true", [])
+    resolved = result.get("resolved", [])
+    outcome = "still-true" if still_true else "resolved"
     return {
-        "attempted": False,
+        "attempted": True,
         "drift_source": drift_source,
-        "outcome": "no-predicate",
-        "still_true": [],
-        "resolved": [],
+        "outcome": outcome,
+        "still_true": still_true,
+        "resolved": resolved,
         "error": None,
     }
