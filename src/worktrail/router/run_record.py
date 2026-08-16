@@ -105,6 +105,23 @@ finish PATH --status completed_pr_open [--pr URL] [--merge-result ...]
             procedure). A terminal record (final_status set) is always
             reported fresh: false, same_dispatch: false -- staleness/liveness
             only means anything for a run still in progress.
+  find-by-worktree --dir DIR --repo REPO --worktree PATH
+         -> read-only: which non-terminal run record (if any) owns this
+            worktree path? Scans <dir>/<repo-name>/*.yaml with
+            `_load_lenient` (skip and warn on malformed files, same
+            tolerance policy as `active-conflicts`), filters to non-terminal
+            records whose `worktree` field is exactly PATH -- a flat string
+            equality check, not a resolved-path comparison, matching how
+            `worktree` is written verbatim by `set "$RUN" worktree "$WT"` at
+            creation time. Prints {"found": bool, "path": str|null,
+            "run_id": str|null}. If more than one non-terminal record
+            matches (shouldn't happen in normal operation, but two records
+            could both name the same now-stale path after a
+            crash-without-cleanup), resolves to the most recently started
+            one -- the same tie-break `active-conflicts` already uses. Feeds
+            `liveness` for the deletion liveness guard: resolve a worktree
+            path to its owning run record here, then ask `liveness` whether
+            that record is still actively being worked.
 """
 from __future__ import annotations
 
@@ -833,6 +850,41 @@ def cmd_liveness(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_find_by_worktree(args: argparse.Namespace) -> int:
+    """Read-only: which non-terminal run record (if any) owns this worktree path?
+
+    See the `find-by-worktree` entry in this module's docstring for the full
+    scan/tie-break behavior. Feeds `liveness` for the deletion liveness
+    guard (`#worktree-deletion-liveness-guard`).
+    """
+    repo = Path(args.repo).resolve()
+    repo_dir = Path(args.dir).expanduser() / repo.name
+    candidates: List[Dict[str, Any]] = []
+    if repo_dir.is_dir():
+        for path in sorted(repo_dir.glob("*.yaml")):
+            record, warning = _load_lenient(path)
+            if warning is not None:
+                print(f"warning: run_record: skipping malformed record {path}: "
+                      f"{warning}", file=sys.stderr)
+                continue
+            if record.get("final_status") is not None:
+                continue
+            if record.get("worktree") != args.worktree:
+                continue
+            candidates.append({
+                "path": str(path),
+                "run_id": record.get("run_id"),
+                "started_ts": _record_started_ts(record, path),
+            })
+    if not candidates:
+        print(json.dumps({"found": False, "path": None, "run_id": None}))
+        return 0
+    candidates.sort(key=lambda c: c["started_ts"], reverse=True)
+    best = candidates[0]
+    print(json.dumps({"found": True, "path": best["path"], "run_id": best["run_id"]}))
+    return 0
+
+
 def _claim_slug(specification: str) -> str:
     slug = re.sub(r"[^A-Za-z0-9_.-]", "_", specification or "")
     return slug[:200] or "unknown"
@@ -1363,6 +1415,12 @@ def main(argv=None) -> int:
     s.add_argument("--dispatch-id", default=None,
                     help="this invocation's own dispatch_id, to check same_dispatch")
     s.set_defaults(func=cmd_liveness)
+
+    s = sub.add_parser("find-by-worktree")
+    s.add_argument("--dir", required=True, help="run records directory")
+    s.add_argument("--repo", required=True)
+    s.add_argument("--worktree", required=True, help="worktree path to look up (exact match)")
+    s.set_defaults(func=cmd_find_by_worktree)
 
     args = p.parse_args(argv)
     try:

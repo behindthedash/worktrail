@@ -1,6 +1,6 @@
 ## 1. Worktree-to-run-record lookup
 
-- [ ] 1.1 Implement the `find-by-worktree` subcommand in `run_record.py`: given `--dir`,
+- [x] 1.1 Implement the `find-by-worktree` subcommand in `run_record.py`: given `--dir`,
       `--repo`, `--worktree`, scan `<dir>/<repo-name>/*.yaml` with `_load_lenient`
       (skip and warn on malformed files), filter to non-terminal records whose
       `worktree` field equals the target path, and print
@@ -8,7 +8,7 @@
       started match when more than one candidate matches. Add a docstring entry in the
       module's CLI reference following the `active-conflicts`/`liveness` style.
       (Requirement: Worktree-to-run-record lookup)
-- [ ] 1.2 Add coverage in `tests/router/test_run_record.py` for `find-by-worktree`:
+- [x] 1.2 Add coverage in `tests/router/test_run_record.py` for `find-by-worktree`:
       exact match, no match, one malformed record file skipped alongside valid ones,
       and multiple non-terminal candidates resolving to the most recently started one.
       (Requirement: Worktree-to-run-record lookup)
