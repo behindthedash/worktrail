@@ -7,11 +7,14 @@ Or as part of the go skill's suite: python3 -m pytest . -q
 
 from __future__ import annotations
 
+import contextlib
+import io
+import json
 import tempfile
 import unittest
 from pathlib import Path
 
-from worktrail.router.check_brief_predicate import recheck
+from worktrail.router.check_brief_predicate import main, recheck
 
 
 STILL_DRIFTED_TASK = """---
@@ -187,6 +190,85 @@ class RecheckTest(unittest.TestCase):
         self.assertEqual(result["still_true"], [])
         self.assertEqual(result["resolved"], [])
         self.assertIsNotNone(result["error"])
+
+
+BRIEF_STILL_TRUE = """---
+status: claimed
+drift-source: checkbox-drift-sweep
+drift-findings:
+  - path: docs/specs/010-alpha/tasks/TASK-001.md
+    unchecked_count: 1
+    total_count: 2
+---
+## Focus
+
+- TASK-001 still has an unchecked box despite status: completed
+"""
+
+BRIEF_RESOLVED = """---
+status: claimed
+drift-source: checkbox-drift-sweep
+drift-findings:
+  - path: docs/specs/010-alpha/tasks/TASK-001.md
+    unchecked_count: 1
+    total_count: 2
+---
+## Focus
+
+- TASK-001 had an unchecked box despite status: completed
+"""
+
+
+class CLIEndToEndTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.repo = Path(self._tmp.name)
+
+    def _run_main(self, brief_path: Path) -> str:
+        argv = ["--repo", str(self.repo), "--brief", str(brief_path), "--json"]
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            exit_code = main(argv)
+        self.assertEqual(exit_code, 0)
+        return buf.getvalue()
+
+    def test_cli_still_true_outcome(self) -> None:
+        _write(self.repo, "docs/specs/010-alpha/tasks/TASK-001.md", STILL_DRIFTED_TASK)
+        brief_path = self.repo / "brief.md"
+        brief_path.write_text(BRIEF_STILL_TRUE, encoding="utf-8")
+
+        stdout = self._run_main(brief_path)
+        result = json.loads(stdout)
+
+        self.assertTrue(result["attempted"])
+        self.assertEqual(result["outcome"], "still-true")
+        self.assertEqual(result["drift_source"], "checkbox-drift-sweep")
+        self.assertEqual(
+            result["still_true"], ["docs/specs/010-alpha/tasks/TASK-001.md"]
+        )
+        self.assertEqual(result["resolved"], [])
+        self.assertIsNone(result["error"])
+
+    def test_cli_resolved_outcome(self) -> None:
+        _write(
+            self.repo,
+            "docs/specs/010-alpha/tasks/TASK-001.md",
+            RESOLVED_TASK_ALL_CHECKED,
+        )
+        brief_path = self.repo / "brief.md"
+        brief_path.write_text(BRIEF_RESOLVED, encoding="utf-8")
+
+        stdout = self._run_main(brief_path)
+        result = json.loads(stdout)
+
+        self.assertTrue(result["attempted"])
+        self.assertEqual(result["outcome"], "resolved")
+        self.assertEqual(result["still_true"], [])
+        self.assertEqual(
+            result["resolved"], ["docs/specs/010-alpha/tasks/TASK-001.md"]
+        )
+        self.assertIsNone(result["error"])
 
 
 if __name__ == "__main__":
