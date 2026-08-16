@@ -111,6 +111,33 @@ class FileCheckboxDriftBriefTest(unittest.TestCase):
         files = list((self.queue_base / "queue").glob("*.md"))
         self.assertEqual(len(files), 1)
 
+    def test_drift_findings_frontmatter_present_and_correctly_shaped(self) -> None:
+        path = file_checkbox_drift_brief(self.repo, MULTI_HITS, self.queue_base)
+        fm = read_frontmatter(path)
+        findings = fm.get("drift-findings")
+        self.assertIsInstance(findings, list)
+        self.assertEqual(len(findings), len(MULTI_HITS))
+        for hit, finding in zip(MULTI_HITS, findings):
+            self.assertEqual(
+                finding,
+                {
+                    "path": hit["path"],
+                    "unchecked_count": hit["unchecked_count"],
+                    "total_count": hit["total_count"],
+                },
+            )
+
+    def test_drift_findings_round_trips_and_brief_still_validates(self) -> None:
+        path = file_checkbox_drift_brief(self.repo, MULTI_HITS, self.queue_base)
+        fm = read_frontmatter(path)
+        findings = fm.get("drift-findings")
+        for finding in findings:
+            self.assertIsInstance(finding["path"], str)
+            self.assertIsInstance(finding["unchecked_count"], int)
+            self.assertIsInstance(finding["total_count"], int)
+        ok, reason = validate_brief(path, required=("id", "status", "focus"))
+        self.assertTrue(ok, reason)
+
     def test_no_subprocess_or_git_invocation(self) -> None:
         # AC-CHG-008: no git operation (commit, branch, gh pr create) is ever
         # performed by the filer against any repo.
