@@ -52,16 +52,45 @@ class TestUnreadableBrief(unittest.TestCase):
 
 
 class TestNoRepoFrontmatter(unittest.TestCase):
-    def test_missing_repo_skips_check_but_stays_checked(self):
+    def test_missing_repo_fails_open_as_unchecked(self):
+        # A skipped check must never be indistinguishable from a real
+        # searched-and-clean negative -- checked=False (unknown) is the only
+        # honest report when there was no repo: to scan evidence against.
+        # `checked=True, resumable=False` here would be read by the go front
+        # door's Phase 5 as authoritative grounds to disqualify Route E, even
+        # though no evidence-gathering happened at all.
         with tempfile.TemporaryDirectory() as t:
             tmp = Path(t)
             brief = tmp / "b.md"
             brief.write_text("---\nid: b\nrepo: null\n---\n\n## Focus\n\ntest\n",
                               encoding="utf-8")
             res = crs.check(brief, do_gh=False)
-            self.assertTrue(res["checked"])
+            self.assertFalse(res["checked"])
             self.assertFalse(res["resumable"])
             self.assertIn("no repo:", res["warning"])
+
+    def test_missing_repo_with_inflight_run_record_is_not_reported_as_non_resumable(self):
+        # Even when other briefs' run records exist on disk, a repo-absent
+        # brief must come back unknown (checked=False), never a confident
+        # "not resumable" -- the check has no repo to scan and must say so,
+        # not silently claim it looked and found nothing.
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            runs_dir = tmp / "runs"
+            other_repo = str(tmp / "myrepo")
+            worktree = tmp / "myrepo-worktrees" / "some-branch"
+            worktree.mkdir(parents=True)
+            _write_run_record(runs_dir, other_repo, "go-1",
+                               "20260812-999999-real-resume",
+                               final_status=None, worktree=str(worktree))
+
+            brief = tmp / "b.md"
+            brief.write_text("---\nid: b\nrepo: null\n---\n\n## Focus\n\ntest\n",
+                              encoding="utf-8")
+            res = crs.check(brief, runs_dir=runs_dir, do_gh=False)
+            self.assertFalse(res["checked"])
+            self.assertFalse(res["resumable"])
+            self.assertIsNone(res["evidence"]["run_record"])
 
 
 class TestRunRecordScan(unittest.TestCase):

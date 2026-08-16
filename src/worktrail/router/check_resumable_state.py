@@ -22,10 +22,15 @@ agent to notice (the gap worktrail-drain's unattended one-shots have no one to
 catch).
 
 Best-effort by design, same posture as `check_repo_freshness.py` and
-`check_brief_staleness.py`: an unreadable brief is the only `checked: false`
-cause. A missing `repo:` frontmatter, `gh` unavailable/unauthenticated/erroring,
-or no run-records directory all degrade to "not resumable" plus a warning, never
-an exception and never a reason to report `checked: false`.
+`check_brief_staleness.py`. `checked: false` means the question is unanswered:
+either the brief itself couldn't be read, or it carries no `repo:` frontmatter
+so there was nothing to scan evidence against -- the caller's contract treats
+that as "unknown", not as an authoritative "not resumable" (worktrail-go's
+`/go` SKILL.md Phase 5 fails open on `checked: false` rather than passing
+`--resumable-state` at all). `gh` unavailable/unauthenticated/erroring, or no
+run-records directory, still degrade to "not resumable" plus a warning under a
+`checked: true` result, since those only affect one piece of evidence, not
+whether the check ran at all.
 """
 from __future__ import annotations
 
@@ -110,12 +115,14 @@ def check(
 
     Returns `{"checked": bool, "resumable": bool, "evidence": {"run_record":
     str|None, "worktree": str|None, "open_pr": dict|None}, "warning": str|None}`.
-    `checked=False` only when the brief itself can't be read -- callers must
-    treat that as "unknown", not as "not resumable". `resumable=True` requires
-    either an in-flight run record whose worktree still exists on disk, or an
-    open PR referencing the brief; a run record alone (worktree gone, e.g.
-    already cleaned up post-merge) is surfaced as evidence but is not
-    "resumable" on its own.
+    `checked=False` means the question is unanswered -- either the brief itself
+    couldn't be read, or it carries no `repo:` frontmatter so evidence-gathering
+    had nothing to scan. Callers must treat `checked=False` as "unknown", never
+    as "not resumable": `resumable` is only meaningful when `checked` is True.
+    `resumable=True` requires either an in-flight run record whose worktree
+    still exists on disk, or an open PR referencing the brief; a run record
+    alone (worktree gone, e.g. already cleaned up post-merge) is surfaced as
+    evidence but is not "resumable" on its own.
     """
     result: Dict[str, Any] = {
         "checked": False,
@@ -131,34 +138,32 @@ def check(
         return result
 
     frontmatter = read_frontmatter(brief_path)
-    result["checked"] = True
     brief_id = str(frontmatter.get("id") or brief_path.stem)
     repo = frontmatter.get("repo")
 
-    warnings: List[str] = []
+    if not repo:
+        result["warning"] = "brief has no repo: frontmatter -- resumable-state check skipped"
+        return result
+
+    result["checked"] = True
     resolved_runs_dir = Path(runs_dir).expanduser() if runs_dir is not None else worktrail_home() / "runs"
 
-    if not repo:
-        warnings.append("brief has no repo: frontmatter -- resumable-state check skipped")
-    else:
-        record = _find_inflight_run_record(brief_id, str(repo), resolved_runs_dir)
-        if record is not None:
-            result["evidence"]["run_record"] = record["path"]
-            worktree = record.get("worktree")
-            if worktree and Path(str(worktree)).expanduser().exists():
-                result["evidence"]["worktree"] = str(worktree)
+    record = _find_inflight_run_record(brief_id, str(repo), resolved_runs_dir)
+    if record is not None:
+        result["evidence"]["run_record"] = record["path"]
+        worktree = record.get("worktree")
+        if worktree and Path(str(worktree)).expanduser().exists():
+            result["evidence"]["worktree"] = str(worktree)
 
-        if do_gh:
-            pr = _find_open_pr(brief_id, str(repo), gh_timeout)
-            if pr is not None:
-                result["evidence"]["open_pr"] = pr
+    if do_gh:
+        pr = _find_open_pr(brief_id, str(repo), gh_timeout)
+        if pr is not None:
+            result["evidence"]["open_pr"] = pr
 
     result["resumable"] = bool(
         (result["evidence"]["run_record"] and result["evidence"]["worktree"])
         or result["evidence"]["open_pr"]
     )
-    if warnings:
-        result["warning"] = "; ".join(warnings)
     return result
 
 
