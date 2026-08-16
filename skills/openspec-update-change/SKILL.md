@@ -64,6 +64,23 @@ Revise a change's existing planning artifacts and keep them coherent. Never edit
      ```bash
      openspec instructions <artifact-id> --change "<name>" --json
      ```
+   - **If the artifact being revised is `tasks`**, worktrail's own orchestrator (not OpenSpec)
+     compiles `tasks.md` into a per-task file-scope plan afterward (`worktrail-compile`), and
+     OpenSpec's checklist schema carries no field for that. This is a delta edit, not a fresh
+     write - apply these rules only to the task line(s) this revision adds or changes scope for;
+     do not retroactively rewrite untouched existing task lines to add tags they lack:
+     - **Requirement coverage**: if the revision adds or rescopes a task so it implements a
+       requirement declared in this change's `specs/**/spec.md` (`### Requirement: <Name>` under
+       `## ADDED Requirements` / `## MODIFIED Requirements`), append `(Requirement: <exact
+       title>)` to that task line - the exact requirement name must appear somewhere in
+       `tasks.md`.
+     - **File-less tasks**: if the revision adds or rescopes a task that creates or modifies no
+       file (pure end-to-end verification, or pure cleanup with no diff), give it a leading
+       tail-kind tag or `worktrail-compile` rejects it for having no file scope: `[e2e]` for
+       verification-only tasks, `[cleanup]` for cleanup-only tasks - e.g. `- [ ] 3.1 [e2e] Run
+       the full test suite and confirm it passes.` Any other kind tag, including `[docs]`, does
+       NOT exempt a task from file scope - a `[docs]`-tagged task still needs a real file (the
+       doc it updates).
 
 6. **Point to the next step (guidance only - NEVER act on it)**
    - Artifacts still missing -> suggest `/opsx:propose` (same change name) to create them.
@@ -84,3 +101,4 @@ After each invocation, show:
 - Do not advance the build frontier: no new artifacts, no new files under glob artifacts - that is `/opsx:propose`'s job (re-run against the same change name).
 - Confirm every edit with the user before writing.
 - If the request changes the change's *intent* rather than refining it, recommend starting fresh with `/opsx:new` (the "Update vs. Start Fresh" heuristic).
+- Before writing a `tasks.md` revision, re-check only the task line(s) this revision touched against the requirement-coverage and file-less-task rules above - an added or rescoped task implementing a declared requirement must carry `(Requirement: <exact title>)`, and one with no file changes must carry `[e2e]` or `[cleanup]`. Do not touch untouched existing lines to satisfy this check.
