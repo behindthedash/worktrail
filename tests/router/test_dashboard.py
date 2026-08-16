@@ -1358,6 +1358,44 @@ class CategoryPickerAndRender(unittest.TestCase):
         self.assertIn("next_action", item)
         self.assertIn("stage", item)
 
+    def test_category_items_decisions_carry_dispatch_data(self):
+        decisions = [
+            {"id": "dec-1", "question": "Should we use approach A or B?", "repo": "myrepo", "brief": "20260617-001"},
+        ]
+        items = dashboard.build_category_items(None, [], inflight=[], queue_briefs=[], open_decisions=decisions)
+        item = items["decisions"][0]
+        self.assertEqual(item["type"], "decision")
+        self.assertEqual(item["action"], "answer-decision")
+        self.assertEqual(item["id"], "dec-1")
+        self.assertEqual(item["label"], "Should we use approach A or B?")
+        self.assertEqual(item["repo"], "myrepo")
+        self.assertEqual(item["brief"], "20260617-001")
+
+    def test_category_items_decisions_label_truncated_and_falls_back_to_id(self):
+        long_question = "x" * 80
+        decisions = [
+            {"id": "dec-1", "question": long_question},
+            {"id": "dec-2", "question": None},
+        ]
+        items = dashboard.build_category_items(None, [], inflight=[], queue_briefs=[], open_decisions=decisions)
+        labels = {i["id"]: i["label"] for i in items["decisions"]}
+        self.assertEqual(labels["dec-1"], long_question[:60])
+        self.assertEqual(len(labels["dec-1"]), 60)
+        self.assertEqual(labels["dec-2"], "dec-2")
+
+    def test_category_items_decisions_capped_at_four(self):
+        decisions = [{"id": f"dec-{i}", "question": f"q{i}"} for i in range(6)]
+        items = dashboard.build_category_items(None, [], inflight=[], queue_briefs=[], open_decisions=decisions)
+        self.assertEqual(len(items["decisions"]), 4)
+
+    def test_category_items_decisions_omitted_when_none_or_empty(self):
+        items_none = dashboard.build_category_items(None, [], inflight=[], queue_briefs=[], open_decisions=None)
+        items_empty = dashboard.build_category_items(None, [], inflight=[], queue_briefs=[], open_decisions=[])
+        items_default = dashboard.build_category_items(None, [], inflight=[], queue_briefs=[])
+        self.assertNotIn("decisions", items_none)
+        self.assertNotIn("decisions", items_empty)
+        self.assertNotIn("decisions", items_default)
+
     def test_category_items_queue_item_planned_agent_matches_routing(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
