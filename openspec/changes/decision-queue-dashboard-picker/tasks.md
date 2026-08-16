@@ -79,7 +79,7 @@
 
 ## 4. Verification
 
-- [ ] 4.1 [e2e] Run `PYTHONPATH=src pytest -q` and `PYTHONPATH=src python3 -m
+- [x] 4.1 [e2e] Run `PYTHONPATH=src pytest -q` and `PYTHONPATH=src python3 -m
       worktrail.orchestrator.orchestrate check`; both must be green, including the new dashboard
       coverage from section 2 and the existing `tests/test_plugin_surface.py` cross-skill
       reference-link checks against the new `answer-decision.md` file.
