@@ -27,6 +27,34 @@ A/B/G-J (when the brief carries `related:` entries) it runs in addition to the r
 collision branch. Running more than one branch for the same dispatch is expected, not a bug:
 each branch answers a different question and none suppresses another.
 
+## Predicate re-check
+
+Before any of the probe-based checking below, re-derive whether the brief's own captured
+*predicate* is still true. Some briefs (e.g. those filed by a checkbox-drift sweep) do not just
+describe stale work to search for — they carry a specific claim about repo state in their
+frontmatter (`drift-source`, `drift-findings`) that may itself have already been resolved by the
+time the brief is dispatched. Read the claimed brief's frontmatter, then run:
+
+```bash
+RECHECK_JSON=$(worktrail-recheck-brief-predicate \
+  --repo "$REPO" --brief "$CLAIMED_BRIEF_PATH" --json 2>/dev/null)
+```
+
+Branch on `attempted` and `outcome` before ever reaching today's "Running it" step below:
+
+| `attempted` | `outcome` | Meaning | Action |
+|---|---|---|---|
+| `false` | `no-predicate` | Brief carries no `drift-source`; nothing to re-check. | Fall through to "Running it" unchanged. |
+| `false` | `unrecognized` | `drift-source` is set but no re-check is registered for it. | Fall through to "Running it" unchanged. |
+| `true` | `error` | A predicate was registered but re-checking it failed (missing `drift-findings`, an unreadable task file, or the recheck function itself raised). | Fall through to "Running it" unchanged. |
+| `true` | `still-true` | Every `drift-findings` entry still holds against current on-disk state. | Documented separately, below the probe-based flow. |
+| `true` | `resolved` | No `drift-findings` entry still holds. | Documented separately, below the probe-based flow. |
+
+Any `attempted: false` outcome (`no-predicate`, `unrecognized`) or `outcome: "error"` is not a
+signal of anything — it means the same as never having run this check at all, and today's
+"Running it" section proceeds exactly as it does for a non-drift brief, with no new behavior
+inserted between the gate above and the `worktrail-check-brief-staleness` invocation below.
+
 ## Running it
 
 ```bash
