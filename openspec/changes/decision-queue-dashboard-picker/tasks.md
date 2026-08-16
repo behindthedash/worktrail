@@ -1,11 +1,11 @@
 ## 1. `dashboard.py` — decisions input + category wiring
 
-- [ ] 1.1 Add a `--decisions-json` CLI argument to `dashboard.py`'s `main()` argparse (JSON
+- [x] 1.1 Add a `--decisions-json` CLI argument to `dashboard.py`'s `main()` argparse (JSON
       string from `worktrail-decision list --status open --json`), and parse it into an
       `open_decisions: List[Dict[str, Any]]` list, mirroring the existing `--queue-json` /
       `queue_briefs` parse block exactly (same `parsed.get("decisions", [])` pattern, same
       degrade-to-`[]`-on-parse-failure behavior).
-- [ ] 1.2 Add a `"decisions"` entry to `_CATEGORY_DESC` describing the category (e.g. "Answer a
+- [x] 1.2 Add a `"decisions"` entry to `_CATEGORY_DESC` describing the category (e.g. "Answer a
       blocked product decision — unblocks the brief automatically.").
 - [ ] 1.3 Extend `build_category_actions` with a new `open_decisions: Optional[List[Dict[str,
       Any]]] = None` parameter. When `len(open_decisions or [])` is nonzero, append a `decisions`
