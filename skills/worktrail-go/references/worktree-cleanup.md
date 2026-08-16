@@ -45,7 +45,18 @@ already upstream — the squash-merge-safe "is it merged" check (see memory
 
 Show a compact table: branch · state (MERGED/GONE/DIRTY) · prunable? Group the
 clearly-safe ones and ask for a single confirmation before removing. Then, for each
-confirmed-stale worktree:
+confirmed-stale worktree, run the shared
+`subagent-prompts.md#worktree-deletion-liveness-guard` before removing it — this flow
+has no `$RUN` of its own, so resolve the run-records directory from policy instead:
+
+```bash
+RUN_RECORDS_DIR=$(worktrail-policy --repo "$REPO" --json | python3 -c "import json,sys; print(json.load(sys.stdin)['run_record_dir'])")
+```
+
+Then, with `$RUN_RECORDS_DIR` set above and `$INVOCATION_CONTEXT_DISPATCH_ID` passed
+through unchanged from the invoking shell, run the guard body from
+`#worktree-deletion-liveness-guard` against this `$WT`. Only proceed to remove if the
+guard did not block:
 
 ```bash
 git -C "$REPO" worktree remove "$WT"          # refuses if dirty — that's the safety net
