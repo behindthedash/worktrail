@@ -3,7 +3,8 @@ name: worktrail-help
 description: >
   Show the Worktrail front-door commands and accepted positional arguments.
   Use when the user asks how to invoke worktrail-go, wants the available repo,
-  spec, brief, route, or auto forms, or invokes worktrail-go with help.
+  spec, brief, route, or auto forms, invokes worktrail-go with help, or asks
+  how to answer a filed product decision (worktrail-decision).
 allowed-tools: Read
 ---
 
@@ -51,3 +52,18 @@ The standalone drain skill is intentionally not user-facing.
 
 `handoff:<id>` remains an internal/documented compatibility spelling, but the
 portable front-door spelling is the bare positional `<brief-id>`.
+
+## Answering a filed decision
+
+An unattended run that hits a genuine product decision files a record instead
+of guessing, then blocks the brief until you answer. This is a separate CLI,
+not a `<front-door>` form:
+
+```text
+worktrail-decision list                         everything open/answered/resolved
+worktrail-decision answer <id> --answer "..."    record your answer
+```
+
+The blocked brief unblocks automatically once you answer; the next drain pass
+picks it back up. Full filing/resuming procedure:
+`../worktrail-go/references/decision-queue.md`.
