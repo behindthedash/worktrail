@@ -365,6 +365,18 @@ def resolve_decision(identifier: str,
 # list / show
 
 
+def _decision_row(md: Path, status: str, fm: Dict[str, Any],
+                  body: str) -> Dict[str, Any]:
+    m = re.search(r"^##\s+Question\s*$\r?\n\r?\n?(.+)$", body, re.MULTILINE)
+    return {
+        "id": md.stem, "status": status, "path": str(md),
+        "repo": fm.get("repo"), "brief": fm.get("brief"),
+        "created": fm.get("created"),
+        "answered_at": fm.get("answered-at"),
+        "question": (m.group(1).strip() if m else ""),
+    }
+
+
 def list_decisions(status: Optional[str] = None,
                    queue_base: Optional[Path] = None) -> Dict[str, Any]:
     base = decisions_dir(queue_base)
@@ -381,14 +393,7 @@ def list_decisions(status: Optional[str] = None,
                 _fm, body = split_frontmatter(md.read_text(encoding="utf-8"))
             except OSError:
                 body = ""
-            m = re.search(r"^##\s+Question\s*$\r?\n\r?\n?(.+)$", body, re.MULTILINE)
-            rows.append({
-                "id": md.stem, "status": st, "path": str(md),
-                "repo": fm.get("repo"), "brief": fm.get("brief"),
-                "created": fm.get("created"),
-                "answered_at": fm.get("answered-at"),
-                "question": (m.group(1).strip() if m else ""),
-            })
+            rows.append(_decision_row(md, st, fm, body))
     return {"decisions": rows}
 
 
@@ -466,7 +471,17 @@ def main(argv: Optional[List[str]] = None) -> int:
                 print(f"error: no decision matches {args.identifier!r}",
                       file=sys.stderr)
                 return 1
-            print(found["path"].read_text(encoding="utf-8"))
+            content = found["path"].read_text(encoding="utf-8")
+            if args.as_json:
+                try:
+                    _fm, body = split_frontmatter(content)
+                except OSError:
+                    body = ""
+                row = _decision_row(found["path"], found["status"], found["fm"], body)
+                row["content"] = content
+                print(json.dumps(row, indent=2))
+                return 0
+            print(content)
             return 0
         elif args.cmd == "answer":
             result = answer(args.identifier, args.answer, queue_base=qb)
