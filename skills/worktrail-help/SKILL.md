@@ -56,8 +56,14 @@ portable front-door spelling is the bare positional `<brief-id>`.
 ## Answering a filed decision
 
 An unattended run that hits a genuine product decision files a record instead
-of guessing, then blocks the brief until you answer. This is a separate CLI,
-not a `<front-door>` form:
+of guessing, then blocks the brief until you answer. The bare `<front-door>`
+dashboard now surfaces every open decision directly as a picker category —
+selecting one walks you through its Question/Background/Options interactively
+and records your answer, no manual CLI call needed. Full interactive
+procedure: `../worktrail-go/references/answer-decision.md`.
+
+For non-interactive use (e.g. scripting an answer), the underlying CLI is
+still available directly, not as a `<front-door>` form:
 
 ```text
 worktrail-decision list                         everything open/answered/resolved
