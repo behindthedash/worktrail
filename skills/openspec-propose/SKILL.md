@@ -74,6 +74,21 @@ per the calling worktrail-sdd-workflow pipeline instead.
       - Read any completed dependency files for context
       - Create the artifact file using `template` as the structure and write it to `resolvedOutputPath`
       - Apply `context` and `rules` as constraints - but do NOT copy them into the file
+      - **If `<artifact-id>` is `tasks`**, worktrail's own orchestrator (not OpenSpec) compiles
+        `tasks.md` into a per-task file-scope plan afterward (`worktrail-compile`), and OpenSpec's
+        checklist schema carries no field for that — get it right on the first pass instead of
+        relying on that later compile step to catch it:
+        - **Requirement coverage**: for every requirement declared in this change's
+          `specs/**/spec.md` (`### Requirement: <Name>` under `## ADDED Requirements` /
+          `## MODIFIED Requirements`), make the exact requirement name appear somewhere in
+          `tasks.md` — append `(Requirement: <exact title>)` to the task line that implements it.
+        - **File-less tasks**: a task that creates or modifies no file (pure end-to-end
+          verification, or pure cleanup with no diff) needs a leading tail-kind tag or
+          `worktrail-compile` rejects it for having no file scope: `[e2e]` for verification-only
+          tasks, `[cleanup]` for cleanup-only tasks — e.g. `- [ ] 3.1 [e2e] Run the full test
+          suite and confirm it passes.` Any other kind tag, including `[docs]`, does NOT exempt a
+          task from file scope — a `[docs]`-tagged task still needs a real file (the doc it
+          updates).
       - Show brief progress: "Created <artifact-id>"
 
    b. **Continue until all `applyRequires` artifacts are complete**
@@ -117,3 +132,6 @@ After completing all artifacts, summarize:
 - If context is critically unclear, ask the user - but prefer making reasonable decisions to keep momentum
 - If a change with that name already exists, ask if user wants to continue it or create a new one
 - Verify each artifact file exists after writing before proceeding to next
+- Before showing final status, re-check `tasks.md` against the requirement-coverage and
+  file-less-task rules above — every declared requirement's exact name must appear somewhere in
+  the file, and every task with no file changes must carry `[e2e]` or `[cleanup]`
