@@ -11,7 +11,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from worktrail.addons.base import AddOnResult
+from worktrail.router.policy import load_policy
 from worktrail.router.preflight import (
+    ADDON_REQUIRED_FAILURE_EXIT,
     check, duplicate_work_warning, is_running, is_unparseable_command,
     labels_in_command, main, marker_path, read_marker, read_running_lock,
     remove_running_lock, running_lock_path, tree_state, write_marker,
@@ -419,6 +422,67 @@ class TestRunCli(_GitRepoCase):
         repo = self._init_repo('pre_pr_cmd: "exit 3"\n')
         code = main(["run", "--repo", repo])
         self.assertEqual(code, 3)
+        self.assertIsNone(read_running_lock(Path(repo)))
+
+
+class TestRunAddons(_GitRepoCase):
+    def test_unconfigured_repo_sees_no_addon_invocation(self) -> None:
+        # No `add_ons:` key in go-policy.yaml -- run_addons must iterate zero
+        # entries, so addon_for is never even consulted.
+        repo = self._init_repo('pre_pr_cmd: "true"\n')
+        with mock.patch("worktrail.addons.runner.addon_for") as mock_addon_for:
+            code = main(["run", "--repo", repo])
+        self.assertEqual(code, 0)
+        mock_addon_for.assert_not_called()
+
+    def test_configured_addon_output_committed_before_gate_runs(self) -> None:
+        # pre_pr_cmd itself asserts the add-on's commit is already HEAD,
+        # so a passing gate proves the commit landed before the gate ran.
+        repo = self._init_repo(
+            'pre_pr_cmd: \'git log -1 --pretty=%s | grep -q '
+            '"^chore(fakeaddon): synced$"\'\n'
+        )
+        policy = load_policy(Path(repo))
+        policy["add_ons"] = {"fakeaddon": {}}
+
+        def _run(ctx):
+            path = Path(ctx.worktree) / "generated.txt"
+            path.write_text("generated\n", encoding="utf-8")
+            return AddOnResult(changed=True, detail="synced", paths=[path])
+
+        fake_addon = mock.Mock()
+        fake_addon.run.side_effect = _run
+
+        with mock.patch(
+            "worktrail.router.preflight.load_policy", return_value=policy,
+        ), mock.patch(
+            "worktrail.addons.runner.addon_for", return_value=fake_addon,
+        ):
+            code = main(["run", "--repo", repo])
+        self.assertEqual(code, 0)
+        fake_addon.run.assert_called_once()
+        subject = subprocess.run(
+            ["git", "-C", repo, "log", "-1", "--pretty=%s"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        self.assertEqual(subject, "chore(fakeaddon): synced")
+
+    def test_required_addon_failure_fails_preflight_run(self) -> None:
+        repo = self._init_repo('pre_pr_cmd: "true"\n')
+        policy = load_policy(Path(repo))
+        policy["add_ons"] = {"fakeaddon": {"required": True}}
+
+        fake_addon = mock.Mock()
+        fake_addon.install.side_effect = RuntimeError("boom")
+
+        with mock.patch(
+            "worktrail.router.preflight.load_policy", return_value=policy,
+        ), mock.patch(
+            "worktrail.addons.runner.addon_for", return_value=fake_addon,
+        ):
+            code = main(["run", "--repo", repo])
+        self.assertEqual(code, ADDON_REQUIRED_FAILURE_EXIT)
+        self.assertIsNone(read_marker(Path(repo)))
         self.assertIsNone(read_running_lock(Path(repo)))
 
 
