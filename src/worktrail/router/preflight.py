@@ -71,12 +71,18 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
-from worktrail.addons.runner import run_addons
+from worktrail.addons.runner import AddOnFailure, run_addons
 
 from . import pre_pr_gate
 from .policy import load_policy
 
 MARKER_NAME = "preflight-pass.json"
+
+# Returned by `run` when a `required: true` add-on (`policy["add_ons"]`) fails
+# -- mirrors pre_pr_gate's UNCONFIGURED_EXIT/failing-cmd exit codes (2 and the
+# command's own nonzero returncode): no pass marker is written, so `check()`'s
+# `gh pr create` guard denies the same as it would for a failed smoke gate.
+ADDON_REQUIRED_FAILURE_EXIT = 6
 
 # Written for the duration of `run`'s gate execution and removed in a
 # `finally` block on exit (pass, fail, or exception) -- gives callers a
@@ -564,7 +570,15 @@ def _run(args: argparse.Namespace) -> int:
 
     write_running_lock(repo)
     try:
-        run_addons(repo, repo, policy)
+        try:
+            run_addons(repo, repo, policy)
+        except AddOnFailure as e:
+            print(
+                f"PRE-PR GATE: FAIL — required add-on {e.name!r} failed: {e.detail}",
+                file=sys.stderr,
+            )
+            print("  Fix the add-on failure and re-run the gate.", file=sys.stderr)
+            return ADDON_REQUIRED_FAILURE_EXIT
         exit_code = pre_pr_gate.main(gate_argv)
     finally:
         remove_running_lock(repo)
