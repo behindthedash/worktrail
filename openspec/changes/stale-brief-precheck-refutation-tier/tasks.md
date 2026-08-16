@@ -3,7 +3,8 @@
 - [ ] 1.1 In `src/worktrail/router/spec_sync_sweep_checkbox_brief.py`, extend `_render()` to emit
       a `drift-findings` frontmatter list (one entry per hit: `path`, `unchecked_count`,
       `total_count`) alongside the existing `drift-source: checkbox-drift-sweep` marker, without
-      changing the existing prose `## Focus` bullet rendering.
+      changing the existing prose `## Focus` bullet rendering. Implements Requirement:
+      Deterministic Staleness Predicate Is Captured On Sweep-Generated Briefs.
 - [ ] 1.2 Update `tests/router/test_spec_sync_sweep_checkbox_brief.py` to assert the new
       `drift-findings` frontmatter is present, correctly shaped, and round-trips through
       `brief_frontmatter.read_frontmatter`/`validate_brief` for a multi-hit brief.
@@ -19,11 +20,13 @@
       `read_task_file`/`_all_checkboxes_checked`, classify as still-true (still `status:
       completed` with an unchecked box in `COMPLETION_AUDIT_SECTIONS`) or resolved (fully
       checked, or no longer `status: completed`); a finding that cannot be read raises, causing
-      the whole brief's recheck to become `outcome="error"`.
+      the whole brief's recheck to become `outcome="error"`. Implements Requirement:
+      Checkbox-Drift Predicate Re-Check Reflects Current Task-File State.
 - [ ] 2.3 Implement `recheck()`'s outcome selection: `"no-predicate"` when `drift-source` is
       absent, `"unrecognized"` when present but not in `PREDICATE_RECHECKS`, `"error"` when the
       registered function raises or `drift-findings` is missing/empty, `"still-true"` when any
-      finding is still-true, `"resolved"` when every finding resolves.
+      finding is still-true, `"resolved"` when every finding resolves. Implements Requirement:
+      Deterministic Predicate Re-Check Precedes Evidence Surfacing.
 - [ ] 2.4 Add `tests/router/test_check_brief_predicate.py` covering: no `drift-source`;
       unrecognized `drift-source`; checkbox-drift brief with all findings still drifted
       (still-true); all findings resolved (resolved); mixed still-true/resolved (still-true,
@@ -43,14 +46,16 @@
 
 ## 4. Run-record and queue-mutation wiring for the two terminal outcomes
 
-- [ ] 4.1 Document (in `check_brief_predicate.py`'s module docstring or a small helper) the
+- [ ] 4.1 Implements Requirement: Predicate Still True Proceeds Automatically With Recorded Evidence.
+      Document (in `check_brief_predicate.py`'s module docstring or a small helper) the
       exact evidence-line format for the `"still-true"` outcome, built from the `still_true`
       list, matching the existing `worktrail-run-record append "$RUN" decisions "..."` pattern
       used for the probe-based "proceed" outcome.
 - [ ] 4.2 Document the exact closure-note format for the `"resolved"` outcome, built from the
       `resolved` list and naming the predicate re-check explicitly (never a commit SHA or PR
       number), matching the existing `worktrail-work-queue done ... --note "..."` pattern used
-      for the probe-based "close as already-delivered" outcome.
+      for the probe-based "close as already-delivered" outcome. Implements Requirement:
+      Predicate Resolved Closes The Brief Automatically Citing The Re-Check.
 
 ## 5. Phase 5.5 skill-doc integration
 
@@ -76,14 +81,14 @@
 
 ## 6. Verification
 
-- [ ] 6.1 Run `PYTHONPATH=src pytest -q` and confirm all new and existing tests pass.
-- [ ] 6.2 Run `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` (golden
+- [ ] 6.1 [e2e] Run `PYTHONPATH=src pytest -q` and confirm all new and existing tests pass.
+- [ ] 6.2 [e2e] Run `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` (golden
       record/replay regression) and confirm it stays green.
-- [ ] 6.3 Confirm `tests/test_plugin_surface.py` still passes after adding the new console
+- [ ] 6.3 [e2e] Confirm `tests/test_plugin_surface.py` still passes after adding the new console
       script (no plugin/skill directory changes are needed since no new skill is introduced,
       only a new reference-doc section in the existing `worktrail-go` skill).
-- [ ] 6.4 Manually replay the motivating case's shape: construct a fixture checkbox-drift brief
-      with `drift-findings` naming two still-`status: completed`/still-unchecked task files, run
-      `worktrail-recheck-brief-predicate`, and confirm it reports `outcome: "still-true"` (i.e.
-      would have proceeded automatically instead of filing decision
+- [ ] 6.4 [e2e] Manually replay the motivating case's shape: construct a fixture checkbox-drift
+      brief with `drift-findings` naming two still-`status: completed`/still-unchecked task
+      files, run `worktrail-recheck-brief-predicate`, and confirm it reports `outcome:
+      "still-true"` (i.e. would have proceeded automatically instead of filing decision
       `20260814-030507-does-merged-pr-46-fix`).
