@@ -34,6 +34,7 @@ from . import dispatch
 from . import live
 from . import progress
 from . import worktree
+from ..addons import runner as addons_runner
 from ..taskformats import resolve as taskformats
 
 TAIL = ("e2e", "cleanup")
@@ -870,6 +871,7 @@ def integrate_one(
     pr_labels: Optional[list[str]] = None,
     route: Optional[str] = None,
     gates: str = "",
+    policy: Optional[dict] = None,
 ) -> Optional[tuple]:
     """Integrate exactly one group and record its result in the journal.
 
@@ -906,6 +908,11 @@ def integrate_one(
     this run, forwarded to the label refresh so require_human_routes (and
     any gate-driven eligibility check) reaches orchestrator-created group
     PRs the same way it reaches one-off PRs. Omit when unknown.
+    policy: go-policy.yaml's parsed dict, forwarded to
+    `addons.runner.run_addons` so a freshly-built group branch gets its
+    configured add-ons' output staged and committed before the drift/smoke
+    gates and the push. None (or a policy with no `add_ons` key) runs zero
+    add-ons -- the zero-behavior-change default for an unconfigured repo.
     """
     name = g["name"]
 
@@ -1071,6 +1078,12 @@ def integrate_one(
             if strip_spec_folder:
                 _strip_spec_folder_to_base(iw, spec_id, target)
             _write_group_task_status(iw, spec_id, g, status)
+            # Configured add-ons (aspens sync, etc.) run and commit here, after the
+            # task branches are merged and the status write above but before the
+            # drift/smoke gates and the push -- so their output is part of what
+            # those gates verify and what reaches the PR, not a trailing commit
+            # tacked on after the fact.
+            addons_runner.run_addons(iw, repo, policy or {})
             # Deterministic drift checks, before the smoke command and before the
             # push. After the status write above, because DoD verification's entire
             # population is the set of task files that write just stamped
