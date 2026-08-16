@@ -15,7 +15,7 @@
 
 ## 2. Run record tracks its own worktree path
 
-- [ ] 2.1 Wire `run_record.py set "$RUN" worktree "$WT"` into all three
+- [x] 2.1 Wire `run_record.py set "$RUN" worktree "$WT"` into all three
       worktree-creation procedures in `skills/worktrail-go/references/subagent-prompts.md`
       (`#spec-worktree-setup`, `#change-spec-worktree-setup`,
       `#fix-branch-worktree-setup`), immediately after each `git worktree add`.
@@ -23,7 +23,7 @@
 
 ## 3. Deletion liveness guard procedure
 
-- [ ] 3.1 Add a new shared named section `#worktree-deletion-liveness-guard` to
+- [x] 3.1 Add a new shared named section `#worktree-deletion-liveness-guard` to
       `skills/worktrail-go/references/subagent-prompts.md`: given `$WT`, a run-records
       directory, and the caller's `$INVOCATION_CONTEXT_DISPATCH_ID`, resolve the owning
       run record via `find-by-worktree`; if found, call `liveness` on it with
@@ -34,7 +34,7 @@
 
 ## 4. Wire the guard into all documented deletion paths
 
-- [ ] 4.1 Invoke `#worktree-deletion-liveness-guard` from both teardown sections in
+- [x] 4.1 Invoke `#worktree-deletion-liveness-guard` from both teardown sections in
       `skills/worktrail-go/references/subagent-prompts.md` — the `new`-pipeline
       teardown under `#worktree-lifecycle` and `#fix-branch-worktree-teardown` — before
       each section's `git worktree remove`/`branch -D` calls, passing that call site's

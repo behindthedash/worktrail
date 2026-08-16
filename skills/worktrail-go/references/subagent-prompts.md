@@ -1006,6 +1006,7 @@ SIBLING_REF_GLOB="refs/heads/spec/$SPEC_ID"
 # run the sibling check — #sibling-worktree-check
 WT="$REPO-worktrees/$SPEC_ID-spec"
 git -C "$REPO" worktree add -b "spec/$SPEC_ID" "$WT" "$BASE"
+worktrail-run-record set "$RUN" worktree "$WT"
 if [ "$FORMAT" = "openspec" ]; then
   SPEC_DIR="$WT/openspec/changes/$SPEC_ID"
 else
@@ -1049,6 +1050,7 @@ sibling already made.
 CHANGE_ID="$SPEC_ID-$CHANGE_SLUG"
 WT="$REPO-worktrees/$SPEC_ID-chg-$CHANGE_SLUG"
 git -C "$REPO" worktree add -b "chg/$CHANGE_ID" "$WT" "$BASE"
+worktrail-run-record set "$RUN" worktree "$WT"
 CHANGE_DIR="$WT/openspec/changes/$CHANGE_ID"
 ```
 
@@ -1129,6 +1131,7 @@ when `$RUN` reaches any `finish` completion state, same recovery path as
 ```bash
 WT="$REPO-worktrees/fix-$SLUG"
 git -C "$REPO" worktree add -b "fix/$SLUG" "$WT" "$BASE"
+worktrail-run-record set "$RUN" worktree "$WT"
 ```
 
 If `git worktree add` is sandbox-denied, surface it and stop — don't write on base.
@@ -1139,6 +1142,55 @@ After creating the worktree, bootstrap that checkout's local dependencies before
 running repo-local tools from it (`npm ci` or the repo's documented equivalent) —
 see the note under `#spec-worktree-setup`; do not assume the base checkout's
 `node_modules` or generated artifacts are usable from the new worktree.
+
+### Worktree deletion liveness guard {#worktree-deletion-liveness-guard}
+
+Shared by every documented deletion path — the `new`-pipeline teardown below,
+`#fix-branch-worktree-teardown`, and `worktree-cleanup.md`'s prune step. `git worktree
+add` now stamps the creating run's own path onto that run record (see
+`#spec-worktree-setup`/`#change-spec-worktree-setup`/`#fix-branch-worktree-setup`), so
+a worktree about to be removed can be checked back against the run that owns it before
+it's deleted out from under a still-active process — the same class of cross-session
+collision `#active-conflicts-scan` and the Active-run-resume liveness check
+(`worktrail-go/SKILL.md` Phase 7) already guard against, applied here to deletion
+instead of duplicate dispatch.
+
+Call this before any `git worktree remove`/`branch -D` pair below, with `$WT` set to
+the worktree about to be deleted, `$RUN_RECORDS_DIR` set to that call site's own
+run-records directory, and `$INVOCATION_CONTEXT_DISPATCH_ID` carried through from the
+invoking shell:
+
+```bash
+OWNER=$(worktrail-run-record find-by-worktree \
+  --dir "$RUN_RECORDS_DIR" --repo "$REPO" --worktree "$WT")
+OWNER_FOUND=$(echo "$OWNER" | python3 -c "import json,sys; print(str(json.load(sys.stdin)['found']).lower())")
+
+if [ "$OWNER_FOUND" = "true" ]; then
+  OWNER_PATH=$(echo "$OWNER" | python3 -c "import json,sys; print(json.load(sys.stdin)['path'])")
+  LIVENESS=$(worktrail-run-record liveness "$OWNER_PATH" --dispatch-id "$INVOCATION_CONTEXT_DISPATCH_ID")
+  LIVE_FRESH=$(echo "$LIVENESS" | python3 -c "import json,sys; print(str(json.load(sys.stdin)['fresh']).lower())")
+  LIVE_SAME_DISPATCH=$(echo "$LIVENESS" | python3 -c "import json,sys; print(str(json.load(sys.stdin)['same_dispatch']).lower())")
+
+  if [ "$LIVE_FRESH" = "true" ] && [ "$LIVE_SAME_DISPATCH" = "false" ]; then
+    echo "BLOCKED: refusing to delete $WT — owned by a live run:" >&2
+    echo "$LIVENESS" | python3 -c "
+import sys, json
+r = json.load(sys.stdin)
+print(f'  run_id={r.get(\"run_id\",\"?\")} age_seconds={r.get(\"age_seconds\",\"?\")} updated_at={r.get(\"updated_at\",\"?\")}')
+" >&2
+    # Stop here — do not run git worktree remove/branch -D on $WT.
+  fi
+fi
+```
+
+`same_dispatch: true` (this exact dispatch owns the record it just found) and
+`fresh: false` (a stale/abandoned owning record) both proceed with the caller's
+deletion unchanged — the first because the caller is deleting its own worktree, the
+second because the owning process most likely crashed without ever reaching teardown
+and the record itself would otherwise rot forever. `OWNER_FOUND = false` (no run
+record ever claimed this path, e.g. records already pruned) also proceeds unchanged —
+this guard only ever blocks on positive evidence of a live, different owner, never on
+the absence of one.
 
 ### Teardown after `new` pipeline completes
 
@@ -1152,6 +1204,11 @@ anywhere outside `$WT`), not `$WT` itself — `cd` back first if an earlier step
 inside it. See the worktree-lifecycle note above for why.
 
 - **All group PRs auto-merged green:**
+
+  Before removing `$WT`, run `#worktree-deletion-liveness-guard` with `$RUN_RECORDS_DIR`
+  set to `"$(dirname "$(dirname "$RUN")")"` and `$INVOCATION_CONTEXT_DISPATCH_ID` carried
+  through from the invoking shell. If it blocks, stop here — do not run the commands below.
+
   ```bash
   git -C "$REPO" worktree remove "$WT"
   git -C "$REPO" branch -D "spec/$SPEC_ID"   # only after confirmed merge
@@ -1188,6 +1245,11 @@ anywhere outside `$WT`), not `$WT` itself — `cd` back first if an earlier step
 inside it. See the worktree-lifecycle note above for why.
 
 - **PR merged:**
+
+  Before removing `$WT`, run `#worktree-deletion-liveness-guard` with `$RUN_RECORDS_DIR`
+  set to `"$(dirname "$(dirname "$RUN")")"` and `$INVOCATION_CONTEXT_DISPATCH_ID` carried
+  through from the invoking shell. If it blocks, stop here — do not run the commands below.
+
   ```bash
   gh pr view "$PR_URL" --json state,mergedAt   # confirm merged before removing
   git -C "$REPO" worktree remove "$WT"
