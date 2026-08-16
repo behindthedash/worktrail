@@ -1,11 +1,11 @@
 ## 1. Stamp structured findings on checkbox-drift briefs
 
-- [ ] 1.1 In `src/worktrail/router/spec_sync_sweep_checkbox_brief.py`, extend `_render()` to emit
+- [x] 1.1 In `src/worktrail/router/spec_sync_sweep_checkbox_brief.py`, extend `_render()` to emit
       a `drift-findings` frontmatter list (one entry per hit: `path`, `unchecked_count`,
       `total_count`) alongside the existing `drift-source: checkbox-drift-sweep` marker, without
       changing the existing prose `## Focus` bullet rendering. Implements Requirement:
       Deterministic Staleness Predicate Is Captured On Sweep-Generated Briefs.
-- [ ] 1.2 Update `tests/router/test_spec_sync_sweep_checkbox_brief.py` to assert the new
+- [x] 1.2 Update `tests/router/test_spec_sync_sweep_checkbox_brief.py` to assert the new
       `drift-findings` frontmatter is present, correctly shaped, and round-trips through
       `brief_frontmatter.read_frontmatter`/`validate_brief` for a multi-hit brief.
 
