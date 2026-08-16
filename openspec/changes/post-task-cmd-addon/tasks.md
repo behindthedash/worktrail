@@ -7,7 +7,7 @@
 
 - [x] 2.1 Create `src/worktrail/addons/__init__.py` and `src/worktrail/addons/base.py` defining the `AddOn` `Protocol` (`name`, `install(ctx)`, `configure(ctx)`, `run(ctx) -> AddOnResult`) and an `AddOnResult` dataclass (`changed: bool`, `detail: str`, `paths: list[Path]`), mirroring `src/worktrail/taskformats/base.py`'s docstring/seam pattern. Implements Requirement: Add-ons are pluggable behind a common interface.
 - [x] 2.2 Create `src/worktrail/addons/resolve.py` with an `addon_for(name: str) -> AddOn` if/elif dispatch (mirroring `taskformats/resolve.py:73-82`'s `task_source_for`) that raises a clear error for an unresolved name (per design D5). Implements Requirement: Unknown add-on names fail closed.
-- [ ] 2.3 Add `tests/addons/test_base.py` and `tests/addons/test_resolve.py` covering: known name resolves, unknown name raises with the name in the message.
+- [x] 2.3 Add `tests/addons/test_base.py` and `tests/addons/test_resolve.py` covering: known name resolves, unknown name raises with the name in the message.
 
 ## 3. Shared stage-and-commit runner
 
@@ -32,13 +32,13 @@
 - [x] 6.1 Create `src/worktrail/addons/aspens.py` implementing `AddOn`: `install()` ensures the `aspens` CLI is present, checking a machine-local marker (`~/.cache/worktrail/addons/aspens/last-check`, default 24h interval per design D7) before re-checking/updating. Implements Requirement: aspens CLI availability is worktrail's responsibility.
 - [x] 6.2 Implement `configure()`: run `aspens doc init` (with the add-on's configured target/backend, or sane defaults) only when `.aspens.json` is absent; leave an existing `.aspens.json` untouched. Explicitly do not call aspens' own `--install-hook`. Implements Requirement: aspens is configured, not left uninitialized and Requirement: aspens' own post-commit hook is never installed.
 - [x] 6.3 Implement `run()`: execute `aspens doc sync` (or `--refresh`), following the `subprocess.run` house style (`shell=True`/explicit list, `cwd=worktree`, `capture_output=True, text=True`, named timeout) from `integrate.py:651-658`, and report changed paths for the shared runner to stage/commit. Implements Requirement: aspens sync runs and commits after each task.
-- [ ] 6.4 Register `aspens` in `addons/resolve.py`'s dispatch.
-- [ ] 6.5 Add `tests/addons/test_aspens.py` covering: install skips when marker is fresh, install runs when marker stale/missing, configure is a no-op when `.aspens.json` exists, configure initializes when absent, run never invokes `--install-hook`, run reports changed paths for a successful sync.
+- [x] 6.4 Register `aspens` in `addons/resolve.py`'s dispatch.
+- [x] 6.5 Add `tests/addons/test_aspens.py` covering: install skips when marker is fresh, install runs when marker stale/missing, configure is a no-op when `.aspens.json` exists, configure initializes when absent, run never invokes `--install-hook`, run reports changed paths for a successful sync.
 
 ## 7. Plugin/CI surface
 
-- [ ] 7.1 [cleanup] Confirm `tests/test_plugin_surface.py` still passes unmodified (no new skill/command surface is introduced by this change — the add-on mechanism is internal to `integrate.py`/`preflight.py`). Verification-only: no files are changed by this task.
-- [ ] 7.2 [cleanup] Run `PYTHONPATH=src pytest -q` and `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` and confirm both are green. Verification-only: no files are changed by this task.
+- [x] 7.1 [cleanup] Confirm `tests/test_plugin_surface.py` still passes unmodified (no new skill/command surface is introduced by this change — the add-on mechanism is internal to `integrate.py`/`preflight.py`). Verification-only: no files are changed by this task.
+- [x] 7.2 [cleanup] Run `PYTHONPATH=src pytest -q` and `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` and confirm both are green. Verification-only: no files are changed by this task.
 
 ## 8. Rollout: enable the aspens add-on in this repo (dogfood)
 
