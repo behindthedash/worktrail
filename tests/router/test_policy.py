@@ -79,6 +79,26 @@ class TestDefaults(unittest.TestCase):
         self.assertTrue(pol["allow_seeded_implementation"])
 
 
+class TestAddOns(unittest.TestCase):
+    """add_ons: opt-in map of add-on name -> config, consumed by
+    addons/runner.py (post-task-cmd-addon). Empty by default so a repo with
+    no add_ons: key sees zero behavior change."""
+
+    def test_add_ons_defaults_to_empty_dict(self):
+        pol = load_policy(Path(tempfile.mkdtemp()))
+        self.assertEqual(pol["add_ons"], {})
+
+    def test_configured_add_ons_round_trips(self):
+        repo = _repo_with("add_ons:\n  aspens: true\n")
+        pol = load_policy(repo)
+        self.assertEqual(pol["add_ons"], {"aspens": True})
+
+    def test_add_ons_not_reported_as_unknown_key(self):
+        repo = _repo_with("add_ons:\n  aspens: true\n")
+        pol = load_policy(repo)
+        self.assertNotIn("add_ons", pol["_meta"]["unknown_keys"])
+
+
 class TestYamlSubset(unittest.TestCase):
     def test_scalars_nesting_and_lists(self):
         parsed = parse_policy_yaml(

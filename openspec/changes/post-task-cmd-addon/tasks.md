@@ -1,11 +1,11 @@
 ## 1. Policy support
 
-- [x] 1.1 Add `add_ons` to `DEFAULTS` in `src/worktrail/router/policy.py` (default `{}`) and to `KNOWN_KEYS`, alongside the existing `pre_pr_cmd`/`integrate_smoke_cmd` keys. Implements Requirement: Add-ons are opt-in per repo (a repo with no `add_ons:` key gets the `{}` default, so the runner in 3.1 iterates zero entries).
-- [ ] 1.2 Add/extend `tests/router/test_policy.py` to assert: `add_ons` defaults to `{}`, a configured `add_ons:` block round-trips through `load_policy`, and it is not reported in `unknown_keys`.
+- [ ] 1.1 Add `add_ons` to `DEFAULTS` in `src/worktrail/router/policy.py` (default `{}`) and to `KNOWN_KEYS`, alongside the existing `pre_pr_cmd`/`integrate_smoke_cmd` keys. Implements Requirement: Add-ons are opt-in per repo (a repo with no `add_ons:` key gets the `{}` default, so the runner in 3.1 iterates zero entries).
+- [x] 1.2 Add/extend `tests/router/test_policy.py` to assert: `add_ons` defaults to `{}`, a configured `add_ons:` block round-trips through `load_policy`, and it is not reported in `unknown_keys`.
 
 ## 2. Add-on interface and resolver
 
-- [x] 2.1 Create `src/worktrail/addons/__init__.py` and `src/worktrail/addons/base.py` defining the `AddOn` `Protocol` (`name`, `install(ctx)`, `configure(ctx)`, `run(ctx) -> AddOnResult`) and an `AddOnResult` dataclass (`changed: bool`, `detail: str`, `paths: list[Path]`), mirroring `src/worktrail/taskformats/base.py`'s docstring/seam pattern. Implements Requirement: Add-ons are pluggable behind a common interface.
+- [ ] 2.1 Create `src/worktrail/addons/__init__.py` and `src/worktrail/addons/base.py` defining the `AddOn` `Protocol` (`name`, `install(ctx)`, `configure(ctx)`, `run(ctx) -> AddOnResult`) and an `AddOnResult` dataclass (`changed: bool`, `detail: str`, `paths: list[Path]`), mirroring `src/worktrail/taskformats/base.py`'s docstring/seam pattern. Implements Requirement: Add-ons are pluggable behind a common interface.
 - [ ] 2.2 Create `src/worktrail/addons/resolve.py` with an `addon_for(name: str) -> AddOn` if/elif dispatch (mirroring `taskformats/resolve.py:73-82`'s `task_source_for`) that raises a clear error for an unresolved name (per design D5). Implements Requirement: Unknown add-on names fail closed.
 - [ ] 2.3 Add `tests/addons/test_base.py` and `tests/addons/test_resolve.py` covering: known name resolves, unknown name raises with the name in the message.
 
