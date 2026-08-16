@@ -22,6 +22,7 @@ LAST_CHECK_MARKER = CACHE_DIR / "last-check"
 CHECK_INTERVAL_SECONDS = 24 * 60 * 60
 
 INSTALL_TIMEOUT = 120
+CONFIGURE_TIMEOUT = 120
 
 
 class AspensAddOn:
@@ -50,7 +51,33 @@ class AspensAddOn:
         self._touch_marker()
 
     def configure(self, ctx: Any) -> None:
-        raise NotImplementedError
+        """Run `aspens doc init` once, leaving an existing `.aspens.json` untouched.
+
+        Never passes `--install-hook`: aspens' own post-commit hook is the
+        detached, non-committing mechanism this add-on exists to replace, so
+        the shared runner's own stage-and-commit step must stay the only
+        thing that ever commits aspens' output.
+        """
+        worktree = Path(ctx.worktree)
+        if (worktree / ".aspens.json").exists():
+            return
+        config = getattr(ctx, "config", None) or {}
+        cmd = ["aspens", "doc", "init"]
+        if config.get("target"):
+            cmd += ["--target", str(config["target"])]
+        if config.get("backend"):
+            cmd += ["--backend", str(config["backend"])]
+        try:
+            subprocess.run(
+                cmd,
+                cwd=str(worktree),
+                capture_output=True,
+                text=True,
+                timeout=getattr(ctx, "timeout", CONFIGURE_TIMEOUT),
+                check=False,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            pass
 
     def run(self, ctx: Any) -> AddOnResult:
         raise NotImplementedError
