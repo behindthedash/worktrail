@@ -1,7 +1,7 @@
 ## 1. Policy support
 
 - [ ] 1.1 Add `add_ons` to `DEFAULTS` in `src/worktrail/router/policy.py` (default `{}`) and to `KNOWN_KEYS`, alongside the existing `pre_pr_cmd`/`integrate_smoke_cmd` keys. Implements Requirement: Add-ons are opt-in per repo (a repo with no `add_ons:` key gets the `{}` default, so the runner in 3.1 iterates zero entries).
-- [ ] 1.2 Add/extend `tests/router/test_policy.py` to assert: `add_ons` defaults to `{}`, a configured `add_ons:` block round-trips through `load_policy`, and it is not reported in `unknown_keys`.
+- [x] 1.2 Add/extend `tests/router/test_policy.py` to assert: `add_ons` defaults to `{}`, a configured `add_ons:` block round-trips through `load_policy`, and it is not reported in `unknown_keys`.
 
 ## 2. Add-on interface and resolver
 
