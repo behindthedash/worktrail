@@ -18,8 +18,26 @@ would ride the same route/worktree/PR; when in doubt, leave a candidate in the q
    `related`-linked and same-`target-spec` briefs rank first; ≤3 companions. `reason` is
    one of `related-link` | `same-target-spec` | `score`.
 
-2. If `batch` is empty, claim just the primary (`worktrail-work-queue claim <id> --json`) and
-   continue. With two or more candidates, ask via `AskUserQuestion` (multiSelect, header
+2. If `batch` is empty, claim just the primary and continue:
+
+   ```bash
+   worktrail-work-queue claim <id> --by "$INVOCATION_CONTEXT_DISPATCH_ID" --json
+   ```
+
+   Always pass `--by "$INVOCATION_CONTEXT_DISPATCH_ID"` (resolved once in the Invocation
+   Context step) — it is the identity `claim()` compares against a prior claimant's
+   `claimed-by` to compute `same_owner`, distinguishing "this exact /go dispatch already
+   claimed this brief" from "a different, possibly concurrent, dispatch already owns it."
+   `status: "claimed"` → proceed. `status: "already-claimed"` with `same_owner: true` →
+   also proceed (a retried claim within this same dispatch). `status: "already-claimed"`
+   with `same_owner: false` (or `null`, which means `--by` was somehow not honored — treat
+   it the same as `false`, never as `true`) → a different dispatch owns this brief; do NOT
+   seed a pipeline against it. Report which brief was contended and stop this selection —
+   re-list the queue (Step 1 above) and pick a different candidate rather than silently
+   continuing on someone else's claim (`docs/specs/research/
+   concurrent-go-dispatch-brief-claim-race.md` is the incident this guards against).
+
+   With two or more batch candidates, ask via `AskUserQuestion` (multiSelect, header
    `Batch briefs`): "These queued briefs touch the same surface — fold them into this
    run?", one option per candidate showing its id, focus, and reason. With exactly one
    candidate, the single-option guard applies (`AskUserQuestion` rejects one-element
@@ -30,11 +48,15 @@ would ride the same route/worktree/PR; when in doubt, leave a candidate in the q
 3. Claim the primary and the selected companions in one call:
 
    ```bash
-   worktrail-work-queue claim-batch <primary-id> <companion-id> ... --json
+   worktrail-work-queue claim-batch <primary-id> <companion-id> ... --by "$INVOCATION_CONTEXT_DISPATCH_ID" --json
    ```
 
+   The primary's result carries `same_owner` exactly as in Step 2 above — apply the same
+   rule (`already-claimed` + `same_owner: false`/`null` aborts the batch, do not seed).
    A companion reported `already-claimed`/`none` lost a race — proceed without it, never
-   retry-loop. Claimed companions are stamped `batch-primary: <primary>`; the primary
+   retry-loop (companions don't need the `same_owner` check: losing a companion race just
+   drops it from the batch, it never causes a duplicate pipeline the way a primary
+   collision would). Claimed companions are stamped `batch-primary: <primary>`; the primary
    records `batch: [...]`.
 
 4. Read every claimed brief, then treat their union as ONE request for the rest of the

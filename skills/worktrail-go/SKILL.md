@@ -93,6 +93,7 @@ CONTEXT_JSON=$(worktrail-invocation-context \
 INVOCATION_CONTEXT_AGENT=$(echo "$CONTEXT_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin)['agent_cli'])")
 INVOCATION_CONTEXT_NATIVE_SKILL=$(echo "$CONTEXT_JSON" | python3 -c "import json,sys; print(str(json.load(sys.stdin)['native_skill_available']).lower())")
 INVOCATION_CONTEXT_DISPATCH_MODE=$(echo "$CONTEXT_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin)['dispatch_mode'])")
+INVOCATION_CONTEXT_DISPATCH_ID=$(echo "$CONTEXT_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin)['dispatch_id'])")
 ```
 
 Exit 2 means `dispatch_mode: blocked` — neither capability is available. Stop and
@@ -106,11 +107,25 @@ sdd-workflow seed prompt `Agent CLI:`) MUST use `$INVOCATION_CONTEXT_AGENT`.
 Do NOT re-detect the host or re-read env vars in child processes — the resolved
 values are the durable per-invocation identity.
 
-Hold all three values for the entire session. When the policy `run_record_dir` is set,
+Hold all four values for the entire session. When the policy `run_record_dir` is set,
 pass `--agent "$INVOCATION_CONTEXT_AGENT"` to every `worktrail-run-record` call, and on
 the `start` call also pass `--native-skill-available "$INVOCATION_CONTEXT_NATIVE_SKILL"`
 and `--dispatch-mode "$INVOCATION_CONTEXT_DISPATCH_MODE"` so the audit record captures
 which path was taken and why.
+
+`$INVOCATION_CONTEXT_DISPATCH_ID` is the stable identity for this one `/go` invocation.
+Pass it as `--by "$INVOCATION_CONTEXT_DISPATCH_ID"` to every `worktrail-work-queue
+claim`/`claim-batch` call this dispatch makes (`references/batch-consumption.md`), and
+forward it to the dispatched executor (native `Skill(...)` args or the adapter's `--args`,
+Phase 7) as a `by:$INVOCATION_CONTEXT_DISPATCH_ID` token so sdd-workflow's own
+handoff-seed claim call (`references/subagent-prompts.md#handoff-seed` Step 3) uses the
+identical value — `claim()`'s `same_owner` result only means "this dispatch" when both
+calls of the pair pass the same `--by`. Also pass it as `--dispatch-id
+"$INVOCATION_CONTEXT_DISPATCH_ID"` on the Phase 6 `worktrail-run-record start` call, which
+stamps it onto the run record for a later invocation's Active-run-resume check (below) to
+compare against. Never regenerate or re-derive a dispatch id downstream; a mismatched value
+defeats the whole guarantee (see
+`docs/specs/research/concurrent-go-dispatch-brief-claim-race.md`).
 
 ### Phase 1 — Classify the Invocation, Then Show the Orientation Dashboard
 
@@ -441,9 +456,14 @@ RUN_JSON=$(worktrail-run-record start \
   --route "$ROUTE" \
   --risk "$RISK_LEVEL" \
   --gates "$GATES" \
-  --agent "$INVOCATION_CONTEXT_AGENT")
+  --agent "$INVOCATION_CONTEXT_AGENT" \
+  --dispatch-id "$INVOCATION_CONTEXT_DISPATCH_ID")
 RUN=$(echo "$RUN_JSON" | python3 -c "import sys, json; print(json.load(sys.stdin)['path'])")
 ```
+
+Always pass `--dispatch-id "$INVOCATION_CONTEXT_DISPATCH_ID"` — it is what a later
+invocation's Active-run-resume check (below) compares against to tell this dispatch's own
+run apart from a different dispatch's.
 
 Hold `$RISK_LEVEL` and `$GATES` for Phase 8's mandatory pre-PR gate
 (`sdd-workflow/SKILL.md`'s `pre_pr_gate.py --run --risk --gates` call) — they are
@@ -550,18 +570,32 @@ Dispatch policy is simple:
   failure the capability value exists to prevent. Never substitute a different provider
   than the one resolved; a provider whose CLI is missing resolves to `blocked`, which is
   an actionable stop, not a licence to switch.
-- **Active-run resume (Route E) stays in-session — never spawn a nested worker.** If the
-  resolved dispatch is a Route E continue/resume (the dashboard/classifier resolved
-  `action: resume`, or the route is E), first check whether the run is **already active**:
-  its run record exists with no `final_status` AND its `worktree` path already exists on
-  disk (this is the same run record `run_record.py`'s staleness logic treats as live). If
-  so, the active parent already owns the run/worktree/provider — hand execution back to it
-  by continuing the route **in this session** via the direct
-  `Skill("worktrail-sdd-workflow", ...)` call (or, where the host blocks that, the seeded
-  in-session path). Do **not** fall through to the Native Skill adapter or the headless
-  subprocess spawn below and do not start a poll loop: a nested worker re-entering the same
-  already-active run/worktree would self-poll and duplicate or stall execution (Datalena run
-  go-20260811-132806).
+- **Active-run resume (Route E) stays in-session — never spawn a nested worker, and never
+  duplicate a genuinely different dispatch's own live run.** If the resolved dispatch is a
+  Route E continue/resume (the dashboard/classifier resolved `action: resume`, or the route
+  is E), first check whether the run is **already active**: its run record exists with no
+  `final_status` AND its `worktree` path already exists on disk (this is the same run record
+  `run_record.py`'s staleness logic treats as live). If not, this is a genuinely stalled run
+  with no worktree — proceed via the normal Route E "reconstruct before acting" procedure.
+
+  If the filesystem test says already-active, the evidence alone cannot tell "I am the
+  process that started this run" apart from "a different, possibly still-running process
+  started it" (both look identical: non-terminal + worktree exists) — the same failure shape
+  as the single-session nested-worker incident (Datalena run go-20260811-132806), but at the
+  cross-session level. Resolve the ambiguity with the run's own heartbeat and dispatch
+  identity before acting on it:
+
+  ```bash
+  LIVENESS=$(worktrail-run-record liveness "$RUN" --dispatch-id "$INVOCATION_CONTEXT_DISPATCH_ID")
+  SAME_DISPATCH=$(echo "$LIVENESS" | python3 -c "import json,sys; print(str(json.load(sys.stdin)['same_dispatch']).lower())")
+  FRESH=$(echo "$LIVENESS" | python3 -c "import json,sys; print(str(json.load(sys.stdin)['fresh']).lower())")
+  ```
+
+  | `same_dispatch` | `fresh` | Meaning | Action |
+  |---|---|---|---|
+  | `true` | — | This exact `/go` invocation already claimed and started this run (the literal single-session nested-worker case the original rule covered). | Hand execution back to it by continuing the route **in this session** via the direct `Skill("worktrail-sdd-workflow", ...)` call (or, where the host blocks that, the seeded in-session path). Do **not** fall through to the Native Skill adapter or the headless subprocess spawn below and do not start a poll loop. |
+  | `false` | `true` | A **different** dispatch owns this run and its heartbeat is recent — it is plausibly still actively working right now. Continuing "in this session" here would be a genuinely independent, duplicate continuation, not a hand-back — that is exactly the cross-session incident named above. | Do **not** continue in-session, do **not** spawn a nested worker. Stop and report: this run is currently owned by another active dispatch (`run_id`, `updated_at`, age from `$LIVENESS`); the user or a later retry decides next steps. |
+  | `false` | `false` | A different dispatch started this run, but its heartbeat is stale — the owning process most likely crashed or was interrupted without calling `finish`. This is exactly the abandoned-run case Route E's resume path exists for. | Proceed via the full Route E "reconstruct before acting" procedure (routes.md §E) — restore state, run the drift check, determine complete/incomplete/obsolete, then re-enter at the detected stage. Do **not** take the same-dispatch fast-path shortcut; you are not the process that was working on it. |
 - OpenCode parent sessions use the seeded subprocess path with `opencode` when the harness
   supplies the explicit `OPENCODE_PARENT` marker; explicit invocation, repository policy,
   and machine-wide provider overrides still win.
@@ -693,12 +727,17 @@ decision → `blocked_product_decision`; ceiling → `failed_recoverable`.
 
 ```
 Skill("worktrail-sdd-workflow", args="<repo-path> route:<X> [spec-folder]")
-Skill("worktrail-sdd-workflow", args="handoff:<id> route:<X>")
+Skill("worktrail-sdd-workflow", args="handoff:<id> route:<X> by:<dispatch-id>")
 ```
 
 sdd-workflow requires the resolved `route:X` on every dispatch, including handoff-seed
 dispatches. The full `handoff:<id>` is retained alongside the route so the executor can
-load the claimed brief without losing its context.
+load the claimed brief without losing its context. On a `handoff:<id>` dispatch, always
+append `by:$INVOCATION_CONTEXT_DISPATCH_ID` — sdd-workflow's own handoff-seed claim call
+threads it through as `--by` so `claim()` can tell "this dispatch already owns the brief"
+apart from a different, possibly concurrent, dispatch (`same_owner` in the claim response;
+see the Invocation Context section above). Omit the `by:` token only for the non-handoff
+form, which never calls `claim()`.
 
 ## Related Briefs
 

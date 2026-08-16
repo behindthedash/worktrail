@@ -578,15 +578,41 @@ def _claim_warnings(path: Path) -> List[str]:
     return warnings
 
 
+def _same_owner(existing_path: Path, by: Optional[str]) -> Optional[bool]:
+    """Compare an already-claimed brief's stamped `claimed-by` against `by`.
+
+    Returns None (unknown -- never assume ownership) when `by` was not
+    supplied by this caller; the two-call intra-session pattern (go's own
+    claim, then sdd-workflow's handoff-seed claim) only reads as
+    "same owner" when both calls pass the identical explicit `--by` value --
+    `_agent_label()`'s PID-based default is a fresh value on every CLI
+    invocation, so comparing that default across two calls of one legitimate
+    dispatch would misclassify it as "different owner" (see
+    docs/specs/research/concurrent-go-dispatch-brief-claim-race.md).
+    """
+    if by is None:
+        return None
+    claimed_by = _read_frontmatter(existing_path).get("claimed-by")
+    return claimed_by is not None and claimed_by == by
+
+
 def claim(identifier: str, by: Optional[str] = None) -> Dict[str, Any]:
     """Atomically move the matching queue brief into picked/ and stamp it.
 
     Returns {"status": "claimed"|"none"|"ambiguous"|"already-claimed"|"error",
              "path": str|None, "candidates": [...], "error": str|None,
-             "warnings": [...]}.
+             "warnings": [...], "same_owner": bool|None}.
     The rename is the atomic arbiter: a racing loser sees the source gone and
     gets "already-claimed". On success, "warnings" lists any unresolved blocked-by
     dependencies (never hard-blocks -- autonomous workflows must not be broken).
+
+    `same_owner` distinguishes, on an "already-claimed" result, whether the
+    caller's own earlier claim (within the same /go dispatch, identified by a
+    stable `--by` value threaded through both the front door's claim and
+    sdd-workflow's handoff-seed claim) already holds this brief (True), a
+    different owner holds it (False), or ownership cannot be determined
+    because no `--by` was supplied (None). A fresh "claimed" result is
+    trivially `same_owner: True` -- the caller just became the owner.
     """
     res = resolve(identifier, queue_dir())
     if res["status"] != "match":
@@ -596,12 +622,14 @@ def claim(identifier: str, by: Optional[str] = None) -> Dict[str, Any]:
         if res["status"] == "none":
             picked_res = resolve(identifier, picked_dir())
             if picked_res["status"] == "match":
+                picked_path = Path(picked_res["candidates"][0])
                 return {
                     "status": "already-claimed",
-                    "path": picked_res["candidates"][0],
+                    "path": str(picked_path),
                     "candidates": [],
                     "error": None,
                     "warnings": [],
+                    "same_owner": _same_owner(picked_path, by),
                 }
         return {
             "status": res["status"],
@@ -609,6 +637,7 @@ def claim(identifier: str, by: Optional[str] = None) -> Dict[str, Any]:
             "candidates": res["candidates"],
             "error": None,
             "warnings": [],
+            "same_owner": None,
         }
 
     src = Path(res["candidates"][0])
@@ -622,6 +651,7 @@ def claim(identifier: str, by: Optional[str] = None) -> Dict[str, Any]:
                 "candidates": [],
                 "error": None,
                 "warnings": [],
+                "same_owner": _same_owner(dst, by),
             }
         os.rename(src, dst)  # atomic within one filesystem
     except FileNotFoundError:  # another agent won the race
@@ -631,6 +661,7 @@ def claim(identifier: str, by: Optional[str] = None) -> Dict[str, Any]:
             "candidates": [],
             "error": None,
             "warnings": [],
+            "same_owner": False,
         }
     except OSError as exc:
         return {
@@ -650,6 +681,7 @@ def claim(identifier: str, by: Optional[str] = None) -> Dict[str, Any]:
             "candidates": [],
             "error": f"read before stamp failed: {exc}",
             "warnings": [],
+            "same_owner": True,
         }
 
     try:
@@ -663,6 +695,7 @@ def claim(identifier: str, by: Optional[str] = None) -> Dict[str, Any]:
             "candidates": [],
             "error": f"stamp failed: {exc}",
             "warnings": [],
+            "same_owner": True,
         }
     except ValueError as exc:
         # Unlike a transient OSError, this means the brief's pre-existing
@@ -710,6 +743,7 @@ def claim(identifier: str, by: Optional[str] = None) -> Dict[str, Any]:
         "candidates": [],
         "error": None,
         "warnings": warnings,
+        "same_owner": True,
     }
 
 
@@ -761,6 +795,7 @@ def claim_batch(primary: str, companions: List[str], by: Optional[str] = None) -
         "candidates": [],
         "error": None,
         "warnings": primary_res.get("warnings", []),
+        "same_owner": True,
         "companions": companion_results,
     }
 

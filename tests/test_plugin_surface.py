@@ -209,7 +209,7 @@ def test_handoff_dispatch_includes_explicit_executor_route():
     """The SDD executor's direct-invocation guard requires route:X even for handoffs."""
     go_skill = SKILLS_DIR / "worktrail-go" / "SKILL.md"
     text = go_skill.read_text()
-    assert 'Skill("worktrail-sdd-workflow", args="handoff:<id> route:<X>")' in text
+    assert 'Skill("worktrail-sdd-workflow", args="handoff:<id> route:<X> by:<dispatch-id>")' in text
     assert 'Skill("worktrail-sdd-workflow", args="handoff:<id>")' not in text
 
 

@@ -23,6 +23,7 @@ import json
 import os
 import shutil
 import sys
+import uuid
 from dataclasses import asdict, dataclass
 from typing import Callable, Mapping, Optional
 
@@ -49,12 +50,28 @@ class InvocationContext:
     native_skill_available: bool
     dispatch_mode: str
     capability_source: str
+    dispatch_id: str
     blocked_reason: Optional[str] = None
     warning: Optional[str] = None
 
 
 def _which(name: str) -> Optional[str]:
     return shutil.which(name)
+
+
+def _generate_dispatch_id() -> str:
+    """A fresh, unguessable identity for one /go invocation.
+
+    Threaded as `--by` through every `worktrail-work-queue claim` call this
+    dispatch makes (the front door's own claim, then sdd-workflow's
+    handoff-seed claim) so `claim()`'s `same_owner` result can tell "this
+    dispatch already owns this brief" apart from "a different dispatch does" --
+    see docs/specs/research/concurrent-go-dispatch-brief-claim-race.md. Must
+    be stable across both calls of one dispatch and distinct across two
+    concurrent dispatches; a fresh uuid4 per top-level `resolve()` call
+    satisfies both without any shared external state.
+    """
+    return f"go-{uuid.uuid4().hex[:16]}"
 
 
 def _resolve_agent(
@@ -106,6 +123,7 @@ def resolve(
     policy_agent: Optional[str] = None,
     native_skill: Optional[bool] = None,
     active_resume: bool = False,
+    dispatch_id: Optional[str] = None,
     environ: Optional[Mapping[str, str]] = None,
     which: Optional[Callable[[str], Optional[str]]] = None,
 ) -> InvocationContext:
@@ -115,6 +133,7 @@ def resolve(
 
     agent_cli = _resolve_agent(agent, policy_agent, env)
     available, source, warning = _resolve_capability(native_skill, env)
+    resolved_dispatch_id = dispatch_id or _generate_dispatch_id()
 
     # An already-active resume is owned by the parent that holds its run record
     # and worktree; spawning any child re-enters a run already in flight.
@@ -138,6 +157,7 @@ def resolve(
         native_skill_available=available,
         dispatch_mode=mode,
         capability_source=source,
+        dispatch_id=resolved_dispatch_id,
         blocked_reason=blocked_reason,
         warning=warning,
     )
@@ -166,6 +186,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         action="store_true",
         help="this dispatch continues a run whose record and worktree already exist",
     )
+    parser.add_argument(
+        "--dispatch-id",
+        default=None,
+        help="override the generated dispatch identity (tests/replay only)",
+    )
     parser.add_argument("--json", action="store_true")
     parsed = parser.parse_args(argv)
 
@@ -175,6 +200,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             policy_agent=parsed.policy_agent,
             native_skill=parsed.native_skill,
             active_resume=parsed.active_resume,
+            dispatch_id=parsed.dispatch_id,
         )
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -189,6 +215,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"agent_cli: {context.agent_cli}")
         print(f"native_skill_available: {context.native_skill_available}")
         print(f"dispatch_mode: {context.dispatch_mode}")
+        print(f"dispatch_id: {context.dispatch_id}")
 
     if context.dispatch_mode == BLOCKED:
         print(

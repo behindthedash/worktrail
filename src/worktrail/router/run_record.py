@@ -84,6 +84,27 @@ finish PATH --status completed_pr_open [--pr URL] [--merge-result ...]
             recent for its repo, OR started within --keep-days, OR is still
             non-terminal (no final_status yet) -- whichever keeps more.
             Omit --repo to prune every repo directory under --dir.
+  liveness RUN_PATH [--ttl-seconds N] [--dispatch-id ID]
+         -> read-only: is this non-terminal run still actively being worked?
+            `updated_at` (stamped by every `_save()`, i.e. every mutating
+            subcommand -- a heartbeat, not just an audit field) newer than
+            --ttl-seconds (default 1200) ago means "fresh" -- the owning
+            process is plausibly still working. Older means "stale" -- no
+            activity recently, most likely a crashed/abandoned session. Also
+            reports `same_dispatch` when --dispatch-id is given: True only if
+            it matches the record's own stamped `dispatch_id` from `start`.
+            Used by worktrail-go/SKILL.md's Active-run-resume evidence test
+            (docs/specs/research/concurrent-go-dispatch-brief-claim-race.md,
+            recommended fix #3) to tell "I am the process that started this
+            run" (same_dispatch: true, skip this check entirely) apart from
+            "a different, possibly-concurrent dispatch is evaluating someone
+            else's still-live run" (same_dispatch: false, fresh: true --
+            do NOT resume, a live collision) apart from "a different dispatch
+            found an abandoned run" (same_dispatch: false, fresh: false --
+            safe to resume via the full Route E reconstruct-before-acting
+            procedure). A terminal record (final_status set) is always
+            reported fresh: false, same_dispatch: false -- staleness/liveness
+            only means anything for a run still in progress.
 """
 from __future__ import annotations
 
@@ -98,7 +119,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from . import invocation_context
 from ..shared.homedir import worktrail_home
@@ -263,6 +284,16 @@ def _load(path: Path) -> Dict[str, Any]:
 
 
 def _save(path: Path, record: Dict[str, Any]) -> None:
+    # `updated_at` is a heartbeat, not just an audit timestamp: every mutation
+    # of a live run record goes through this one function, so stamping it
+    # here (rather than in each of the ~8 call sites) guarantees no mutating
+    # subcommand can forget it. The Active-run-resume evidence test in
+    # worktrail-go/SKILL.md reads its freshness to distinguish "the owning
+    # process is still actively working" from "non-terminal status + worktree
+    # exists, but nothing has touched this record in a while" -- the gap
+    # named in docs/specs/research/concurrent-go-dispatch-brief-claim-race.md
+    # (recommended fix #3): today's evidence test can't tell those apart.
+    record["updated_at"] = _now()
     tmp = path.with_suffix(".tmp")
     tmp.write_text(_render(record), encoding="utf-8")
     tmp.replace(path)  # atomic — a crashed write never corrupts the record
@@ -317,6 +348,8 @@ def cmd_start(args: argparse.Namespace) -> int:
            if args.native_skill_available is not None else {}),
         **({"dispatch_mode": args.dispatch_mode}
            if args.dispatch_mode is not None else {}),
+        **({"dispatch_id": args.dispatch_id}
+           if args.dispatch_id is not None else {}),
         "status": "route_selected",
         **({"routing_decision": routing_decision} if routing_decision is not None else {}),
         "epic": None,
@@ -726,6 +759,78 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
         merge_result=merge_result,
     )
     return cmd_finish(finish_args)
+
+
+_DEFAULT_LIVENESS_TTL_SECONDS = 1200  # 20 minutes -- matches the harness's own
+# idle-wakeup pacing guidance, a reasonable proxy for "an actively working
+# session touches its run record at least this often."
+
+
+def _run_liveness(
+    record: Dict[str, Any], ttl_seconds: int, caller_dispatch_id: Optional[str] = None
+) -> Dict[str, Any]:
+    """Heartbeat freshness + dispatch-identity match for one run record.
+
+    A terminal record (`final_status` set) is always reported not-fresh and
+    not-same-dispatch -- liveness only means anything for a run still in
+    progress; a finished run has nothing left to collide with.
+    """
+    if record.get("final_status") is not None:
+        return {
+            "fresh": False,
+            "same_dispatch": False,
+            "age_seconds": None,
+            "updated_at": record.get("updated_at"),
+            "reason": "terminal",
+        }
+    same_dispatch = (
+        caller_dispatch_id is not None
+        and record.get("dispatch_id") is not None
+        and record.get("dispatch_id") == caller_dispatch_id
+    )
+    updated_at = record.get("updated_at")
+    if not updated_at:
+        # No heartbeat ever recorded (a record predating this field) -- treat
+        # as stale rather than guessing fresh, so an old record doesn't block
+        # forever on a signal it never had.
+        return {
+            "fresh": False,
+            "same_dispatch": same_dispatch,
+            "age_seconds": None,
+            "updated_at": None,
+            "reason": "no_heartbeat",
+        }
+    try:
+        then = datetime.strptime(updated_at, "%Y-%m-%dT%H:%M:%S%z")
+        age_seconds = (datetime.now(then.tzinfo) - then).total_seconds()
+    except ValueError:
+        return {
+            "fresh": False,
+            "same_dispatch": same_dispatch,
+            "age_seconds": None,
+            "updated_at": updated_at,
+            "reason": "unparsable_updated_at",
+        }
+    return {
+        "fresh": age_seconds <= ttl_seconds,
+        "same_dispatch": same_dispatch,
+        "age_seconds": age_seconds,
+        "updated_at": updated_at,
+        "reason": None,
+    }
+
+
+def cmd_liveness(args: argparse.Namespace) -> int:
+    """Read-only: is this run's owning process plausibly still active?
+
+    See the `liveness` entry in this module's docstring for the full
+    same_dispatch/fresh decision table this feeds into.
+    """
+    run_path = Path(args.run)
+    record = _load(run_path)
+    result = _run_liveness(record, args.ttl_seconds, args.dispatch_id)
+    print(json.dumps({"run_id": record.get("run_id"), "path": str(run_path), **result}))
+    return 0
 
 
 def _claim_slug(specification: str) -> str:
@@ -1149,6 +1254,15 @@ def main(argv=None) -> int:
         help="dispatch path the invocation context selected (invocation_context.py)",
     )
     s.add_argument(
+        "--dispatch-id",
+        default=None,
+        help="stable identity for this /go invocation (invocation_context.py's "
+             "dispatch_id); the Active-run-resume evidence test compares it against "
+             "a later invocation's own dispatch_id to tell a genuine same-session "
+             "continuation apart from a different, possibly concurrent, dispatch "
+             "evaluating the same run record. Omit to record no field at all.",
+    )
+    s.add_argument(
         "--routing-decision",
         default=None,
         help="JSON object from resolve_routing() with the resolved primary agent, roles, and fallback chain",
@@ -1241,6 +1355,14 @@ def main(argv=None) -> int:
     s.add_argument("--dry-run", action="store_true",
                     help="report what would be pruned without deleting")
     s.set_defaults(func=cmd_prune)
+
+    s = sub.add_parser("liveness")
+    s.add_argument("run")
+    s.add_argument("--ttl-seconds", type=int, default=_DEFAULT_LIVENESS_TTL_SECONDS,
+                    help="heartbeat freshness window in seconds (default 1200)")
+    s.add_argument("--dispatch-id", default=None,
+                    help="this invocation's own dispatch_id, to check same_dispatch")
+    s.set_defaults(func=cmd_liveness)
 
     args = p.parse_args(argv)
     try:
