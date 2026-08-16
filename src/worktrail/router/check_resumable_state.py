@@ -24,13 +24,29 @@ catch).
 Best-effort by design, same posture as `check_repo_freshness.py` and
 `check_brief_staleness.py`. `checked: false` means the question is unanswered:
 either the brief itself couldn't be read, or it carries no `repo:` frontmatter
-so there was nothing to scan evidence against -- the caller's contract treats
-that as "unknown", not as an authoritative "not resumable" (worktrail-go's
-`/go` SKILL.md Phase 5 fails open on `checked: false` rather than passing
-`--resumable-state` at all). `gh` unavailable/unauthenticated/erroring, or no
-run-records directory, still degrade to "not resumable" plus a warning under a
-`checked: true` result, since those only affect one piece of evidence, not
-whether the check ran at all.
+AND no `--repo` override was supplied, so there was nothing to scan evidence
+against -- the caller's contract treats that as "unknown", not as an
+authoritative "not resumable" (worktrail-go's `/go` SKILL.md Phase 5 fails
+open on `checked: false` rather than passing `--resumable-state` at all).
+`gh` unavailable/unauthenticated/erroring, or no run-records directory, still
+degrade to "not resumable" plus a warning under a `checked: true` result,
+since those only affect one piece of evidence, not whether the check ran at
+all.
+
+A brief captured without `repo:` frontmatter (e.g. a meta-brief about
+worktrail itself, or one hand-authored without `worktrail-resolve-repo`'s
+hint-based resolution) used to fail open unconditionally -- silently
+disabling this whole disqualification check for exactly the briefs that most
+need it, since `--handoff-route`/`recommended-route: E` still reaches
+`classify.py` unchallenged. `/go`'s SKILL.md already resolves the dispatch's
+target repo in Phase 3, before this check ever runs in Phase 5 -- `--repo`
+lets the caller pass that already-resolved path through as a fallback instead
+of this module re-deriving it. Frontmatter still wins when present, since a
+brief that names its own repo is more authoritative than the dispatch's
+resolved target (they should normally agree, but the brief's own claim is
+kept as the primary source of truth). The override does not change the
+`resumable=False` contract in any way -- it only changes whether the check
+runs at all when frontmatter is absent.
 """
 from __future__ import annotations
 
@@ -110,19 +126,26 @@ def check(
     runs_dir: Optional[Path] = None,
     do_gh: bool = True,
     gh_timeout: int = DEFAULT_GH_TIMEOUT,
+    repo_override: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Does the claimed brief at `brief_path` have real resumable state?
 
     Returns `{"checked": bool, "resumable": bool, "evidence": {"run_record":
     str|None, "worktree": str|None, "open_pr": dict|None}, "warning": str|None}`.
     `checked=False` means the question is unanswered -- either the brief itself
-    couldn't be read, or it carries no `repo:` frontmatter so evidence-gathering
-    had nothing to scan. Callers must treat `checked=False` as "unknown", never
-    as "not resumable": `resumable` is only meaningful when `checked` is True.
-    `resumable=True` requires either an in-flight run record whose worktree
-    still exists on disk, or an open PR referencing the brief; a run record
-    alone (worktree gone, e.g. already cleaned up post-merge) is surfaced as
-    evidence but is not "resumable" on its own.
+    couldn't be read, or it carries no `repo:` frontmatter and no `repo_override`
+    was given, so evidence-gathering had nothing to scan. Callers must treat
+    `checked=False` as "unknown", never as "not resumable": `resumable` is only
+    meaningful when `checked` is True. `resumable=True` requires either an
+    in-flight run record whose worktree still exists on disk, or an open PR
+    referencing the brief; a run record alone (worktree gone, e.g. already
+    cleaned up post-merge) is surfaced as evidence but is not "resumable" on
+    its own.
+
+    `repo_override` is used only when the brief's own `repo:` frontmatter is
+    absent -- the caller's already-resolved dispatch target repo (e.g. `/go`
+    SKILL.md's Phase 3 `$REPO`), not a second source of truth to reconcile
+    against the brief's own claim.
     """
     result: Dict[str, Any] = {
         "checked": False,
@@ -139,10 +162,13 @@ def check(
 
     frontmatter = read_frontmatter(brief_path)
     brief_id = str(frontmatter.get("id") or brief_path.stem)
-    repo = frontmatter.get("repo")
+    repo = frontmatter.get("repo") or repo_override
 
     if not repo:
-        result["warning"] = "brief has no repo: frontmatter -- resumable-state check skipped"
+        result["warning"] = (
+            "brief has no repo: frontmatter and no --repo override was given -- "
+            "resumable-state check skipped"
+        )
         return result
 
     result["checked"] = True
@@ -173,6 +199,10 @@ def main(argv=None) -> int:
     p.add_argument("--dir", default=None, help="run records directory (default worktrail_home()/runs)")
     p.add_argument("--no-gh", action="store_true", help="skip the open-PR gh lookup")
     p.add_argument("--gh-timeout", type=int, default=DEFAULT_GH_TIMEOUT)
+    p.add_argument(
+        "--repo", default=None,
+        help="fallback target repo, used only when the brief has no repo: frontmatter",
+    )
     p.add_argument("--json", action="store_true")
     args = p.parse_args(argv)
 
@@ -181,6 +211,7 @@ def main(argv=None) -> int:
         runs_dir=Path(args.dir) if args.dir else None,
         do_gh=not args.no_gh,
         gh_timeout=args.gh_timeout,
+        repo_override=args.repo,
     )
     if args.json:
         print(json.dumps(res))

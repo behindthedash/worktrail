@@ -284,20 +284,24 @@ before `--handoff-route` even gets a say (observed: brief 20260812-163747 scored
 high confidence purely from its own bug-report prose). Run the mechanical check and always
 pass its result — `resumable: false` disqualifies E outright regardless of text score or a
 stale `recommended-route: E` in the brief's own frontmatter; omit the flag only for a
-free-text dispatch with no claimed brief at all:
+free-text dispatch with no claimed brief at all. Always pass `--repo "$REPO"` (already
+resolved by Phase 3) as a fallback — the brief's own `repo:` frontmatter still wins when
+present, but a brief captured without it (e.g. a meta-brief about worktrail itself) no
+longer silently disables this check:
 
 ```bash
-RESUMABLE_JSON=$(worktrail-check-resumable-state --brief "<primary-claimed-path>" --json)
+RESUMABLE_JSON=$(worktrail-check-resumable-state --brief "<primary-claimed-path>" --repo "$REPO" --json)
 RESUMABLE=$(echo "$RESUMABLE_JSON" | python3 -c "import sys, json; d = json.load(sys.stdin); print(str(d['resumable']).lower() if d.get('checked') else '')")
 RESUMABLE_FLAG=(); [ -n "$RESUMABLE" ] && RESUMABLE_FLAG=(--resumable-state "$RESUMABLE")
 
 worktrail-classify --request "$ARG_INTENT" --state "$STATE_JSON" "${HANDOFF_ROUTE_FLAG[@]}" "${RESUMABLE_FLAG[@]}" --repo "$REPO" --json
 ```
 
-`checked: false` (the claimed brief itself couldn't be read) leaves `$RESUMABLE` empty and
-`--resumable-state` omitted — fail-open to classify.py's prior behavior, never a reason to
-block dispatch. `auto` mode runs this exactly the same way; there is no human here either,
-which is the whole reason a mechanical check replaces agent judgment for this signal.
+`checked: false` (the claimed brief itself couldn't be read — `--repo "$REPO"` covers the
+missing-frontmatter case now) leaves `$RESUMABLE` empty and `--resumable-state` omitted —
+fail-open to classify.py's prior behavior, never a reason to block dispatch. `auto` mode
+runs this exactly the same way; there is no human here either, which is the whole reason a
+mechanical check replaces agent judgment for this signal.
 
 For free-text/level-2-item dispatches with no claimed brief, omit both `--handoff-route` and
 `--resumable-state` (no hint to weigh, nothing to check):
