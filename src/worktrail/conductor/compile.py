@@ -75,15 +75,22 @@ def default_cache_dir(repo: "str | Path") -> Path:
 
 
 def _git_repo_root(path: Path) -> Optional[Path]:
-    """Return the actual Git checkout root containing ``path``.
+    """Return the canonical checkout root that owns ``path``'s Git state.
 
-    Checking only for a directory named ``.git`` is insufficient: test and
-    cache fixtures may use that name as a marker, and an unrelated ancestor
-    can then make an outside path look like a repository.
+    Resolves via ``--git-common-dir`` rather than ``--show-toplevel``: a spec
+    directory inside a linked *worktree* (which is what SDD skills always run
+    `worktrail-compile` against -- see AGENTS.md `conductor/`) has its own
+    toplevel distinct from the canonical checkout, so `--show-toplevel` would
+    resolve `default_cache_dir` to `<worktree>-worktrees/runplans` while
+    `live.py`'s canonical `full-real` run reads `<repo>-worktrees/runplans` --
+    two caches that never share an entry, so the (paid, LLM-backed) pre-compile
+    result was always thrown away. `--git-common-dir` is shared by every
+    worktree of one checkout and resolves to the same canonical root whether
+    `path` is inside the main checkout or a linked worktree.
     """
     try:
         result = subprocess.run(
-            ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+            ["git", "-C", str(path), "rev-parse", "--path-format=absolute", "--git-common-dir"],
             capture_output=True,
             text=True,
             check=False,
@@ -92,8 +99,11 @@ def _git_repo_root(path: Path) -> Optional[Path]:
         return None
     if result.returncode != 0:
         return None
-    root = result.stdout.strip()
-    return Path(root).resolve() if root else None
+    common_dir = result.stdout.strip()
+    if not common_dir:
+        return None
+    common_path = Path(common_dir)
+    return common_path.parent.resolve() if common_path.name == ".git" else None
 
 
 # --------------------------------------------------------------------------- #
