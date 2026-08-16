@@ -11,11 +11,11 @@
 
 ## 2. Predicate re-check module
 
-- [ ] 2.1 Create `src/worktrail/router/check_brief_predicate.py` with the `recheck(repo,
+- [x] 2.1 Create `src/worktrail/router/check_brief_predicate.py` with the `recheck(repo,
       frontmatter)` entrypoint (never raises; returns `{"attempted", "drift_source", "outcome",
       "still_true", "resolved", "error"}` per design.md) and the `PREDICATE_RECHECKS` registry
       dict.
-- [ ] 2.2 Implement `_recheck_checkbox_drift(repo, findings)`: for each `drift-findings` entry,
+- [x] 2.2 Implement `_recheck_checkbox_drift(repo, findings)`: for each `drift-findings` entry,
       read the task file at its `path` via `taskformats.devkit.checkbox_audit`'s existing
       `read_task_file`/`_all_checkboxes_checked`, classify as still-true (still `status:
       completed` with an unchecked box in `COMPLETION_AUDIT_SECTIONS`) or resolved (fully
