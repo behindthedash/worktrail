@@ -89,6 +89,24 @@ per the calling worktrail-sdd-workflow pipeline instead.
           suite and confirm it passes.` Any other kind tag, including `[docs]`, does NOT exempt a
           task from file scope — a `[docs]`-tagged task still needs a real file (the doc it
           updates).
+        - **Per-phase hot-file ownership bias**: when a file recurs across more than one `##`
+          phase in `tasks.md`, bias decomposition so it is owned by at most one task per phase —
+          do not let two tasks within the same phase both list it in their file scope. A hot file
+          that already recurs across phases just from the shape of the work is fine; the bias
+          only applies to collapsing multiple same-phase tasks onto it.
+        - **Per-phase file split for additive hot files**: if the hot file is additive/composable
+          (entries appended to a registry, table, or list rather than a single section rewritten
+          in place), don't rely on ownership bias alone — split it into separate per-phase files,
+          each owned by the one task in that phase, and add a single later task that composes them
+          into the final combined file. This turns what would be a cross-phase collision into
+          independent per-phase file scopes plus one explicit composition step.
+        - **Collision-serialization preserved for unavoidable same-file edits**: neither bias
+          above eliminates every same-file collision by construction — some hot files still end
+          up owned by more than one task in the same phase. That's fine: `worktrail-compile`'s
+          grouping-time shared-file lane folding (serializing tasks that collide on a file into
+          the same lane) still applies unchanged and remains the backstop. This guidance is a
+          decomposition-time reduction of how often that backstop has to fire, not a replacement
+          for it.
       - Show brief progress: "Created <artifact-id>"
 
    b. **Continue until all `applyRequires` artifacts are complete**
