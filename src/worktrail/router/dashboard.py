@@ -1991,12 +1991,17 @@ def build_category_items(
     queue_briefs: List[Dict[str, Any]],
     backlog_total: int = 0,
     clusters: Optional[List[Dict[str, Any]]] = None,
+    open_decisions: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, List[Dict[str, Any]]]:
     """Level-2 items per category for the two-level /go picker.
 
     Returns a dict keyed by category string. Each value is a list of ≤4 items
     with full dispatch data (action, spec_id, repo, path, next_action). Items
-    beyond 4 are reachable via 'Other' in the AskUserQuestion level-2 call."""
+    beyond 4 are reachable via 'Other' in the AskUserQuestion level-2 call.
+    'decisions' is capped at 4 with no overflow item (matching every other
+    category's own cap) and is omitted entirely when there are no open
+    decisions, so callers that never pass `open_decisions` see byte-identical
+    output."""
     default_repo_root = _dashboard_repo_root()
 
     def _spec_item(s: Dict[str, Any], repo: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -2141,13 +2146,32 @@ def build_category_items(
             "action": "see-backlog",
         })
 
+    decision_items: List[Dict[str, Any]] = []
+    for decision in (open_decisions or [])[:4]:
+        question = decision.get("question")
+        item = {
+            "type": "decision",
+            "action": "answer-decision",
+            "id": decision.get("id"),
+            "label": (question or decision.get("id"))[:60],
+            "description": decision.get("description"),
+        }
+        if decision.get("repo") is not None:
+            item["repo"] = decision["repo"]
+        if decision.get("brief") is not None:
+            item["brief"] = decision["brief"]
+        decision_items.append(item)
+
     result: Dict[str, List[Dict[str, Any]]] = {}
     for key, items in [
+        ("decisions", decision_items),
         ("ready", ready_items),
         ("needs-tasks", tasks_items),
         ("workqueue", workqueue_items),
         ("new-work", new_work_items),
     ]:
+        if key == "decisions" and not items:
+            continue
         numbered = items[:4]
         for i, item in enumerate(numbered, 1):
             item["n"] = i
