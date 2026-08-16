@@ -7,13 +7,13 @@
       degrade-to-`[]`-on-parse-failure behavior).
 - [ ] 1.2 Add a `"decisions"` entry to `_CATEGORY_DESC` describing the category (e.g. "Answer a
       blocked product decision — unblocks the brief automatically.").
-- [ ] 1.3 Extend `build_category_actions` with a new `open_decisions: Optional[List[Dict[str,
+- [x] 1.3 Extend `build_category_actions` with a new `open_decisions: Optional[List[Dict[str,
       Any]]] = None` parameter. When `len(open_decisions or [])` is nonzero, append a `decisions`
       category (`label: "Open decisions (N)"`) to `categories` **before** the existing
       `ready`/`needs-tasks`/`workqueue`/`new-work` appends, so it is the first entry and — under
       the existing `categories[:4]` truncation — the last one dropped, not the first. (Requirement:
       Open decisions surface as an interactive dashboard picker category)
-- [ ] 1.4 Extend `build_category_items` with the same `open_decisions` parameter. Build a
+- [x] 1.4 Extend `build_category_items` with the same `open_decisions` parameter. Build a
       `"decisions"` entry in the returned dict: for each open decision (capped at 4, matching
       every other category's own cap — no dedicated overflow item, per design.md), a
       `type: "decision"` item with `action: "answer-decision"`, `id` (the decision id), `label`
@@ -23,7 +23,7 @@
       category key is already always-present-but-populated today, so existing callers that never
       pass `open_decisions` see byte-identical output. (Requirement: Open decisions surface as an
       interactive dashboard picker category)
-- [ ] 1.5 Wire `open_decisions` through `main()`: parse `--decisions-json` per 1.1, pass
+- [x] 1.5 Wire `open_decisions` through `main()`: parse `--decisions-json` per 1.1, pass
       `open_decisions=open_decisions` to both `build_category_actions` calls and both
       `build_category_items` calls (the `--repos` multi-repo branch and the `--root` single-repo
       branch), and echo `"open_decisions": open_decisions` in both branches' JSON output dict
@@ -31,19 +31,19 @@
 
 ## 2. Tests
 
-- [ ] 2.1 `tests/router/test_dashboard.py`: cover `build_category_actions` with open decisions —
+- [x] 2.1 `tests/router/test_dashboard.py`: cover `build_category_actions` with open decisions —
       the `decisions` category appears with the correct count and is omitted when
       `open_decisions` is `None`/`[]`; it is ranked ahead of `ready` in the returned list; and
       when decisions + ready + needs-tasks + workqueue are all simultaneously populated, the
       returned categories are exactly `decisions`, `ready`, `needs-tasks`, `workqueue` (four
       entries, `new-work` omitted) — never dropping any of the three pre-existing categories.
       (Requirement: Open decisions surface as an interactive dashboard picker category)
-- [ ] 2.2 `tests/router/test_dashboard.py`: cover `build_category_items` with open decisions —
+- [x] 2.2 `tests/router/test_dashboard.py`: cover `build_category_items` with open decisions —
       returned `"decisions"` items carry `type`, `action: "answer-decision"`, `id`, `label`
       (derived from `question`), `repo`, `brief`; capped at 4 when more than 4 are open; and the
       `"decisions"` key is absent from the result when there are no open decisions. (Requirement:
       Open decisions surface as an interactive dashboard picker category)
-- [ ] 2.3 `tests/router/test_dashboard.py`: cover `main()`'s `--decisions-json` CLI flag
+- [x] 2.3 `tests/router/test_dashboard.py`: cover `main()`'s `--decisions-json` CLI flag
       end-to-end — valid JSON surfaces in both the `category_actions`/`category_items` picker
       data and the echoed `open_decisions` field of `--json` output; malformed JSON degrades to
       an empty list (no crash), matching `--queue-json`'s existing malformed-input behavior.
@@ -68,7 +68,7 @@
       flow — resolution stays the consuming agent's job when it later resumes the brief, per
       `decision-queue.md`'s unchanged "Resuming from an answered decision" procedure. (Requirement:
       Selecting an open decision answers it interactively without a manual CLI call)
-- [ ] 3.4 `skills/worktrail-go/references/dashboard-render.md`: document the new `decisions`
+- [x] 3.4 `skills/worktrail-go/references/dashboard-render.md`: document the new `decisions`
       category in the `category_actions`/`category_items` field contract (category ordering,
       the `type: "decision"` item shape, the `answer-decision` action, and the "new-work is the
       one that yields its slot" truncation note).
