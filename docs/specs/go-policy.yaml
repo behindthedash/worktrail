@@ -25,3 +25,13 @@ docs_only_paths:
 automerge:
   enabled: true
   max_risk: medium
+# add_ons: opt-in per-repo worktrail add-ons (worktrail.addons), run after a
+# task's own commit and before push/PR. aspens keeps skill-doc sync landed in
+# the same PR the task produced instead of racing worktree teardown (spec
+# post-task-cmd-addon). required: false (default) — a flaky aspens CLI must
+# never block an unrelated task's PR.
+add_ons:
+  aspens:
+    enabled: true
+    target: claude
+    required: false
