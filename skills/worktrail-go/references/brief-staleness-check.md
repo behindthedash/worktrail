@@ -55,6 +55,24 @@ signal of anything — it means the same as never having run this check at all, 
 "Running it" section proceeds exactly as it does for a non-drift brief, with no new behavior
 inserted between the gate above and the `worktrail-check-brief-staleness` invocation below.
 
+**On `outcome: "still-true"`** — the predicate still holds, so there is nothing to prompt about
+and nothing to close: continue straight to Phase 6/7 unchanged, exactly as the probe-based
+"proceed" branch does when its own evidence is empty (no operator prompt, no early run-record
+open). Once Phase 6 has opened the run record, append the evidence line
+`check_brief_predicate.format_still_true_evidence` builds from the recheck result, using the
+same post-Phase-6 `run-record append` pattern the probe-based "proceed" branch uses below:
+
+```bash
+worktrail-run-record append "$RUN" decisions \
+  "Predicate re-check (checkbox-drift-sweep) found the staleness predicate still true for \
+2 finding(s): docs/specs/x/tasks/TASK-001.md, docs/specs/x/tasks/TASK-004.md. Proceeded \
+automatically without an operator prompt."
+```
+
+Unlike the probe-based evidence line, there is no commit SHA or PR number to cite — the probe
+search never runs on this path — so the still-true task-file paths themselves are the cited
+evidence.
+
 ## Running it
 
 ```bash
