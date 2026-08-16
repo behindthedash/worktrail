@@ -85,6 +85,22 @@ class TestOverridesAndSignals(unittest.TestCase):
         self.assertEqual(r["ambiguous_between"], [])
         self.assertIsNone(r["question"])
 
+    def test_handoff_route_does_not_override_broad_organic_agreement(self):
+        # Reproduces the 20260815-114628 incident: a stale/wrong brief
+        # recommendation (B) absent from organic scores must not beat an
+        # organic pick (J) that has independent corroboration from a nonzero
+        # runner-up (F) — unlike test_handoff_route_overrides_low_confidence_
+        # disagreement above, where the organic runner-up scored zero (a lone
+        # spike, plausibly a keyword coincidence) rather than a genuine
+        # second candidate.
+        r = classify(
+            "a small explicit-gh-path-resolution fix to dependabot-pullhook-"
+            "dispatch.py classifier subprocess call",
+            handoff_route="B")
+        self.assertEqual(r["route"], "J")
+        self.assertEqual(r["confidence"], "medium")
+        self.assertEqual(r["route_source"], "classifier")
+
     def test_handoff_route_does_not_override_high_confidence(self):
         # A high-confidence organic disagreement is a signal worth a fresh
         # look, not a silent override — repo state may have drifted since
