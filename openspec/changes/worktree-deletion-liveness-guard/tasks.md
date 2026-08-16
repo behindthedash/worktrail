@@ -40,7 +40,7 @@
       each section's `git worktree remove`/`branch -D` calls, passing that call site's
       own `$RUN`-derived run-records directory and `$INVOCATION_CONTEXT_DISPATCH_ID`.
       (Requirement: Guard applies uniformly across all documented deletion paths)
-- [ ] 4.2 Invoke `#worktree-deletion-liveness-guard` from the prune step in
+- [x] 4.2 Invoke `#worktree-deletion-liveness-guard` from the prune step in
       `skills/worktrail-go/references/worktree-cleanup.md` before each confirmed-stale
       worktree's `git worktree remove`/`branch -D` calls, resolving the run-records
       directory from `worktrail-policy --json`'s `run_record_dir` (this flow has no
