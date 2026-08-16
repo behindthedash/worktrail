@@ -227,6 +227,12 @@ aggregate budget for the network-dependent `gh` phase — all module-level const
 nobody weighs whether to run it. Anything dropped by a cap is *counted* (`probes.dropped`, and
 warnings for capped PR results and skipped probes), never silently discarded.
 
+The predicate re-check above (`check_brief_predicate.py`) adds no comparable cost: it spawns no
+subprocess and hits no network, only `Path.read_text` on the task files named in the brief's own
+`drift-findings` — bounded by however many findings the drift sweep that filed the brief captured,
+which is small in practice since it lists specific task files, not a repo-wide scan. It stays
+cheap enough that nobody weighs whether to run it, same as the probe-based check above.
+
 ## Relationship to the batch queue triager
 
 This is the inline, per-dispatch, near-zero-cost check on the one brief you are about to start.
