@@ -27,6 +27,52 @@ A/B/G-J (when the brief carries `related:` entries) it runs in addition to the r
 collision branch. Running more than one branch for the same dispatch is expected, not a bug:
 each branch answers a different question and none suppresses another.
 
+## Predicate re-check
+
+Before any of the probe-based checking below, re-derive whether the brief's own captured
+*predicate* is still true. Some briefs (e.g. those filed by a checkbox-drift sweep) do not just
+describe stale work to search for — they carry a specific claim about repo state in their
+frontmatter (`drift-source`, `drift-findings`) that may itself have already been resolved by the
+time the brief is dispatched. Read the claimed brief's frontmatter, then run:
+
+```bash
+RECHECK_JSON=$(worktrail-recheck-brief-predicate \
+  --repo "$REPO" --brief "$CLAIMED_BRIEF_PATH" --json 2>/dev/null)
+```
+
+Branch on `attempted` and `outcome` before ever reaching today's "Running it" step below:
+
+| `attempted` | `outcome` | Meaning | Action |
+|---|---|---|---|
+| `false` | `no-predicate` | Brief carries no `drift-source`; nothing to re-check. | Fall through to "Running it" unchanged. |
+| `false` | `unrecognized` | `drift-source` is set but no re-check is registered for it. | Fall through to "Running it" unchanged. |
+| `true` | `error` | A predicate was registered but re-checking it failed (missing `drift-findings`, an unreadable task file, or the recheck function itself raised). | Fall through to "Running it" unchanged. |
+| `true` | `still-true` | Every `drift-findings` entry still holds against current on-disk state. | Documented separately, below the probe-based flow. |
+| `true` | `resolved` | No `drift-findings` entry still holds. | Documented separately, below the probe-based flow. |
+
+Any `attempted: false` outcome (`no-predicate`, `unrecognized`) or `outcome: "error"` is not a
+signal of anything — it means the same as never having run this check at all, and today's
+"Running it" section proceeds exactly as it does for a non-drift brief, with no new behavior
+inserted between the gate above and the `worktrail-check-brief-staleness` invocation below.
+
+**On `outcome: "still-true"`** — the predicate still holds, so there is nothing to prompt about
+and nothing to close: continue straight to Phase 6/7 unchanged, exactly as the probe-based
+"proceed" branch does when its own evidence is empty (no operator prompt, no early run-record
+open). Once Phase 6 has opened the run record, append the evidence line
+`check_brief_predicate.format_still_true_evidence` builds from the recheck result, using the
+same post-Phase-6 `run-record append` pattern the probe-based "proceed" branch uses below:
+
+```bash
+worktrail-run-record append "$RUN" decisions \
+  "Predicate re-check (checkbox-drift-sweep) found the staleness predicate still true for \
+2 finding(s): docs/specs/x/tasks/TASK-001.md, docs/specs/x/tasks/TASK-004.md. Proceeded \
+automatically without an operator prompt."
+```
+
+Unlike the probe-based evidence line, there is no commit SHA or PR number to cite — the probe
+search never runs on this path — so the still-true task-file paths themselves are the cited
+evidence.
+
 ## Running it
 
 ```bash
