@@ -34,23 +34,37 @@ Print it as-is. Do not regroup, reorder, re-summarize, or re-emoji it.
 
 The ≤4 work-category buttons for the first `AskUserQuestion` call. Each entry is
 `{n, label, description, category}`, present in priority order and only when the
-category has actionable items. `category` is one of `ready`, `needs-tasks`,
-`workqueue`, `new-work`; `new-work` is always the final entry. The label carries the
-count (e.g. `Ready / in-progress (3)`).
+category has actionable items. `category` is one of `decisions`, `ready`,
+`needs-tasks`, `workqueue`, `new-work`; `decisions` leads (highest priority — an
+open decision blocks a brief until answered) and `new-work` is always the final
+entry, so it is the one that yields its slot when the ≤4 cap truncates the list.
+The label carries the count (e.g. `Ready / in-progress (3)`, `Open decisions (2)`).
 
 ## `category_items` (Level 2)
 
 A map keyed by `category` string; each value is the ≤4 items for that category's
 second `AskUserQuestion` call. Each item carries its display fields (`label`,
 `description`), a per-category `n`, a `type` (`inflight`/`spec`/`queue`/`fixed`/
-`cluster`/`see-more`), an `action`, and the dispatch fields that action needs
+`cluster`/`see-more`/`decision`), an `action`, and the dispatch fields that action needs
 (`id`, `repo`, `path`, `spec_id`, `next_action`, `overflow_ids`, `members`,
-`signals`). `action` is one of: `resume`, `implement`, `close-stale`, `claim`,
-`consolidate-cluster`, `brainstorm`, `see-backlog`, `see-more`.
+`signals`, `brief`). `action` is one of: `resume`, `implement`, `close-stale`, `claim`,
+`consolidate-cluster`, `brainstorm`, `see-backlog`, `see-more`, `answer-decision`.
 Blocked queue briefs are excluded from both the Level-1 count and the Level-2
 items (they are not claimable). Items beyond the 4 shown are reachable via the
 tool's automatic "Other". Dispatch directly from the chosen item — do not
 re-derive it.
+
+A `type: "decision"` item (`action: "answer-decision"`) surfaces one open
+decision from the human-decision-queue, sourced from the caller-supplied
+`--decisions-json` (`worktrail-decision list --status open --json`) — never
+inferred. `id` is the decision id; `label` is its question text (truncated to
+60 chars, falling back to the id when no question is present); `repo` and
+`brief` are included only when present on the source record (multi-repo /
+brief-linkage context for dispatch). The `decisions` category is capped at 4
+items with no overflow/`see-more` entry — matching every other category's own
+per-category cap — and is omitted entirely from `category_items` when there
+are no open decisions, so callers that never pass `--decisions-json` see
+byte-identical output to before this category existed.
 
 A `type: "cluster"` item (`action: "consolidate-cluster"`) surfaces a detected
 brief cluster (`docs/specs/018-handoff-queue-cluster-detection`) as a
