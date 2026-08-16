@@ -54,6 +54,10 @@ QUARANTINE_DEPENDENCY_QUARANTINED = "dependency_quarantined"
 # a documentation-accuracy problem, not a failing merged tree like
 # QUARANTINE_INTEGRATION_ERROR, so remediation is fixing the spec/tasks, not the code.
 QUARANTINE_PRE_PR_DRIFT = "pre_pr_drift"
+# A `required: true` configured add-on's install/configure/run step failed
+# (see `addons.runner.AddOnFailure`, per design D4). A non-required add-on's
+# failure is logged and skipped instead of quarantining the group.
+QUARANTINE_ADDON_FAILURE = "addon_failure"
 
 
 _HERE = Path(__file__).resolve().parent
@@ -1083,7 +1087,13 @@ def integrate_one(
             # drift/smoke gates and the push -- so their output is part of what
             # those gates verify and what reaches the PR, not a trailing commit
             # tacked on after the fact.
-            addons_runner.run_addons(iw, repo, policy or {})
+            try:
+                addons_runner.run_addons(iw, repo, policy or {})
+            except addons_runner.AddOnFailure as e:
+                quarantined[name] = f"required add-on failed: {e.detail}"
+                print(f"  SKIP [{name:9}] -- {quarantined[name]}")
+                _do_journal(name, "", gb, "QUARANTINED", QUARANTINE_ADDON_FAILURE)
+                return None
             # Deterministic drift checks, before the smoke command and before the
             # push. After the status write above, because DoD verification's entire
             # population is the set of task files that write just stamped
