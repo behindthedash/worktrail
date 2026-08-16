@@ -89,6 +89,11 @@ per the calling worktrail-sdd-workflow pipeline instead.
           suite and confirm it passes.` Any other kind tag, including `[docs]`, does NOT exempt a
           task from file scope — a `[docs]`-tagged task still needs a real file (the doc it
           updates).
+        - **Per-phase hot-file ownership bias**: when a file recurs across more than one `##`
+          phase in `tasks.md`, bias decomposition so it is owned by at most one task per phase —
+          do not let two tasks within the same phase both list it in their file scope. A hot file
+          that already recurs across phases just from the shape of the work is fine; the bias
+          only applies to collapsing multiple same-phase tasks onto it.
       - Show brief progress: "Created <artifact-id>"
 
    b. **Continue until all `applyRequires` artifacts are complete**
