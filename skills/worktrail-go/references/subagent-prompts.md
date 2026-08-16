@@ -368,6 +368,28 @@ ticks this system wrote.
 
 ### Authoring a change {#openspec-propose}
 
+**Resumability pre-check (mandatory, before every dispatch below).** `run_in_background`
+(next paragraph) only removes the foreground-timeout trigger — an OOM kill, a host
+disconnect, or a spawn that legitimately outlives even a generous background execution
+still kills the child mid-generation. The child's `Write`/`Edit` calls flush to disk
+immediately, so `openspec/changes/<change-id>/` on `$WT` retains whatever it finished
+before dying; the risk is re-dispatching a fresh `/opsx:propose` for that same
+change-id, which hits OpenSpec's own change-name-collision guardrail
+(`openspec new change` refuses an existing name — `#openspec-nnn-prefix` above) instead
+of continuing the work. Run:
+
+```bash
+worktrail-check-openspec-propose-resume --worktree "$WT" --change-id "$SPEC_ID" --json
+```
+
+`checked: false` (worktree unreachable) — treat as unknown, do not skip the check
+silently; surface the warning and stop rather than guessing. `resumable: false` —
+`$SPEC_ID`'s change directory is untouched or absent; dispatch `/opsx:propose` as below.
+`resumable: true` — a prior spawn already wrote `present` artifacts (and/or delta specs
+under `specs/`); dispatch `/opsx:update "$SPEC_ID"` instead (`#openspec-explore`,
+"revise the existing artifacts, keeps them coherent"), directing it to complete
+`missing` — never re-dispatch `/opsx:propose` for a `resumable: true` change-id.
+
 Spawn it headlessly against the change worktree — do **not** relocate the calling
 session into `$WT` to run it:
 
@@ -390,7 +412,9 @@ minutes to author the full proposal/delta-specs/design/tasks set — invoke it
 via `run_in_background` (or an explicitly extended timeout), never a
 default-timeout (2min) foreground `Bash` call. A foreground call with the
 default timeout killed a child mid-generation on 2026-08-15, discarding
-partial work with no resume/checkpoint.
+partial work; the resumability pre-check above is what now lets a later
+re-dispatch continue from that partial state instead of colliding on
+`/opsx:propose`'s own change-name guardrail.
 
 **Why not run it inline.** The former procedure moved the session with
 `EnterWorktree({path: "$WT"})`. That can never run unattended: `EnterWorktree`
