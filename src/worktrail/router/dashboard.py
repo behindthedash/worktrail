@@ -1919,12 +1919,14 @@ def build_category_actions(
     spec_rows: Optional[List[Dict[str, Any]]],
     inflight: List[Dict[str, Any]],
     queue_briefs: List[Dict[str, Any]],
+    open_decisions: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     """Level-1 AskUserQuestion buttons: one per work category (≤4).
 
-    Categories are only included when they have actionable items. The four
-    possible categories in priority order: ready/in-progress, needs-tasking,
-    work-queue, new-work. 'New work' is always present as the final entry."""
+    Categories are only included when they have actionable items. The five
+    possible categories in priority order: decisions, ready/in-progress,
+    needs-tasking, work-queue, new-work. 'New work' is always present as the
+    final entry, so it is the first one dropped by the ≤4 truncation."""
     actives: List[Dict[str, Any]] = []
     if repo_rows is not None:
         for repo in repo_rows:
@@ -1944,7 +1946,15 @@ def build_category_actions(
         if not b.get("blocked") and not b.get("not_yet_due") and not b.get("recently_released")
     )
 
+    decisions_count = len(open_decisions or [])
+
     categories: List[Dict[str, Any]] = []
+    if decisions_count:
+        categories.append({
+            "label": f"Open decisions ({decisions_count})",
+            "description": _CATEGORY_DESC["decisions"],
+            "category": "decisions",
+        })
     if ready_count:
         categories.append({
             "label": f"Ready / in-progress ({ready_count})",
