@@ -24,6 +24,7 @@ falls through to today's unmodified brief-staleness flow.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Callable, Dict, List
 
@@ -137,3 +138,44 @@ def recheck(repo: Path, frontmatter: Dict[str, Any]) -> Dict[str, object]:
         "resolved": resolved,
         "error": None,
     }
+
+
+# --- CLI --------------------------------------------------------------------
+
+def _format_human(res: Dict[str, object]) -> str:
+    if not res["attempted"]:
+        return f"not attempted: outcome={res['outcome']}"
+    if res["outcome"] == "error":
+        return f"error: {res.get('error')}"
+    return (
+        f"outcome={res['outcome']} drift_source={res['drift_source']!r} "
+        f"still_true={res['still_true']} resolved={res['resolved']}"
+    )
+
+
+def main(argv=None) -> int:
+    import argparse
+
+    from ..shared.brief_frontmatter import read_frontmatter
+
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--repo", required=True)
+    p.add_argument("--brief", required=True)
+    p.add_argument("--json", action="store_true")
+    args = p.parse_args(argv)
+
+    frontmatter = read_frontmatter(Path(args.brief))
+    res = recheck(Path(args.repo), frontmatter)
+
+    if args.json:
+        print(json.dumps(res))
+    else:
+        print(_format_human(res))
+
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+
+    sys.exit(main())
