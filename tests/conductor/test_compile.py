@@ -974,3 +974,67 @@ def test_a_compiled_plan_unlocks_parallelism_the_format_could_not_express(change
     assert {t["id"] for t in frontier} == {"1.1", "1.2"}
     assert "2.1" not in {t["id"] for t in frontier}, "the tail is still held out"
     assert any("applied" in n for n in notes)
+
+
+# --------------------------------------------------------------------------- #
+# `_git_repo_root` must resolve to the canonical checkout, not a linked
+# worktree's own toplevel -- otherwise a worktree pre-compile and the later
+# canonical `full-real` run never share a cache entry (see AGENTS.md
+# `conductor/`).
+# --------------------------------------------------------------------------- #
+@pytest.fixture()
+def repo_with_worktree(tmp_path: Path):
+    """A canonical checkout plus one linked worktree off it, both real git
+    checkouts -- `--git-common-dir` only differs from `--show-toplevel` for an
+    actual `git worktree add` checkout, not a bare `.git`-marker directory."""
+    import subprocess
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@example.com"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "t"], check=True)
+    (repo / "README.md").write_text("x\n")
+    subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "init"], check=True)
+
+    worktree = tmp_path / "repo-worktrees" / "some-branch"
+    worktree.parent.mkdir(parents=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", "-b", "some-branch", str(worktree)],
+        check=True,
+    )
+    return repo, worktree
+
+
+def test_git_repo_root_resolves_a_linked_worktree_to_the_canonical_checkout(repo_with_worktree):
+    repo, worktree = repo_with_worktree
+    spec_dir = worktree / "openspec" / "changes" / "add-thing"
+    spec_dir.mkdir(parents=True)
+
+    resolved_from_worktree = conductor_compile._git_repo_root(spec_dir)
+    resolved_from_repo = conductor_compile._git_repo_root(repo)
+
+    assert resolved_from_worktree == repo.resolve()
+    assert resolved_from_worktree == resolved_from_repo
+
+
+def test_cli_compiling_from_a_worktree_caches_under_the_canonical_repo(repo_with_worktree, capsys):
+    """Regression for the divergence: `worktrail-compile` invoked with a spec
+    dir inside a linked worktree (exactly how the SDD skills run it) must
+    still print a cache path under `<repo>-worktrees/runplans`, not
+    `<worktree>-worktrees/runplans` -- otherwise this compile's result is
+    never read back by the canonical `full-real` run."""
+    repo, worktree = repo_with_worktree
+    d = worktree / "openspec" / "changes" / "add-thing"
+    d.mkdir(parents=True)
+    (d / "proposal.md").write_text("## Why\nBecause.\n")
+    (d / "tasks.md").write_text("## 1. Core\n\n- [ ] 1.1 Add the parser\n")
+
+    rc = conductor_compile.main([str(d), "--no-llm"])
+    out = capsys.readouterr().out
+    assert rc == 1  # scope gap expected with --no-llm; the cache line still prints first
+    cache_line = next(line for line in out.splitlines() if line.strip().startswith("cache:"))
+    expected_cache_dir = conductor_compile.default_cache_dir(repo)
+    assert str(expected_cache_dir) in cache_line
+    assert str(worktree) not in cache_line
