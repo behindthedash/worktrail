@@ -1143,6 +1143,55 @@ running repo-local tools from it (`npm ci` or the repo's documented equivalent) 
 see the note under `#spec-worktree-setup`; do not assume the base checkout's
 `node_modules` or generated artifacts are usable from the new worktree.
 
+### Worktree deletion liveness guard {#worktree-deletion-liveness-guard}
+
+Shared by every documented deletion path — the `new`-pipeline teardown below,
+`#fix-branch-worktree-teardown`, and `worktree-cleanup.md`'s prune step. `git worktree
+add` now stamps the creating run's own path onto that run record (see
+`#spec-worktree-setup`/`#change-spec-worktree-setup`/`#fix-branch-worktree-setup`), so
+a worktree about to be removed can be checked back against the run that owns it before
+it's deleted out from under a still-active process — the same class of cross-session
+collision `#active-conflicts-scan` and the Active-run-resume liveness check
+(`worktrail-go/SKILL.md` Phase 7) already guard against, applied here to deletion
+instead of duplicate dispatch.
+
+Call this before any `git worktree remove`/`branch -D` pair below, with `$WT` set to
+the worktree about to be deleted, `$RUN_RECORDS_DIR` set to that call site's own
+run-records directory, and `$INVOCATION_CONTEXT_DISPATCH_ID` carried through from the
+invoking shell:
+
+```bash
+OWNER=$(worktrail-run-record find-by-worktree \
+  --dir "$RUN_RECORDS_DIR" --repo "$REPO" --worktree "$WT")
+OWNER_FOUND=$(echo "$OWNER" | python3 -c "import json,sys; print(str(json.load(sys.stdin)['found']).lower())")
+
+if [ "$OWNER_FOUND" = "true" ]; then
+  OWNER_PATH=$(echo "$OWNER" | python3 -c "import json,sys; print(json.load(sys.stdin)['path'])")
+  LIVENESS=$(worktrail-run-record liveness "$OWNER_PATH" --dispatch-id "$INVOCATION_CONTEXT_DISPATCH_ID")
+  LIVE_FRESH=$(echo "$LIVENESS" | python3 -c "import json,sys; print(str(json.load(sys.stdin)['fresh']).lower())")
+  LIVE_SAME_DISPATCH=$(echo "$LIVENESS" | python3 -c "import json,sys; print(str(json.load(sys.stdin)['same_dispatch']).lower())")
+
+  if [ "$LIVE_FRESH" = "true" ] && [ "$LIVE_SAME_DISPATCH" = "false" ]; then
+    echo "BLOCKED: refusing to delete $WT — owned by a live run:" >&2
+    echo "$LIVENESS" | python3 -c "
+import sys, json
+r = json.load(sys.stdin)
+print(f'  run_id={r.get(\"run_id\",\"?\")} age_seconds={r.get(\"age_seconds\",\"?\")} updated_at={r.get(\"updated_at\",\"?\")}')
+" >&2
+    # Stop here — do not run git worktree remove/branch -D on $WT.
+  fi
+fi
+```
+
+`same_dispatch: true` (this exact dispatch owns the record it just found) and
+`fresh: false` (a stale/abandoned owning record) both proceed with the caller's
+deletion unchanged — the first because the caller is deleting its own worktree, the
+second because the owning process most likely crashed without ever reaching teardown
+and the record itself would otherwise rot forever. `OWNER_FOUND = false` (no run
+record ever claimed this path, e.g. records already pruned) also proceeds unchanged —
+this guard only ever blocks on positive evidence of a live, different owner, never on
+the absence of one.
+
 ### Teardown after `new` pipeline completes
 
 Group-branch naming: the live `full` path creates per-group branches as `<run-id>/<group>`
