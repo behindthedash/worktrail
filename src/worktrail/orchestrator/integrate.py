@@ -993,36 +993,34 @@ def integrate_one(
     pr_base = target
 
     # When the dep group's branch is the target but has since been deleted (merged +
-    # cleanup), git worktree add fails with "src refspec does not match any". Detect the
-    # missing ref and fall back to the pre-squash merge-base of the first task branch and
-    # the remote base, then reconcile squash-merge divergence after integrating tasks.
-    squash_reconcile_ref: Optional[str] = None
+    # cleanup) OR was never a real branch at all (dependency verified ALREADY_INTEGRATED
+    # from a prior run — group_branch holds only the synthetic f"{run_id}/{name}" marker
+    # the implicit-merge early return above writes), git worktree add fails with "src
+    # refspec does not match any". Detect the missing ref. Either way the dependency's
+    # content is already fully present on the live base by construction (that is why its
+    # branch is gone), so resolve directly to the freshly-fetched live base ref instead of
+    # reconstructing a historical pre-squash point and reconciling divergence with an
+    # unconditioned `-X ours` merge — that reconstruction can predate content the live base
+    # actually has (e.g. a dependency integrated via an unrelated prior run shares no
+    # lineage with this run's task branches), and `-X ours` then silently discards live-base
+    # content on any overlapping line instead of failing loud. Root-caused live: reintroduced
+    # duplicate code and reverted tasks.md checkboxes (PR #414); see
+    # docs/specs/research/integrate-one-dep-branch-gone-fallback-root-cause.md.
     if g["depends_on"] and target != base:
         ref_ok = _git(repo, "rev-parse", "--verify", target, check=False)
         if ref_ok.returncode != 0:
             remote_base_ref = f"{remote}/{base}"
-            # The dep branch is gone because it was just squash-merged, but this
-            # process's local `remote_base_ref` may still predate that merge — nothing
-            # else in this run guarantees a fetch happened since. Fetch now so both the
-            # merge-base computation below and the squash-reconcile merge further down
-            # see the dependency's actual merged tip, not a stale pre-merge `base`.
+            # This process's local base ref may predate the dependency's actual merge —
+            # nothing else in this run guarantees a fetch happened since. Fetch now so
+            # `remote_base_ref` reflects the dependency's real, current position.
             _git(repo, "fetch", "-q", remote, base, check=False)
-            if deliverable:
-                first_task = f"{spec_id}/{deliverable[0].lower()}"
-                mb = _git(repo, "merge-base", first_task, remote_base_ref, check=False)
-                if mb.returncode == 0 and mb.stdout.strip():
-                    target = mb.stdout.strip()
-                    squash_reconcile_ref = remote_base_ref
-                else:
-                    target = remote_base_ref
-            else:
-                target = remote_base_ref
-            # The dep group has been merged into `base` and its branch deleted; this
+            target = remote_base_ref
+            # The dep group has been merged into `base` and its branch is gone; this
             # dependent group's PR must target the real base branch, not the (now-gone)
-            # dep branch or the pre-squash commit `target` — GitHub requires a branch ref.
+            # dep branch — GitHub requires a branch ref.
             pr_base = base
             print(f"  FALLBACK [{name:9}] dep branch '{g['depends_on'][0]}' gone — "
-                  f"start {'pre-squash ' + target[:8] if squash_reconcile_ref else remote_base_ref}")
+                  f"start {remote_base_ref}")
 
     # Reconcile: MERGED? Skip branch/PR creation and write MERGED record.
     # Transient-retried: a flaky 5xx here would otherwise read as "no PR",
@@ -1073,12 +1071,6 @@ def integrate_one(
                 print(f"  SKIP [{name:9}] -- {quarantined[name]}")
                 _do_journal(name, "", gb, "QUARANTINED", QUARANTINE_MERGE_CONFLICT)
                 return None
-            # When we started from a pre-squash merge-base (dep branch was deleted after
-            # squash-merge), bring in the squashed remote base with -X ours. The task
-            # branches carry the base group's content from before the squash; -X ours
-            # resolves apparent conflicts in our favor (content is byte-identical).
-            if squash_reconcile_ref:
-                _git(iw, "merge", "--no-edit", "-X", "ours", squash_reconcile_ref, check=False)
             if strip_spec_folder:
                 _strip_spec_folder_to_base(iw, spec_id, target)
             _write_group_task_status(iw, spec_id, g, status)
