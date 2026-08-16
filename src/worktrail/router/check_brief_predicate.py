@@ -21,6 +21,24 @@ predicate without touching `recheck()`'s own control flow. Only the
 (no predicate captured, an unrecognized `drift-source`, a registered
 predicate that itself fails) degrades to a non-terminal outcome so Phase 5.5
 falls through to today's unmodified brief-staleness flow.
+
+The two terminal outcomes each reuse an existing queue/run-record pattern
+rather than inventing a new one (see design.md - Decisions): `"resolved"`
+reuses `work_queue.py done`'s `--note`, and `"still-true"` reuses the
+post-Phase-6 `worktrail-run-record append "$RUN" decisions "..."` pattern the
+probe-based "proceed" outcome already uses in `brief-staleness-check.md`.
+`format_still_true_evidence` builds that exact line from `recheck()`'s
+`still_true` list so Phase 5.5's skill doc has one canonical string to call
+instead of composing prose ad hoc:
+
+    Predicate re-check (checkbox-drift-sweep) found the staleness predicate
+    still true for 2 finding(s): docs/specs/x/tasks/TASK-001.md,
+    docs/specs/x/tasks/TASK-004.md. Proceeded automatically without an
+    operator prompt.
+
+Unlike the probe-based line it mirrors, there is no commit SHA or PR number
+to cite -- the probe search never runs on this path -- so the still-true
+task-file paths themselves are the cited evidence.
 """
 from __future__ import annotations
 
@@ -138,6 +156,26 @@ def recheck(repo: Path, frontmatter: Dict[str, Any]) -> Dict[str, object]:
         "resolved": resolved,
         "error": None,
     }
+
+
+def format_still_true_evidence(result: Dict[str, object]) -> str:
+    """Build the exact evidence line for `recheck()`'s `"still-true"` outcome.
+
+    Callers append this via the same post-Phase-6 pattern the probe-based
+    "proceed" outcome uses (`worktrail-run-record append "$RUN" decisions
+    "<this string>"`), so the run record reads the same way regardless of
+    which path decided to proceed. There is no commit SHA or PR number to
+    cite here -- the probe search never runs on this path -- so the
+    still-true task-file paths from `result["still_true"]` are the cited
+    evidence instead.
+    """
+    still_true = result["still_true"]
+    paths = ", ".join(still_true)
+    return (
+        f"Predicate re-check ({result['drift_source']}) found the staleness "
+        f"predicate still true for {len(still_true)} finding(s): {paths}. "
+        "Proceeded automatically without an operator prompt."
+    )
 
 
 # --- CLI --------------------------------------------------------------------
