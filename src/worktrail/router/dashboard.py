@@ -2154,7 +2154,7 @@ def build_category_items(
             "action": "answer-decision",
             "id": decision.get("id"),
             "label": (question or decision.get("id"))[:60],
-            "description": decision.get("description"),
+            "description": "Answer this blocked decision to unblock the brief.",
         }
         if decision.get("repo") is not None:
             item["repo"] = decision["repo"]
