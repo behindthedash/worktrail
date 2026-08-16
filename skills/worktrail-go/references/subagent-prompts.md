@@ -1006,6 +1006,7 @@ SIBLING_REF_GLOB="refs/heads/spec/$SPEC_ID"
 # run the sibling check — #sibling-worktree-check
 WT="$REPO-worktrees/$SPEC_ID-spec"
 git -C "$REPO" worktree add -b "spec/$SPEC_ID" "$WT" "$BASE"
+worktrail-run-record set "$RUN" worktree "$WT"
 if [ "$FORMAT" = "openspec" ]; then
   SPEC_DIR="$WT/openspec/changes/$SPEC_ID"
 else
@@ -1049,6 +1050,7 @@ sibling already made.
 CHANGE_ID="$SPEC_ID-$CHANGE_SLUG"
 WT="$REPO-worktrees/$SPEC_ID-chg-$CHANGE_SLUG"
 git -C "$REPO" worktree add -b "chg/$CHANGE_ID" "$WT" "$BASE"
+worktrail-run-record set "$RUN" worktree "$WT"
 CHANGE_DIR="$WT/openspec/changes/$CHANGE_ID"
 ```
 
@@ -1129,6 +1131,7 @@ when `$RUN` reaches any `finish` completion state, same recovery path as
 ```bash
 WT="$REPO-worktrees/fix-$SLUG"
 git -C "$REPO" worktree add -b "fix/$SLUG" "$WT" "$BASE"
+worktrail-run-record set "$RUN" worktree "$WT"
 ```
 
 If `git worktree add` is sandbox-denied, surface it and stop — don't write on base.
