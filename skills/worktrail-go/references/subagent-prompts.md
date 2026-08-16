@@ -1204,6 +1204,11 @@ anywhere outside `$WT`), not `$WT` itself — `cd` back first if an earlier step
 inside it. See the worktree-lifecycle note above for why.
 
 - **All group PRs auto-merged green:**
+
+  Before removing `$WT`, run `#worktree-deletion-liveness-guard` with `$RUN_RECORDS_DIR`
+  set to `"$(dirname "$(dirname "$RUN")")"` and `$INVOCATION_CONTEXT_DISPATCH_ID` carried
+  through from the invoking shell. If it blocks, stop here — do not run the commands below.
+
   ```bash
   git -C "$REPO" worktree remove "$WT"
   git -C "$REPO" branch -D "spec/$SPEC_ID"   # only after confirmed merge
@@ -1240,6 +1245,11 @@ anywhere outside `$WT`), not `$WT` itself — `cd` back first if an earlier step
 inside it. See the worktree-lifecycle note above for why.
 
 - **PR merged:**
+
+  Before removing `$WT`, run `#worktree-deletion-liveness-guard` with `$RUN_RECORDS_DIR`
+  set to `"$(dirname "$(dirname "$RUN")")"` and `$INVOCATION_CONTEXT_DISPATCH_ID` carried
+  through from the invoking shell. If it blocks, stop here — do not run the commands below.
+
   ```bash
   gh pr view "$PR_URL" --json state,mergedAt   # confirm merged before removing
   git -C "$REPO" worktree remove "$WT"
