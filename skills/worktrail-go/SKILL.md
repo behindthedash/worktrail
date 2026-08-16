@@ -138,6 +138,7 @@ Extract from the arguments: `$ARG_REPO` (first positional arg if it looks like a
 
 ```bash
 QUEUE_JSON=$(worktrail-work-queue list --json 2>/dev/null)
+DECISIONS_JSON=$(worktrail-decision list --status open --json 2>/dev/null)
 AUTO_FLAGS=()
 if [ "$AUTO_MODE" = "true" ]; then
   AUTO_FLAGS=(--auto)
@@ -146,12 +147,14 @@ fi
 if [ "$RESOLVE_MODE" = "in-repo" ]; then
   DASHBOARD_JSON=$(worktrail-dashboard \
     --root "$REPO/docs/specs" --picked-dir "$BASE/picked" \
-    --queue-json "$QUEUE_JSON" "${AUTO_FLAGS[@]}" --json 2>/dev/null)
+    --queue-json "$QUEUE_JSON" --decisions-json "$DECISIONS_JSON" \
+    "${AUTO_FLAGS[@]}" --json 2>/dev/null)
 else
   REPOS_DIR="${HOME}/projects"; [ -d "$REPOS_DIR" ] || REPOS_DIR="$PWD"
   DASHBOARD_JSON=$(worktrail-dashboard \
     --repos "$REPOS_DIR" --picked-dir "$BASE/picked" \
-    --queue-json "$QUEUE_JSON" "${AUTO_FLAGS[@]}" --json 2>/dev/null)
+    --queue-json "$QUEUE_JSON" --decisions-json "$DECISIONS_JSON" \
+    "${AUTO_FLAGS[@]}" --json 2>/dev/null)
 fi
 ```
 
