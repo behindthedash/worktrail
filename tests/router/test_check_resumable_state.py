@@ -93,6 +93,63 @@ class TestNoRepoFrontmatter(unittest.TestCase):
             self.assertIsNone(res["evidence"]["run_record"])
 
 
+class TestRepoOverrideFallback(unittest.TestCase):
+    """`/go`'s Phase 3 already resolves the dispatch target repo before Phase 5
+    runs this check -- `repo_override` lets a brief with no `repo:` frontmatter
+    (e.g. a meta-brief about worktrail itself) still get evidence-checked
+    instead of silently skipping, per brief 20260815-211359."""
+
+    def test_override_used_when_frontmatter_missing(self):
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            runs_dir = tmp / "runs"
+            repo = str(tmp / "myrepo")
+            worktree = tmp / "myrepo-worktrees" / "some-branch"
+            worktree.mkdir(parents=True)
+            brief_id = "20260815-211359-meta-brief"
+            brief = tmp / "b.md"
+            brief.write_text(f"---\nid: {brief_id}\nrepo: null\n---\n\n## Focus\n\ntest\n",
+                              encoding="utf-8")
+            _write_run_record(runs_dir, repo, "go-1", brief_id,
+                               final_status=None, worktree=str(worktree))
+
+            res = crs.check(brief, runs_dir=runs_dir, do_gh=False, repo_override=repo)
+            self.assertTrue(res["checked"])
+            self.assertTrue(res["resumable"])
+            self.assertEqual(res["evidence"]["worktree"], str(worktree))
+
+    def test_frontmatter_repo_wins_over_override(self):
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            runs_dir = tmp / "runs"
+            frontmatter_repo = str(tmp / "real-repo")
+            override_repo = str(tmp / "wrong-repo")
+            worktree = tmp / "real-repo-worktrees" / "some-branch"
+            worktree.mkdir(parents=True)
+            brief_id = "20260815-211359-frontmatter-wins"
+            brief = _write_brief(tmp, brief_id, frontmatter_repo)
+            _write_run_record(runs_dir, frontmatter_repo, "go-1", brief_id,
+                               final_status=None, worktree=str(worktree))
+
+            res = crs.check(brief, runs_dir=runs_dir, do_gh=False, repo_override=override_repo)
+            self.assertTrue(res["checked"])
+            self.assertTrue(res["resumable"])
+            self.assertEqual(res["evidence"]["worktree"], str(worktree))
+
+    def test_no_override_and_no_frontmatter_still_fails_open(self):
+        # repo_override defaults to None -- unchanged behavior for every
+        # existing caller that doesn't pass it.
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            brief = tmp / "b.md"
+            brief.write_text("---\nid: b\nrepo: null\n---\n\n## Focus\n\ntest\n",
+                              encoding="utf-8")
+            res = crs.check(brief, do_gh=False, repo_override=None)
+            self.assertFalse(res["checked"])
+            self.assertFalse(res["resumable"])
+            self.assertIn("no repo:", res["warning"])
+
+
 class TestRunRecordScan(unittest.TestCase):
     def test_no_run_records_directory_is_not_resumable(self):
         with tempfile.TemporaryDirectory() as t:
@@ -277,6 +334,33 @@ class TestCli(unittest.TestCase):
                                 "--no-gh", "--json"])
             self.assertEqual(rc, 0)
             mock_find.assert_not_called()
+
+    def test_repo_flag_is_wired_as_fallback(self):
+        import io
+        import json
+        from contextlib import redirect_stdout
+
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            runs_dir = tmp / "runs"
+            repo = str(tmp / "myrepo")
+            worktree = tmp / "myrepo-worktrees" / "some-branch"
+            worktree.mkdir(parents=True)
+            brief_id = "b"
+            brief = tmp / "b.md"
+            brief.write_text(f"---\nid: {brief_id}\nrepo: null\n---\n\n## Focus\n\ntest\n",
+                              encoding="utf-8")
+            _write_run_record(runs_dir, repo, "go-1", brief_id,
+                               final_status=None, worktree=str(worktree))
+
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = crs.main(["--brief", str(brief), "--dir", str(runs_dir),
+                                "--no-gh", "--repo", repo, "--json"])
+            self.assertEqual(rc, 0)
+            res = json.loads(buf.getvalue())
+            self.assertTrue(res["checked"])
+            self.assertTrue(res["resumable"])
 
 
 if __name__ == "__main__":
