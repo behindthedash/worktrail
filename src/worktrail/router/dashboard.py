@@ -1906,6 +1906,7 @@ _STAGE_PRIORITY = {
 # --- two-level category picker -----------------------------------------------
 
 _CATEGORY_DESC = {
+    "decisions":   "Answer a blocked product decision — unblocks the brief automatically.",
     "ready":       "Run orchestrator, continue verify, or sync on these specs.",
     "needs-tasks": "Generate task DAG (spec-to-tasks) or resolve clarifications.",
     "workqueue":   "Claim a queued brief or resume stalled in-flight work.",
