@@ -1919,12 +1919,14 @@ def build_category_actions(
     spec_rows: Optional[List[Dict[str, Any]]],
     inflight: List[Dict[str, Any]],
     queue_briefs: List[Dict[str, Any]],
+    open_decisions: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     """Level-1 AskUserQuestion buttons: one per work category (≤4).
 
-    Categories are only included when they have actionable items. The four
-    possible categories in priority order: ready/in-progress, needs-tasking,
-    work-queue, new-work. 'New work' is always present as the final entry."""
+    Categories are only included when they have actionable items. The five
+    possible categories in priority order: decisions, ready/in-progress,
+    needs-tasking, work-queue, new-work. 'New work' is always present as the
+    final entry, so it is the first one dropped by the ≤4 truncation."""
     actives: List[Dict[str, Any]] = []
     if repo_rows is not None:
         for repo in repo_rows:
@@ -1944,7 +1946,15 @@ def build_category_actions(
         if not b.get("blocked") and not b.get("not_yet_due") and not b.get("recently_released")
     )
 
+    decisions_count = len(open_decisions or [])
+
     categories: List[Dict[str, Any]] = []
+    if decisions_count:
+        categories.append({
+            "label": f"Open decisions ({decisions_count})",
+            "description": _CATEGORY_DESC["decisions"],
+            "category": "decisions",
+        })
     if ready_count:
         categories.append({
             "label": f"Ready / in-progress ({ready_count})",
@@ -1981,12 +1991,17 @@ def build_category_items(
     queue_briefs: List[Dict[str, Any]],
     backlog_total: int = 0,
     clusters: Optional[List[Dict[str, Any]]] = None,
+    open_decisions: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, List[Dict[str, Any]]]:
     """Level-2 items per category for the two-level /go picker.
 
     Returns a dict keyed by category string. Each value is a list of ≤4 items
     with full dispatch data (action, spec_id, repo, path, next_action). Items
-    beyond 4 are reachable via 'Other' in the AskUserQuestion level-2 call."""
+    beyond 4 are reachable via 'Other' in the AskUserQuestion level-2 call.
+    'decisions' is capped at 4 with no overflow item (matching every other
+    category's own cap) and is omitted entirely when there are no open
+    decisions, so callers that never pass `open_decisions` see byte-identical
+    output."""
     default_repo_root = _dashboard_repo_root()
 
     def _spec_item(s: Dict[str, Any], repo: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -2131,13 +2146,32 @@ def build_category_items(
             "action": "see-backlog",
         })
 
+    decision_items: List[Dict[str, Any]] = []
+    for decision in (open_decisions or [])[:4]:
+        question = decision.get("question")
+        item = {
+            "type": "decision",
+            "action": "answer-decision",
+            "id": decision.get("id"),
+            "label": (question or decision.get("id"))[:60],
+            "description": "Answer this blocked decision to unblock the brief.",
+        }
+        if decision.get("repo") is not None:
+            item["repo"] = decision["repo"]
+        if decision.get("brief") is not None:
+            item["brief"] = decision["brief"]
+        decision_items.append(item)
+
     result: Dict[str, List[Dict[str, Any]]] = {}
     for key, items in [
+        ("decisions", decision_items),
         ("ready", ready_items),
         ("needs-tasks", tasks_items),
         ("workqueue", workqueue_items),
         ("new-work", new_work_items),
     ]:
+        if key == "decisions" and not items:
+            continue
         numbered = items[:4]
         for i, item in enumerate(numbered, 1):
             item["n"] = i
@@ -2744,12 +2778,16 @@ def main(argv=None) -> int:
                         "active_specs": sum(r.get("active", 0) for r in repo_rows),
                         "handoff_queue": unblocked_queue_total,
                         "inflight": inflight,
-                        "category_actions": build_category_actions(repo_rows, None, inflight, queue_briefs),
+                        "category_actions": build_category_actions(
+                            repo_rows, None, inflight, queue_briefs, open_decisions=open_decisions
+                        ),
                         "category_items": build_category_items(
-                            repo_rows, None, inflight, queue_briefs, backlog_total, clusters=clusters
+                            repo_rows, None, inflight, queue_briefs, backlog_total, clusters=clusters,
+                            open_decisions=open_decisions,
                         ),
                         "auto_pick": auto_pick,
                         "clusters": clusters,
+                        "open_decisions": open_decisions,
                         "cluster_precision": cluster_precision,
                         "capacity": capacity,
                         "postmerge_check_failures": postmerge_check_failures,
@@ -2796,12 +2834,16 @@ def main(argv=None) -> int:
                     "handoff_queue": unblocked_queue_total,
                     "inflight": inflight,
                     "worktrees": worktrees,
-                    "category_actions": build_category_actions(None, rows, inflight, queue_briefs),
+                    "category_actions": build_category_actions(
+                        None, rows, inflight, queue_briefs, open_decisions=open_decisions
+                    ),
                     "category_items": build_category_items(
-                        None, rows, inflight, queue_briefs, backlog_total, clusters=clusters
+                        None, rows, inflight, queue_briefs, backlog_total, clusters=clusters,
+                        open_decisions=open_decisions,
                     ),
                     "auto_pick": auto_pick,
                     "clusters": clusters,
+                    "open_decisions": open_decisions,
                     "cluster_precision": cluster_precision,
                     "capacity": capacity,
                     "postmerge_check_failures": postmerge_check_failures,

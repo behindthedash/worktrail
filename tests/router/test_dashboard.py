@@ -1267,6 +1267,53 @@ class CategoryPickerAndRender(unittest.TestCase):
         cats = dashboard.build_category_actions(None, rows, inflight=[brief], queue_briefs=[])
         self.assertLessEqual(len(cats), 4)
 
+    def test_category_actions_decisions_included_with_count(self):
+        decisions = [{"id": "dec-1", "question": "q1"}, {"id": "dec-2", "question": "q2"}]
+        cats = dashboard.build_category_actions(
+            None, [], inflight=[], queue_briefs=[], open_decisions=decisions
+        )
+        decision_cats = [c for c in cats if c["category"] == "decisions"]
+        self.assertEqual(len(decision_cats), 1)
+        self.assertEqual(decision_cats[0]["label"], "Open decisions (2)")
+
+    def test_category_actions_decisions_omitted_when_none_or_empty(self):
+        cats_none = dashboard.build_category_actions(
+            None, [], inflight=[], queue_briefs=[], open_decisions=None
+        )
+        cats_empty = dashboard.build_category_actions(
+            None, [], inflight=[], queue_briefs=[], open_decisions=[]
+        )
+        self.assertFalse(any(c["category"] == "decisions" for c in cats_none))
+        self.assertFalse(any(c["category"] == "decisions" for c in cats_empty))
+
+    def test_category_actions_decisions_ranked_ahead_of_ready(self):
+        rows = [self._spec_row("001", "ready-to-implement", "orchestrator")]
+        decisions = [{"id": "dec-1", "question": "q1"}]
+        cats = dashboard.build_category_actions(
+            None, rows, inflight=[], queue_briefs=[], open_decisions=decisions
+        )
+        categories = [c["category"] for c in cats]
+        self.assertEqual(categories.index("decisions"), 0)
+        self.assertLess(categories.index("decisions"), categories.index("ready"))
+
+    def test_category_actions_decisions_ready_tasks_queue_drop_new_work(self):
+        # decisions + ready + needs-tasks + workqueue all populated simultaneously
+        # must yield exactly these four, in this order -- new-work is the one that
+        # yields its slot to the ≤4 truncation, never one of the pre-existing three.
+        rows = [
+            self._spec_row("001", "ready-to-implement", "orchestrator"),
+            self._spec_row("002", "needs-tasks", "spec-to-tasks"),
+        ]
+        brief = {"filename": "20260617-001.md", "focus": "fix login", "claimed_at": "2026-06-17T00:00:00"}
+        decisions = [{"id": "dec-1", "question": "q1"}]
+        cats = dashboard.build_category_actions(
+            None, rows, inflight=[brief], queue_briefs=[], open_decisions=decisions
+        )
+        self.assertEqual(
+            [c["category"] for c in cats],
+            ["decisions", "ready", "needs-tasks", "workqueue"],
+        )
+
     # --- build_category_items tests ---
 
     def test_category_items_ready_contains_actionable_specs(self):
@@ -1310,6 +1357,44 @@ class CategoryPickerAndRender(unittest.TestCase):
         self.assertEqual(item["spec_id"], "001")
         self.assertIn("next_action", item)
         self.assertIn("stage", item)
+
+    def test_category_items_decisions_carry_dispatch_data(self):
+        decisions = [
+            {"id": "dec-1", "question": "Should we use approach A or B?", "repo": "myrepo", "brief": "20260617-001"},
+        ]
+        items = dashboard.build_category_items(None, [], inflight=[], queue_briefs=[], open_decisions=decisions)
+        item = items["decisions"][0]
+        self.assertEqual(item["type"], "decision")
+        self.assertEqual(item["action"], "answer-decision")
+        self.assertEqual(item["id"], "dec-1")
+        self.assertEqual(item["label"], "Should we use approach A or B?")
+        self.assertEqual(item["repo"], "myrepo")
+        self.assertEqual(item["brief"], "20260617-001")
+
+    def test_category_items_decisions_label_truncated_and_falls_back_to_id(self):
+        long_question = "x" * 80
+        decisions = [
+            {"id": "dec-1", "question": long_question},
+            {"id": "dec-2", "question": None},
+        ]
+        items = dashboard.build_category_items(None, [], inflight=[], queue_briefs=[], open_decisions=decisions)
+        labels = {i["id"]: i["label"] for i in items["decisions"]}
+        self.assertEqual(labels["dec-1"], long_question[:60])
+        self.assertEqual(len(labels["dec-1"]), 60)
+        self.assertEqual(labels["dec-2"], "dec-2")
+
+    def test_category_items_decisions_capped_at_four(self):
+        decisions = [{"id": f"dec-{i}", "question": f"q{i}"} for i in range(6)]
+        items = dashboard.build_category_items(None, [], inflight=[], queue_briefs=[], open_decisions=decisions)
+        self.assertEqual(len(items["decisions"]), 4)
+
+    def test_category_items_decisions_omitted_when_none_or_empty(self):
+        items_none = dashboard.build_category_items(None, [], inflight=[], queue_briefs=[], open_decisions=None)
+        items_empty = dashboard.build_category_items(None, [], inflight=[], queue_briefs=[], open_decisions=[])
+        items_default = dashboard.build_category_items(None, [], inflight=[], queue_briefs=[])
+        self.assertNotIn("decisions", items_none)
+        self.assertNotIn("decisions", items_empty)
+        self.assertNotIn("decisions", items_default)
 
     def test_category_items_queue_item_planned_agent_matches_routing(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -3431,3 +3516,106 @@ class RepoScopedQueueRender(unittest.TestCase):
         self.assertIn("Stalled in-flight (1, +1 in other repos)", out)
         self.assertIn("ours", out)
         self.assertNotIn("theirs", out)
+
+
+class DecisionsJsonCLI(unittest.TestCase):
+    """`main()`'s `--decisions-json` flag, end-to-end: valid JSON must reach
+    both the category picker data and the echoed `open_decisions` field;
+    malformed JSON must degrade to an empty list rather than crash, mirroring
+    `--queue-json`'s existing malformed-input behavior."""
+
+    DECISIONS_PAYLOAD = json.dumps(
+        {"decisions": [{"id": "dec-1", "question": "Approach A or B?", "repo": "myrepo"}]}
+    )
+
+    def setUp(self):
+        # Isolate from this machine's real ~/work-queue -- otherwise stray
+        # queue/cluster state there could interfere with the two `main()`
+        # calls under test.
+        self._tmp = tempfile.TemporaryDirectory()
+        work_queue_dir = Path(self._tmp.name) / "work-queue"
+        (work_queue_dir / "queue").mkdir(parents=True)
+        self._env_patch = mock.patch.dict(os.environ, {"WORK_QUEUE_DIR": str(work_queue_dir)})
+        self._env_patch.start()
+
+    def tearDown(self):
+        self._env_patch.stop()
+        self._tmp.cleanup()
+
+    @staticmethod
+    def _run_json(argv):
+        import io
+        from contextlib import redirect_stdout
+
+        f = io.StringIO()
+        with redirect_stdout(f):
+            dashboard.main(argv)
+        return json.loads(f.getvalue())
+
+    def test_valid_decisions_json_surfaces_in_single_repo_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            specs_dir = Path(tmp) / "myrepo" / "docs" / "specs"
+            specs_dir.mkdir(parents=True)
+
+            output = self._run_json([
+                "--root", str(specs_dir),
+                "--decisions-json", self.DECISIONS_PAYLOAD,
+                "--json",
+            ])
+
+            self.assertEqual(
+                output["open_decisions"],
+                [{"id": "dec-1", "question": "Approach A or B?", "repo": "myrepo"}],
+            )
+            decision_cats = [c for c in output["category_actions"] if c["category"] == "decisions"]
+            self.assertEqual(len(decision_cats), 1)
+            self.assertEqual(decision_cats[0]["label"], "Open decisions (1)")
+            self.assertEqual(len(output["category_items"]["decisions"]), 1)
+            self.assertEqual(output["category_items"]["decisions"][0]["id"], "dec-1")
+
+    def test_valid_decisions_json_surfaces_in_multi_repo_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp)
+            (parent / "myrepo" / ".git").mkdir(parents=True)
+
+            output = self._run_json([
+                "--repos", str(parent),
+                "--decisions-json", self.DECISIONS_PAYLOAD,
+                "--json",
+            ])
+
+            self.assertEqual(
+                output["open_decisions"],
+                [{"id": "dec-1", "question": "Approach A or B?", "repo": "myrepo"}],
+            )
+            decision_cats = [c for c in output["category_actions"] if c["category"] == "decisions"]
+            self.assertEqual(len(decision_cats), 1)
+            self.assertEqual(decision_cats[0]["label"], "Open decisions (1)")
+            self.assertEqual(len(output["category_items"]["decisions"]), 1)
+            self.assertEqual(output["category_items"]["decisions"][0]["id"], "dec-1")
+
+    def test_malformed_decisions_json_degrades_to_empty_list(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            specs_dir = Path(tmp) / "myrepo" / "docs" / "specs"
+            specs_dir.mkdir(parents=True)
+
+            output = self._run_json([
+                "--root", str(specs_dir),
+                "--decisions-json", "{not valid json",
+                "--json",
+            ])
+
+            self.assertEqual(output["open_decisions"], [])
+            self.assertNotIn("decisions", output["category_items"])
+            self.assertFalse(
+                any(c["category"] == "decisions" for c in output["category_actions"])
+            )
+
+    def test_absent_decisions_json_defaults_to_empty_list(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            specs_dir = Path(tmp) / "myrepo" / "docs" / "specs"
+            specs_dir.mkdir(parents=True)
+
+            output = self._run_json(["--root", str(specs_dir), "--json"])
+
+            self.assertEqual(output["open_decisions"], [])
