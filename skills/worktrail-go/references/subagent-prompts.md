@@ -385,6 +385,13 @@ child the permissions it needs to author files with no human at the keyboard.
 `worktrail-skill-dispatch` preserves the requested provider, so this one call
 covers Claude Code, Codex, and OpenCode rather than branching per host.
 
+**Expect several minutes, not seconds.** This spawn routinely takes multiple
+minutes to author the full proposal/delta-specs/design/tasks set — invoke it
+via `run_in_background` (or an explicitly extended timeout), never a
+default-timeout (2min) foreground `Bash` call. A foreground call with the
+default timeout killed a child mid-generation on 2026-08-15, discarding
+partial work with no resume/checkpoint.
+
 **Why not run it inline.** The former procedure moved the session with
 `EnterWorktree({path: "$WT"})`. That can never run unattended: `EnterWorktree`
 returns `behavior: 'ask'` unconditionally for any path outside
