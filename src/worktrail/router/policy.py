@@ -192,6 +192,11 @@ DEFAULTS: Dict[str, Any] = {
     # that hasn't reviewed the feature never has its backlog silently drained
     # into implementation runs.
     "allow_seeded_implementation": False,
+    # Opt-in map of add-on name -> config (e.g. {"aspens": {...}}) run by
+    # addons/runner.py after each task/group's own work, staged and committed
+    # separately. Empty by default: a repo with no add_ons: key gets zero
+    # entries, so the runner iterates nothing and behavior is unchanged.
+    "add_ons": {},
 }
 
 KNOWN_KEYS = set(DEFAULTS) | {"automerge"}
