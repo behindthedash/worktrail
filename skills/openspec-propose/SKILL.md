@@ -94,6 +94,12 @@ per the calling worktrail-sdd-workflow pipeline instead.
           do not let two tasks within the same phase both list it in their file scope. A hot file
           that already recurs across phases just from the shape of the work is fine; the bias
           only applies to collapsing multiple same-phase tasks onto it.
+        - **Per-phase file split for additive hot files**: if the hot file is additive/composable
+          (entries appended to a registry, table, or list rather than a single section rewritten
+          in place), don't rely on ownership bias alone — split it into separate per-phase files,
+          each owned by the one task in that phase, and add a single later task that composes them
+          into the final combined file. This turns what would be a cross-phase collision into
+          independent per-phase file scopes plus one explicit composition step.
       - Show brief progress: "Created <artifact-id>"
 
    b. **Continue until all `applyRequires` artifacts are complete**
