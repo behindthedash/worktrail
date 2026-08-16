@@ -1074,6 +1074,59 @@ instead.)
 # $SLUG is a short fix descriptor (e.g. "cache-header-null-check"), confirmed
 # via AskUserQuestion if unclear ($AUTO_MODE=true: derive from the brief
 # focus/request text — never ask)
+```
+
+**Atomic ownership guard (mandatory, before `git worktree add` below).** Unspecced
+fixes have no `$SPEC_ID` to key `#active-conflicts-scan` on, which is why this setup
+previously had no ownership check at all — a gap named directly in
+`docs/specs/research/concurrent-go-dispatch-brief-claim-race.md` (recommended fix #2):
+two concurrent `/go` dispatches both landing on the same unspecced defect could each
+create their own `$WT`/branch and duplicate the fix with nothing to stop either.
+`run_record.py claim`'s exclusivity primitive is generic over its `--specification`
+string (it slugifies whatever key it's given into a lock filename — see
+`#active-conflicts-scan`), so reuse it here keyed on `fix:$SLUG` — namespaced with a
+`fix:` prefix so it can never collide with a real spec id's lock:
+
+```bash
+CLAIM_KEY="fix:$SLUG"
+RUN_RECORDS_DIR="$(dirname "$(dirname "$RUN")")"
+SCAN=$(worktrail-run-record active-conflicts \
+  --dir "$RUN_RECORDS_DIR" --repo "$REPO" --specification "$CLAIM_KEY" --exclude "$RUN")
+echo "$SCAN" | python3 -c '
+import json, sys
+for r in json.load(sys.stdin)["stale"]:
+    print(r["path"])
+' | while IFS= read -r STALE_PATH; do
+  worktrail-run-record reconcile "$STALE_PATH" \
+    --note "auto-reconciled: fix-branch-active-conflicts-staleness-reconciliation"
+done
+
+CLAIM=$(worktrail-run-record claim "$RUN" --specification "$CLAIM_KEY")
+CLAIM_STATUS=$(echo "$CLAIM" | python3 -c 'import sys, json; print(json.load(sys.stdin)["status"])')
+
+if [ "$CLAIM_STATUS" != "claimed" ]; then
+  echo "BLOCKED: active run(s) already target $CLAIM_KEY ($CLAIM_STATUS):" >&2
+  echo "$CLAIM" | python3 -c "
+import sys, json
+c = json.load(sys.stdin)
+for r in (c.get('conflicts') or [c]):
+    print(f'  run_id={r.get(\"run_id\",\"?\")} started_at={r.get(\"started_at\",\"?\")} request_summary={r.get(\"request_summary\",\"?\")} path={r.get(\"path\",\"?\")}')
+" >&2
+  worktrail-run-record finish "$RUN" \
+    --status blocked_external_dependency \
+    --merge-result "claim on $CLAIM_KEY failed ($CLAIM_STATUS) — another run already targets this fix"
+  # Stop here — do not create $WT, do not touch any repo file.
+fi
+```
+
+Unlike `#active-conflicts-scan`'s sibling worktree/branch grep (advisory, spec-only),
+this is a **hard stop**: it is the only ownership guard unspecced fix work gets, so
+there is no fallback advisory check to catch what it misses. If `$CLAIM_STATUS` is
+`claimed`, proceed to the worktree creation below. The claim releases automatically
+when `$RUN` reaches any `finish` completion state, same recovery path as
+`#active-conflicts-scan`.
+
+```bash
 WT="$REPO-worktrees/fix-$SLUG"
 git -C "$REPO" worktree add -b "fix/$SLUG" "$WT" "$BASE"
 ```
@@ -1201,20 +1254,29 @@ runs unattended, stop and report — never ask, never pick a brief silently.)
 ### Step 3 — Claim the brief: atomic queue/ → picked/
 
 ```bash
-worktrail-work-queue claim "<id-or-filename>" --json
+worktrail-work-queue claim "<id-or-filename>" --by "$GO_DISPATCH_ID" --json
 ```
+
+Always pass `--by "$GO_DISPATCH_ID"` — the token this dispatch received from `worktrail-go`
+as `by:<dispatch-id>` (Phase 1 Intake table, `worktrail-sdd-workflow/SKILL.md`). It is the
+same identity `worktrail-go`'s own earlier claim on this brief (if any) already passed, so
+`claim()` can compute `same_owner` by comparing it against the brief's stamped `claimed-by`.
+If this dispatch has no `$GO_DISPATCH_ID` (an older or non-`/go` caller), omit `--by` — the
+claim still succeeds, but `same_owner` on any `already-claimed` result is `null` and must be
+treated as "not confirmed mine."
 
 The claim resolves `<id>` (full filename, stem, unique prefix, or `id` frontmatter) AND
 atomically moves it out of `queue/` into `picked/`, stamping `status: picked` + `claimed-at`.
-Act on `status`:
+Act on `status` and `same_owner` together:
 
-| `status` | Action |
-|----------|--------|
-| `claimed` | Use the returned `path` (now in `picked/`) for Step 4. |
-| `already-claimed` with `path` | Use the returned picked path for Step 4. This is the expected path when the generic `go` front door claimed the brief before delegating to `sdd-workflow handoff:<id>`. |
-| `already-claimed` without `path` | Another session won the race — re-list (Step 1) and pick another; do NOT seed. |
-| `none` | Brief `<id>` not in the queue. List queue briefs newest-first; ask the user to pick or abort. |
-| `ambiguous` | `<id>` matches multiple briefs. List the `candidates`; ask to disambiguate, then re-claim. |
+| `status` | `same_owner` | Action |
+|----------|--------------|--------|
+| `claimed` | (always `true`) | Use the returned `path` (now in `picked/`) for Step 4. |
+| `already-claimed` with `path` | `true` | Use the returned picked path for Step 4. This is the expected path when the generic `go` front door claimed the brief (with the identical `--by`) before delegating to `sdd-workflow handoff:<id>`. |
+| `already-claimed` with `path` | `false` or `null` | A **different** dispatch owns this brief — the "already-claimed with path" shape alone does NOT mean it is this dispatch's own claim (path presence and ownership are independent; see `docs/specs/research/concurrent-go-dispatch-brief-claim-race.md`, the incident this guards against). Do NOT seed — re-list (Step 1) and pick another. |
+| `already-claimed` without `path` | `false` | Another session won the race — re-list (Step 1) and pick another; do NOT seed. |
+| `none` | — | Brief `<id>` not in the queue. List queue briefs newest-first; ask the user to pick or abort. |
+| `ambiguous` | — | `<id>` matches multiple briefs. List the `candidates`; ask to disambiguate, then re-claim. |
 
 The atomic rename is the concurrency guarantee: only one agent can claim a given brief, so
 two sessions never seed the same one. Never hand-`mv` a brief — always go through `work_queue.py`.

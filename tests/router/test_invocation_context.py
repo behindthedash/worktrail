@@ -167,6 +167,25 @@ class ProviderStabilityTests(unittest.TestCase):
         self.assertEqual(len(modes), 4)
 
 
+class DispatchIdTests(unittest.TestCase):
+    """dispatch_id is the stable identity threaded through both claim() calls
+    of one /go dispatch -- see docs/specs/research/
+    concurrent-go-dispatch-brief-claim-race.md."""
+
+    def test_dispatch_id_is_present_and_nonempty(self):
+        resolved = _resolve()
+        self.assertTrue(resolved.dispatch_id)
+
+    def test_two_independent_resolutions_get_distinct_dispatch_ids(self):
+        first = _resolve()
+        second = _resolve()
+        self.assertNotEqual(first.dispatch_id, second.dispatch_id)
+
+    def test_explicit_dispatch_id_is_passed_through_unchanged(self):
+        resolved = _resolve(dispatch_id="go-fixed-for-test")
+        self.assertEqual(resolved.dispatch_id, "go-fixed-for-test")
+
+
 class CliTests(unittest.TestCase):
     def _run(self, argv, environ=None, installed=True):
         out, err = StringIO(), StringIO()
@@ -186,6 +205,17 @@ class CliTests(unittest.TestCase):
         self.assertEqual(payload["agent_cli"], "codex")
         self.assertFalse(payload["native_skill_available"])
         self.assertEqual(payload["dispatch_mode"], "adapter")
+        self.assertTrue(payload["dispatch_id"])
+
+    def test_dispatch_id_override_is_honored(self):
+        import json
+
+        code, stdout, _ = self._run(
+            ["--agent", "codex", "--no-native-skill", "--dispatch-id", "go-abc123", "--json"]
+        )
+        self.assertEqual(code, 0)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["dispatch_id"], "go-abc123")
 
     def test_conflicting_capability_flags_are_rejected(self):
         with self.assertRaises(SystemExit):

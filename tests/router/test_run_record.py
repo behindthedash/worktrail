@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+from datetime import datetime, timedelta, timezone
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -26,6 +27,7 @@ from worktrail.router.run_record import (
     _load_lock,
     _lock_path,
     _push_remote_claim,
+    _run_liveness,
     main,
 )
 
@@ -40,6 +42,8 @@ def _start(tmp, **over):
         argv += ["--routing-decision", json.dumps(over["routing_decision"])]
     if "gates" in over and over["gates"] is not None:
         argv += ["--gates", over["gates"]]
+    if "dispatch_id" in over and over["dispatch_id"] is not None:
+        argv += ["--dispatch-id", over["dispatch_id"]]
     out = StringIO()
     with patch("sys.stdout", out):
         rc = main(argv)
@@ -231,7 +235,7 @@ class TestLifecycle(unittest.TestCase):
                 "subagents_called", "files_changed", "tests_run", "decisions",
                 "assumptions", "deferred_work", "scope_review", "validation_evidence",
                 "failure_recovery", "interventions", "capacity_gate", "pull_request",
-                "merge_decision", "merge_result", "final_status",
+                "merge_decision", "merge_result", "final_status", "updated_at",
             },
         )
 
@@ -1522,6 +1526,101 @@ class TestPrune(unittest.TestCase):
         self.assertTrue(corrupted.exists())
         self.assertEqual(len(repo["warnings"]), 1)
         self.assertIn(str(corrupted), repo["warnings"][0])
+
+
+class TestLiveness(unittest.TestCase):
+    """`updated_at` heartbeat + `dispatch_id` identity -- the Active-run-resume
+    evidence test's missing signal, per docs/specs/research/
+    concurrent-go-dispatch-brief-claim-race.md recommended fix #3."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def _backdate_updated_at(self, path, seconds_ago):
+        """Directly rewrite `updated_at` bypassing `_save()`'s own auto-stamp
+        (every `main(["set", ...])` call would otherwise reset it to now)."""
+        record = _load(Path(path))
+        then = datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)
+        record["updated_at"] = then.strftime("%Y-%m-%dT%H:%M:%S%z")
+        Path(path).write_text(run_record._render(record), encoding="utf-8")
+
+    def test_start_stamps_updated_at(self):
+        res = _start(self.tmp)
+        rec = _load(Path(res["path"]))
+        self.assertIn("updated_at", rec)
+        self.assertIsNotNone(rec["updated_at"])
+
+    def test_set_refreshes_the_heartbeat(self):
+        res = _start(self.tmp)
+        path = res["path"]
+        self._backdate_updated_at(path, seconds_ago=9999)
+        main(["set", path, "status", "executing"])
+        rec = _load(Path(path))
+        result = _run_liveness(rec, ttl_seconds=1200)
+        self.assertTrue(result["fresh"])
+
+    def test_fresh_heartbeat_within_ttl(self):
+        res = _start(self.tmp)
+        path = res["path"]
+        self._backdate_updated_at(path, seconds_ago=60)
+        result = _run_liveness(_load(Path(path)), ttl_seconds=1200)
+        self.assertTrue(result["fresh"])
+        self.assertIsNone(result["reason"])
+
+    def test_stale_heartbeat_beyond_ttl(self):
+        res = _start(self.tmp)
+        path = res["path"]
+        self._backdate_updated_at(path, seconds_ago=99999)
+        result = _run_liveness(_load(Path(path)), ttl_seconds=1200)
+        self.assertFalse(result["fresh"])
+
+    def test_terminal_record_is_never_fresh_regardless_of_heartbeat_age(self):
+        res = _start(self.tmp)
+        path = res["path"]
+        _complete_scope_review(path)
+        main(["finish", path, "--status", "completed_and_merged"])
+        self._backdate_updated_at(path, seconds_ago=1)
+        result = _run_liveness(_load(Path(path)), ttl_seconds=1200)
+        self.assertFalse(result["fresh"])
+        self.assertEqual(result["reason"], "terminal")
+
+    def test_no_heartbeat_ever_recorded_is_stale_not_a_crash(self):
+        legacy_path = Path(self.tmp) / "go-legacy.yaml"
+        legacy_path.write_text(_legacy_record_text(), encoding="utf-8")
+        result = _run_liveness(_load(legacy_path), ttl_seconds=1200)
+        self.assertFalse(result["fresh"])
+        self.assertEqual(result["reason"], "no_heartbeat")
+
+    def test_same_dispatch_id_matches(self):
+        res = _start(self.tmp, dispatch_id="go-abc123")
+        result = _run_liveness(_load(Path(res["path"])), ttl_seconds=1200,
+                                caller_dispatch_id="go-abc123")
+        self.assertTrue(result["same_dispatch"])
+
+    def test_different_dispatch_id_does_not_match(self):
+        res = _start(self.tmp, dispatch_id="go-abc123")
+        result = _run_liveness(_load(Path(res["path"])), ttl_seconds=1200,
+                                caller_dispatch_id="go-xyz789")
+        self.assertFalse(result["same_dispatch"])
+
+    def test_no_dispatch_id_recorded_never_matches(self):
+        res = _start(self.tmp)  # no --dispatch-id
+        result = _run_liveness(_load(Path(res["path"])), ttl_seconds=1200,
+                                caller_dispatch_id="go-xyz789")
+        self.assertFalse(result["same_dispatch"])
+
+    def test_cli_liveness_subcommand(self):
+        res = _start(self.tmp, dispatch_id="go-abc123")
+        path = res["path"]
+        self._backdate_updated_at(path, seconds_ago=60)
+        out = StringIO()
+        with patch("sys.stdout", out):
+            rc = main(["liveness", path, "--dispatch-id", "go-abc123"])
+        self.assertEqual(rc, 0)
+        payload = json.loads(out.getvalue())
+        self.assertTrue(payload["fresh"])
+        self.assertTrue(payload["same_dispatch"])
+        self.assertEqual(payload["run_id"], res["run_id"])
 
 
 if __name__ == "__main__":

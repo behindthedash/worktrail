@@ -426,6 +426,62 @@ would silently do nothing in pipeline mode. The non-pipeline serial path
 plain `Verifier()` with neither passed gets private ones, identical in
 effect.
 
+### 2.17 Cross-dispatch claim/resume identity
+
+Three related evidence-tests in the front door could not distinguish "this
+dispatch itself" from "a different, possibly concurrent, dispatch" —
+`docs/specs/research/concurrent-go-dispatch-brief-claim-race.md` names the
+confirmed incident (two sessions duplicating a fix, one worktree's
+uncommitted work silently deleted mid-command) and a prior single-session
+precedent (Datalena run go-20260811-132806). All three fixes share one new
+primitive: `invocation_context.resolve()` now generates a `dispatch_id`
+(fresh `uuid4` per top-level `/go` invocation) alongside `agent_cli` and
+`dispatch_mode`.
+
+1. **`work_queue.claim()`'s `already-claimed` response** returned the
+   identical shape whether the caller's own earlier claim (the documented
+   two-step `go` → `sdd-workflow handoff:<id>` intra-session pattern) or a
+   completely different session already held the brief — path presence and
+   ownership were conflated. `claim`/`claim-batch` now accept `--by
+   <dispatch_id>`, comparing it against the brief's stamped `claimed-by` to
+   return `same_owner: true|false|null` (`null` when no `--by` was
+   supplied — never guessed true). `worktrail-go` threads its
+   `$INVOCATION_CONTEXT_DISPATCH_ID` through both its own claim call
+   (`references/batch-consumption.md`) and the dispatched executor (a new
+   `by:<dispatch-id>` token on the `handoff:<id> route:<X>` args, parsed by
+   `sdd-workflow`'s Phase 1 Intake), so both calls of one dispatch pass the
+   identical value.
+
+2. **Unspecced Route F work** (`#fix-branch-worktree-setup`) had no
+   ownership guard at all, unlike its spec-owned sibling
+   `#change-spec-worktree-setup` (`#active-conflicts-scan`) — two concurrent
+   dispatches landing on the same unspecced defect could each create their
+   own worktree/branch and duplicate the fix. `run_record.py claim`'s
+   exclusivity primitive is generic over its `--specification` string (any
+   string it can slugify into a lock filename), so the same hard-stop
+   procedure now runs there too, keyed on a `fix:$SLUG`-namespaced value to
+   avoid colliding with real spec ids.
+
+3. **The Active-run-resume rule** ("already active" = non-terminal status +
+   worktree exists on disk) is satisfied identically by "I am the process
+   that started this run" and "a different process started it and is still
+   live" — the exact gap the rule's own cited incident (Datalena
+   go-20260811-132806) was written to prevent, just one level up. `_save()`
+   now stamps `updated_at` on every mutation (a heartbeat, not just an audit
+   field — every `set`/`append`/`intervention`/`scope-review`/`capacity-gate`
+   call goes through it), and a new `run_record.py liveness` subcommand
+   reports `fresh` (heartbeat within `--ttl-seconds`, default 1200) and
+   `same_dispatch` (does the record's stamped `dispatch_id`, from `start
+   --dispatch-id`, match the caller's own). The rule now branches three ways:
+   `same_dispatch: true` keeps the original same-session hand-back;
+   `same_dispatch: false` + `fresh: true` is a live cross-dispatch collision
+   — stop and report, never continue in-session; `same_dispatch: false` +
+   `fresh: false` is a genuinely abandoned run — proceed via the full Route E
+   reconstruct-before-acting procedure instead of the same-session shortcut.
+
+None of these fixes touch `classify.py`'s routing/scoring logic, so the
+routing cassette is unaffected.
+
 ---
 
 ## 3. Migration plan (v1 → v2)

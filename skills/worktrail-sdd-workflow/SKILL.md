@@ -86,6 +86,7 @@ Unrecognised value → warn once and fall back.
 | 2 | `new` `implement` `continue` `pr` `brainstorm` | v1 intent — skips classification, maps to routes C+D / D / E / E(pr) / A |
 | 2 | `route:A`..`route:J` | explicit route override |
 | 3 | spec folder name (e.g. `003-payments`) | skips spec picker |
+| any | `by:<dispatch-id>` (labeled, matched by prefix — not positional) | handoff-seed mode only: the caller's `$INVOCATION_CONTEXT_DISPATCH_ID`. Hold as `$GO_DISPATCH_ID` and pass `--by "$GO_DISPATCH_ID"` on the handoff-seed claim call (`#handoff-seed` Step 3) so `claim()`'s `same_owner` result can tell this dispatch's own claim apart from a different dispatch's. Every `handoff:<id>` dispatch from `worktrail-go` carries this token (Dispatch Contract, `worktrail-go/SKILL.md`); its absence means an older caller or a non-`/go` invocation — fall back to an unqualified claim call (no `--by`), which yields `same_owner: null` and must be treated as "not confirmed mine," never as true. |
 
 ### Phase 6 — Start the run record
 

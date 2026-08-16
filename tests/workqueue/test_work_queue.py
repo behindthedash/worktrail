@@ -289,6 +289,75 @@ class TestClaim(QueueTestBase):
         self.assertEqual(res["status"], "already-claimed")
         self.assertEqual(res["path"], str(self.picked / "20260603-201545-prior.md"))
 
+    def test_fresh_claim_is_same_owner_true(self):
+        self.write("20260531-141200-auth.md", focus="auth")
+        res = q.claim("20260531-141200-auth", by="go-dispatch-1")
+        self.assertEqual(res["status"], "claimed")
+        self.assertIs(res["same_owner"], True)
+
+    def test_same_dispatch_reclaim_is_same_owner_true(self):
+        """The documented intra-session pattern: go's own claim, then
+        sdd-workflow's handoff-seed claim, passing the identical --by value."""
+        self.write("20260531-141200-auth.md", focus="auth")
+        first = q.claim("20260531-141200-auth", by="go-dispatch-1")
+        self.assertEqual(first["status"], "claimed")
+        second = q.claim("20260531-141200-auth", by="go-dispatch-1")
+        self.assertEqual(second["status"], "already-claimed")
+        self.assertIs(second["same_owner"], True)
+
+    def test_cross_dispatch_reclaim_is_same_owner_false(self):
+        """A different /go dispatch (different --by identity) hitting a brief
+        someone else already claimed must be told it is NOT theirs."""
+        self.write("20260531-141200-auth.md", focus="auth")
+        first = q.claim("20260531-141200-auth", by="go-dispatch-1")
+        self.assertEqual(first["status"], "claimed")
+        second = q.claim("20260531-141200-auth", by="go-dispatch-2")
+        self.assertEqual(second["status"], "already-claimed")
+        self.assertIs(second["same_owner"], False)
+
+    def test_already_claimed_without_by_is_same_owner_none(self):
+        """Callers that omit --by get an explicit 'unknown', never a guessed True."""
+        self.write("20260531-141200-auth.md", focus="auth")
+        first = q.claim("20260531-141200-auth", by="go-dispatch-1")
+        self.assertEqual(first["status"], "claimed")
+        second = q.claim("20260531-141200-auth")
+        self.assertEqual(second["status"], "already-claimed")
+        self.assertIsNone(second["same_owner"])
+
+    def test_race_lost_before_rename_is_same_owner_false(self):
+        """The FileNotFoundError TOCTOU branch: no path to compare against, so
+        same_owner is a definite False, never None."""
+        self.write("20260531-141200-auth.md", focus="auth")
+        src = self.queue / "20260531-141200-auth.md"
+        orig_rename = q.os.rename
+
+        def fake_rename(a, b):
+            src.unlink(missing_ok=True)  # simulate the racing winner
+            raise FileNotFoundError()
+
+        q.os.rename = fake_rename
+        try:
+            res = q.claim("20260531-141200-auth", by="go-dispatch-1")
+        finally:
+            q.os.rename = orig_rename
+        self.assertEqual(res["status"], "already-claimed")
+        self.assertIsNone(res["path"])
+        self.assertIs(res["same_owner"], False)
+
+    def test_dst_already_present_same_owner_compares_by(self):
+        self.write("dup.md", focus="x")
+        self.picked.mkdir(parents=True, exist_ok=True)
+        (self.picked / "dup.md").write_text(
+            _brief("already", extra="claimed-by: go-dispatch-1"), encoding="utf-8"
+        )
+        same = q.claim("dup.md", by="go-dispatch-1")
+        self.assertIs(same["same_owner"], True)
+        (self.picked / "dup.md").write_text(
+            _brief("already", extra="claimed-by: go-dispatch-1"), encoding="utf-8"
+        )
+        different = q.claim("dup.md", by="go-dispatch-2")
+        self.assertIs(different["same_owner"], False)
+
 
 class TestDoneRelease(QueueTestBase):
     def test_done_stamps_in_picked(self):
