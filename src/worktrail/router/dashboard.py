@@ -1906,6 +1906,7 @@ _STAGE_PRIORITY = {
 # --- two-level category picker -----------------------------------------------
 
 _CATEGORY_DESC = {
+    "decisions":   "Answer a blocked product decision — unblocks the brief automatically.",
     "ready":       "Run orchestrator, continue verify, or sync on these specs.",
     "needs-tasks": "Generate task DAG (spec-to-tasks) or resolve clarifications.",
     "workqueue":   "Claim a queued brief or resume stalled in-flight work.",
@@ -2558,6 +2559,12 @@ def main(argv=None) -> int:
         "category picker so /go renders the list from data, not LLM judgment",
     )
     p.add_argument(
+        "--decisions-json",
+        default=None,
+        help="JSON string from 'worktrail-decision list --status open --json'; fed into the "
+        "category picker so /go renders open decisions from data, not LLM judgment",
+    )
+    p.add_argument(
         "--capacity-cache",
         default=None,
         help="provider capacity cache path (default: WORKTRAIL_AGENT_CAPACITY_CACHE or "
@@ -2668,6 +2675,15 @@ def main(argv=None) -> int:
         try:
             parsed = json.loads(args.queue_json)
             queue_briefs = parsed.get("briefs", []) if isinstance(parsed, dict) else []
+        except (json.JSONDecodeError, AttributeError):
+            pass
+
+    # Parse open decisions from --decisions-json if provided.
+    open_decisions: List[Dict[str, Any]] = []
+    if args.decisions_json:
+        try:
+            parsed = json.loads(args.decisions_json)
+            open_decisions = parsed.get("decisions", []) if isinstance(parsed, dict) else []
         except (json.JSONDecodeError, AttributeError):
             pass
 
