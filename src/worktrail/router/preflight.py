@@ -71,6 +71,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
+from worktrail.addons.runner import run_addons
+
 from . import pre_pr_gate
 from .policy import load_policy
 
@@ -547,6 +549,7 @@ def check(repo: Path, command: Optional[str] = None) -> Dict[str, Any]:
 
 def _run(args: argparse.Namespace) -> int:
     repo = Path(args.repo).resolve()
+    policy = load_policy(repo)
     gate_argv = ["--repo", str(repo)]
     if args.risk:
         gate_argv += ["--risk", args.risk]
@@ -561,6 +564,7 @@ def _run(args: argparse.Namespace) -> int:
 
     write_running_lock(repo)
     try:
+        run_addons(repo, repo, policy)
         exit_code = pre_pr_gate.main(gate_argv)
     finally:
         remove_running_lock(repo)
@@ -571,7 +575,6 @@ def _run(args: argparse.Namespace) -> int:
     if state is None:
         print("preflight: gate passed but tree state could not be recorded", file=sys.stderr)
         return 0
-    policy = load_policy(repo)
     cmd = pre_pr_gate.resolve_cmd(policy)
     labels: List[str] = []
     if args.risk:
