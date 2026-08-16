@@ -1,11 +1,11 @@
 ## 1. `dashboard.py` — decisions input + category wiring
 
-- [x] 1.1 Add a `--decisions-json` CLI argument to `dashboard.py`'s `main()` argparse (JSON
+- [ ] 1.1 Add a `--decisions-json` CLI argument to `dashboard.py`'s `main()` argparse (JSON
       string from `worktrail-decision list --status open --json`), and parse it into an
       `open_decisions: List[Dict[str, Any]]` list, mirroring the existing `--queue-json` /
       `queue_briefs` parse block exactly (same `parsed.get("decisions", [])` pattern, same
       degrade-to-`[]`-on-parse-failure behavior).
-- [x] 1.2 Add a `"decisions"` entry to `_CATEGORY_DESC` describing the category (e.g. "Answer a
+- [ ] 1.2 Add a `"decisions"` entry to `_CATEGORY_DESC` describing the category (e.g. "Answer a
       blocked product decision — unblocks the brief automatically.").
 - [ ] 1.3 Extend `build_category_actions` with a new `open_decisions: Optional[List[Dict[str,
       Any]]] = None` parameter. When `len(open_decisions or [])` is nonzero, append a `decisions`
@@ -50,14 +50,14 @@
 
 ## 3. `worktrail-go` skill wiring
 
-- [ ] 3.1 `skills/worktrail-go/SKILL.md` Phase 1: alongside the existing `QUEUE_JSON=$(worktrail-
+- [x] 3.1 `skills/worktrail-go/SKILL.md` Phase 1: alongside the existing `QUEUE_JSON=$(worktrail-
       work-queue list --json ...)` fetch, add `DECISIONS_JSON=$(worktrail-decision list --status
       open --json ...)` and pass `--decisions-json "$DECISIONS_JSON"` to both `worktrail-
       dashboard` invocations (the `in-repo` and multi-repo branches).
-- [ ] 3.2 `skills/worktrail-go/SKILL.md` Phase 2's action → dispatch table: add an
+- [x] 3.2 `skills/worktrail-go/SKILL.md` Phase 2's action → dispatch table: add an
       `answer-decision` row pointing at the new reference doc from task 3.3. (Requirement:
       Selecting an open decision answers it interactively without a manual CLI call)
-- [ ] 3.3 Create `skills/worktrail-go/references/answer-decision.md` documenting the interactive
+- [x] 3.3 Create `skills/worktrail-go/references/answer-decision.md` documenting the interactive
       procedure: run `worktrail-decision show <id>` and read its Question/Background/Options
       (with per-option costs when present) sections directly as text; present them via an
       interactive choice prompt in the record's priority order, with a free-text fallback for a
@@ -72,7 +72,7 @@
       category in the `category_actions`/`category_items` field contract (category ordering,
       the `type: "decision"` item shape, the `answer-decision` action, and the "new-work is the
       one that yields its slot" truncation note).
-- [ ] 3.5 `skills/worktrail-help/SKILL.md`: update the "Answering a filed decision" section to
+- [x] 3.5 `skills/worktrail-help/SKILL.md`: update the "Answering a filed decision" section to
       note the dashboard now surfaces open decisions directly as an interactive picker category,
       keeping the existing `worktrail-decision list`/`answer` CLI pointer as the non-interactive
       alternative.
