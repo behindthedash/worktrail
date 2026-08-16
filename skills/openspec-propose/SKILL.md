@@ -100,6 +100,13 @@ per the calling worktrail-sdd-workflow pipeline instead.
           each owned by the one task in that phase, and add a single later task that composes them
           into the final combined file. This turns what would be a cross-phase collision into
           independent per-phase file scopes plus one explicit composition step.
+        - **Collision-serialization preserved for unavoidable same-file edits**: neither bias
+          above eliminates every same-file collision by construction — some hot files still end
+          up owned by more than one task in the same phase. That's fine: `worktrail-compile`'s
+          grouping-time shared-file lane folding (serializing tasks that collide on a file into
+          the same lane) still applies unchanged and remains the backstop. This guidance is a
+          decomposition-time reduction of how often that backstop has to fire, not a replacement
+          for it.
       - Show brief progress: "Created <artifact-id>"
 
    b. **Continue until all `applyRequires` artifacts are complete**
