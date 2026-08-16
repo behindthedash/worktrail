@@ -39,6 +39,21 @@ instead of composing prose ad hoc:
 Unlike the probe-based line it mirrors, there is no commit SHA or PR number
 to cite -- the probe search never runs on this path -- so the still-true
 task-file paths themselves are the cited evidence.
+
+`format_resolved_closure_note` builds the mirror-image string for the
+`"resolved"` outcome, passed as `work_queue.py done`'s `--note` the same way
+the probe-based "close as already-delivered" branch's note is:
+
+    worktrail-work-queue done "$BRIEF_ID" --implementation-complete --note \\
+      "Closed as already-delivered: predicate re-check (checkbox-drift-sweep)
+      found the staleness predicate resolved for 2 finding(s):
+      docs/specs/x/tasks/TASK-001.md, docs/specs/x/tasks/TASK-004.md. Surfaced
+      by the Phase 5.5 predicate re-check; closed automatically without an
+      operator prompt."
+
+As with the still-true evidence line, the predicate re-check itself -- not a
+commit SHA or PR number -- is the cited evidence, since the probe search
+never runs on this path.
 """
 from __future__ import annotations
 
@@ -175,6 +190,30 @@ def format_still_true_evidence(result: Dict[str, object]) -> str:
         f"Predicate re-check ({result['drift_source']}) found the staleness "
         f"predicate still true for {len(still_true)} finding(s): {paths}. "
         "Proceeded automatically without an operator prompt."
+    )
+
+
+def format_resolved_closure_note(result: Dict[str, object]) -> str:
+    """Build the exact closure note for `recheck()`'s `"resolved"` outcome.
+
+    Callers pass this as `work_queue.py done`'s `--note` the same way the
+    probe-based "close as already-delivered" branch does
+    (`worktrail-work-queue done "$BRIEF_ID" --implementation-complete --note
+    "<this string>"`), so both closure paths read the same way in the
+    queue's history regardless of which one fired. Unlike that sibling note,
+    there is no commit SHA or PR number to cite -- the probe search never
+    runs on this path -- so the predicate re-check itself, named explicitly,
+    is the cited evidence, alongside the resolved task-file paths from
+    `result["resolved"]`.
+    """
+    resolved = result["resolved"]
+    paths = ", ".join(resolved)
+    return (
+        "Closed as already-delivered: predicate re-check "
+        f"({result['drift_source']}) found the staleness predicate resolved "
+        f"for {len(resolved)} finding(s): {paths}. Surfaced by the Phase 5.5 "
+        "predicate re-check; closed automatically without an operator "
+        "prompt."
     )
 
 
