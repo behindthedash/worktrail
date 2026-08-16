@@ -98,6 +98,33 @@ class TestAddOns(unittest.TestCase):
         pol = load_policy(repo)
         self.assertNotIn("add_ons", pol["_meta"]["unknown_keys"])
 
+    def test_nested_add_on_config_round_trips(self):
+        # Design D3's real shape (`Dict[str, Dict[str, Any]]`) — the flat
+        # `aspens: true` case above doesn't exercise nesting, and
+        # `parse_policy_yaml`'s one-level-nesting subset used to flatten a
+        # nested add-on's own keys up into `add_ons` as siblings of the
+        # add-on name instead of nesting them under it.
+        repo = _repo_with(
+            "add_ons:\n"
+            "  aspens:\n"
+            "    enabled: true\n"
+            "    target: claude\n"
+            "    required: false\n"
+        )
+        pol = load_policy(repo)
+        self.assertEqual(
+            pol["add_ons"],
+            {"aspens": {"enabled": True, "target": "claude", "required": False}},
+        )
+
+    def test_malformed_add_ons_falls_back_to_empty_dict(self):
+        repo = _repo_with("add_ons: true\n")
+        pol = load_policy(repo)
+        self.assertEqual(pol["add_ons"], {})
+        self.assertTrue(
+            any("add_ons must be a mapping" in w for w in pol["_meta"]["warnings"])
+        )
+
 
 class TestYamlSubset(unittest.TestCase):
     def test_scalars_nesting_and_lists(self):

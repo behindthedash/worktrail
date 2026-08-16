@@ -477,6 +477,30 @@ def _load_yaml_mapping(text: str) -> Optional[Dict[str, Any]]:
     return loaded if isinstance(loaded, dict) else None
 
 
+def _resolve_add_ons(parsed_local: Dict[str, Any], meta: Dict[str, Any]) -> Dict[str, Any]:
+    """Resolve `policy["add_ons"]` from the repo-local block, re-parsed with
+    real YAML (design D3: `Dict[str, Dict[str, Any]]`, arbitrary per-add-on
+    nesting `add_ons.<name>.<key>`) rather than `parse_policy_yaml`'s
+    one-level-nesting subset, which flattens a nested add-on config's own
+    keys up into `add_ons` as siblings of the add-on name instead of nesting
+    them under it -- the same limitation `routing` already has its own real-
+    YAML resolution for.
+
+    A malformed top-level shape (not a mapping) falls back to the safe `{}`
+    default with a warning, matching `automerge`'s own fail-safe posture --
+    never let a malformed policy file widen behavior beyond the documented
+    opt-in-per-repo default of zero add-ons.
+    """
+    raw = parsed_local.get("add_ons") if isinstance(parsed_local, dict) else None
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        meta["warnings"].append(
+            f"add_ons must be a mapping of add-on name -> config; got {raw!r} — ignored")
+        return {}
+    return raw
+
+
 def _resolve_routing(repo: Path, parsed_local: Dict[str, Any], meta: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Resolve `policy["routing"]`: repo-local `routing:` block, else the
     machine-wide routing file (`WORKTRAIL_ROUTING_FILE`, default `worktrail_home()/routing.yaml`),
@@ -659,6 +683,15 @@ def load_policy(repo: Path) -> Dict[str, Any]:
                 # `routing`'s arbitrary nesting — resolved separately below via
                 # `_resolve_routing()` (real `yaml.safe_load`).
                 continue
+            elif key == "add_ons":
+                # Same limitation as `routing` above: a per-add-on config is a
+                # nested dict (design D3, `Dict[str, Dict[str, Any]]`, e.g.
+                # `add_ons: {aspens: {enabled: true, target: ..., required: ...}}`).
+                # `parse_policy_yaml`'s one-level-nesting subset flattens the
+                # add-on's own keys up into `add_ons` as siblings of the add-on
+                # name instead of nesting them under it — resolved separately
+                # below via `full_local` (real `yaml.safe_load`).
+                continue
             else:
                 policy[key] = value
     # Repo `routing:` block (re-parsed with real YAML), else the machine-wide
@@ -668,6 +701,7 @@ def load_policy(repo: Path) -> Dict[str, Any]:
     else:
         full_local = {}
     policy["routing"] = _resolve_routing(repo, full_local, meta)
+    policy["add_ons"] = _resolve_add_ons(full_local, meta)
     # Validation / clamping — never let a policy file widen autonomy unsafely.
     mr = policy["automerge"].get("max_risk", "low")
     if mr not in VALID_MAX_RISK:
