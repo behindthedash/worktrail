@@ -162,7 +162,13 @@ not the change under test, is why the loop stopped.
      When the outage fallback is active, skip this guard's CANCELLED/SUCCESS same-context
      pairing check entirely: treat it as no signal, the same way the review-thread gate
      below treats `checked: false`, and proceed straight to the review-thread gate rather
-     than blocking completion on a check this fallback cannot evaluate.
+     than blocking completion on a check this fallback cannot evaluate. **Record the
+     skip in the eventual `--merge-result` text** — append `"; merge-state guard skipped
+     (GraphQL outage fallback active, no REST equivalent for mergeStateStatus)"` to
+     whichever `--merge-result` string case 1 below ends up emitting, so a human reviewing
+     `finish` output can see this completion never actually checked for the stray
+     CANCELLED/SUCCESS pairing worktrail PR #393 hit, rather than reading a plain
+     `completed_pr_open`/`completed_and_merged` as equivalent to a normal run.
      - `BLOCKED` — scan `statusCheckRollup` for a `CANCELLED` entry whose `name` also has a
        `SUCCESS` entry (same `name`, different run). Found: `gh run rerun <the CANCELLED
        run's databaseId> --repo "$OWNER/$REPO_NAME"`, wait for it
