@@ -11,10 +11,15 @@ Criteria / Definition of Done checkboxes and nothing would catch it.
 
 When a `completed` task declares no `dod-checks` at all, `derive_dod_checks`
 synthesizes a fallback in its place — an `ac_checkboxes_complete` check
-against the task file itself, plus a `file_tracked` and `no_stub_markers`
-check for each path in frontmatter `files:` — so an author can't skip
-verification simply by omitting `dod-checks`. An explicit `dod-checks` list
-always wins over derivation.
+against the task file itself (covering both the `## Acceptance Criteria`
+and `## Definition of Done (DoD)` sections, via
+`taskformats.devkit.schema.COMPLETION_AUDIT_SECTIONS` — the same section set
+`update_status()`'s completed-task drift warning and the fleet-wide
+`checkbox_audit.py` sweep already use, so all three agree on what counts as
+drift), plus a `file_tracked` and `no_stub_markers` check for each path in
+frontmatter `files:` — so an author can't skip verification simply by
+omitting `dod-checks`. An explicit `dod-checks` list always wins over
+derivation.
 
 This is the deterministic backstop, wired into `pre_pr_gate.py` the same way
 `check_clarification_integrity.py` is: scoped by default to task files
@@ -82,8 +87,11 @@ def run_check(repo: Path, check: dict) -> str | None:
         _frontmatter, error, body = read_task_file(repo / task_path)
         if error:
             return f"ac_checkboxes_complete check failed: {task_path} could not be read ({error})"
-        if not schema._all_checkboxes_checked(body, sections=("Acceptance Criteria",)):
-            return f"ac_checkboxes_complete check failed: {task_path} has unchecked Acceptance Criteria checkboxes"
+        if not schema._all_checkboxes_checked(body, sections=schema.COMPLETION_AUDIT_SECTIONS):
+            return (
+                f"ac_checkboxes_complete check failed: {task_path} has unchecked "
+                "Acceptance Criteria / Definition of Done checkboxes"
+            )
         return None
 
     if check_type == "no_stub_markers":
@@ -127,8 +135,9 @@ def run_check(repo: Path, check: dict) -> str | None:
 def derive_dod_checks(frontmatter: dict, body: str, task_relpath: str) -> list[dict]:
     """Derive a `dod-checks` list when a task declares none.
 
-    Always includes one `ac_checkboxes_complete` check against the task file
-    itself; for each path in frontmatter `files:` (if present), adds a
+    Always includes one `ac_checkboxes_complete` check (covering both
+    Acceptance Criteria and Definition of Done checkboxes) against the task
+    file itself; for each path in frontmatter `files:` (if present), adds a
     `file_tracked` check and a `no_stub_markers` check for that path.
     """
     checks: list[dict] = [

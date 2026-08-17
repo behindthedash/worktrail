@@ -155,6 +155,31 @@ class RunCheckTests(unittest.TestCase):
         self.assertIsNotNone(failure)
         self.assertIn("missing.md", failure)
 
+    def test_ac_checkboxes_complete_also_covers_dod_section(self) -> None:
+        # The check spans taskformats.devkit.schema.COMPLETION_AUDIT_SECTIONS
+        # ("Acceptance Criteria", "Definition of Done (DoD)"), not just AC --
+        # an unchecked DoD box fails it even when AC is fully checked.
+        self._write_task(
+            "TASK-001.md",
+            "## Acceptance Criteria\n\n- [x] one\n\n"
+            "## Definition of Done (DoD)\n\n- [ ] not done\n",
+        )
+        failure = run_check(
+            self.repo, {"type": "ac_checkboxes_complete", "task_path": "TASK-001.md"}
+        )
+        self.assertIsNotNone(failure)
+        self.assertIn("TASK-001.md", failure)
+
+    def test_ac_checkboxes_complete_passes_when_both_sections_fully_checked(self) -> None:
+        self._write_task(
+            "TASK-001.md",
+            "## Acceptance Criteria\n\n- [x] one\n\n"
+            "## Definition of Done (DoD)\n\n- [x] two\n",
+        )
+        self.assertIsNone(
+            run_check(self.repo, {"type": "ac_checkboxes_complete", "task_path": "TASK-001.md"})
+        )
+
 
 class FileTrackedTests(unittest.TestCase):
     def setUp(self) -> None:
