@@ -1,18 +1,18 @@
 ## 1. "Waiting for checks" section
 
-- [ ] 1.1 Add a GraphQL-outage detection note directly under the existing
+- [x] 1.1 Add a GraphQL-outage detection note directly under the existing
       `--watch` command block: a command that fails outright (non-zero exit
       with an HTTP 5xx or GraphQL-error-body in stderr) is a different
       failure mode from a `--watch` timeout with checks still pending, and
       routes to the new REST-fallback subsection below instead of the
       existing 3x-retry-then-stuck-check-run path.
-- [ ] 1.2 Add a new "GraphQL outage fallback" subsection (parallel in
+- [x] 1.2 Add a new "GraphQL outage fallback" subsection (parallel in
       structure to the existing "Stuck check-run fallback" subsection):
       bounded discrete retries (3, matching the existing `--watch` retry
       cap) of `gh api repos/$OWNER/$REPO_NAME/commits/$HEAD_SHA/check-runs`,
       no hand-rolled sleep loop, citing this file's own existing rule
       against sleep loops (GO v1 defect L7) as the reason.
-- [ ] 1.3 Document how the loop returns to normal `--watch` operation on
+- [x] 1.3 Document how the loop returns to normal `--watch` operation on
       the next loop entry once GraphQL recovers (no persistent "degraded
       mode" flag to reset).
 - [ ] 1.4 Document the bounded-retries-exhausted path: falls through to the

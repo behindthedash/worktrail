@@ -36,6 +36,13 @@ gh pr checks "$PR_NUM" --repo "$OWNER/$REPO_NAME" --watch --fail-fast
 gh pr checks "$PR_NUM" --repo "$OWNER/$REPO_NAME" --json name,bucket,workflowRunId  # final state
 ```
 
+**GraphQL outage, not a pending-checks timeout.** The command above fails outright — non-zero
+exit with an HTTP 5xx or a GraphQL-error-body in stderr, not a clean timeout with checks still
+pending — when GitHub's GraphQL API itself is degraded (`gh pr checks` is GraphQL-backed). This
+is a different failure mode from the ordinary `--watch` timeout handled by the 3x-retry-then-
+stuck-check-run path above: retrying the same GraphQL call just re-hits the outage. Route to the
+"GraphQL outage fallback" subsection below instead.
+
 (Optional event-driven variant when pullhook is deployed at
 `https://pullhook.io`: `curl -sf "https://pullhook.io/api/hooks/<repo-channel>/pull"`
 blocks up to 30 s and returns on a check_run event.)
@@ -73,6 +80,26 @@ check-run as still-pending:
    step still genuinely `status:in_progress`/`conclusion:null` means the job really is
    still running — this is not the stale-status case; re-enter the watch loop above
    rather than escalating further.
+
+**GraphQL outage fallback (when the note above routes here).** `gh pr checks --watch` is
+GraphQL-backed; the check-runs data itself is also available over REST, which can stay healthy
+during a GraphQL-side outage. Poll that instead:
+
+```bash
+gh api "repos/$OWNER/$REPO_NAME/commits/$HEAD_SHA/check-runs"
+```
+
+Bounded to 3 discrete retries, matching the `--watch` retry cap above. No hand-rolled sleep loop
+between attempts — the same rule the "Waiting for checks" note above already states (GO v1 defect
+L7): the harness blocks `sleep`, and a foreground poll loop strands the run. Re-issue the same `gh
+api` call up to 3 times; each invocation's own network round-trip is the only spacing between
+attempts.
+
+**Recovery.** The moment a `gh api` retry above returns cleanly (GraphQL has recovered),
+resume ordinary `--watch` operation on the very next loop entry — go back to the
+`gh pr checks --watch` command at the top of this section. There is no persistent
+"degraded mode" flag to reset: the REST poll above is used only for the duration of the
+outage itself, one retry attempt at a time, never latched across loop iterations.
 
 ## When the checks settle, classify the results and act
 
