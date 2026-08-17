@@ -36,6 +36,13 @@ gh pr checks "$PR_NUM" --repo "$OWNER/$REPO_NAME" --watch --fail-fast
 gh pr checks "$PR_NUM" --repo "$OWNER/$REPO_NAME" --json name,bucket,workflowRunId  # final state
 ```
 
+**GraphQL outage, not a pending-checks timeout.** The command above fails outright — non-zero
+exit with an HTTP 5xx or a GraphQL-error-body in stderr, not a clean timeout with checks still
+pending — when GitHub's GraphQL API itself is degraded (`gh pr checks` is GraphQL-backed). This
+is a different failure mode from the ordinary `--watch` timeout handled by the 3x-retry-then-
+stuck-check-run path above: retrying the same GraphQL call just re-hits the outage. Route to the
+"GraphQL outage fallback" subsection below instead.
+
 (Optional event-driven variant when pullhook is deployed at
 `https://pullhook.io`: `curl -sf "https://pullhook.io/api/hooks/<repo-channel>/pull"`
 blocks up to 30 s and returns on a check_run event.)
