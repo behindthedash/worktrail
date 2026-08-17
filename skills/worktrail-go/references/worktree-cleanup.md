@@ -21,6 +21,15 @@ BASE="$(git -C "$REPO" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null
 BASE="${BASE:-main}"   # some repos integrate on dev; resolve_repo/policy knows the real base
 ```
 
+**Scoped invocation (e.g. from `close-stale`).** Callers that already know which
+spec they're cleaning up after — the `close-stale` action, after its docs-only PR
+lands — don't need every worktree in the repo, only that spec's own. Filter the
+enumerated list to worktree directory names starting with `<spec_id>-` (the
+`worktree.py` naming convention: task worktrees are `<spec_id>-<task>`, verify
+worktrees are `<spec_id>-verify-<group>`) before running step 2's classification.
+This is a filter on the same enumerate-then-classify-then-confirm flow below, not a
+separate procedure — everything from step 2 onward is unchanged.
+
 ## 2. Classify each worktree
 
 For each worktree path `WT` with branch `BR` (skip the main checkout itself):

@@ -84,6 +84,7 @@ worktrail-run-record = "worktrail.router.run_record:main"
 worktrail-skill-dispatch = "worktrail.router.skill_dispatch:main"
 worktrail-skill-prose-scan = "worktrail.router.skill_prose_advisory_scan:main"
 worktrail-spec-sync-sweep = "worktrail.router.spec_sync_sweep:main"
+worktrail-sweep-stale-worktrees = "worktrail.router.sweep_stale_worktrees:main"
 worktrail-tier-accuracy = "worktrail.router.tier_accuracy:main"
 
 [tool.setuptools.packages.find]
