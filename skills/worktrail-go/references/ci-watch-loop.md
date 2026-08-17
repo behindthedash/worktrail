@@ -119,6 +119,15 @@ not the change under test, is why the loop stopped.
    gh pr view "$PR_NUM" --repo "$OWNER/$REPO_NAME" \
      --json state,mergedAt,autoMergeRequest,headRefOid,mergeStateStatus,statusCheckRollup
    ```
+   **REST substitute (only during the GraphQL outage fallback above).** `gh pr view` above is
+   GraphQL-backed like `gh pr checks`; when the outage fallback is active, substitute:
+   ```bash
+   gh api repos/$OWNER/$REPO_NAME/pulls/$PR_NUM
+   ```
+   mapping REST's flatter shape onto the fields the branches below key off: `state == "MERGED"`
+   becomes REST's `merged` boolean (or `merged_at != null`); `headRefOid` becomes `head.sha`;
+   `autoMergeRequest` becomes REST's `auto_merge` object (non-null when armed, same presence
+   check as below).
    - **Stale-head guard (only if this loop pushed a fixup — `$PUSH_SHA` is set, case 3
      below):** `state == "MERGED"` with `headRefOid` != `$PUSH_SHA` means the PR merged a
      head OLDER than the fix just pushed (GGB #556: a pyright fix landed 2s after native
