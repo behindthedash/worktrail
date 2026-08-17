@@ -1,0 +1,183 @@
+{
+  "version": "2.0",
+  "skills": {
+    "base": {
+      "type": "base",
+      "enforcement": "suggest",
+      "priority": "critical",
+      "scope": "all",
+      "alwaysActivate": true,
+      "filePatterns": [],
+      "promptTriggers": {
+        "keywords": [
+          "core",
+          "conventions",
+          "tech",
+          "stack",
+          "project"
+        ],
+        "intentPatterns": []
+      }
+    },
+    "drain": {
+      "type": "domain",
+      "enforcement": "suggest",
+      "priority": "high",
+      "scope": "all",
+      "alwaysActivate": false,
+      "filePatterns": [
+        "src/worktrail/drain/**"
+      ],
+      "promptTriggers": {
+        "keywords": [
+          "drain",
+          "queue_empty",
+          "circuit_breaker",
+          "capacity_gated",
+          "no_pick",
+          "fallback-agent",
+          "unattended",
+          "queue-draining",
+          "loop",
+          "fresh-context",
+          "one-shot",
+          "worktrail"
+        ],
+        "intentPatterns": []
+      }
+    },
+    "router": {
+      "type": "domain",
+      "enforcement": "suggest",
+      "priority": "high",
+      "scope": "all",
+      "alwaysActivate": false,
+      "filePatterns": [
+        "src/worktrail/router/**"
+      ],
+      "promptTriggers": {
+        "keywords": [
+          "policy.py",
+          "go-policy.yaml",
+          "run_record",
+          "dashboard",
+          "automerge_eligible",
+          "risk label",
+          "classify",
+          "router",
+          "front",
+          "door",
+          "internals",
+          "policy",
+          "resolution",
+          "worktrail"
+        ],
+        "intentPatterns": [
+          "(create|update|fix|add|modify|change|debug|refactor|implement|build).*risk label",
+          "risk label.*(create|update|fix|add|modify|change|debug|refactor|implement|build)"
+        ]
+      }
+    },
+    "tests": {
+      "type": "domain",
+      "enforcement": "suggest",
+      "priority": "high",
+      "scope": "all",
+      "alwaysActivate": false,
+      "filePatterns": [
+        "tests/**/*.py",
+        "conftest.py"
+      ],
+      "promptTriggers": {
+        "keywords": [
+          "test",
+          "pytest",
+          "unittest",
+          "fixture",
+          "hermetic",
+          "enforcement coverage",
+          "selfcheck",
+          "tests",
+          "testing",
+          "conventions",
+          "worktrail",
+          "isolation",
+          "conftest"
+        ],
+        "intentPatterns": [
+          "(create|update|fix|add|modify|change|debug|refactor|implement|build).*enforcement coverage",
+          "enforcement coverage.*(create|update|fix|add|modify|change|debug|refactor|implement|build)"
+        ]
+      }
+    },
+    "workqueue": {
+      "type": "domain",
+      "enforcement": "suggest",
+      "priority": "high",
+      "scope": "all",
+      "alwaysActivate": false,
+      "filePatterns": [
+        "src/worktrail/workqueue/**"
+      ],
+      "promptTriggers": {
+        "keywords": [
+          "work_queue",
+          "WORK_QUEUE_DIR",
+          "claim",
+          "handoff brief",
+          "picked/",
+          "queue/",
+          "workqueue",
+          "handoff-brief",
+          "queue",
+          "lifecycle",
+          "atomic",
+          "claim/done/release",
+          "worktrail"
+        ],
+        "intentPatterns": [
+          "(create|update|fix|add|modify|change|debug|refactor|implement|build).*handoff brief",
+          "handoff brief.*(create|update|fix|add|modify|change|debug|refactor|implement|build)"
+        ]
+      }
+    },
+    "worktrail": {
+      "type": "domain",
+      "enforcement": "suggest",
+      "priority": "high",
+      "scope": "all",
+      "alwaysActivate": false,
+      "filePatterns": [
+        "src/worktrail/conductor/**",
+        "src/worktrail/orchestrator/**",
+        "src/worktrail/taskformats/**",
+        "src/worktrail/addons/**",
+        "src/worktrail/workqueue/**",
+        "src/worktrail/router/**"
+      ],
+      "promptTriggers": {
+        "keywords": [
+          "RunPlan",
+          "runnable_frontier",
+          "TaskSource",
+          "add_ons",
+          "AddOn",
+          "worktree",
+          "spec_ref",
+          "worktrail",
+          "task",
+          "orchestration",
+          "internals",
+          "safety",
+          "conductor",
+          "orchestrator",
+          "taskformats",
+          "addons",
+          "workqueue",
+          "router"
+        ],
+        "intentPatterns": []
+      }
+    }
+  }
+}
