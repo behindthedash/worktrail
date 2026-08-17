@@ -30,8 +30,18 @@ automerge:
 # the same PR the task produced instead of racing worktree teardown (spec
 # post-task-cmd-addon). required: false (default) — a flaky aspens CLI must
 # never block an unrelated task's PR.
+#
+# enabled: false (2026-08-16): `aspens doc sync` does a destructive in-place
+# rewrite of CLAUDE.md/AGENTS.md instead of writing to its own file — verified
+# live, it gutted 146 lines of hand-authored AGENTS.md content down to 17 lines
+# of boilerplate, and the pre-PR test gate still passed (pytest doesn't assert
+# on doc content, so nothing catches it). Re-enable once the aspens fork
+# switches to a dedicated-file + stable-import pattern (see handoff for the
+# fix spec). The .claude/skills/*.md content already generated and committed
+# in this repo is safe and unaffected — this only disables future automatic
+# doc sync runs.
 add_ons:
   aspens:
-    enabled: true
+    enabled: false
     target: claude
     required: false
