@@ -152,7 +152,7 @@ next step, documented below.
 |---|---|---|
 | `checked: false` | The question could not be asked — not a git checkout, missing/malformed `created:`, no probes extracted, or a git failure. | **Proceed.** Treat as no signal, never as "nothing landed". Do not prompt. |
 | `checked: true`, `matches` and `pull_requests` both empty | Probes were searched; nothing landed since capture. A definite negative. | **Proceed.** Do not prompt. |
-| `checked: true`, `matches` or `pull_requests` non-empty | Evidence exists that something touched the brief's named files/symbols since capture. | **Prompt the operator** (below). |
+| `checked: true`, `matches` or `pull_requests` non-empty | Evidence exists that something touched the brief's named files/symbols since capture. | Run **File-state verification** (above) before showing anything to the operator. |
 
 `warning` may be non-null on any of these rows and never changes the action on its own — it
 carries partial-degradation detail (a timed-out probe, `gh` unavailable, results capped). Surface
