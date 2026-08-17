@@ -739,6 +739,52 @@ def check(repo: Path, text: str, since: Any, base: Optional[str] = None) -> Dict
     return result
 
 
+# --- verification-outcome formatting ----------------------------------------
+
+def _cite_match(match: Dict[str, Any]) -> str:
+    return f"{match['sha']} ({match['kind']} probe: {match['probe']})"
+
+
+def _cite_pull_request(pr: Dict[str, Any]) -> str:
+    return f"PR #{pr['number']}"
+
+
+def format_verified_absent_evidence(
+    matches: List[Dict[str, Any]], pull_requests: List[Dict[str, Any]], finding: str
+) -> str:
+    """Build the exact evidence line for the skill doc's file-state
+    verification step's `verifiably-absent` outcome (see
+    `skills/worktrail-go/references/brief-staleness-check.md` - "File-state
+    verification"), mirroring `check_brief_predicate.format_still_true_evidence`'s
+    shape and docstring style.
+
+    Callers append this via the same post-Phase-6 pattern the predicate
+    re-check's `still-true` outcome already uses (`worktrail-run-record
+    append "$RUN" decisions "<this string>"`), so the run record reads the
+    same way regardless of which path decided to proceed automatically.
+
+    Unlike `format_still_true_evidence`, `check()`'s probe search *did* run
+    on this path and did find `matches`/`pull_requests` -- that is exactly
+    why the operator prompt would otherwise fire. Citing the raw matches
+    alone would repeat the false-positive `check()`'s own docstring warns
+    against ("evidence surfaced here is for a human to judge, never
+    auto-applied"); what makes automatic resolution safe here is `finding`,
+    the file-state verification step's own account of what it read on disk
+    and why the matched commits/PRs do not actually apply to the brief's
+    current shape. Both the raw evidence and that finding are cited
+    together so the run record shows what was matched *and* why it was
+    cleared.
+    """
+    citations = [_cite_match(m) for m in matches] + [_cite_pull_request(pr) for pr in pull_requests]
+    cited = ", ".join(citations)
+    return (
+        f"File-state verification found the brief's described work "
+        f"verifiably absent despite {len(matches)} matched commit(s) and "
+        f"{len(pull_requests)} matched pull request(s) ({cited}): {finding}. "
+        "Proceeded automatically without an operator prompt."
+    )
+
+
 # --- CLI ------------------------------------------------------------------------
 
 def _read_brief(path: Path) -> Tuple[Optional[str], Any, Optional[str]]:
