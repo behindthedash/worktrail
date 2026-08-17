@@ -53,7 +53,7 @@
 
 ## 3. Spec sync and verification
 
-- [ ] 3.1 Confirm `openspec/changes/stale-brief-precheck-verify-before-prompt/specs/stale-brief-precheck/spec.md`
+- [x] 3.1 Confirm `openspec/changes/stale-brief-precheck-verify-before-prompt/specs/stale-brief-precheck/spec.md`
       does not restate or contradict the search-boundary edits pending in
       `stale-brief-precheck-recheck-search-boundary` or
       `stale-brief-precheck-consolidation-original-created` (both scoped to the "History Search
