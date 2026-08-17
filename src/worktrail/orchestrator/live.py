@@ -2173,6 +2173,7 @@ def live_run(
     with_tail: bool = False,
     agent: str = DEFAULT_AGENT,
     model: str | None = None,
+    spawn=None,
 ) -> dict:
     """Drive the spec with LIVE workers, recording a REAL cassette.
 
@@ -2191,7 +2192,7 @@ def live_run(
     for t in tasks:
         t["status"], t["retry_count"] = "pending", 0
     by_id = {t["id"]: t for t in tasks}
-    spawn = LiveSpawn(spec_id, SAMPLE_SPEC_REL, agent=agent, model=model)
+    spawn = spawn or LiveSpawn(spec_id, SAMPLE_SPEC_REL, agent=agent, model=model)
     wt_base = repo.parent / f"{repo.name}-wt"
     entries: list = []
 
@@ -2238,11 +2239,21 @@ def live_run(
                 print(f"     raw tail: {raw[-220:]!r}")
                 task["status"] = "failed"
                 break
+            old, new = dispatch.apply_report(tasks, rep, role)
+            report_fields = {k: rep.get(k) for k in orchestrate._REPORT_FIELDS}
+            if new == "escalated":
+                # The review 3-strikes circuit breaker (dispatch.transition) computes
+                # this status in-memory only -- stamp it onto the entry that actually
+                # trips it, not only onto downstream dependency-gate entries it blocks,
+                # so clear_tasks()'s terminal_status match can find it. Same fix as
+                # _apply_step_commit() (#496), applied here to live_run's own separate
+                # (pre-#498) entry-construction path.
+                report_fields["terminal_status"] = "escalated"
             entries.append(
                 {
                     "task": rep["task"],
                     "role": rep["step"],
-                    "report": {k: rep.get(k) for k in orchestrate._REPORT_FIELDS},
+                    "report": report_fields,
                     **({"usage": _usage} if _usage else {}),
                     **({"tools_used": _tools_used} if _tools_used else {}),
                     **({"skills_used": _skills_used} if _skills_used else {}),
@@ -2254,7 +2265,6 @@ def live_run(
                 }
             )
             record()
-            old, new = dispatch.apply_report(tasks, rep, role)
             extra = f" [{rep.get('review_status')}]" if role == dispatch.ROLE_REVIEW else ""
             print(
                 f"{_ts()}   {task['id']} {role:9} {old:12} -> {new}{extra}  (sha {str(rep.get('head_sha',''))[:8]})"
@@ -2262,7 +2272,7 @@ def live_run(
 
     tick = 0
     while True:
-        _annotate_external_deps(repo, tasks, spec_rel)
+        _annotate_external_deps(repo, tasks, SAMPLE_SPEC_REL)
         frontier = coordinator.runnable_frontier(tasks, max_workers)
         if not frontier:
             break
