@@ -9,6 +9,22 @@ on:
     # auto-merge short of a manual `gh pr merge --auto` or a new push.
     types: [opened, reopened, ready_for_review, labeled, unlabeled]
 
+# The group includes the triggering event action: a `labeled` run must never
+# cancel an in-flight `opened`/`reopened`/`ready_for_review` run for the same
+# PR -- a cancelled run of a required check stays on the head SHA and blocks
+# the merge/auto-merge even after a newer run succeeds (same failure class
+# `version_bump_check.yml`'s group guards against, PRs #344-#346).
+#
+# The group also includes the label name for labeled/unlabeled events: a PR
+# opened with two `gh pr create --label` flags fires two separate `labeled`
+# webhook events (one per label), which would otherwise share one
+# `...-labeled` group and cancel each other (PR #393). Empty for
+# opened/reopened/ready_for_review (no `label` on the event payload), so
+# those keep deduping as before.
+concurrency:
+  group: auto-merge-${{ github.event.pull_request.number }}-${{ github.event.action }}-${{ github.event.label.name || '' }}
+  cancel-in-progress: true
+
 jobs:
   test-automerge-eligibility:
     runs-on: ubuntu-latest
