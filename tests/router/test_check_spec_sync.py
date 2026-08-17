@@ -420,6 +420,31 @@ class CheckSpecSyncFilesTrackedTests(unittest.TestCase):
         self.assertIn("src/never/committed.py", failures[0])
         self.assertIn("not git-tracked", failures[0])
 
+    def test_passes_when_directory_entry_fully_tracked(self):
+        # A files: entry naming a directory (trailing slash) whose contents are
+        # entirely git-tracked must not be flagged. git ls-files never echoes back
+        # the literal directory-path string, only the individual file paths under
+        # it, so a naive membership check against that string always fails even
+        # when every file underneath is tracked.
+        write(self.repo / "drizzle" / "0000_init.sql", "-- migration\n")
+        write(self.repo / "drizzle" / "meta" / "_journal.json", "{}\n")
+        git_commit_all(self.repo)
+        make_task_with_files(self.spec_dir, "TASK-001", "completed", files=["drizzle/"])
+        self.assertEqual(check_spec(self.spec_dir, repo=self.repo), [])
+
+    def test_flags_directory_entry_with_untracked_contents(self):
+        # A directory entry should still be flagged when it has no tracked files
+        # under it at all (e.g. entirely gitignored or never committed).
+        write(self.repo / ".gitignore", "untracked_dir/\n")
+        git_commit_all(self.repo)
+        (self.repo / "untracked_dir").mkdir()
+        (self.repo / "untracked_dir" / "scratch.sql").write_text("-- scratch\n")
+        make_task_with_files(self.spec_dir, "TASK-001", "completed", files=["untracked_dir/"])
+        failures = check_spec(self.spec_dir, repo=self.repo)
+        self.assertEqual(len(failures), 1)
+        self.assertIn("untracked_dir/", failures[0])
+        self.assertIn("not git-tracked", failures[0])
+
     def test_skips_non_repo_relative_entries(self):
         git_commit_all(self.repo)
         make_task_with_files(

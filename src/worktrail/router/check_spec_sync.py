@@ -236,6 +236,21 @@ def _git_tracked(repo: Path, paths: list[str]) -> set[str]:
     return {p for p in result.stdout.split("\0") if p}
 
 
+def _entry_is_tracked(entry: str, tracked: set[str]) -> bool:
+    """Whether `entry` counts as git-tracked given `tracked`, the set of file
+    paths `_git_tracked` reported. A plain file entry must appear verbatim.
+    A directory-style entry (trailing slash) counts as tracked when at least
+    one reported path falls under it -- `git ls-files` expands a directory
+    pathspec into the individual file paths beneath it and never echoes back
+    the literal directory string itself, so an exact-match check against a
+    directory entry always misses even when its contents are fully tracked."""
+    if entry in tracked:
+        return True
+    if entry.endswith("/"):
+        return any(p.startswith(entry) for p in tracked)
+    return False
+
+
 def _looks_repo_relative(entry: str) -> bool:
     """True for `files:` entries this check can verify: repo-relative source
     paths. False for `~`-prefixed deployment paths, absolute paths, and
@@ -309,7 +324,7 @@ def check_spec(spec_dir: Path, repo: Path | None = None) -> list[str]:
         if candidates:
             tracked = _git_tracked(repo, [entry for _, entry in candidates])
             for tf_name, entry in candidates:
-                if entry not in tracked:
+                if not _entry_is_tracked(entry, tracked):
                     failures.append(
                         f"{tf_name}: files: entry '{entry}' is not git-tracked on {repo}"
                     )
