@@ -1,11 +1,11 @@
 ## 1. Formatting helpers
 
-- [ ] 1.1 In `src/worktrail/router/check_brief_staleness.py`, add
+- [x] 1.1 In `src/worktrail/router/check_brief_staleness.py`, add
       `format_verified_absent_evidence(matches, pull_requests, finding)` — builds the canonical
       evidence-line string (matched commits/PRs plus the verification finding) for the
       run-record-append pattern, mirroring `check_brief_predicate.format_still_true_evidence`'s
       shape and docstring style.
-- [ ] 1.2 In the same module, add
+- [x] 1.2 In the same module, add
       `format_verified_present_closure_note(matches, pull_requests, finding)` — builds the
       canonical closure-note string for `work_queue.py done --note`, mirroring
       `check_brief_predicate.format_resolved_closure_note`'s shape and docstring style.
@@ -16,7 +16,7 @@
 
 ## 2. Skill-doc verification step
 
-- [ ] 2.1 In `skills/worktrail-go/references/brief-staleness-check.md`, insert a new section
+- [x] 2.1 In `skills/worktrail-go/references/brief-staleness-check.md`, insert a new section
       "File-state verification" implementing the requirement "File-State Verification Precedes Evidence Surfacing",
       between "Running it" and "Reading the result"/"The operator
       prompt", gated on `matches`/`pull_requests` being non-empty and the predicate re-check
@@ -26,7 +26,7 @@
       `inconclusive`, defaulting to `inconclusive` whenever the read is partial, ambiguous, or
       the capability is implemented differently than described.
       files: skills/worktrail-go/references/brief-staleness-check.md
-- [ ] 2.2 Update the "Reading the result" table's `checked: true`, non-empty-evidence row to
+- [x] 2.2 Update the "Reading the result" table's `checked: true`, non-empty-evidence row to
       point to the new verification step instead of straight to "the operator" prompt.
 - [ ] 2.3 Document the "Verified Absent Proceeds Automatically With Recorded Verification"
       outcome: proceed to Phase 6/7 without a prompt, then
