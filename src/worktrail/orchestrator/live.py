@@ -3863,6 +3863,7 @@ def _pipeline_scheduler(
                     _record_group_fn(
                         name, "", f"{run_id}/{name}", "QUARANTINED",
                         integrate_module.QUARANTINE_INTEGRATION_ERROR,
+                        quarantine_detail=quarantined[name],
                     )
                     print(
                         f"{_ts()}   !! GROUP [{name}] integrate raised: {exc!r} -- quarantined, run continues"
@@ -3909,6 +3910,7 @@ def _pipeline_scheduler(
                 _record_group_fn(
                     name, "", group_branch.get(name, f"{run_id}/{name}"), "QUARANTINED",
                     integrate_module.QUARANTINE_INTEGRATION_ERROR,
+                    quarantine_detail=quarantined[name],
                 )
                 print(
                     f"{_ts()}   !! GROUP [{name}] verify raised: {exc!r} -- quarantined, run continues"
@@ -4043,12 +4045,15 @@ def _pipeline_scheduler(
 
     def _record_group_fn(
         name: str, pr_url: str, head_branch: str, state: str, quarantine_reason: str = "",
+        quarantine_detail: str = "",
     ) -> None:
         """Serialize one group's integrate result under state_lock (AC-015 / TASK-006)."""
         with state_lock:
             record = {"pr_url": pr_url, "head_branch": head_branch, "state": state}
             if quarantine_reason:
                 record["quarantine_reason"] = quarantine_reason
+            if quarantine_detail:
+                record["quarantine_detail"] = quarantine_detail
             groups_journal[name] = record
             _record()
 

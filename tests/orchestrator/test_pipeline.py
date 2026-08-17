@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from worktrail.orchestrator import spawnlib  # noqa: E402
 
+from worktrail.orchestrator import integrate  # noqa: E402
 from worktrail.orchestrator import live  # noqa: E402
 
 
@@ -430,6 +431,25 @@ class IsolationTest(unittest.TestCase):
             self.assertIn("feature-1", result["quarantined"])
             self.assertIn("base", result["merged"])
             self.assertIn("feature-2", result["merged"])
+
+    def test_integrate_exception_persists_detail_to_journal(self):
+        """The exception's own text must survive into the on-disk journal, not
+        just the 'integration_error' category -- otherwise a group quarantined
+        by an unanticipated exception (e.g. a `git worktree add` failure) is
+        undiagnosable after the run ends (see
+        docs/specs/research/base-integration-group-worktree-add-quarantine.md)."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            repo = _init_repo(Path(tmp))
+            journal_path = str(Path(tmp) / "pipeline-journal.json")
+            integrate_one, _ = _make_integrate_one(raise_for={"feature-1"})
+
+            _run(repo, tmp, FakeSpawn(), integrate_one, FakeVerifier(), journal_path=journal_path)
+
+            journal = json.loads(Path(journal_path).read_text())
+            record = journal["groups"]["feature-1"]
+            self.assertEqual(record["quarantine_reason"], integrate.QUARANTINE_INTEGRATION_ERROR)
+            self.assertIn("quarantine_detail", record)
+            self.assertIn("feature-1", record["quarantine_detail"])
 
     def test_exception_does_not_abort_run(self):
         """An exception in one group's IV must not propagate and abort the run."""

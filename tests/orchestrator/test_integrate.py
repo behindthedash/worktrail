@@ -1521,6 +1521,45 @@ class IntegrationWorktreeIsolation(unittest.TestCase):
                 _run(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip(), base
             )
 
+    def test_worktree_add_retries_once_after_transient_failure(self):
+        """A first `git worktree add` failure (e.g. a stale registration the prune
+        above it didn't catch) must not sink the group -- mirror
+        add_stacked_worktree()'s task-level prune-and-retry-once pattern."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, base = self._init_repo(tmp)
+            real_git = integrate._git
+            calls = {"add": 0}
+
+            def flaky_git(r, *args, check=True):
+                if args[:2] == ("worktree", "add"):
+                    calls["add"] += 1
+                    if calls["add"] == 1:
+                        return Proc(255, "", "fatal: transient worktree add failure")
+                return real_git(r, *args, check=check)
+
+            with patch.object(integrate, "_git", side_effect=flaky_git):
+                with integrate._integration_worktree(repo, "run-1/base", base) as iw:
+                    self.assertTrue(Path(iw).exists())
+            self.assertEqual(calls["add"], 2, "must retry exactly once after the first failure")
+
+    def test_worktree_add_raises_informative_error_after_retry_exhausted(self):
+        """A persistent `git worktree add` failure must raise WorktreeAddError
+        carrying the real git stderr -- not a bare, message-less exception the
+        catch-all in live.py can only describe as a returncode."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, base = self._init_repo(tmp)
+
+            def always_fails(r, *args, check=True):
+                if args[:2] == ("worktree", "add"):
+                    return Proc(255, "", "fatal: unable to create worktree registration")
+                return integrate.live._git(r, *args, check=check)
+
+            with patch.object(integrate, "_git", side_effect=always_fails):
+                with self.assertRaises(integrate.live.WorktreeAddError) as ctx:
+                    with integrate._integration_worktree(repo, "run-1/base", base):
+                        pass
+            self.assertIn("unable to create worktree registration", str(ctx.exception))
+
 
 class SpecFolderOwnership(unittest.TestCase):
     """Fix 1: only the spec-carrier group carries docs/specs/<spec_id>/.
