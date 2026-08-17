@@ -657,5 +657,113 @@ class TestCli(unittest.TestCase):
         self.assertIn("no evidence", out)
 
 
+class TestFormatVerifiedAbsentEvidence(unittest.TestCase):
+    """Task 1.3 -- coverage for `format_verified_absent_evidence`, mirroring
+    `test_check_brief_predicate.py`'s style of asserting on the exact
+    rendered string shape rather than substring presence alone."""
+
+    MATCH = {"sha": "abc1234", "kind": "path", "probe": "src/widget.py"}
+    PR = {"number": 42, "title": "close race", "url": "https://example/42"}
+
+    def test_matches_only(self):
+        out = cbs.format_verified_absent_evidence([self.MATCH], [], "already removed on disk")
+        self.assertEqual(
+            out,
+            "File-state verification found the brief's described work "
+            "verifiably absent despite 1 matched commit(s) and 0 matched "
+            "pull request(s) (abc1234 (path probe: src/widget.py)): "
+            "already removed on disk. Proceeded automatically without an "
+            "operator prompt.",
+        )
+
+    def test_pull_requests_only(self):
+        out = cbs.format_verified_absent_evidence([], [self.PR], "reverted after merge")
+        self.assertEqual(
+            out,
+            "File-state verification found the brief's described work "
+            "verifiably absent despite 0 matched commit(s) and 1 matched "
+            "pull request(s) (PR #42): reverted after merge. Proceeded "
+            "automatically without an operator prompt.",
+        )
+
+    def test_matches_and_pull_requests_both(self):
+        out = cbs.format_verified_absent_evidence([self.MATCH], [self.PR], "no trace remains")
+        self.assertEqual(
+            out,
+            "File-state verification found the brief's described work "
+            "verifiably absent despite 1 matched commit(s) and 1 matched "
+            "pull request(s) (abc1234 (path probe: src/widget.py), PR #42): "
+            "no trace remains. Proceeded automatically without an operator "
+            "prompt.",
+        )
+
+    def test_no_matches_or_pull_requests_renders_empty_citation_list(self):
+        out = cbs.format_verified_absent_evidence([], [], "nothing was matched")
+        self.assertEqual(
+            out,
+            "File-state verification found the brief's described work "
+            "verifiably absent despite 0 matched commit(s) and 0 matched "
+            "pull request(s) (): nothing was matched. Proceeded "
+            "automatically without an operator prompt.",
+        )
+
+
+class TestFormatVerifiedPresentClosureNote(unittest.TestCase):
+    """Task 1.3 -- coverage for `format_verified_present_closure_note`,
+    mirroring `test_check_brief_predicate.py`'s style of asserting on the
+    exact rendered string shape rather than substring presence alone."""
+
+    MATCH = {"sha": "abc1234", "kind": "symbol", "probe": "apply_to_tasks"}
+    PR = {"number": 89, "title": "ship the feature", "url": "https://example/89"}
+
+    def test_matches_only(self):
+        out = cbs.format_verified_present_closure_note([self.MATCH], [], "helper exists and is wired in")
+        self.assertEqual(
+            out,
+            "Closed as already-delivered: file-state verification found "
+            "the brief's described work verifiably present, confirmed by "
+            "1 matched commit(s) and 0 matched pull request(s) "
+            "(abc1234 (symbol probe: apply_to_tasks)): helper exists and "
+            "is wired in. Surfaced by the file-state verification step; "
+            "closed automatically without an operator prompt.",
+        )
+
+    def test_pull_requests_only(self):
+        out = cbs.format_verified_present_closure_note([], [self.PR], "PR shipped the described change")
+        self.assertEqual(
+            out,
+            "Closed as already-delivered: file-state verification found "
+            "the brief's described work verifiably present, confirmed by "
+            "0 matched commit(s) and 1 matched pull request(s) (PR #89): "
+            "PR shipped the described change. Surfaced by the file-state "
+            "verification step; closed automatically without an operator "
+            "prompt.",
+        )
+
+    def test_matches_and_pull_requests_both(self):
+        out = cbs.format_verified_present_closure_note([self.MATCH], [self.PR], "confirmed on disk and in PR")
+        self.assertEqual(
+            out,
+            "Closed as already-delivered: file-state verification found "
+            "the brief's described work verifiably present, confirmed by "
+            "1 matched commit(s) and 1 matched pull request(s) "
+            "(abc1234 (symbol probe: apply_to_tasks), PR #89): confirmed "
+            "on disk and in PR. Surfaced by the file-state verification "
+            "step; closed automatically without an operator prompt.",
+        )
+
+    def test_no_matches_or_pull_requests_renders_empty_citation_list(self):
+        out = cbs.format_verified_present_closure_note([], [], "confirmed by direct inspection")
+        self.assertEqual(
+            out,
+            "Closed as already-delivered: file-state verification found "
+            "the brief's described work verifiably present, confirmed by "
+            "0 matched commit(s) and 0 matched pull request(s) (): "
+            "confirmed by direct inspection. Surfaced by the file-state "
+            "verification step; closed automatically without an operator "
+            "prompt.",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
