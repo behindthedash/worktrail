@@ -1586,11 +1586,16 @@ def _carry_squash_merged_dependencies(
     run stacked onto (branch still present) already carries the content via the
     normal sibling-merge above. For each such dependency with a missing declared
     file, fetch the freshest base ref (`<remote>/<base>`, falling back to local
-    `<base>`) and merge it into `wt` with `-X ours` -- the same squash-reconcile
-    strategy `integrate.py` already uses for group branches (byte-identical
-    content; favor the worktree for apparent conflicts). A merge failure aborts
-    and falls through with a WARN: `_require_dependency_files` stays the
-    fail-loud backstop when the content genuinely isn't available.
+    `<base>`) and merge it into `wt` with a normal (unbiased) merge -- deliberately
+    NOT `-X ours`: an `-X` strategy auto-resolves every content-level conflict in
+    the merge, not just ones touching this dependency's own files, silently
+    discarding real live-base content on any file the worktree's stale start point
+    happens to also touch (`docs/specs/research/carry-squash-merged-dependencies-x-ours-risk.md`,
+    the same risk class root-caused and fixed for `integrate_one`'s
+    dependency-branch-gone fallback in PR #475). A merge failure -- whether from a
+    genuine conflict or any other git error -- aborts and falls through with a
+    WARN: `_require_dependency_files` stays the fail-loud backstop when the
+    content genuinely isn't available.
     """
     stale_deps = [
         dep_id
@@ -1613,7 +1618,7 @@ def _carry_squash_merged_dependencies(
     if _git(wt, "merge-base", "--is-ancestor", ref, "HEAD", check=False).returncode == 0:
         return  # already carried (e.g. a prior carry, or the worktree started past it)
 
-    m = _git(wt, "merge", "--no-edit", "-X", "ours", ref, check=False)
+    m = _git(wt, "merge", "--no-edit", ref, check=False)
     if m.returncode != 0:
         _git(wt, "merge", "--abort", check=False)
         print(

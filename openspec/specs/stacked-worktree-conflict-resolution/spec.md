@@ -89,9 +89,14 @@ cleaned up before this worktree was created), and at least one of that dependenc
 declared files is missing from the freshly stacked worktree, the system SHALL bring the
 merged base content into the worktree by merging the freshest available base ref
 (remote base after a fetch, falling back to the local base ref) before dependency-file
-validation runs. Apparent conflicts between pre-squash stacked content and the squashed
-base commit SHALL be resolved in favor of the stacked worktree's content, consistent
-with the existing group-branch squash reconciliation.
+validation runs. The merge SHALL NOT auto-resolve conflicts in favor of either side: a
+genuine content-level conflict between the stacked worktree and the base ref SHALL fail
+the merge loudly (aborting it) rather than being silently resolved, so
+dependency-file validation's fail-loud backstop remains the source of truth when the
+carried content genuinely diverges. (An earlier version of this requirement resolved
+conflicts in favor of the stacked worktree via `-X ours`, "consistent with the existing
+group-branch squash reconciliation" -- that referenced mechanism was later found unsafe
+and removed; see `docs/specs/research/carry-squash-merged-dependencies-x-ours-risk.md`.)
 
 #### Scenario: Tail task dispatched after dependencies squash-merged and cleaned up
 - **WHEN** a tail (e2e/cleanup) task's worktree is created after every dependency's
@@ -112,4 +117,12 @@ with the existing group-branch squash reconciliation.
 - **THEN** the system does not silently proceed with a worktree missing dependency
   content: dependency-file validation still fails loud with
   `WorktreeMissingDependencyFileError`, exactly as before this change
+
+#### Scenario: Base ref content genuinely conflicts with the stacked worktree
+- **WHEN** the carry merge encounters a real content-level conflict between the
+  stacked worktree's pre-squash content and the base ref -- including on a file
+  the triggering dependency never declared
+- **THEN** the merge is aborted rather than auto-resolved in favor of either side,
+  and dependency-file validation's fail-loud backstop is the mechanism that
+  surfaces the missing content, instead of the conflict being silently discarded
 
