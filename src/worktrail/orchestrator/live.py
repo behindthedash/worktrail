@@ -1210,6 +1210,24 @@ def _branch_exists(repo: Path, name: str) -> bool:
     return _git(repo, "rev-parse", "--verify", "--quiet", name, check=False).returncode == 0
 
 
+def _is_ancestor(git_dir: Path, ancestor: str, descendant: str) -> bool:
+    """True if `ancestor`'s content is already present in `descendant` (`git merge-base
+    --is-ancestor`) -- the one correct freshness/staleness primitive for this module.
+
+    A branch/file *existence* check cannot tell a stale copy from a fresh one -- it was
+    the root cause of two independently-discovered incidents (`_carry_squash_merged_
+    dependencies`'s file-existence gate, and `integrate_one`'s dependency-branch-gone
+    fallback reconstructing a stale merge-base) before both were fixed to use this
+    ancestry test instead. Every call site in this module that needs to know whether a
+    ref's content is already caught up with another ref should go through this, not a
+    hand-written `_git(..., "merge-base", "--is-ancestor", ...)` call.
+    """
+    return (
+        _git(git_dir, "merge-base", "--is-ancestor", ancestor, descendant, check=False).returncode
+        == 0
+    )
+
+
 def _worktree_checkouts_on_branch(repo: Path, base: str) -> list[Path]:
     """Every linked worktree (this repo's own checkout included) that has
     `refs/heads/<base>` checked out right now. Worktrees share one ref store,
@@ -1269,8 +1287,7 @@ def _refresh_base_branch(repo: Path, remote: str, base: str) -> None:
     remote_sha = _git(repo, "rev-parse", f"{remote}/{base}", check=False).stdout.strip()
     if not old_sha or not remote_sha or old_sha == remote_sha:
         return
-    ff = _git(repo, "merge-base", "--is-ancestor", base, f"{remote}/{base}", check=False)
-    if ff.returncode != 0:
+    if not _is_ancestor(repo, base, f"{remote}/{base}"):
         print(
             f"{_ts()} BASE REFRESH: local '{base}' ({old_sha[:8]}) has diverged from "
             f"{remote}/{base} ({remote_sha[:8]}) -- not fast-forwardable; leaving the "
@@ -1478,7 +1495,7 @@ def _validate_retained_task_branch(
     if branch_head.returncode != 0:
         raise WorktreeAddError(f"retained task branch {branch} has no resolvable commit")
 
-    if _git(repo, "merge-base", "--is-ancestor", start_ref, branch, check=False).returncode != 0:
+    if not _is_ancestor(repo, start_ref, branch):
         raise WorktreeAddError(
             f"retained task branch {branch} is stale: {start_ref} is not an ancestor of "
             f"{branch}. Repair the branch or choose an explicit fresh run before retrying."
@@ -1488,13 +1505,7 @@ def _validate_retained_task_branch(
         expected = _git(
             repo, "rev-parse", "--verify", f"{expected_head_sha}^{{commit}}", check=False
         )
-        if (
-            expected.returncode != 0
-            or _git(
-                repo, "merge-base", "--is-ancestor", expected_head_sha, branch, check=False
-            ).returncode
-            != 0
-        ):
+        if expected.returncode != 0 or not _is_ancestor(repo, expected_head_sha, branch):
             raise WorktreeAddError(
                 f"retained task branch {branch} does not contain journaled task head "
                 f"{expected_head_sha}. Repair the branch or clear the stale run explicitly."
@@ -1627,7 +1638,7 @@ def _carry_squash_merged_dependencies(
     if not _branch_exists(repo, ref):
         return  # neither ref resolvable; _require_dependency_files raises with forensics
 
-    if _git(wt, "merge-base", "--is-ancestor", ref, "HEAD", check=False).returncode == 0:
+    if _is_ancestor(wt, ref, "HEAD"):
         return  # already carried (e.g. a prior carry, or the worktree started past it)
 
     m = _git(wt, "merge", "--no-edit", ref, check=False)
@@ -2611,13 +2622,7 @@ def _require_dependency_files(wt: Path, task: dict, by_id: dict) -> "list[dict]"
             if _dependency_file_declared_path_exists(wt, f):
                 continue
             dep_head = dep.get("head_sha")
-            if (
-                dep_head
-                and _git(
-                    wt, "merge-base", "--is-ancestor", dep_head, "HEAD", check=False
-                ).returncode
-                == 0
-            ):
+            if dep_head and _is_ancestor(wt, dep_head, "HEAD"):
                 print(
                     f"{_ts()} WARN: task {task['id']} worktree {wt} is missing "
                     f"{dep_id}'s declared file {f!r}, but {dep_id}'s commit "
