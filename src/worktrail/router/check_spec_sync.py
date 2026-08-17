@@ -55,6 +55,24 @@ are treated as in-progress work and skipped entirely.
     current index. This check is skipped entirely unless a repo root is
     supplied -- it has no meaning without one.
 
+    Two verified-non-drift shapes recur fleet-wide and previously had no way
+    to be silenced: (a) a task's own success-criteria/title says the file was
+    *removed* by that task or a later task in the same spec (working as
+    designed, e.g. a "remove legacy X" spec), and (b) the file legitimately
+    lives in a *different* repo (e.g. a package-extraction spec whose task
+    `files:` point at the extracted package's own repo). Rather than teach
+    Check C to infer either case automatically -- inferring "removed on
+    purpose" from prose is exactly the kind of guess check_spec_sync.py exists
+    to avoid, and inferring "lives elsewhere" would need a registry of every
+    consuming repo's other repos -- a task can opt a specific entry out
+    explicitly via the sibling frontmatter field `files-sync-exempt`, a list
+    of `files:` values this check must not verify. An entry not also present
+    in `files:` is inert (nothing to exempt), never an error, since a stale
+    exemption naming a `files:` entry that was itself edited/removed since is
+    not worth failing the gate over. Confirmed against gracefully-giving-back
+    spec 20260817-060013-spec-sync-drift (32 findings across specs
+    015/018/026/027, all either case (a) or (b)).
+
 --fix rewrites a spec's Status header (Check B's STALE_PARENT_STATUSES case
 only) to "Implemented" in place. Check A drift and a missing Status header
 are never auto-fixed -- there is no single correct value to synthesize for
@@ -109,7 +127,12 @@ STALE_PARENT_STATUSES = {
 # `2026-07-24--foo.md`, since digits sort before lowercase letters in
 # ASCII) -- confirmed live against behindthedash spec
 # 001-release-notes-self-audit, which false-positived a "no Status header"
-# drift on every PR in the repo because of exactly this gap.
+# drift on every PR in the repo because of exactly this gap. `e2e-verification-
+# notes.md` is the same shadowing hazard again: no Status header by design,
+# and its name also sorts after a dated spec filename -- confirmed live
+# against gracefully-giving-back spec 027-feedback-capture-package, whose
+# real parent spec (2026-07-13--feedback-capture-package.md, Status:
+# Implemented) was shadowed by this file on every future PR.
 AUX_FILENAMES = {
     "data-model.md",
     "decision-log.md",
@@ -117,6 +140,7 @@ AUX_FILENAMES = {
     "technical-plan.md",
     "user-request.md",
     "brainstorming-notes.md",
+    "e2e-verification-notes.md",
 }
 
 
@@ -318,8 +342,9 @@ def check_spec(spec_dir: Path, repo: Path | None = None) -> list[str]:
                 continue
             if frontmatter.get("kind", "impl") != "impl":
                 continue
+            exempt = {e for e in (frontmatter.get("files-sync-exempt") or []) if isinstance(e, str)}
             for entry in frontmatter.get("files") or []:
-                if isinstance(entry, str) and _looks_repo_relative(entry):
+                if isinstance(entry, str) and _looks_repo_relative(entry) and entry not in exempt:
                     candidates.append((tf.name, entry))
         if candidates:
             tracked = _git_tracked(repo, [entry for _, entry in candidates])

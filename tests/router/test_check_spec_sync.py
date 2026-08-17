@@ -44,10 +44,19 @@ dependencies: []
 
 
 def make_task_with_files(
-    spec_dir: Path, task_id: str, status: str, files: list[str], kind: str | None = None
+    spec_dir: Path,
+    task_id: str,
+    status: str,
+    files: list[str],
+    kind: str | None = None,
+    exempt: list[str] | None = None,
 ) -> None:
     files_block = "\n".join(f"  - {f}" for f in files)
     kind_line = f"kind: {kind}\n" if kind is not None else ""
+    exempt_block = ""
+    if exempt is not None:
+        exempt_lines = "\n".join(f"  - {f}" for f in exempt)
+        exempt_block = f"files-sync-exempt:\n{exempt_lines}\n"
     write(
         spec_dir / "tasks" / f"{task_id}.md",
         f"""---
@@ -58,7 +67,7 @@ status: {status}
 dependencies: []
 files:
 {files_block}
-{kind_line}---
+{kind_line}{exempt_block}---
 
 ## Definition of Done
 - [x] done
@@ -254,6 +263,18 @@ class CheckSpecSyncTests(unittest.TestCase):
         self.task_summary({"TASK-001": "completed"})
         self.parent_spec("Completed")
         write(self.spec_dir / "brainstorming-notes.md", "Some brainstorming.\n")
+        self.assertEqual(check_spec(self.spec_dir), [])
+
+    def test_e2e_verification_notes_never_shadows_parent_spec(self):
+        # Regression fixture for gracefully-giving-back spec
+        # 027-feedback-capture-package: the same find_parent_spec()
+        # lexicographic-last hazard as user-request.md/brainstorming-notes.md
+        # above, but for e2e-verification-notes.md, which also carries no
+        # Status header by design and also sorts after a dated spec filename.
+        make_task(self.spec_dir, "TASK-001", "completed")
+        self.task_summary({"TASK-001": "completed"})
+        self.parent_spec("Implemented")
+        write(self.spec_dir / "e2e-verification-notes.md", "Verified 2026-07-18.\n")
         self.assertEqual(check_spec(self.spec_dir), [])
 
     def test_ready_to_implement_near_miss_is_flagged(self):
@@ -473,6 +494,34 @@ class CheckSpecSyncFilesTrackedTests(unittest.TestCase):
         git_commit_all(self.repo)
         make_task_with_files(
             self.spec_dir, "TASK-001", "completed", files=["src/never/committed.py"]
+        )
+        failures = check_spec(self.spec_dir, repo=self.repo)
+        self.assertEqual(len(failures), 1)
+        self.assertIn("src/never/committed.py", failures[0])
+
+    def test_files_sync_exempt_silences_matching_entry(self):
+        git_commit_all(self.repo)
+        make_task_with_files(
+            self.spec_dir,
+            "TASK-001",
+            "completed",
+            files=["src/never/committed.py", "src/also/missing.py"],
+            exempt=["src/never/committed.py"],
+        )
+        failures = check_spec(self.spec_dir, repo=self.repo)
+        self.assertEqual(len(failures), 1)
+        self.assertIn("src/also/missing.py", failures[0])
+
+    def test_files_sync_exempt_entry_not_in_files_is_inert(self):
+        # An exemption naming a path that isn't (or is no longer) in files:
+        # is not an error -- it simply has nothing to exempt.
+        git_commit_all(self.repo)
+        make_task_with_files(
+            self.spec_dir,
+            "TASK-001",
+            "completed",
+            files=["src/never/committed.py"],
+            exempt=["src/some/other/path.py"],
         )
         failures = check_spec(self.spec_dir, repo=self.repo)
         self.assertEqual(len(failures), 1)

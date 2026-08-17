@@ -60,6 +60,7 @@ FIELD_SCHEMA = {
     "cleanup_date": {"type": (str, date), "required": False},
     "timeout": {"type": int, "required": False},
     "files": {"type": list, "required": False},
+    "files-sync-exempt": {"type": list, "required": False},
     "kind": {"type": str, "required": False, "values": ["impl", "e2e", "cleanup", "docs"]},
     "complexity": {"type": str, "required": False},
     "domain": {"type": str, "required": False},
