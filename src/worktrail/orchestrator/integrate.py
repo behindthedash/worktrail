@@ -252,7 +252,19 @@ def _integration_worktree(repo: Path, branch: str, start_ref: str, git_lock=None
     wt = repo.parent / f"{repo.name}-integrate" / f"{branch.replace('/', '-')}-{uuid.uuid4().hex[:8]}"
     with lock:
         _git(repo, "worktree", "prune", check=False)  # clear stale registrations from crashes
-        _git(repo, "worktree", "add", "-f", "-B", branch, str(wt), start_ref)
+        r = _git(repo, "worktree", "add", "-f", "-B", branch, str(wt), start_ref, check=False)
+        if r.returncode != 0:
+            # Mirror add_stacked_worktree()'s task-level resilience (live.py): a
+            # registration can still go stale between the prune above and this add
+            # (a concurrent/crashed run touching the shared .git/worktrees registry).
+            # Prune once more and retry before giving up.
+            _git(repo, "worktree", "prune", check=False)
+            r = _git(repo, "worktree", "add", "-f", "-B", branch, str(wt), start_ref, check=False)
+        if r.returncode != 0:
+            raise live.WorktreeAddError(
+                f"git worktree add failed for group branch {branch}: "
+                f"{(r.stderr or '').strip()[:300]}"
+            )
     try:
         yield wt
     finally:
@@ -464,6 +476,7 @@ def _write_group_journal(
     head_branch: str,
     state: str,
     quarantine_reason: str = "",
+    quarantine_detail: str = "",
 ) -> None:
     """Atomically write one group's integrate record into the journal.
 
@@ -471,6 +484,14 @@ def _write_group_journal(
     non-empty (i.e. state == "QUARANTINED"). Rebuilding the record fresh each
     call means a group that later transitions out of QUARANTINED drops any
     stale reason automatically.
+
+    quarantine_detail: optional free-text detail (e.g. the exception repr from
+    an unhandled `integrate_one_fn` failure), recorded only when non-empty.
+    Explicit quarantine paths already describe themselves via `quarantine_reason`
+    categories; this exists so a quarantine caused by an unanticipated exception
+    is not reduced to a bare category with the actual failure lost to an
+    in-memory dict and unpersisted stdout (see
+    docs/specs/research/base-integration-group-worktree-add-quarantine.md).
     """
     if not journal_path:
         return
@@ -484,6 +505,8 @@ def _write_group_journal(
         record = {"pr_url": pr_url, "head_branch": head_branch, "state": state}
         if quarantine_reason:
             record["quarantine_reason"] = quarantine_reason
+        if quarantine_detail:
+            record["quarantine_detail"] = quarantine_detail
         journal["groups"][name] = record
         progress.atomic_write_text(
             journal_file, json.dumps(journal, indent=2, sort_keys=True) + "\n"
