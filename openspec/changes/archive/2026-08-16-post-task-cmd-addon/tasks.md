@@ -42,7 +42,7 @@
 
 ## 8. Rollout: enable the aspens add-on in this repo (dogfood)
 
-- [ ] 8.1 Enable `add_ons: { aspens: {...} }` in this repo's (`worktrail`) own `docs/specs/go-policy.yaml`, running a first-time `aspens doc init` as part of enabling; verify a real task's sync commit lands in its own PR (dogfood, per design Migration Plan step 3).
+- [x] 8.1 Enable `add_ons: { aspens: {...} }` in this repo's (`worktrail`) own `docs/specs/go-policy.yaml`, running a first-time `aspens doc init` as part of enabling; verify a real task's sync commit lands in its own PR (dogfood, per design Migration Plan step 3).
 
 Enabling the `aspens` add-on in `datalena`, `gracefully-giving-back`, `mailbox-service`,
 `kudera-consulting`, and `pullhook` is **not** part of this change: this repo's
