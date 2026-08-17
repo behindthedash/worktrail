@@ -45,18 +45,18 @@
 
 ## 3. Verification
 
-- [ ] 3.1 [cleanup] Re-read the full edited `ci-watch-loop.md` end to end to
+- [x] 3.1 [cleanup] Re-read the full edited `ci-watch-loop.md` end to end to
       confirm the new subsections read consistently with the existing
       "Stuck check-run fallback" subsection's structure and tone, and that
       no existing case numbering (1-5) or cross-references shifted. Tagged
       `[cleanup]` (tail kind): verification-only, no file scope of its own —
       needs 2.4's edits merged first.
-- [ ] 3.2 [cleanup] Run `PYTHONPATH=src pytest -q -k test_plugin_surface` to
+- [x] 3.2 [cleanup] Run `PYTHONPATH=src pytest -q -k test_plugin_surface` to
       confirm `test_cross_skill_anchor_citations_resolve` and the rest of
       the plugin-surface lockstep checks still pass (no anchors
       renamed/removed, only added). Tagged `[cleanup]` for the same reason
       as 3.1.
-- [ ] 3.3 [cleanup] Run the full suite (`PYTHONPATH=src pytest -q &&
+- [x] 3.3 [cleanup] Run the full suite (`PYTHONPATH=src pytest -q &&
       PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`)
       to confirm this doc-only change has no unexpected side effects.
       Tagged `[cleanup]` for the same reason as 3.1.
