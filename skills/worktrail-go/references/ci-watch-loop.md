@@ -81,6 +81,20 @@ check-run as still-pending:
    still running — this is not the stale-status case; re-enter the watch loop above
    rather than escalating further.
 
+**GraphQL outage fallback (when the note above routes here).** `gh pr checks --watch` is
+GraphQL-backed; the check-runs data itself is also available over REST, which can stay healthy
+during a GraphQL-side outage. Poll that instead:
+
+```bash
+gh api "repos/$OWNER/$REPO_NAME/commits/$HEAD_SHA/check-runs"
+```
+
+Bounded to 3 discrete retries, matching the `--watch` retry cap above. No hand-rolled sleep loop
+between attempts — the same rule the "Waiting for checks" note above already states (GO v1 defect
+L7): the harness blocks `sleep`, and a foreground poll loop strands the run. Re-issue the same `gh
+api` call up to 3 times; each invocation's own network round-trip is the only spacing between
+attempts.
+
 ## When the checks settle, classify the results and act
 
 1. **All pass** — no `bucket: fail` entries. Before finishing, re-query the PR's live
