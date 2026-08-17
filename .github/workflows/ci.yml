@@ -130,7 +130,7 @@ jobs:
             --output "artifacts/${{ matrix.agent }}"
       - name: Publish exact smoke evidence
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: installed-drain-smoke-${{ matrix.agent }}
           path: artifacts/${{ matrix.agent }}/
