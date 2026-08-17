@@ -25,7 +25,7 @@ jobs:
         # PR-only: base ref (and thus a diff to filter) only exists for
         # pull_request events. Non-PR triggers use the fallback step below.
         if: github.event_name == 'pull_request'
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         id: filter
         with:
           predicate-quantifier: every
