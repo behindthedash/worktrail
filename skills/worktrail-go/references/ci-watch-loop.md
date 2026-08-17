@@ -155,7 +155,14 @@ not the change under test, is why the loop stopped.
      green in `gh pr checks` and `autoMergeRequest` armed — this loop finished
      `completed_pr_open` on that basis and the merge stalled indefinitely until a human
      noticed and manually re-ran the stray cancelled run). Check `mergeStateStatus` from
-     the query above before finishing on either branch that follows the review-thread gate:
+     the query above before finishing on either branch that follows the review-thread gate.
+     **No REST equivalent (outage fallback only).** `mergeStateStatus` and per-context
+     `statusCheckRollup` history are GraphQL-only fields — the REST substitute above
+     (`gh api repos/$OWNER/$REPO_NAME/pulls/$PR_NUM`) has nothing that maps onto either.
+     When the outage fallback is active, skip this guard's CANCELLED/SUCCESS same-context
+     pairing check entirely: treat it as no signal, the same way the review-thread gate
+     below treats `checked: false`, and proceed straight to the review-thread gate rather
+     than blocking completion on a check this fallback cannot evaluate.
      - `BLOCKED` — scan `statusCheckRollup` for a `CANCELLED` entry whose `name` also has a
        `SUCCESS` entry (same `name`, different run). Found: `gh run rerun <the CANCELLED
        run's databaseId> --repo "$OWNER/$REPO_NAME"`, wait for it
