@@ -627,8 +627,7 @@ def detect_unreconciled_evidence(
         head = _git(wt, "rev-parse", "HEAD", check=False).stdout.strip()
         if not head:
             continue
-        p = _git(wt, "merge-base", "--is-ancestor", head, remote_base_ref, check=False)
-        if p.returncode != 0:
+        if not live._is_ancestor(wt, head, remote_base_ref):
             findings.append({"task": task["id"], "worktree": str(wt), "head_sha": head[:8]})
     return findings
 

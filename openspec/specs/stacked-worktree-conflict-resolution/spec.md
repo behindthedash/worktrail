@@ -85,18 +85,26 @@ existing callers that do not pass the parameter observe no behavior change.
 ### Requirement: Carry already-merged dependency content across a squash-merge boundary
 When a stacked task worktree is created and one of the task's dependencies is in a
 DONE-like status with no task branch remaining (its group PR was merged and the branch
-cleaned up before this worktree was created), and at least one of that dependency's
-declared files is missing from the freshly stacked worktree, the system SHALL bring the
-merged base content into the worktree by merging the freshest available base ref
-(remote base after a fetch, falling back to the local base ref) before dependency-file
-validation runs. The merge SHALL NOT auto-resolve conflicts in favor of either side: a
-genuine content-level conflict between the stacked worktree and the base ref SHALL fail
-the merge loudly (aborting it) rather than being silently resolved, so
-dependency-file validation's fail-loud backstop remains the source of truth when the
-carried content genuinely diverges. (An earlier version of this requirement resolved
-conflicts in favor of the stacked worktree via `-X ours`, "consistent with the existing
-group-branch squash reconciliation" -- that referenced mechanism was later found unsafe
-and removed; see `docs/specs/research/carry-squash-merged-dependencies-x-ours-risk.md`.)
+cleaned up before this worktree was created), the system SHALL bring the merged base
+content into the worktree by merging the freshest available base ref (remote base after
+a fetch, falling back to the local base ref) before dependency-file validation runs, then
+proceed only once the worktree's `HEAD` is confirmed to already contain that base ref
+(`git merge-base --is-ancestor`) -- a no-op when it already does. The merge SHALL NOT
+auto-resolve conflicts in favor of either side: a genuine content-level conflict between
+the stacked worktree and the base ref SHALL fail the merge loudly (aborting it) rather
+than being silently resolved, so dependency-file validation's fail-loud backstop remains
+the source of truth when the carried content genuinely diverges. (An earlier version of
+this requirement resolved conflicts in favor of the stacked worktree via `-X ours`,
+"consistent with the existing group-branch squash reconciliation" -- that referenced
+mechanism was later found unsafe and removed; see
+`docs/specs/research/carry-squash-merged-dependencies-x-ours-risk.md`. A later version
+also gated this carry on at least one of the dependency's declared files being missing
+from the worktree -- a bare path-existence check that can never detect staleness when the
+declared file already existed in the repo before the dependency's own change, which is
+the common case for any edit to an established file; that gate was removed so the carry
+attempt (and the exact `merge-base --is-ancestor` check that already no-ops when nothing
+is missing) is what determines whether content needs to move, not a broken existence
+proxy; see `docs/specs/research/tail-dispatch-worktree-stale-pre-existing-file.md`.)
 
 #### Scenario: Tail task dispatched after dependencies squash-merged and cleaned up
 - **WHEN** a tail (e2e/cleanup) task's worktree is created after every dependency's
@@ -104,6 +112,16 @@ and removed; see `docs/specs/research/carry-squash-merged-dependencies-x-ours-ri
 - **THEN** the stacked worktree contains each dependency's declared files, dependency-file
   validation passes without raising `WorktreeMissingDependencyFileError`, and the tail
   task is dispatched normally
+
+#### Scenario: Dependency's declared file already existed before its own change
+- **WHEN** a DONE, branch-gone dependency's declared file is an edit to a file that
+  already existed in the repo before the dependency's own change (not a newly-created
+  file) -- so the path trivially exists in the stacked worktree regardless of which
+  commit it forked from
+- **THEN** the carry attempt still runs (it is not skipped merely because the path
+  exists), and the `merge-base --is-ancestor` check brings the worktree's `HEAD` up to
+  the base ref when it is not already an ancestor, so the dependency's actual edit lands
+  and dependency-file validation passes
 
 #### Scenario: Dependency branches still present
 - **WHEN** a task's worktree is created while all of its dependencies' task branches
