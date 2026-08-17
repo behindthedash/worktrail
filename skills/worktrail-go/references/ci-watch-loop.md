@@ -95,6 +95,12 @@ L7): the harness blocks `sleep`, and a foreground poll loop strands the run. Re-
 api` call up to 3 times; each invocation's own network round-trip is the only spacing between
 attempts.
 
+**Recovery.** The moment a `gh api` retry above returns cleanly (GraphQL has recovered),
+resume ordinary `--watch` operation on the very next loop entry — go back to the
+`gh pr checks --watch` command at the top of this section. There is no persistent
+"degraded mode" flag to reset: the REST poll above is used only for the duration of the
+outage itself, one retry attempt at a time, never latched across loop iterations.
+
 ## When the checks settle, classify the results and act
 
 1. **All pass** — no `bucket: fail` entries. Before finishing, re-query the PR's live
