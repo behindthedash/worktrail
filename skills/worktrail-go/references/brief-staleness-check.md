@@ -113,6 +113,33 @@ The command **always exits 0**. It is a signal source for a human decision, not 
 non-zero exit would turn "could not determine" into a dispatch failure, which is exactly the
 fail-open contract it exists to honor. Never test its exit code; read `checked`.
 
+## File-state verification
+
+Runs only when there is both something to verify and no earlier step that already decided the
+outcome: `STALENESS_JSON`'s `matches` or `pull_requests` is non-empty (`checked: true` with both
+empty is a definite negative with nothing to verify — see "Reading the result" below), and the
+predicate re-check above did not already determine the outcome (any `attempted`/`outcome`
+combination other than `still-true`/`resolved` reaches this step unchanged). When both hold,
+before showing the operator anything, read or grep the brief's named paths and symbols — the
+same ones the probes matched — for the *specific capability* the brief's focus prose describes.
+This is a targeted read of the matched files/symbols, not a fresh investigation of the whole
+repo: the question is not merely whether a file exists or a symbol appears, but whether the
+capability the brief asks for is actually implemented, as described, in what is there now.
+
+Classify what you find as exactly one of:
+
+| Classification | Meaning |
+|---|---|
+| `verifiably-absent` | The named paths/symbols were read, and the specific capability the brief describes is confirmed absent from their current content. |
+| `verifiably-present` | The named paths/symbols were read, and the specific capability the brief describes is confirmed present in their current content. |
+| `inconclusive` | The read was partial (e.g. a named path no longer exists), ambiguous, or the capability is implemented differently than the brief describes — anything short of a confident absent/present call. |
+
+Default to `inconclusive` whenever in doubt. A guess that turns out wrong either strands the
+brief with silently unfinished work (a false `verifiably-absent`) or auto-closes a brief whose
+work is not actually done (a false `verifiably-present`) — both worse than falling through to
+the human judgment call `inconclusive` reaches. The outcome of this classification decides the
+next step, documented below.
+
 ## Reading the result
 
 ```json
