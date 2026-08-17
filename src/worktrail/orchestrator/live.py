@@ -1586,18 +1586,31 @@ def _carry_squash_merged_dependencies(
 
     Only engages for a dependency that is both DONE and branch-gone -- one this
     run stacked onto (branch still present) already carries the content via the
-    normal sibling-merge above. For each such dependency with a missing declared
-    file, fetch the freshest base ref (`<remote>/<base>`, falling back to local
-    `<base>`) and merge it into `wt` with a normal (unbiased) merge -- deliberately
-    NOT `-X ours`: an `-X` strategy auto-resolves every content-level conflict in
-    the merge, not just ones touching this dependency's own files, silently
-    discarding real live-base content on any file the worktree's stale start point
-    happens to also touch (`docs/specs/research/carry-squash-merged-dependencies-x-ours-risk.md`,
+    normal sibling-merge above. For each such dependency, fetch the freshest
+    base ref (`<remote>/<base>`, falling back to local `<base>`) and merge it
+    into `wt` with a normal (unbiased) merge -- deliberately NOT `-X ours`: an
+    `-X` strategy auto-resolves every content-level conflict in the merge, not
+    just ones touching this dependency's own files, silently discarding real
+    live-base content on any file the worktree's stale start point happens to
+    also touch (`docs/specs/research/carry-squash-merged-dependencies-x-ours-risk.md`,
     the same risk class root-caused and fixed for `integrate_one`'s
     dependency-branch-gone fallback in PR #475). A merge failure -- whether from a
     genuine conflict or any other git error -- aborts and falls through with a
     WARN: `_require_dependency_files` stays the fail-loud backstop when the
     content genuinely isn't available.
+
+    Deliberately does NOT gate on `_dependency_file_declared_path_exists` --
+    that is a bare path-existence check, which is a broken proxy for "content
+    is missing" whenever a dependency's declared file already existed in the
+    repo before the dependency's own change (any edit to an established file,
+    not just a newly-created one): the path exists in every worktree
+    regardless of which commit it forked from, so the check can never detect
+    staleness (brief 20260817-120332, reproduced live on a tail-kind task
+    depending on an edit to a long-lived doc). The `merge-base --is-ancestor`
+    check right below is the actual, exact freshness test and already
+    short-circuits into a no-op for a dependency whose content is genuinely
+    already present -- so gating on it alone is both correct and sufficient;
+    the extra file-existence pre-filter only introduced false negatives.
     """
     stale_deps = [
         dep_id
@@ -1605,9 +1618,6 @@ def _carry_squash_merged_dependencies(
         if (dep := by_id.get(dep_id)) is not None
         and dep.get("status") in coordinator.DONE
         and not _branch_exists(repo, f"{spec_id}/{dep_id.lower()}")
-        and any(
-            not _dependency_file_declared_path_exists(wt, f) for f in dep.get("files", []) or []
-        )
     ]
     if not stale_deps:
         return
