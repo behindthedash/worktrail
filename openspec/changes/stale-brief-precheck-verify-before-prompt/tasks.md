@@ -17,20 +17,24 @@
 ## 2. Skill-doc verification step
 
 - [ ] 2.1 In `skills/worktrail-go/references/brief-staleness-check.md`, insert a new section
-      "File-state verification" between "Running it" and "Reading the result"/"The operator
+      "File-state verification" implementing the requirement "File-State Verification Precedes Evidence Surfacing",
+      between "Running it" and "Reading the result"/"The operator
       prompt", gated on `matches`/`pull_requests` being non-empty and the predicate re-check
       not having already decided the outcome. Instruct the dispatching agent to read/grep the
       brief's named paths and symbols for the specific capability its focus prose describes,
       and to classify the result as `verifiably-absent`, `verifiably-present`, or
       `inconclusive`, defaulting to `inconclusive` whenever the read is partial, ambiguous, or
       the capability is implemented differently than described.
+      files: skills/worktrail-go/references/brief-staleness-check.md
 - [ ] 2.2 Update the "Reading the result" table's `checked: true`, non-empty-evidence row to
       point to the new verification step instead of straight to "the operator" prompt.
-- [ ] 2.3 Document the `verifiably-absent` outcome: proceed to Phase 6/7 without a prompt, then
+- [ ] 2.3 Document the "Verified Absent Proceeds Automatically With Recorded Verification"
+      outcome: proceed to Phase 6/7 without a prompt, then
       append the `format_verified_absent_evidence` string via `worktrail-run-record append "$RUN"
       decisions "..."` once Phase 6 opens the run record — following the same post-Phase-6
       pattern the predicate re-check's `still-true` outcome already uses.
-- [ ] 2.4 Document the `verifiably-present` outcome: close the brief automatically via
+- [ ] 2.4 Document the requirement "Verified Present Closes The Brief Automatically Citing The Verification":
+      close the brief automatically via
       `worktrail-work-queue done "$BRIEF_ID" --implementation-complete --note "..."` using
       `format_verified_present_closure_note`, before Phase 6 opens a run record, report the
       closure, and stop — following the same pre-Phase-6 pattern the predicate re-check's
@@ -54,8 +58,9 @@
       `stale-brief-precheck-recheck-search-boundary` or
       `stale-brief-precheck-consolidation-original-created` (both scoped to the "History Search
       Is Bounded By The Brief's Capture Time" requirement, untouched by this change).
-- [ ] 3.2 Run `openspec validate --change stale-brief-precheck-verify-before-prompt --strict`
+      files: openspec/changes/stale-brief-precheck-verify-before-prompt/specs/stale-brief-precheck/spec.md
+- [ ] 3.2 [e2e] Run `openspec validate --change stale-brief-precheck-verify-before-prompt --strict`
       and resolve any reported issues.
-- [ ] 3.3 Run `PYTHONPATH=src pytest -q` and
+- [ ] 3.3 [e2e] Run `PYTHONPATH=src pytest -q` and
       `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`; both green before
       this change is considered implementation-complete.
