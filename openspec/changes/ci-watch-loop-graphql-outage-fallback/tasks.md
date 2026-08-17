@@ -15,29 +15,29 @@
 - [x] 1.3 Document how the loop returns to normal `--watch` operation on
       the next loop entry once GraphQL recovers (no persistent "degraded
       mode" flag to reset).
-- [ ] 1.4 Document the bounded-retries-exhausted path: falls through to the
+- [x] 1.4 Document the bounded-retries-exhausted path: falls through to the
       existing iteration-ceiling stop (case 5, `failed_recoverable`) with
       the outage noted as the cause, not a new terminal status.
 
 ## 2. Case 1 ("All pass") classification
 
-- [ ] 2.1 Add a REST substitute for the `gh pr view
+- [x] 2.1 Add a REST substitute for the `gh pr view
       --json state,mergedAt,autoMergeRequest,headRefOid,mergeStateStatus,
       statusCheckRollup` call: `gh api repos/$OWNER/$REPO_NAME/pulls/$PR_NUM`,
       mapping `state`/`merged_at`/`head.sha`/`auto_merge` to the fields the
       existing branches already key off (`state == "MERGED"` becomes
       REST's `merged` boolean or `merged_at != null`; `headRefOid` becomes
       `head.sha`; `autoMergeRequest` becomes REST's `auto_merge` object).
-- [ ] 2.2 Document that `mergeStateStatus` and per-context
+- [x] 2.2 Document that `mergeStateStatus` and per-context
       `statusCheckRollup` history have no REST equivalent: when the REST
       substitute is active, the merge-state guard's CANCELLED/SUCCESS
       same-context pairing is skipped (treated as no signal, mirroring the
       review-thread gate's existing `checked: false` handling) rather than
       blocking completion.
-- [ ] 2.3 Document recording the reduced-fidelity guard in the eventual
+- [x] 2.3 Document recording the reduced-fidelity guard in the eventual
       `--merge-result` text so a human reviewing `finish` output can see
       that the merge-state guard did not run for this completion.
-- [ ] 2.4 Confirm the stale-head guard and review-thread gate (which key
+- [x] 2.4 Confirm the stale-head guard and review-thread gate (which key
       off `$PUSH_SHA` and `worktrail-check-review-threads` respectively,
       not the fields this change adds a REST substitute for) are
       unaffected and need no wording changes beyond what 2.2/2.3 already
