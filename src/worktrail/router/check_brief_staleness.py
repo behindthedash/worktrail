@@ -785,6 +785,41 @@ def format_verified_absent_evidence(
     )
 
 
+def format_verified_present_closure_note(
+    matches: List[Dict[str, Any]], pull_requests: List[Dict[str, Any]], finding: str
+) -> str:
+    """Build the exact closure note for the skill doc's file-state
+    verification step's `verifiably-present` outcome (see
+    `skills/worktrail-go/references/brief-staleness-check.md` - "File-state
+    verification"), mirroring `check_brief_predicate.format_resolved_closure_note`'s
+    shape and docstring style.
+
+    Callers pass this as `work_queue.py done`'s `--note` the same way the
+    predicate re-check's `resolved` outcome does
+    (`worktrail-work-queue done "$BRIEF_ID" --implementation-complete --note
+    "<this string>"`), so the queue's history reads the same way regardless
+    of which path decided to close the brief automatically.
+
+    Unlike `format_resolved_closure_note`, `check()`'s probe search *did*
+    run on this path and did find `matches`/`pull_requests` -- those are the
+    matched commits/PRs that delivered the brief's described work. `finding`
+    is the file-state verification step's own account of what it read on
+    disk confirming the work is actually present, cited alongside the raw
+    matches so the queue's history shows both what was matched and what
+    confirmed it.
+    """
+    citations = [_cite_match(m) for m in matches] + [_cite_pull_request(pr) for pr in pull_requests]
+    cited = ", ".join(citations)
+    return (
+        "Closed as already-delivered: file-state verification found the "
+        f"brief's described work verifiably present, confirmed by "
+        f"{len(matches)} matched commit(s) and {len(pull_requests)} matched "
+        f"pull request(s) ({cited}): {finding}. Surfaced by the file-state "
+        "verification step; closed automatically without an operator "
+        "prompt."
+    )
+
+
 # --- CLI ------------------------------------------------------------------------
 
 def _read_brief(path: Path) -> Tuple[Optional[str], Any, Optional[str]]:
