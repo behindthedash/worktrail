@@ -1258,6 +1258,98 @@ def _read_group_journal_record(journal_path: Optional[str], name: str) -> dict:
         return {}
 
 
+def _tail_dependency_closure(task_id: str, by_id: dict) -> set:
+    """All transitive dependency ids of `task_id`, per each task's `deps`."""
+    seen: set = set()
+    stack = list(by_id.get(task_id, {}).get("deps", []))
+    while stack:
+        dep = stack.pop()
+        if dep in seen:
+            continue
+        seen.add(dep)
+        stack.extend(by_id.get(dep, {}).get("deps", []))
+    return seen
+
+
+def _tail_superseded_by_map(findings: list, by_id: dict) -> dict:
+    """Map each finding task id that is a transitive dependency of another
+    finding task id (in the same batch) to a *leaf* finding that supersedes it
+    -- one that is not itself a transitive dependency of any other finding, so
+    it is the one that actually gets its own tail PR (via `integrate_one`)
+    below. Citing a non-leaf intermediate would point the informational
+    `reconcile_superseded_by` field at a task that never gets a PR either.
+
+    A tail task's own worktree is stacked on its full dependency chain, so a
+    descendant finding's cumulative branch already carries every ancestor
+    finding's commits -- opening a separate tail PR for the ancestor is
+    redundant. When more than one leaf's closure contains the same ancestor,
+    which leaf is recorded is informational only; `sorted(leaf ids)` makes the
+    choice deterministic across runs.
+    """
+    finding_ids = {f["task"] for f in findings}
+    closures = {tid: _tail_dependency_closure(tid, by_id) & finding_ids for tid in finding_ids}
+    superseded_ids = set().union(*closures.values()) if closures else set()
+    leaf_ids = sorted(finding_ids - superseded_ids)
+
+    superseded_by: dict = {}
+    for leaf in leaf_ids:
+        for ancestor in closures[leaf]:
+            superseded_by.setdefault(ancestor, leaf)
+    return superseded_by
+
+
+def _close_superseded_tail_pr(
+    repo: Path, remote: str, name: str, journal_path: Optional[str]
+) -> None:
+    """Close `name`'s tail PR and cancel its non-terminal GitHub Actions runs,
+    if the journal shows one already open from an earlier reconciliation pass.
+
+    A superseded finding may have been reconciled into its own open PR by a
+    prior (pre-dedup, or partially-retried) call before a descendant finding
+    made it redundant -- closing a PR does not cancel its already-dispatched
+    Actions runs, so both steps are needed to stop the redundant PR from
+    running CI for free on the shared self-hosted fleet. Best-effort: `gh`
+    failures are printed, never raised, so a close/cancel hiccup never blocks
+    reconciling the rest of the batch.
+    """
+    record = _read_group_journal_record(journal_path, name)
+    if record.get("state") != "OPEN":
+        return
+    branch = record.get("head_branch") or name
+    remote_url = _git(repo, "remote", "get-url", remote, check=False).stdout.strip()
+    gh_repo = (
+        remote_url.removesuffix(".git").split("github.com", 1)[-1].lstrip(":/")
+        if "github.com" in remote_url
+        else None
+    )
+    repo_args = ["--repo", gh_repo] if gh_repo else []
+    close = subprocess.run(
+        ["gh", "pr", "close", branch, *repo_args],
+        capture_output=True, text=True, cwd=str(repo),
+    )
+    if close.returncode != 0:
+        print(
+            f"  WARNING: failed to close superseded tail PR for {name}: "
+            f"{(close.stdout or close.stderr).strip()}"
+        )
+        return
+    list_runs = subprocess.run(
+        ["gh", "run", "list", "--branch", branch, "--json", "databaseId,status", *repo_args],
+        capture_output=True, text=True, cwd=str(repo),
+    )
+    try:
+        runs = json.loads(list_runs.stdout or "[]")
+    except Exception:
+        runs = []
+    for run in runs:
+        if run.get("status") == "completed":
+            continue
+        subprocess.run(
+            ["gh", "run", "cancel", str(run["databaseId"]), *repo_args],
+            capture_output=True, text=True, cwd=str(repo),
+        )
+
+
 def reconcile_unreconciled_tail_evidence(
     findings: list,
     repo: Path,
@@ -1282,16 +1374,29 @@ def reconcile_unreconciled_tail_evidence(
     the tail branch quarantines it exactly like any other group would rather
     than needing new handling here.
 
+    Before that: a finding whose task is a transitive dependency of another
+    finding's task (`_tail_superseded_by_map`) is superseded rather than
+    reconciled on its own -- the descendant's tail worktree is stacked on its
+    full dependency chain, so its cumulative branch already carries the
+    ancestor's commits. This is the common shape when a base integration
+    group quarantines: every DONE task's worktree goes unmerged at once, but
+    only the task DAG's leaf tasks actually need their own PR. Any of those
+    superseded findings that already has an open tail PR from an earlier
+    call is closed (with its non-terminal CI runs cancelled) rather than left
+    to merge redundantly -- see `_close_superseded_tail_pr`.
+
     Returns a new list (the input `findings` is never mutated) of dicts each
     carrying the original finding fields plus `reconcile_state` (one of
-    "opened", "already-open", "merged", "quarantined") and `reconcile_pr_url`
-    (empty string when there is none, e.g. quarantined). The journal is
-    re-read after each `integrate_one` call rather than trusting its return
-    value, since that call returns None on both a MERGED-skip and a
-    QUARANTINED outcome. Distinguishing a freshly-opened PR from one reused
-    from a prior call requires the group's journal state from *before* this
-    call too, so that is captured first -- this makes reconciliation safe to
-    retry across resumed runs.
+    "opened", "already-open", "merged", "quarantined", "superseded") and
+    `reconcile_pr_url` (empty string when there is none, e.g. quarantined or
+    superseded). A "superseded" finding also carries `reconcile_superseded_by`
+    (the descendant task id). The journal is re-read after each
+    `integrate_one` call rather than trusting its return value, since that
+    call returns None on both a MERGED-skip and a QUARANTINED outcome.
+    Distinguishing a freshly-opened PR from one reused from a prior call
+    requires the group's journal state from *before* this call too, so that
+    is captured first -- this makes reconciliation safe to retry across
+    resumed runs.
 
     Each finding is reconciled independently by its own task id: an
     unexpected failure reconciling one finding (e.g. `detect_unreconciled_tail_evidence`
@@ -1303,10 +1408,24 @@ def reconcile_unreconciled_tail_evidence(
     """
     status = {t["id"]: t.get("status", "done") for t in tasks}
     by_id = {t["id"]: t for t in tasks}
+    superseded_by = _tail_superseded_by_map(findings, by_id)
     enriched: list = []
     for finding in findings:
         task_id = finding["task"]
         name = f"tail-{task_id.lower()}"
+        descendant = superseded_by.get(task_id)
+        if descendant is not None:
+            try:
+                _close_superseded_tail_pr(repo, remote, name, journal_path)
+            except Exception as e:
+                print(f"  WARNING: failed to close superseded tail PR for {task_id}: {e}")
+            enriched.append({
+                **finding,
+                "reconcile_state": "superseded",
+                "reconcile_pr_url": "",
+                "reconcile_superseded_by": descendant,
+            })
+            continue
         try:
             pre_state = _read_group_journal_record(journal_path, name).get("state")
             g = {

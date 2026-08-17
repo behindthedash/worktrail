@@ -160,6 +160,30 @@ class TestUnreconciledTailEvidence:
         assert "auto-reconciliation" in detail and "awaiting merge" in detail
         assert "reconcile before the worktree is cleaned up" not in detail
 
+    def test_superseded_gets_informational_wording_not_manual_triage(self, tmp_path):
+        repo = _repo_with_journal(
+            tmp_path,
+            "008-x",
+            {
+                "integrate_complete": True,
+                "unreconciled_tail_evidence": [
+                    {
+                        "task": "T021",
+                        "reconcile_state": "superseded",
+                        "reconcile_pr_url": "",
+                        "reconcile_superseded_by": "T022",
+                    }
+                ],
+            },
+        )
+        findings = journal_selfcheck.check_repo(repo)["findings"]
+        assert len(findings) == 1
+        detail = findings[0]["detail"]
+        assert "T021" in detail
+        assert "superseded by T022" in detail
+        assert "auto-reconciliation" in detail and "awaiting merge" in detail
+        assert "reconcile before the worktree is cleaned up" not in detail
+
     @pytest.mark.parametrize("reconcile_state", ["quarantined", None])
     def test_unresolved_state_keeps_manual_triage_wording(self, tmp_path, reconcile_state):
         entry: "dict[str, object]" = {"task": "T022"}

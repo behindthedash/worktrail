@@ -176,12 +176,20 @@ def check_repo(repo: Path, run_record_dir: Optional[Path] = None) -> Dict[str, A
                     task_id = str(u.get("task", u))
                     reconcile_state = u.get("reconcile_state")
                     pr_url = u.get("reconcile_pr_url") or ""
+                    superseded_by = u.get("reconcile_superseded_by") or ""
                 else:
-                    task_id, reconcile_state, pr_url = str(u), None, ""
+                    task_id, reconcile_state, pr_url, superseded_by = str(u), None, "", ""
                 if reconcile_state == "merged":
                     continue  # belt-and-suspenders: detect_ already stops reporting these
                 if reconcile_state in ("opened", "already-open"):
                     reconciling.append(f"{task_id} ({pr_url})" if pr_url else task_id)
+                elif reconcile_state == "superseded":
+                    # Not manual triage: the descendant's own tail PR already
+                    # carries this task's commits (deps chain), so it reaches
+                    # base once that PR merges rather than needing one of its own.
+                    reconciling.append(
+                        f"{task_id} (superseded by {superseded_by})" if superseded_by else task_id
+                    )
                 else:  # "quarantined", or missing/absent for pre-reconciliation journals
                     manual_triage.append(task_id)
             detail_parts = []
