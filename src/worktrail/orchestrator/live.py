@@ -519,6 +519,8 @@ def _format_unreconciled_tail_note(findings: "list[dict]") -> "str | None":
         pr_url = f.get("reconcile_pr_url")
         if pr_url and state in ("opened", "already-open"):
             suffix += f" {pr_url}"
+        elif state == "superseded":
+            suffix += f" by {f.get('reconcile_superseded_by', '?')}"
         return f"{f['task']} (sha {f['head_sha']} @ {f['worktree']}{suffix})"
 
     return (
