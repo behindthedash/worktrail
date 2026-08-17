@@ -40,6 +40,40 @@ gh pr checks "$PR_NUM" --repo "$OWNER/$REPO_NAME" --json name,bucket,workflowRun
 `https://pullhook.io`: `curl -sf "https://pullhook.io/api/hooks/<repo-channel>/pull"`
 blocks up to 30 s and returns on a check_run event.)
 
+**Stuck check-run fallback (after the 3 exhausted `--watch` retries above).** A required
+check-run can report `status:in_progress`/`conclusion:null` indefinitely even after its
+underlying job has actually finished — observed during a GitHub status-page "major"
+incident (worktrail PR #498, 2026-08-17): the Jobs API's own per-step list showed every
+step already `conclusion:success`, and the PR had already auto-merged (`mergedAt`
+recorded before the stuck check-run's own `started_at`). Do not keep re-issuing
+`gh pr checks --watch` past its own retry budget — cross-check before treating the
+check-run as still-pending:
+
+1. **Short-circuit on an already-merged PR first** — cheapest and most decisive check:
+   ```bash
+   gh pr view "$PR_NUM" --repo "$OWNER/$REPO_NAME" --json state,mergedAt
+   ```
+   `state == "MERGED"` — the PR is already done regardless of what any individual
+   check-run still reports. Treat exactly like case 1's ("All pass") `state == "MERGED"`
+   branch below (no `$PUSH_SHA` is set at this point in the loop, so the stale-head guard
+   there does not apply) and stop. Skip step 2 entirely.
+
+2. **Cross-check the actual job step conclusions** — only if the PR is not yet merged:
+   ```bash
+   gh api "repos/$OWNER/$REPO_NAME/actions/runs/<workflowRunId>/jobs" \
+     --jq '.jobs[] | {name, status, conclusion, steps: [.steps[] | {name, conclusion}]}'
+   ```
+   using the `workflowRunId` the final-state `gh pr checks --json` query above returned
+   for the stuck check-run. Every step already showing a real `conclusion`
+   (`success`/`failure`/etc., none still `null`) despite the check-run API reporting
+   `in_progress`/`null` means the job itself finished and only the check-run's own status
+   report is stale — proceed to classify using the *job's* step conclusions instead of
+   waiting on the check-run API to catch up (all steps succeeded → case 1's non-merged
+   branches; any step failed → case 2 or 3 below, using that job's `--log-failed`). Any
+   step still genuinely `status:in_progress`/`conclusion:null` means the job really is
+   still running — this is not the stale-status case; re-enter the watch loop above
+   rather than escalating further.
+
 ## When the checks settle, classify the results and act
 
 1. **All pass** — no `bucket: fail` entries. Before finishing, re-query the PR's live
