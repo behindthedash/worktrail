@@ -2697,6 +2697,65 @@ def _fire_notify(cmd: str, payload: dict) -> None:
         pass
 
 
+def _apply_step_commit(
+    *,
+    tasks: list,
+    entries: list,
+    actives: dict,
+    record_fn,
+    task: dict,
+    role: str,
+    rep: dict,
+    t0: float,
+    t1: float,
+    usage: dict | None = None,
+    tools_used: list | None = None,
+    skills_used: list | None = None,
+    agent: str | None = None,
+) -> tuple:
+    """Append the journal entry, persist, drop the heartbeat, apply the state
+    transition. Caller must hold state_lock for the duration."""
+    old, new = dispatch.apply_report(tasks, rep, role)
+    report_fields = {k: rep.get(k) for k in orchestrate._REPORT_FIELDS}
+    if new == "escalated":
+        # The review 3-strikes circuit breaker (dispatch.transition) computes
+        # this status in-memory only -- stamp it onto the entry that actually
+        # trips it, not only onto downstream dependency-gate entries it blocks,
+        # so clear_tasks()'s terminal_status match can find it.
+        report_fields["terminal_status"] = "escalated"
+    entry: dict = {
+        "task": rep["task"],
+        "role": rep["step"],
+        "report": report_fields,
+        # Per-step timing -> the journal is auditable after the fact.
+        # Extra keys; reconcile_from_journal/ReplaySpawn ignore them.
+        "started_at": round(t0, 3),
+        "ended_at": round(t1, 3),
+        "duration_s": round(t1 - t0, 1),
+    }
+    if usage:
+        entry["usage"] = usage
+    if tools_used:
+        entry["tools_used"] = tools_used
+    if skills_used:
+        entry["skills_used"] = skills_used
+    if task.get("_scope_added_files"):
+        entry["scope_escalated"] = True
+        entry["scope_added_files"] = list(task["_scope_added_files"])
+    # TASK-007 (REQ-027, AC-026): best-effort agent label -- a lookup
+    # problem here must never fail the run, only omit the key.
+    try:
+        if agent:
+            entry["agent"] = agent
+    except Exception:
+        pass
+    entries.append(entry)
+    task.pop("_scope_added_files", None)
+    record_fn()
+    actives.pop(task["id"], None)
+    return old, new
+
+
 def live_run_real(
     repo: Path,
     spec_rel: str,
@@ -2982,44 +3041,21 @@ def live_run_real(
         """Append the journal entry, persist, drop the heartbeat, apply the state
         transition -- all under the lock so concurrent workers never race."""
         with state_lock:
-            old, new = dispatch.apply_report(tasks, rep, role)
-            report_fields = {k: rep.get(k) for k in orchestrate._REPORT_FIELDS}
-            if new == "escalated":
-                # The review 3-strikes circuit breaker (dispatch.transition) computes
-                # this status in-memory only -- stamp it onto the entry that actually
-                # trips it, not only onto downstream dependency-gate entries it blocks,
-                # so clear_tasks()'s terminal_status match can find it.
-                report_fields["terminal_status"] = "escalated"
-            entry: dict = {
-                "task": rep["task"],
-                "role": rep["step"],
-                "report": report_fields,
-                # Per-step timing -> the journal is auditable after the fact.
-                # Extra keys; reconcile_from_journal/ReplaySpawn ignore them.
-                "started_at": round(t0, 3),
-                "ended_at": round(t1, 3),
-                "duration_s": round(t1 - t0, 1),
-            }
-            if usage:
-                entry["usage"] = usage
-            if tools_used:
-                entry["tools_used"] = tools_used
-            if skills_used:
-                entry["skills_used"] = skills_used
-            if task.get("_scope_added_files"):
-                entry["scope_escalated"] = True
-                entry["scope_added_files"] = list(task["_scope_added_files"])
-            # TASK-007 (REQ-027, AC-026): best-effort agent label -- a lookup
-            # problem here must never fail the run, only omit the key.
-            try:
-                if agent:
-                    entry["agent"] = agent
-            except Exception:
-                pass
-            entries.append(entry)
-            task.pop("_scope_added_files", None)
-            record()
-            actives.pop(task["id"], None)
+            old, new = _apply_step_commit(
+                tasks=tasks,
+                entries=entries,
+                actives=actives,
+                record_fn=record,
+                task=task,
+                role=role,
+                rep=rep,
+                t0=t0,
+                t1=t1,
+                usage=usage,
+                tools_used=tools_used,
+                skills_used=skills_used,
+                agent=agent,
+            )
             _publish_actives()
             if notify_cmd:
                 done_ct = sum(1 for t in tasks if t.get("status") in coordinator.DONE)
@@ -4135,43 +4171,21 @@ def _pipeline_scheduler(
         agent: str | None = None,
     ) -> tuple:
         with state_lock:
-            old, new = dispatch.apply_report(tasks, rep, role)
-            report_fields = {k: rep.get(k) for k in orchestrate._REPORT_FIELDS}
-            if new == "escalated":
-                # The review 3-strikes circuit breaker (dispatch.transition) computes
-                # this status in-memory only -- stamp it onto the entry that actually
-                # trips it, not only onto downstream dependency-gate entries it blocks,
-                # so clear_tasks()'s terminal_status match can find it.
-                report_fields["terminal_status"] = "escalated"
-            entry: dict = {
-                "task": rep["task"],
-                "role": rep["step"],
-                "report": report_fields,
-                "started_at": round(t0, 3),
-                "ended_at": round(t1, 3),
-                "duration_s": round(t1 - t0, 1),
-            }
-            if usage:
-                entry["usage"] = usage
-            if tools_used:
-                entry["tools_used"] = tools_used
-            if skills_used:
-                entry["skills_used"] = skills_used
-            if task.get("_scope_added_files"):
-                entry["scope_escalated"] = True
-                entry["scope_added_files"] = list(task["_scope_added_files"])
-            # TASK-007 (REQ-027, AC-026): best-effort agent label -- a lookup
-            # problem here must never fail the run, only omit the key.
-            try:
-                if agent:
-                    entry["agent"] = agent
-            except Exception:
-                pass
-            entries.append(entry)
-            task.pop("_scope_added_files", None)
-            _record()
-            actives.pop(task["id"], None)
-            return old, new
+            return _apply_step_commit(
+                tasks=tasks,
+                entries=entries,
+                actives=actives,
+                record_fn=_record,
+                task=task,
+                role=role,
+                rep=rep,
+                t0=t0,
+                t1=t1,
+                usage=usage,
+                tools_used=tools_used,
+                skills_used=skills_used,
+                agent=agent,
+            )
 
     def _drive(task: dict) -> None:
         wt = _ensure_wt(task)
