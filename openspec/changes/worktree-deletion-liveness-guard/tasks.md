@@ -50,6 +50,6 @@
 
 ## 5. Verification
 
-- [ ] 5.1 [e2e] Run `PYTHONPATH=src pytest -q` and
+- [x] 5.1 [e2e] Run `PYTHONPATH=src pytest -q` and
       `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` and confirm
       both pass.
