@@ -749,10 +749,16 @@ def _read_brief(path: Path) -> Tuple[Optional[str], Any, Optional[str]]:
     frontmatter + `## Focus` + `## Suggested approach`), rather than
     hand-rolling a second, subtly different parse. `created:` is not part of
     the seed contract, so it comes from `read_frontmatter` directly.
-    `original-created:` (stamped by brief consolidation to preserve the
-    earliest member's capture time) wins over `created:` when present and
-    non-empty, so the staleness search boundary is not reset by
-    consolidation itself.
+    Precedence for the search boundary is `released-at:` > `original-created:`
+    > `created:`. `released-at:` is stamped by `work_queue.py release` on
+    every release, including a recheck, and records the most recent time the
+    brief was looked at — reading it first stops a repeatedly rechecked
+    brief's own already-cited, already-resolved history from re-surfacing as
+    staleness evidence on every subsequent recheck. `original-created:`
+    (stamped by brief consolidation to preserve the earliest member's capture
+    time) remains the anchor for a consolidated brief that has not yet been
+    released post-consolidation, so the staleness search boundary is not
+    reset by consolidation itself.
     """
     try:
         from .handoff_seed import build_seed
@@ -774,7 +780,7 @@ def _read_brief(path: Path) -> Tuple[Optional[str], Any, Optional[str]]:
             f"could not read frontmatter of {path}: {exc!r}"
 
     text = seed.get("feature_idea") or seed.get("focus") or ""
-    since = fm.get("original-created") or fm.get("created")
+    since = fm.get("released-at") or fm.get("original-created") or fm.get("created")
     return text, since, None
 
 

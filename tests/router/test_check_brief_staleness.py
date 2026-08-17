@@ -519,6 +519,75 @@ class TestReadBrief(unittest.TestCase):
         self.assertEqual(since, "2026-01-01T00:00:00-07:00")
         self.assertIn("src/widget.py", text)
 
+    def test_released_at_present_wins_over_original_created_and_created(self):
+        path = self._write_brief(
+            "original-created: '2025-11-01T00:00:00-07:00'\n"
+            "released-at: '2026-08-12T02:35:29-07:00'\n"
+        )
+
+        text, since, error = cbs._read_brief(path)
+
+        self.assertIsNone(error)
+        self.assertEqual(since, "2026-08-12T02:35:29-07:00")
+        self.assertIn("src/widget.py", text)
+
+    def test_released_at_absent_falls_back_to_original_created_unchanged(self):
+        path = self._write_brief("original-created: '2025-11-01T00:00:00-07:00'\n")
+
+        text, since, error = cbs._read_brief(path)
+
+        self.assertIsNone(error)
+        self.assertEqual(since, "2025-11-01T00:00:00-07:00")
+        self.assertIn("src/widget.py", text)
+
+
+class TestRecheckSearchBoundary(unittest.TestCase):
+    """Task 2.2 -- end-to-end: a rechecked brief's `released-at:` excludes a
+    commit that landed before that recheck (already accounted for), even
+    though the same commit lands after the brief's original `created:`."""
+
+    def _write_brief(self, extra_frontmatter: str, focus: str = "Touches src/widget.py.") -> Path:
+        d = tempfile.mkdtemp(prefix="brief-staleness-recheck-")
+        p = Path(d) / "20260101-000000-some-brief.md"
+        p.write_text(
+            "---\nid: 20260101-000000-some-brief\ncreated: '2026-01-01T00:00:00-07:00'\n"
+            f"{extra_frontmatter}"
+            f"focus: |-\n  {focus}\nrepo: null\nstatus: queued\n---\n\n## Focus\n\n{focus}\n",
+            encoding="utf-8",
+        )
+        return p
+
+    def test_commit_between_created_and_released_at_is_excluded(self):
+        repo = _init_repo()
+        _write(repo, "src/widget.py", "print('v2')\n")
+        _commit(repo, "Add widget support", "2026-03-01T00:00:00+00:00")
+
+        path = self._write_brief("released-at: '2026-08-12T02:35:29-07:00'\n")
+        text, since, error = cbs._read_brief(path)
+        self.assertIsNone(error)
+
+        res = cbs.check(Path(repo), text, since)
+
+        self.assertTrue(res["checked"])
+        self.assertEqual(res["matches"], [])
+
+    def test_same_commit_is_evidence_without_released_at(self):
+        # Control: the identical commit IS reported once released-at: is
+        # absent and the boundary falls back to created: (2026-01-01), which
+        # predates the commit.
+        repo = _init_repo()
+        _write(repo, "src/widget.py", "print('v2')\n")
+        sha = _commit(repo, "Add widget support", "2026-03-01T00:00:00+00:00")
+
+        path = self._write_brief("")
+        text, since, error = cbs._read_brief(path)
+        self.assertIsNone(error)
+
+        res = cbs.check(Path(repo), text, since)
+
+        self.assertTrue(res["checked"])
+        self.assertIn(sha, {m["sha"] for m in res["matches"] if m["probe"] == "src/widget.py"})
+
 
 class TestCli(unittest.TestCase):
     """Task 2.4 -- CLI contract: `--json` shape, `--brief` reading, exit 0 on
