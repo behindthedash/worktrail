@@ -2982,10 +2982,18 @@ def live_run_real(
         """Append the journal entry, persist, drop the heartbeat, apply the state
         transition -- all under the lock so concurrent workers never race."""
         with state_lock:
+            old, new = dispatch.apply_report(tasks, rep, role)
+            report_fields = {k: rep.get(k) for k in orchestrate._REPORT_FIELDS}
+            if new == "escalated":
+                # The review 3-strikes circuit breaker (dispatch.transition) computes
+                # this status in-memory only -- stamp it onto the entry that actually
+                # trips it, not only onto downstream dependency-gate entries it blocks,
+                # so clear_tasks()'s terminal_status match can find it.
+                report_fields["terminal_status"] = "escalated"
             entry: dict = {
                 "task": rep["task"],
                 "role": rep["step"],
-                "report": {k: rep.get(k) for k in orchestrate._REPORT_FIELDS},
+                "report": report_fields,
                 # Per-step timing -> the journal is auditable after the fact.
                 # Extra keys; reconcile_from_journal/ReplaySpawn ignore them.
                 "started_at": round(t0, 3),
@@ -3013,7 +3021,6 @@ def live_run_real(
             record()
             actives.pop(task["id"], None)
             _publish_actives()
-            old, new = dispatch.apply_report(tasks, rep, role)
             if notify_cmd:
                 done_ct = sum(1 for t in tasks if t.get("status") in coordinator.DONE)
                 _fire_notify(
@@ -4128,10 +4135,18 @@ def _pipeline_scheduler(
         agent: str | None = None,
     ) -> tuple:
         with state_lock:
+            old, new = dispatch.apply_report(tasks, rep, role)
+            report_fields = {k: rep.get(k) for k in orchestrate._REPORT_FIELDS}
+            if new == "escalated":
+                # The review 3-strikes circuit breaker (dispatch.transition) computes
+                # this status in-memory only -- stamp it onto the entry that actually
+                # trips it, not only onto downstream dependency-gate entries it blocks,
+                # so clear_tasks()'s terminal_status match can find it.
+                report_fields["terminal_status"] = "escalated"
             entry: dict = {
                 "task": rep["task"],
                 "role": rep["step"],
-                "report": {k: rep.get(k) for k in orchestrate._REPORT_FIELDS},
+                "report": report_fields,
                 "started_at": round(t0, 3),
                 "ended_at": round(t1, 3),
                 "duration_s": round(t1 - t0, 1),
@@ -4156,7 +4171,7 @@ def _pipeline_scheduler(
             task.pop("_scope_added_files", None)
             _record()
             actives.pop(task["id"], None)
-            return dispatch.apply_report(tasks, rep, role)
+            return old, new
 
     def _drive(task: dict) -> None:
         wt = _ensure_wt(task)
