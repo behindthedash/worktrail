@@ -101,6 +101,14 @@ resume ordinary `--watch` operation on the very next loop entry — go back to t
 "degraded mode" flag to reset: the REST poll above is used only for the duration of the
 outage itself, one retry attempt at a time, never latched across loop iterations.
 
+**Retries exhausted.** All 3 REST retries above still fail — the outage has not lifted.
+Do not keep retrying past this budget or escalate to a new terminal status; fall through
+to case 5's stop below (`finish("failed_recoverable")`) exactly as if `PATCH_ITER` had
+reached the ceiling, substituting the outage for the usual "patch iterations" summary:
+note that the loop stopped because the GraphQL outage did not clear within the retry
+budget, not because of a code defect, so a human reading the run record knows the outage,
+not the change under test, is why the loop stopped.
+
 ## When the checks settle, classify the results and act
 
 1. **All pass** — no `bucket: fail` entries. Before finishing, re-query the PR's live
