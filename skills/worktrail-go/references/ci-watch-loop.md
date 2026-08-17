@@ -101,6 +101,14 @@ resume ordinary `--watch` operation on the very next loop entry — go back to t
 "degraded mode" flag to reset: the REST poll above is used only for the duration of the
 outage itself, one retry attempt at a time, never latched across loop iterations.
 
+**Retries exhausted.** All 3 REST retries above still fail — the outage has not lifted.
+Do not keep retrying past this budget or escalate to a new terminal status; fall through
+to case 5's stop below (`finish("failed_recoverable")`) exactly as if `PATCH_ITER` had
+reached the ceiling, substituting the outage for the usual "patch iterations" summary:
+note that the loop stopped because the GraphQL outage did not clear within the retry
+budget, not because of a code defect, so a human reading the run record knows the outage,
+not the change under test, is why the loop stopped.
+
 ## When the checks settle, classify the results and act
 
 1. **All pass** — no `bucket: fail` entries. Before finishing, re-query the PR's live
@@ -111,6 +119,15 @@ outage itself, one retry attempt at a time, never latched across loop iterations
    gh pr view "$PR_NUM" --repo "$OWNER/$REPO_NAME" \
      --json state,mergedAt,autoMergeRequest,headRefOid,mergeStateStatus,statusCheckRollup
    ```
+   **REST substitute (only during the GraphQL outage fallback above).** `gh pr view` above is
+   GraphQL-backed like `gh pr checks`; when the outage fallback is active, substitute:
+   ```bash
+   gh api repos/$OWNER/$REPO_NAME/pulls/$PR_NUM
+   ```
+   mapping REST's flatter shape onto the fields the branches below key off: `state == "MERGED"`
+   becomes REST's `merged` boolean (or `merged_at != null`); `headRefOid` becomes `head.sha`;
+   `autoMergeRequest` becomes REST's `auto_merge` object (non-null when armed, same presence
+   check as below).
    - **Stale-head guard (only if this loop pushed a fixup — `$PUSH_SHA` is set, case 3
      below):** `state == "MERGED"` with `headRefOid` != `$PUSH_SHA` means the PR merged a
      head OLDER than the fix just pushed (GGB #556: a pyright fix landed 2s after native
@@ -138,7 +155,20 @@ outage itself, one retry attempt at a time, never latched across loop iterations
      green in `gh pr checks` and `autoMergeRequest` armed — this loop finished
      `completed_pr_open` on that basis and the merge stalled indefinitely until a human
      noticed and manually re-ran the stray cancelled run). Check `mergeStateStatus` from
-     the query above before finishing on either branch that follows the review-thread gate:
+     the query above before finishing on either branch that follows the review-thread gate.
+     **No REST equivalent (outage fallback only).** `mergeStateStatus` and per-context
+     `statusCheckRollup` history are GraphQL-only fields — the REST substitute above
+     (`gh api repos/$OWNER/$REPO_NAME/pulls/$PR_NUM`) has nothing that maps onto either.
+     When the outage fallback is active, skip this guard's CANCELLED/SUCCESS same-context
+     pairing check entirely: treat it as no signal, the same way the review-thread gate
+     below treats `checked: false`, and proceed straight to the review-thread gate rather
+     than blocking completion on a check this fallback cannot evaluate. **Record the
+     skip in the eventual `--merge-result` text** — append `"; merge-state guard skipped
+     (GraphQL outage fallback active, no REST equivalent for mergeStateStatus)"` to
+     whichever `--merge-result` string case 1 below ends up emitting, so a human reviewing
+     `finish` output can see this completion never actually checked for the stray
+     CANCELLED/SUCCESS pairing worktrail PR #393 hit, rather than reading a plain
+     `completed_pr_open`/`completed_and_merged` as equivalent to a normal run.
      - `BLOCKED` — scan `statusCheckRollup` for a `CANCELLED` entry whose `name` also has a
        `SUCCESS` entry (same `name`, different run). Found: `gh run rerun <the CANCELLED
        run's databaseId> --repo "$OWNER/$REPO_NAME"`, wait for it
