@@ -5,7 +5,7 @@
 
 ## 2. Hermetic provider lifecycle regression
 
-- [ ] 2.1 Extend `tests/router/fake_internal_dispatch_agent.py` and `tests/router/test_internal_dispatch_lifecycle.py` with the smallest wrapper-versus-child SIGTERM matrix for Claude, Codex, and OpenCode, asserting exact parent `failed_recoverable` state, ownership preservation, exit `130`, and no surviving fake child while keeping fake credentials and all mutable artifacts under `TemporaryDirectory`. (Requirement: Lifecycle regression remains hermetic)
+- [x] 2.1 Extend `tests/router/fake_internal_dispatch_agent.py` and `tests/router/test_internal_dispatch_lifecycle.py` with the smallest wrapper-versus-child SIGTERM matrix for Claude, Codex, and OpenCode, asserting exact parent `failed_recoverable` state, ownership preservation, exit `130`, and no surviving fake child while keeping fake credentials and all mutable artifacts under `TemporaryDirectory`. (Requirement: Lifecycle regression remains hermetic)
       files: tests/router/fake_internal_dispatch_agent.py, tests/router/test_internal_dispatch_lifecycle.py
 
 ## 3. Verification
