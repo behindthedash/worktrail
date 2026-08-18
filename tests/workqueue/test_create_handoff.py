@@ -4,6 +4,8 @@ import json
 import os
 from pathlib import Path
 
+import pytest
+
 from worktrail.shared.brief_frontmatter import read_frontmatter, validate_brief
 from worktrail.workqueue.create_handoff import create_handoff, main
 
@@ -144,7 +146,88 @@ def test_create_handoff_omits_triage_when_unset(tmp_path: Path):
 
 
 def test_create_handoff_rejects_invalid_triage(tmp_path: Path):
-    import pytest
-
     with pytest.raises(ValueError):
         create_handoff("Fix the thing", queue_base=tmp_path, triage="urgent")
+
+
+def test_create_handoff_preserves_trimmed_blocked_by_order_and_prefixes(tmp_path: Path):
+    result = create_handoff(
+        "Fix the thing",
+        queue_base=tmp_path,
+        blocked_by=[" 20260701-000001-alpha ", "20260701-000002 "],
+    )
+
+    assert read_frontmatter(Path(result["path"]))["blocked-by"] == [
+        "20260701-000001-alpha",
+        "20260701-000002",
+    ]
+
+
+def test_cli_repeated_blocked_by_flags_preserve_order(tmp_path: Path, capsys):
+    assert (
+        main(
+            [
+                "--focus",
+                "Create a handoff with ordered blocked-by refs",
+                "--queue-dir",
+                str(tmp_path),
+                "--blocked-by",
+                " 20260701-000001-alpha ",
+                "--blocked-by",
+                "20260701-000002",
+                "--json",
+            ]
+        )
+        == 0
+    )
+    output = json.loads(capsys.readouterr().out)
+    assert read_frontmatter(Path(output["path"]))["blocked-by"] == [
+        "20260701-000001-alpha",
+        "20260701-000002",
+    ]
+
+
+def test_create_handoff_rejects_blank_blocked_by_without_touching_queue(tmp_path: Path):
+    with pytest.raises(ValueError, match="blocked-by values must be non-empty dependency references"):
+        create_handoff("Fix the thing", queue_base=tmp_path, blocked_by=["   "])
+
+    assert not (tmp_path / "queue").exists()
+    assert not list(tmp_path.rglob("*.md"))
+
+
+def test_cli_rejects_comma_joined_blocked_by_with_actionable_guidance_and_no_queue_dir(
+    tmp_path: Path, capsys
+):
+    assert (
+        main(
+            [
+                "--focus",
+                "Fix the thing",
+                "--queue-dir",
+                str(tmp_path),
+                "--blocked-by",
+                "dep-a,dep-b",
+            ]
+        )
+        == 1
+    )
+    captured = capsys.readouterr()
+    assert "blocked-by accepts exactly one dependency reference per flag" in captured.err
+    assert "repeat --blocked-by for each prerequisite" in captured.err
+    assert not (tmp_path / "queue").exists()
+    assert not list(tmp_path.rglob("*.md"))
+
+
+def test_create_handoff_rejects_blocked_by_before_touching_existing_malformed_queue_brief(
+    tmp_path: Path,
+):
+    queue = tmp_path / "queue"
+    queue.mkdir()
+    malformed = queue / "20260701-000001-broken.md"
+    original = "---\nid: 20260701-000001-broken\nfocus: Broken brief\nstatus: queued\n"
+    malformed.write_text(original, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="blocked-by accepts exactly one dependency reference per flag"):
+        create_handoff("Fix the thing", queue_base=tmp_path, blocked_by=["dep-a,dep-b"])
+
+    assert malformed.read_text(encoding="utf-8") == original
