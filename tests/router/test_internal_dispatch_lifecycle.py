@@ -23,8 +23,8 @@ _FAKE_AGENT = Path(__file__).with_name("fake_internal_dispatch_agent.py")
 
 class InternalDispatchLifecycleTests(unittest.TestCase):
     def _run_seeded_lifecycle(
-        self, root: Path, agent: str, outcome: str,
-    ) -> tuple[int, str]:
+        self, root: Path, agent: str, outcome: str, *, wrapper: bool = False,
+    ) -> tuple[int, str, int | None, int | None]:
         bin_dir = root / "bin"
         bin_dir.mkdir()
         shim = bin_dir / agent
@@ -59,6 +59,8 @@ class InternalDispatchLifecycleTests(unittest.TestCase):
         ).stdout.strip()
         proof = root / "proof"
         ready = root / "ready"
+        wrapper_pid = root / "wrapper-pid"
+        parent_home = root / "codex-parent-home"
         environment = {
             **os.environ,
             "PATH": f"{bin_dir}:{os.environ['PATH']}",
@@ -67,10 +69,19 @@ class InternalDispatchLifecycleTests(unittest.TestCase):
             "FAKE_INTERNAL_DISPATCH_LIFECYCLE": outcome,
             "FAKE_INTERNAL_DISPATCH_OWNERSHIP": ownership,
             "FAKE_INTERNAL_DISPATCH_READY": str(ready),
+            "FAKE_INTERNAL_DISPATCH_WRAPPER_PID": str(wrapper_pid),
             "WORKTRAIL_SKILL_DISPATCH_DEPTH": "0",
             "WORKTRAIL_SKILL_ROOT": str(root / "skills"),
             "WORKTRAIL_CODEX_HOME": str(root / "codex-home"),
         }
+        if agent == "codex":
+            parent_home.mkdir()
+            auth = parent_home / "auth.json"
+            auth.write_text("fake-chatgpt-auth\n")
+            auth.chmod(0o600)
+            environment["CODEX_HOME"] = str(parent_home)
+        if wrapper:
+            environment["FAKE_INTERNAL_DISPATCH_WRAPPER"] = "1"
         command = [
             shutil.which("worktrail-skill-dispatch"), "--agent", agent,
             "--skill", "worktrail-sdd-workflow", "--args", seed,
@@ -84,14 +95,27 @@ class InternalDispatchLifecycleTests(unittest.TestCase):
             while not ready.exists() and process.poll() is None and time.monotonic() < deadline:
                 time.sleep(0.01)
             self.assertTrue(ready.exists(), "fake seeded child never became interruptible")
-            os.kill(int(ready.read_text()), signal.SIGTERM)
-        return process.wait(timeout=5), run.read_text()
+            if wrapper:
+                deadline = time.monotonic() + 5
+                while not wrapper_pid.exists() and process.poll() is None and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(wrapper_pid.exists(), "fake seeded wrapper never published its pid")
+                target_pid = int(wrapper_pid.read_text())
+            else:
+                target_pid = int(ready.read_text())
+            os.kill(target_pid, signal.SIGTERM)
+        return (
+            process.wait(timeout=5),
+            run.read_text(),
+            int(ready.read_text()) if ready.exists() else None,
+            int(wrapper_pid.read_text()) if wrapper_pid.exists() else None,
+        )
 
     def test_seeded_child_mutates_only_the_exact_parent_run_record(self):
         for agent in skill_dispatch.SUPPORTED_AGENTS:
             with self.subTest(agent=agent), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
-                returncode, record = self._run_seeded_lifecycle(
+                returncode, record, _, _ = self._run_seeded_lifecycle(
                     root, agent, "complete",
                 )
                 self.assertEqual(returncode, 0)
@@ -105,7 +129,7 @@ class InternalDispatchLifecycleTests(unittest.TestCase):
     def test_seeded_child_records_terminal_state_before_nonzero_exit(self):
         for agent in skill_dispatch.SUPPORTED_AGENTS:
             with self.subTest(agent=agent), tempfile.TemporaryDirectory() as tmp:
-                returncode, record = self._run_seeded_lifecycle(
+                returncode, record, _, _ = self._run_seeded_lifecycle(
                     Path(tmp), agent, "nonzero",
                 )
                 self.assertEqual(returncode, 9)
@@ -115,14 +139,23 @@ class InternalDispatchLifecycleTests(unittest.TestCase):
 
     def test_seeded_child_records_terminal_state_when_interrupted(self):
         for agent in skill_dispatch.SUPPORTED_AGENTS:
-            with self.subTest(agent=agent), tempfile.TemporaryDirectory() as tmp:
-                returncode, record = self._run_seeded_lifecycle(
-                    Path(tmp), agent, "interrupted",
-                )
-                self.assertEqual(returncode, 130)
-                self.assertIn("dispatch_id: go-parent-dispatch-owner", record)
-                self.assertIn("final_status: failed_recoverable", record)
-                self.assertIn("seeded child interrupted", record)
+            for wrapper in (False, True):
+                label = "wrapper" if wrapper else "child"
+                with self.subTest(agent=agent, interruption=label), tempfile.TemporaryDirectory() as tmp:
+                    returncode, record, child_pid, wrapper_pid = self._run_seeded_lifecycle(
+                        Path(tmp), agent, "interrupted", wrapper=wrapper,
+                    )
+                    self.assertEqual(returncode, 130)
+                    self.assertIn("dispatch_id: go-parent-dispatch-owner", record)
+                    self.assertIn("final_status: failed_recoverable", record)
+                    self.assertIn("seeded child interrupted", record)
+                    self.assertIsNotNone(child_pid)
+                    with self.assertRaises(ProcessLookupError):
+                        os.kill(child_pid, 0)
+                    if wrapper:
+                        self.assertIsNotNone(wrapper_pid)
+                        with self.assertRaises(ProcessLookupError):
+                            os.kill(wrapper_pid, 0)
 
     def test_handoff_route_reaches_each_provider_once_without_front_door_redirect(self):
         with tempfile.TemporaryDirectory() as tmp:
