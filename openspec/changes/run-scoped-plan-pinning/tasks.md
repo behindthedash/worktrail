@@ -89,9 +89,9 @@
       from the cache and before calling `runplan.apply_to_tasks()`, compare the current
       tasks' ids against `plan.by_id()`. On a mismatch, raise the same shape of error as
       the unresolvable-pin case (spec id, pinned fingerprint, the missing/unknown ids, and
-      the DEC-005 re-plan escape hatch) and do not call `apply_to_tasks()`. Extends the
-      requirement "An unresolvable pin fails the run instead of recompiling" (renamed "An
-      unresolvable or mismatched pin fails the run instead of recompiling") with a new
+      the DEC-005 re-plan escape hatch) and do not call `apply_to_tasks()`. The prior
+      requirement "An unresolvable pin fails the run instead of recompiling" is renamed to
+      "An unresolvable or mismatched pin fails the run instead of recompiling" with a new
       scenario in `specs/run-scoped-plan-pinning/spec.md`.
 
       In `tests/orchestrator/test_apply_run_plan_autocompile.py`, add coverage: a pinned
