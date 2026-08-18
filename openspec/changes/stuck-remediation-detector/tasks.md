@@ -14,4 +14,4 @@
 ## 4. Verification
 
 - [ ] 4.1 [e2e] Run `PYTHONPATH=src pytest -q` and confirm it passes.
-- [ ] 4.2 [e2e] Run `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` and confirm it passes.
+- [x] 4.2 [e2e] Run `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` and confirm it passes.
