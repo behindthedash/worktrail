@@ -22,11 +22,15 @@ _FAKE_AGENT = Path(__file__).with_name("fake_internal_dispatch_agent.py")
 
 
 class InternalDispatchLifecycleTests(unittest.TestCase):
-    def _run_seeded_lifecycle(self, root: Path, outcome: str) -> tuple[int, str]:
+    def _run_seeded_lifecycle(
+        self, root: Path, agent: str, outcome: str,
+    ) -> tuple[int, str]:
         bin_dir = root / "bin"
         bin_dir.mkdir()
-        shim = bin_dir / "codex"
-        shim.write_text(f"#!/bin/sh\nexec {sys.executable} {_FAKE_AGENT} codex \"$@\"\n")
+        shim = bin_dir / agent
+        shim.write_text(
+            f"#!/bin/sh\nexec {sys.executable} {_FAKE_AGENT} {agent} \"$@\"\n"
+        )
         shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
         skills = root / "skills" / "worktrail-sdd-workflow"
         skills.mkdir(parents=True)
@@ -49,7 +53,7 @@ class InternalDispatchLifecycleTests(unittest.TestCase):
             [
                 shutil.which("worktrail-go-seed"), "--repo", str(root),
                 "--base", "main", "--route", "F", "--spec", "handoff:lifecycle",
-                "--run", str(run), "--brief", str(brief), "--agent", "codex",
+                "--run", str(run), "--brief", str(brief), "--agent", agent,
             ],
             check=True, capture_output=True, text=True,
         ).stdout.strip()
@@ -68,10 +72,12 @@ class InternalDispatchLifecycleTests(unittest.TestCase):
             "WORKTRAIL_CODEX_HOME": str(root / "codex-home"),
         }
         command = [
-            shutil.which("worktrail-skill-dispatch"), "--agent", "codex",
+            shutil.which("worktrail-skill-dispatch"), "--agent", agent,
             "--skill", "worktrail-sdd-workflow", "--args", seed,
-            "--cwd", str(root), "--write", "--no-inherit-codex-auth",
+            "--cwd", str(root), "--write",
         ]
+        if agent == "codex":
+            command.append("--no-inherit-codex-auth")
         process = subprocess.Popen(command, env=environment)
         if outcome == "interrupted":
             deadline = time.monotonic() + 5
@@ -82,30 +88,41 @@ class InternalDispatchLifecycleTests(unittest.TestCase):
         return process.wait(timeout=5), run.read_text()
 
     def test_seeded_child_mutates_only_the_exact_parent_run_record(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            returncode, record = self._run_seeded_lifecycle(root, "complete")
-            self.assertEqual(returncode, 0)
-            self.assertEqual(list((root / "runs").glob("*.yaml")), [root / "runs/parent.yaml"])
-            self.assertIn("dispatch_id: go-parent-dispatch-owner", record)
-            self.assertIn("- fake-child", record)
-            self.assertIn("final_status: investigation_complete", record)
+        for agent in skill_dispatch.SUPPORTED_AGENTS:
+            with self.subTest(agent=agent), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                returncode, record = self._run_seeded_lifecycle(
+                    root, agent, "complete",
+                )
+                self.assertEqual(returncode, 0)
+                self.assertEqual(
+                    list((root / "runs").glob("*.yaml")), [root / "runs/parent.yaml"],
+                )
+                self.assertIn("dispatch_id: go-parent-dispatch-owner", record)
+                self.assertIn("- fake-child", record)
+                self.assertIn("final_status: investigation_complete", record)
 
     def test_seeded_child_records_terminal_state_before_nonzero_exit(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            returncode, record = self._run_seeded_lifecycle(Path(tmp), "nonzero")
-            self.assertEqual(returncode, 9)
-            self.assertIn("dispatch_id: go-parent-dispatch-owner", record)
-            self.assertIn("final_status: failed_recoverable", record)
-            self.assertIn("seeded child exited nonzero", record)
+        for agent in skill_dispatch.SUPPORTED_AGENTS:
+            with self.subTest(agent=agent), tempfile.TemporaryDirectory() as tmp:
+                returncode, record = self._run_seeded_lifecycle(
+                    Path(tmp), agent, "nonzero",
+                )
+                self.assertEqual(returncode, 9)
+                self.assertIn("dispatch_id: go-parent-dispatch-owner", record)
+                self.assertIn("final_status: failed_recoverable", record)
+                self.assertIn("seeded child exited nonzero", record)
 
     def test_seeded_child_records_terminal_state_when_interrupted(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            returncode, record = self._run_seeded_lifecycle(Path(tmp), "interrupted")
-            self.assertEqual(returncode, 130)
-            self.assertIn("dispatch_id: go-parent-dispatch-owner", record)
-            self.assertIn("final_status: failed_recoverable", record)
-            self.assertIn("seeded child interrupted", record)
+        for agent in skill_dispatch.SUPPORTED_AGENTS:
+            with self.subTest(agent=agent), tempfile.TemporaryDirectory() as tmp:
+                returncode, record = self._run_seeded_lifecycle(
+                    Path(tmp), agent, "interrupted",
+                )
+                self.assertEqual(returncode, 130)
+                self.assertIn("dispatch_id: go-parent-dispatch-owner", record)
+                self.assertIn("final_status: failed_recoverable", record)
+                self.assertIn("seeded child interrupted", record)
 
     def test_handoff_route_reaches_each_provider_once_without_front_door_redirect(self):
         with tempfile.TemporaryDirectory() as tmp:
