@@ -14,8 +14,6 @@ from pathlib import Path
 
 
 _RUN_PATH = re.compile(r"^Run record path: (.+)$", re.MULTILINE)
-
-
 def _finish_lifecycle_run(prompt: str, status: str, result: str) -> None:
     match = _RUN_PATH.search(prompt)
     if match is None:
@@ -32,6 +30,41 @@ def _finish_lifecycle_run(prompt: str, status: str, result: str) -> None:
         ],
         check=True,
     )
+
+
+def _run_wrapper_lifecycle(agent: str, provider_args: list[str], prompt: str) -> int:
+    wrapper_pid = Path(os.environ["FAKE_INTERNAL_DISPATCH_WRAPPER_PID"])
+    wrapper_pid.write_text(str(os.getpid()))
+    child_env = os.environ.copy()
+    child_env.pop("FAKE_INTERNAL_DISPATCH_WRAPPER", None)
+    child_env.pop("FAKE_INTERNAL_DISPATCH_WRAPPER_PID", None)
+    child_env["FAKE_INTERNAL_DISPATCH_LIFECYCLE"] = "interrupted"
+    child = subprocess.Popen([sys.executable, __file__, agent, *provider_args], env=child_env)
+    ready = Path(os.environ["FAKE_INTERNAL_DISPATCH_READY"])
+
+    def interrupted(_signum, _frame):
+        if child.poll() is None:
+            child.send_signal(signal.SIGTERM)
+        try:
+            child.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            child.wait(timeout=5)
+        raise SystemExit(130)
+
+    signal.signal(signal.SIGTERM, interrupted)
+    deadline = time.monotonic() + 5
+    while not ready.exists() and child.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.01)
+    if not ready.exists():
+        proof = Path(os.environ["FAKE_INTERNAL_DISPATCH_PROOF"])
+        proof.write_text(f"wrapper-unready:{agent}\n")
+        return 8
+    while True:
+        status = child.poll()
+        if status is not None:
+            return status
+        time.sleep(0.05)
 
 
 def main(argv: list[str]) -> int:
@@ -57,6 +90,12 @@ def main(argv: list[str]) -> int:
     if os.environ.get("WORKTRAIL_SKILL_DISPATCH_DEPTH") != "1":
         proof.write_text(f"unbounded:{agent}\n")
         return 5
+    if os.environ.get("FAKE_INTERNAL_DISPATCH_WRAPPER") == "1":
+        ownership = os.environ["FAKE_INTERNAL_DISPATCH_OWNERSHIP"]
+        if ownership not in Path(_RUN_PATH.search(prompt).group(1).strip()).read_text():
+            proof.write_text(f"lost-ownership:{agent}\n")
+            return 7
+        return _run_wrapper_lifecycle(agent, provider_args, prompt)
     lifecycle = os.environ.get("FAKE_INTERNAL_DISPATCH_LIFECYCLE")
     if lifecycle:
         ownership = os.environ["FAKE_INTERNAL_DISPATCH_OWNERSHIP"]
