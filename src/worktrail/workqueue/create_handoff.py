@@ -17,6 +17,7 @@ from ..router.classify import classify
 from ..shared.brief_frontmatter import validate_brief
 from . import score_candidates
 from . import work_queue
+from .work_queue import normalize_dependency_reference
 
 
 class _LiteralStr(str):
@@ -50,15 +51,16 @@ def _validate_blocked_by(values: Optional[Iterable[str]]) -> list[str]:
     """Return trimmed dependency references, rejecting empty or comma-joined values."""
     cleaned: list[str] = []
     for raw in values or []:
-        value = str(raw).strip()
-        if not value:
-            raise ValueError("blocked-by values must be non-empty dependency references")
-        if "," in value:
-            raise ValueError(
-                "blocked-by accepts exactly one dependency reference per flag; "
-                "repeat --blocked-by for each prerequisite instead of comma-joining values"
-            )
-        cleaned.append(value)
+        try:
+            cleaned.append(normalize_dependency_reference(raw))
+        except ValueError as exc:
+            message = str(exc)
+            if "comma-joined" in message:
+                raise ValueError(
+                    "blocked-by accepts exactly one dependency reference per flag; "
+                    "repeat --blocked-by for each prerequisite instead of comma-joining values"
+                ) from exc
+            raise ValueError("blocked-by values must be non-empty dependency references") from exc
     return cleaned
 
 

@@ -241,6 +241,62 @@ class TestResolve(QueueTestBase):
         self.assertEqual(res["status"], "none")
 
 
+class TestDependencyReferenceResolution(QueueTestBase):
+    def test_queue_reference_is_active_and_preserves_raw_and_candidates(self):
+        dep = self.write("20260101-000000-dep.md", focus="the prereq", brief_id="dep-id")
+
+        res = q.classify_dependency_reference("dep-id")
+
+        self.assertEqual(res["raw"], "dep-id")
+        self.assertEqual(res["reference"], "dep-id")
+        self.assertEqual(res["state"], "active")
+        self.assertFalse(res["satisfied"])
+        self.assertEqual(res["candidates"], [str(dep.resolve())])
+
+    def test_picked_reference_is_done(self):
+        self.picked.mkdir(parents=True, exist_ok=True)
+        dep = self.picked / "dep.md"
+        dep.write_text(_picked_brief("dep", status="done"), encoding="utf-8")
+
+        res = q.classify_dependency_reference("dep")
+
+        self.assertEqual(res["state"], "done")
+        self.assertTrue(res["satisfied"])
+        self.assertEqual(res["candidates"], [str(dep.resolve())])
+
+    def test_stale_reference_is_satisfied(self):
+        res = q.classify_dependency_reference("stale-id-xyz")
+
+        self.assertEqual(res["state"], "stale")
+        self.assertTrue(res["satisfied"])
+        self.assertEqual(res["candidates"], [])
+
+    def test_ambiguous_reference_preserves_all_candidates(self):
+        first = self.write("20260604-100000-handoff-related-field-autodetect.md", focus="a")
+        second = self.write("20260604-110000-handoff-related-field-autodetect.md", focus="b")
+
+        res = q.classify_dependency_reference("handoff-related-field-autodetect")
+
+        self.assertEqual(res["state"], "ambiguous")
+        self.assertFalse(res["satisfied"])
+        self.assertCountEqual(res["candidates"], [str(first.resolve()), str(second.resolve())])
+
+    def test_malformed_reference_states_preserve_raw_value(self):
+        cases = [
+            (123, "dependency reference must be a string"),
+            ("   ", "dependency reference must not be blank"),
+            ("dep-a, dep-b", "dependency reference must not be comma-joined"),
+        ]
+        for raw, expected_error in cases:
+            with self.subTest(raw=raw):
+                res = q.classify_dependency_reference(raw)
+                self.assertEqual(res["state"], "malformed")
+                self.assertFalse(res["satisfied"])
+                self.assertEqual(res["raw"], raw)
+                self.assertEqual(res["candidates"], [])
+                self.assertEqual(res["error"], expected_error)
+
+
 class TestClaim(QueueTestBase):
     def test_claim_moves_and_stamps(self):
         self.write("20260531-141200-auth.md", focus="auth")
@@ -1001,7 +1057,7 @@ class TestBlockedBy(QueueTestBase):
         self.write("20260101-000001-main.md", focus="needs dep", blocked_by=["dep-id"])
         res = q.claim("20260101-000001-main")
         self.assertEqual(res["status"], "claimed")
-        self.assertIn("blocked by dep-id", res["warnings"])
+        self.assertTrue(any("blocked by dep-id (active dependency reference)" in w for w in res["warnings"]))
 
     def test_claim_no_warnings_when_dep_done(self):
         self.picked.mkdir(parents=True, exist_ok=True)
@@ -1024,6 +1080,92 @@ class TestBlockedBy(QueueTestBase):
         res = q.claim("20260101-000000-a")
         self.assertIn("warnings", res)
         self.assertEqual(res["warnings"], [])
+
+    def test_list_blocks_on_malformed_and_ambiguous_dependencies(self):
+        self.write(
+            "20260101-000000-dep.md",
+            focus="the prereq",
+            brief_id="dep-id",
+        )
+        self.write(
+            "20260604-100000-handoff-related-field-autodetect.md",
+            focus="ambiguous a",
+        )
+        self.write(
+            "20260604-110000-handoff-related-field-autodetect.md",
+            focus="ambiguous b",
+        )
+        self.write(
+            "20260101-000003-main.md",
+            focus="needs dep",
+            blocked_by=["dep-id", "handoff-related-field-autodetect", "dep-id, other-dep", 42],
+        )
+        briefs = {b["filename"]: b for b in q.list_queue()["briefs"]}
+        self.assertFalse(briefs["20260101-000000-dep.md"]["blocked"])
+        self.assertTrue(briefs["20260101-000003-main.md"]["blocked"])
+
+    def test_claim_warnings_include_state_bearing_dependency_diagnostics(self):
+        self.write("20260101-000000-dep.md", focus="the prereq", brief_id="dep-id")
+        self.write("20260101-000001-main.md", focus="needs dep", blocked_by=["dep-id"])
+
+        res = q.claim("20260101-000001-main")
+
+        self.assertEqual(res["status"], "claimed")
+        self.assertTrue(any("blocked by dep-id (active dependency reference)" in w for w in res["warnings"]))
+
+    def test_claim_warnings_include_ambiguous_dependency_diagnostics(self):
+        self.write("20260604-100000-handoff-related-field-autodetect.md", focus="ambiguous a")
+        self.write("20260604-110000-handoff-related-field-autodetect.md", focus="ambiguous b")
+        self.write(
+            "20260101-000001-main.md",
+            focus="needs dep",
+            blocked_by=["handoff-related-field-autodetect"],
+        )
+
+        res = q.claim("20260101-000001-main")
+
+        self.assertEqual(res["status"], "claimed")
+        self.assertTrue(any("ambiguous dependency reference" in w for w in res["warnings"]))
+
+    def test_claim_warnings_include_malformed_raw_value(self):
+        self.write("20260101-000000-dep.md", focus="the prereq", brief_id="dep-id")
+        self.write("20260101-000001-main.md", focus="needs dep", blocked_by=["dep-id, other-dep"])
+
+        res = q.claim("20260101-000001-main")
+
+        self.assertEqual(res["status"], "claimed")
+        self.assertTrue(
+            any(
+                "blocked by dep-id, other-dep (malformed dependency reference" in w
+                for w in res["warnings"]
+            )
+        )
+
+    def test_resolution_does_not_mutate_dependency_bytes(self):
+        dep = self.write("20260101-000000-dep.md", focus="the prereq", brief_id="dep-id")
+        before = dep.read_bytes()
+        self.write("20260101-000001-main.md", focus="needs dep", blocked_by=["dep-id"])
+
+        q.list_queue()
+        q.claim("20260101-000001-main")
+
+        self.assertEqual(dep.read_bytes(), before)
+
+    def test_comma_joined_dependency_with_active_head_is_still_malformed(self):
+        self.write("20260101-000000-dep.md", focus="the prereq", brief_id="dep-id")
+        self.write(
+            "20260101-000001-main.md",
+            focus="needs dep",
+            blocked_by=["dep-id, other-dep"],
+        )
+
+        listed = q.list_queue()["briefs"][0]
+        self.assertTrue(listed["blocked"])
+        res = q.claim("20260101-000001-main")
+        self.assertEqual(res["status"], "claimed")
+        self.assertTrue(
+            any("blocked by dep-id, other-dep (malformed dependency reference" in w for w in res["warnings"])
+        )
 
 
 class TestPremiseDriftWarning(QueueTestBase):
