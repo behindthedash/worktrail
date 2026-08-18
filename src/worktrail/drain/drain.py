@@ -82,7 +82,8 @@ Usage:
            [--agent-cmd TEMPLATE] [--permission-arg FLAG]...
            [--consecutive-failures N] [--iteration-timeout-minutes M]
            [--max-workers N] [--queue-dir DIR] [--runs-dir DIR] [--repos-root DIR]
-           [--capacity-cache PATH] [--lock-file PATH] [--dry-run] [--json]
+           [--capacity-cache PATH] [--lock-file PATH] [--stuck-threshold N]
+           [--dry-run] [--json]
 
 Exit codes: 0 = drained/stopped cleanly with a reported reason; 2 = refused to
 start (lock held, bad args, missing queue dir).
@@ -1720,11 +1721,19 @@ def drain(config: DrainConfig,
             for key, findings in post.items():
                 resumed.setdefault(key, []).extend(findings)
         if slot == 0 and config.repos_root is not None and not config.dry_run:
-            stuck_remediations = stuck_remediation.sweep_and_record(
-                resumed, config.stuck_history_path, config.stuck_threshold)
-            for entry in stuck_remediations:
-                log(f"stuck remediation: {entry['key']} {entry['repo_name']} "
-                    f"{entry['spec_id']} streak={entry['streak']}")
+            # Best-effort like the sweeps above: the detector is advisory
+            # state, and a failure here (e.g. an unwritable history file)
+            # must never abort the drain pass.
+            try:
+                stuck_remediations = stuck_remediation.sweep_and_record(
+                    resumed,
+                    config.stuck_history_path or stuck_remediation.history_path(),
+                    config.stuck_threshold)
+                for entry in stuck_remediations:
+                    log(f"stuck remediation: {entry['key']} {entry['repo_name']} "
+                        f"{entry['spec_id']} streak={entry['streak']}")
+            except Exception as exc:  # noqa: BLE001
+                log(f"stuck-remediation error: {exc}")
     finally:
         release_lock_slot(config.lock_file, slot)
     summary: Dict[str, object] = {
