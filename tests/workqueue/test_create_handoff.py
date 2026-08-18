@@ -218,7 +218,7 @@ def test_cli_rejects_comma_joined_blocked_by_with_actionable_guidance_and_no_que
     assert not list(tmp_path.rglob("*.md"))
 
 
-def test_create_handoff_rejects_blocked_by_before_touching_existing_malformed_queue_brief(
+def test_create_handoff_leaves_existing_malformed_queue_brief_untouched_on_success(
     tmp_path: Path,
 ):
     queue = tmp_path / "queue"
@@ -227,7 +227,16 @@ def test_create_handoff_rejects_blocked_by_before_touching_existing_malformed_qu
     original = "---\nid: 20260701-000001-broken\nfocus: Broken brief\nstatus: queued\n"
     malformed.write_text(original, encoding="utf-8")
 
-    with pytest.raises(ValueError, match="blocked-by accepts exactly one dependency reference per flag"):
-        create_handoff("Fix the thing", queue_base=tmp_path, blocked_by=["dep-a,dep-b"])
+    result = create_handoff(
+        "Fix the thing",
+        queue_base=tmp_path,
+        blocked_by=[" 20260701-000001-alpha ", "20260701-000002"],
+    )
 
     assert malformed.read_text(encoding="utf-8") == original
+    created = Path(result["path"])
+    assert created != malformed
+    assert read_frontmatter(created)["blocked-by"] == [
+        "20260701-000001-alpha",
+        "20260701-000002",
+    ]
