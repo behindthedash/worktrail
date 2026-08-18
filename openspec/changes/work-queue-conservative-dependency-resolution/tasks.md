@@ -5,4 +5,4 @@
 ## 2. Verification
 
 - [ ] 2.1 [e2e] Run `PYTHONPATH=src pytest -q tests/workqueue/test_create_handoff.py tests/workqueue/test_work_queue.py` and confirm producer-contract compatibility plus focused runtime regressions pass; depends on 1.1.
-- [ ] 2.2 [e2e] Run `PYTHONPATH=src pytest -q` and `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` and confirm both repository gates pass; depends on 2.1.
+- [x] 2.2 [e2e] Run `PYTHONPATH=src pytest -q` and `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` and confirm both repository gates pass; depends on 2.1.
