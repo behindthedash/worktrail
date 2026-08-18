@@ -139,5 +139,29 @@ class MigrationPatternsFixTests(unittest.TestCase):
             self.assertNotIn("6.1", g["tasks"])
 
 
+class GroupContainsMigrationTaskTests(unittest.TestCase):
+    def test_base_group_with_folded_migration_task_is_true(self):
+        tasks = _embed_widget_shaped_tasks()
+        patterns = ["api/migrations/versions/*.py"]
+        groups = coordinator.plan_groups(tasks, migration_patterns=patterns)
+        base = next(g for g in groups if g["name"] == "base")
+        self.assertTrue(coordinator.group_contains_migration_task(base, tasks, patterns))
+
+    def test_non_migration_group_is_false(self):
+        tasks = _embed_widget_shaped_tasks()
+        patterns = ["api/migrations/versions/*.py"]
+        groups = coordinator.plan_groups(tasks, migration_patterns=patterns)
+        consumer_group = next(g for g in groups if "3.2" in g["tasks"])
+        self.assertFalse(
+            coordinator.group_contains_migration_task(consumer_group, tasks, patterns)
+        )
+
+    def test_empty_patterns_is_always_false(self):
+        tasks = _embed_widget_shaped_tasks()
+        groups = coordinator.plan_groups(tasks)
+        base = next(g for g in groups if g["name"] == "base")
+        self.assertFalse(coordinator.group_contains_migration_task(base, tasks, []))
+
+
 if __name__ == "__main__":
     unittest.main()
