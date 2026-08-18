@@ -557,6 +557,51 @@ def _format_unreconciled_tail_note(findings: "list[dict]") -> "str | None":
     )
 
 
+def _format_migration_quarantine_warning(
+    groups: "list[dict]",
+    tasks: "list[dict]",
+    migration_patterns: "Sequence[str] | None",
+    quarantined: "dict[str, str]",
+) -> "str | None":
+    """Explicit warning when a migration-touching group is quarantined while
+    other groups still proceeded to PR without it.
+
+    `plan_groups(migration_patterns=...)` folds any migration-touching task into
+    BASE specifically so a migration quarantined there blocks dependent work (see
+    that function's "Why migration tasks are forced into BASE" docstring) -- but
+    the cascade only quarantines a group that declares a dependency edge (deps or
+    a shared file) on the quarantined group. A group whose code merely consumes
+    the new schema, with no such declared edge, is not caught: its PR can land
+    with the migration missing from its branch ancestry, silently defeating the
+    folding guarantee (reproduced live: datalena run go-20260817-162424, spec
+    099, 10 of 11 group PRs referenced a new column with no migration in their
+    ancestry, and nothing warned). Returns None when there is nothing to warn
+    about, so callers can `if note:`.
+    """
+    if not migration_patterns or not quarantined:
+        return None
+    migration_groups = [
+        g["name"]
+        for g in groups
+        if g["name"] in quarantined
+        and coordinator.group_contains_migration_task(g, tasks, migration_patterns)
+    ]
+    if not migration_groups:
+        return None
+    proceeded = sorted(g["name"] for g in groups if g["name"] not in quarantined)
+    if not proceeded:
+        return None
+    reasons = "; ".join(f"{name}: {quarantined[name]}" for name in migration_groups)
+    return (
+        f"!! MIGRATION SAFETY: {', '.join(migration_groups)} carries a schema "
+        f"migration and is quarantined ({reasons}), but {len(proceeded)} other "
+        f"group(s) still opened PR(s) with no declared dependency on it: "
+        f"{', '.join(proceeded)}. worktrail cannot verify these don't reference "
+        f"the pending migration's schema -- manually confirm merge order (the "
+        f"migration group first) before merging any of them."
+    )
+
+
 def _safety_net_events_from_preflight_fallbacks(fallbacks: "dict[str, dict]") -> "list[dict]":
     """Convert `verify.run_all()`'s `preflight_fallbacks` (group -> detail) into
     `progress.append_safety_net_events` entries, so a required-checks preflight
@@ -4466,6 +4511,11 @@ def _pipeline_scheduler(
     if quarantined:
         reasons = ", ".join(f"{k}: {v}" for k, v in quarantined.items())
         print(f"{_ts()} NOTE: {len(quarantined)} group(s) quarantined for human review: {reasons}")
+    migration_warning = _format_migration_quarantine_warning(
+        groups, tasks, migration_patterns, quarantined
+    )
+    if migration_warning:
+        print(f"{_ts()} {migration_warning}")
     if post_merge_regressed:
         print(
             f"{_ts()} !! POST-MERGE REGRESSION: {len(post_merge_regressed)} group(s) "
@@ -4778,6 +4828,11 @@ def _full_real_inner(
         if quarantined:
             reasons = ", ".join(f"{k}: {v}" for k, v in quarantined.items())
             print(f"NOTE: {len(quarantined)} group(s) quarantined for human review: {reasons}")
+        migration_warning = _format_migration_quarantine_warning(
+            groups, tasks, migration_patterns, quarantined
+        )
+        if migration_warning:
+            print(migration_warning)
         if self_merged:
             print(
                 f"!! SELF-MERGE VIOLATION: {len(self_merged)} group(s) merged by a worker "

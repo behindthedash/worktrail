@@ -204,6 +204,25 @@ def _touches_migration(task: Dict[str, Any], patterns: Sequence[str]) -> bool:
     return any(fnmatch.fnmatch(f, pat) for f in files for pat in patterns)
 
 
+def group_contains_migration_task(
+    group: Dict[str, Any], tasks: List[Dict[str, Any]], patterns: Sequence[str]
+) -> bool:
+    """True if any task in `group` (a `plan_groups()` entry) touches a
+    migration path pattern -- i.e. this is (part of) why `plan_groups` folded
+    it into BASE in the first place. Used to detect when BASE's migration-folding
+    safety net (see `plan_groups`'s "Why migration tasks are forced into BASE"
+    docstring) is itself quarantined, since that folding only cascades quarantine
+    to groups with a *declared* dependency edge on BASE -- not to a group whose
+    code merely consumes the new schema with no `deps`/shared-file edge.
+    """
+    if not patterns:
+        return False
+    by_id = {t["id"]: t for t in tasks}
+    return any(
+        _touches_migration(by_id[tid], patterns) for tid in group["tasks"] if tid in by_id
+    )
+
+
 def plan_groups(
     tasks: List[Dict[str, Any]], migration_patterns: Sequence[str] = ()
 ) -> List[Dict[str, Any]]:
