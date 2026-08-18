@@ -8,7 +8,7 @@
 
 ## 3. Tests
 
-- [ ] 3.1 Add `tests/drain/test_stuck_remediation.py` covering `record_and_detect`'s streak/threshold/reset semantics (repeated recurrence increments the streak and flags at `threshold`; an identity absent from a sweep's `resumed` drops out of the next history rather than persisting a stale streak; independent tracking across different `(key, repo_name, spec_id)` identities and across different remediation keys for the same repo/spec) and the `load`/`save`/`sweep_and_record` persistence round-trip (a missing or corrupt history file degrades to an empty history; state written by one `sweep_and_record` call is read back by the next).
+- [x] 3.1 Add `tests/drain/test_stuck_remediation.py` covering `record_and_detect`'s streak/threshold/reset semantics (repeated recurrence increments the streak and flags at `threshold`; an identity absent from a sweep's `resumed` drops out of the next history rather than persisting a stale streak; independent tracking across different `(key, repo_name, spec_id)` identities and across different remediation keys for the same repo/spec) and the `load`/`save`/`sweep_and_record` persistence round-trip (a missing or corrupt history file degrades to an empty history; state written by one `sweep_and_record` call is read back by the next).
 - [ ] 3.2 In `tests/drain/test_drain.py`, add coverage that `drain()`'s `summary["stuck_remediations"]` is an empty list when no identity recurs, that an identity recurring across `stuck_threshold` sequential `drain()` calls sharing a history path is flagged with the expected streak, and that a `--dry-run` (or `repos_root=None`) invocation never writes the history file.
 
 ## 4. Verification
