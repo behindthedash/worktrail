@@ -213,6 +213,24 @@ def test_handoff_dispatch_includes_explicit_executor_route():
     assert 'Skill("worktrail-sdd-workflow", args="handoff:<id>")' not in text
 
 
+def test_adapter_dispatch_seeds_the_parent_run_record():
+    """The adapter must send the resolved seed, not the raw handoff args.
+
+    A raw ``handoff:<id> route:<X>`` child takes handoff-seed mode and starts a
+    second run record.  Pin the front-door procedure to the same seeded-dispatch
+    contract exercised end-to-end by ``test_internal_dispatch_lifecycle.py``.
+    """
+    text = (SKILLS_DIR / "worktrail-go" / "SKILL.md").read_text()
+    start = text.index("**Adapter dispatch (`dispatch_mode: adapter`).**")
+    end = text.index("**Provider-capacity gate:**", start)
+    adapter = text[start:end]
+
+    assert "worktrail-go-seed" in adapter
+    assert '--run "$RUN"' in adapter
+    assert '--brief "$BRIEF_PATH"' in adapter
+    assert '--args "$SEED"' in adapter
+
+
 def test_executor_guard_distinguishes_adapter_entry_from_direct_invocation():
     text = (SKILLS_DIR / "worktrail-sdd-workflow" / "SKILL.md").read_text()
     assert "[WORKTRAIL INTERNAL DISPATCH]" in text
