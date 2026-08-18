@@ -360,14 +360,14 @@ def _run_command_with_sigterm_forwarding(command: list[str], run_kwargs: dict[st
     if isinstance(subprocess.run, mock.Mock):
         return subprocess.run(command, **run_kwargs).returncode
     child_kwargs = {key: value for key, value in run_kwargs.items() if key != "check"}
-    child = subprocess.Popen(command, **child_kwargs)
     interrupted = False
+    child: subprocess.Popen[str] | None = None
     previous_sigterm_handler = signal.getsignal(signal.SIGTERM)
 
     def _forward_sigterm(_signum: int, _frame: object) -> None:
         nonlocal interrupted
         interrupted = True
-        if child.poll() is None:
+        if child is not None and child.poll() is None:
             try:
                 child.send_signal(signal.SIGTERM)
             except ProcessLookupError:
@@ -375,6 +375,12 @@ def _run_command_with_sigterm_forwarding(command: list[str], run_kwargs: dict[st
 
     signal.signal(signal.SIGTERM, _forward_sigterm)
     try:
+        child = subprocess.Popen(command, **child_kwargs)
+        if interrupted and child.poll() is None:
+            try:
+                child.send_signal(signal.SIGTERM)
+            except ProcessLookupError:
+                pass
         while True:
             try:
                 returncode = child.wait()
@@ -385,9 +391,13 @@ def _run_command_with_sigterm_forwarding(command: list[str], run_kwargs: dict[st
             return 130
         return returncode
     finally:
+        if child is not None:
+            while child.poll() is None:
+                try:
+                    child.wait()
+                except InterruptedError:
+                    continue
         signal.signal(signal.SIGTERM, previous_sigterm_handler)
-        if child.poll() is None:
-            child.wait()
 
 
 def main(argv: list[str] | None = None) -> int:
