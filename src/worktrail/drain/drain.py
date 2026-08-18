@@ -104,6 +104,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
+from . import stuck_remediation
 from ..orchestrator import agent_capacity
 from ..orchestrator.integrate import _refresh_pr_labels
 from ..router import dashboard, quarantine_selfcheck
@@ -1491,6 +1492,8 @@ class DrainConfig:
     repos_root: Optional[Path] = None
     seed_backlog: bool = True
     max_workers: int = 1
+    stuck_threshold: int = 3
+    stuck_history_path: Optional[Path] = None
 
 
 @dataclass
@@ -1547,6 +1550,7 @@ def drain(config: DrainConfig,
     iterations: List[Dict[str, object]] = []
     pending_approvals: List[str] = []
     resumed: Dict[str, List[Dict[str, Any]]] = {}
+    stuck_remediations: List[Dict[str, Any]] = []
     # Candidates are evaluated in this fixed priority order every iteration
     # (see select_available_agent) -- a fallback is never "sticky": once a
     # higher-priority agent's persisted gate expires, the very next iteration
@@ -1715,6 +1719,12 @@ def drain(config: DrainConfig,
                 config.iteration_timeout, spawner, log)
             for key, findings in post.items():
                 resumed.setdefault(key, []).extend(findings)
+        if slot == 0 and config.repos_root is not None and not config.dry_run:
+            stuck_remediations = stuck_remediation.sweep_and_record(
+                resumed, config.stuck_history_path, config.stuck_threshold)
+            for entry in stuck_remediations:
+                log(f"stuck remediation: {entry['key']} {entry['repo_name']} "
+                    f"{entry['spec_id']} streak={entry['streak']}")
     finally:
         release_lock_slot(config.lock_file, slot)
     summary: Dict[str, object] = {
@@ -1726,6 +1736,7 @@ def drain(config: DrainConfig,
         "resumed_stale_bookkeeping": resumed.get("stale_bookkeeping", []),
         "resumed_sync_pending": resumed.get("sync_pending", []),
         "resumed_openspec_archive": resumed.get("openspec_archive", []),
+        "stuck_remediations": stuck_remediations,
         "seeded_backlog": seeded_backlog,
         "decisions_open": len(decisions_mod.open_decision_ids(config.queue_dir)),
         "elapsed_s": int(clock() - started),
@@ -1808,6 +1819,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                         help="skip the pre-loop backlog seeding step (needs-tasks "
                              "specs and under-specced epics are then not converted "
                              "into queue briefs this pass)")
+    parser.add_argument("--stuck-threshold", type=int, default=3,
+                        help="remediation-table findings whose action reports "
+                             "apparent success this many sweeps in a row are "
+                             "flagged stuck (default 3)")
     parser.add_argument("--dry-run", action="store_true",
                         help="report the first decision + command, launch nothing")
     parser.add_argument("--json", action="store_true", dest="as_json",
@@ -1861,6 +1876,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         repos_root=args.repos_root,
         seed_backlog=not args.no_seed_backlog,
         max_workers=max_workers,
+        stuck_threshold=args.stuck_threshold,
+        stuck_history_path=stuck_remediation.history_path(),
     )
     try:
         summary = drain(config)
