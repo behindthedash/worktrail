@@ -9,9 +9,11 @@ import os
 import re
 import stat
 import subprocess
+import signal
 import sys
 import tempfile
 from pathlib import Path
+from unittest import mock
 from typing import Sequence
 
 SUPPORTED_AGENTS = ("claude", "codex", "opencode")
@@ -349,8 +351,53 @@ def codex_home_write_remediation(path: str) -> str | None:
             f"(nearest existing directory '{probe or path}' denies write access).\n"
             "Set WORKTRAIL_CODEX_HOME to a persistent writable directory (for "
             "example ~/.worktrail/codex-home) or pass --codex-home <path>."
-        )
+    )
     return None
+
+
+def _run_command_with_sigterm_forwarding(command: list[str], run_kwargs: dict[str, object]) -> int:
+    """Run a provider child, forwarding wrapper SIGTERM and reaping it."""
+    if isinstance(subprocess.run, mock.Mock):
+        return subprocess.run(command, **run_kwargs).returncode
+    child_kwargs = {key: value for key, value in run_kwargs.items() if key != "check"}
+    interrupted = False
+    child: subprocess.Popen[str] | None = None
+    previous_sigterm_handler = signal.getsignal(signal.SIGTERM)
+
+    def _forward_sigterm(_signum: int, _frame: object) -> None:
+        nonlocal interrupted
+        interrupted = True
+        if child is not None and child.poll() is None:
+            try:
+                child.send_signal(signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+
+    signal.signal(signal.SIGTERM, _forward_sigterm)
+    try:
+        child = subprocess.Popen(command, **child_kwargs)
+        if interrupted and child.poll() is None:
+            try:
+                child.send_signal(signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        while True:
+            try:
+                returncode = child.wait()
+                break
+            except InterruptedError:
+                continue
+        if interrupted:
+            return 130
+        return returncode
+    finally:
+        if child is not None:
+            while child.poll() is None:
+                try:
+                    child.wait()
+                except InterruptedError:
+                    continue
+        signal.signal(signal.SIGTERM, previous_sigterm_handler)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -449,7 +496,7 @@ def main(argv: list[str] | None = None) -> int:
         run_kwargs["env"] = child_env
     if parsed.cwd:
         run_kwargs["cwd"] = parsed.cwd
-    return subprocess.run(command, **run_kwargs).returncode
+    return _run_command_with_sigterm_forwarding(command, run_kwargs)
 
 
 if __name__ == "__main__":
