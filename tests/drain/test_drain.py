@@ -2093,6 +2093,83 @@ def test_drain_non_leader_slot_never_sweeps_or_seeds_backlog(tmp_path, monkeypat
 
 
 # ---------------------------------------------------------------------------
+# stuck-remediation detector integration
+
+
+def test_drain_stuck_remediations_empty_when_no_identity_recurs(tmp_path, monkeypatch):
+    fake = FakeQueue([0])
+    install_fake_queue(monkeypatch, fake)
+    repos_root = tmp_path / "projects"
+    repo = _make_repo(repos_root, "repo-a")
+    (repo / "docs" / "specs" / "spec-a").mkdir(parents=True)
+    _write_journal(repo, "spec-a", _BUDGET_EXHAUSTED_GROUPS)
+    history_path = tmp_path / "history.json"
+    config = make_config(tmp_path, repos_root=repos_root, stuck_history_path=history_path)
+
+    summary = drain.drain(config, spawner=lambda c, t: SpawnOutcome(0), log=lambda _l: None)
+
+    # A single sweep only advances the identity's streak to 1, below the
+    # default stuck_threshold of 3, so nothing is flagged yet.
+    assert summary["stuck_remediations"] == []
+
+
+def test_drain_flags_identity_recurring_across_stuck_threshold_calls(tmp_path, monkeypatch):
+    repos_root = tmp_path / "projects"
+    repo = _make_repo(repos_root, "repo-a")
+    (repo / "docs" / "specs" / "spec-a").mkdir(parents=True)
+    _write_journal(repo, "spec-a", _BUDGET_EXHAUSTED_GROUPS)
+    history_path = tmp_path / "history.json"
+    threshold = 2
+
+    summaries = []
+    for _ in range(threshold):
+        fake = FakeQueue([0])
+        install_fake_queue(monkeypatch, fake)
+        config = make_config(tmp_path, repos_root=repos_root,
+                             stuck_history_path=history_path, stuck_threshold=threshold)
+        summaries.append(drain.drain(
+            config, spawner=lambda c, t: SpawnOutcome(0), log=lambda _l: None))
+
+    # The journal is untouched by the faked spawner, so the same
+    # quarantined-budget-exhausted finding re-affirms on every call, building
+    # its streak by one per drain() invocation sharing `history_path`.
+    assert summaries[0]["stuck_remediations"] == []
+    assert summaries[-1]["stuck_remediations"] == [
+        {"key": "quarantined_budget_exhausted", "repo_name": "repo-a",
+         "spec_id": "spec-a", "streak": threshold}]
+
+
+def test_drain_dry_run_never_writes_stuck_history(tmp_path, monkeypatch):
+    fake = FakeQueue([3])
+    install_fake_queue(monkeypatch, fake)
+    repos_root = tmp_path / "projects"
+    repo = _make_repo(repos_root, "repo-a")
+    (repo / "docs" / "specs" / "spec-a").mkdir(parents=True)
+    _write_journal(repo, "spec-a", _BUDGET_EXHAUSTED_GROUPS)
+    history_path = tmp_path / "history.json"
+    config = make_config(tmp_path, repos_root=repos_root, dry_run=True,
+                         stuck_history_path=history_path)
+
+    def spawner(cmd, timeout):
+        raise AssertionError("dry-run must not spawn, including for the stuck-remediation sweep")
+
+    drain.drain(config, spawner=spawner, log=lambda _l: None)
+
+    assert not history_path.exists()
+
+
+def test_drain_repos_root_none_never_writes_stuck_history(tmp_path, monkeypatch):
+    fake = FakeQueue([0])
+    install_fake_queue(monkeypatch, fake)
+    history_path = tmp_path / "history.json"
+    config = make_config(tmp_path, stuck_history_path=history_path)  # repos_root defaults to None
+
+    drain.drain(config, spawner=lambda c, t: SpawnOutcome(0), log=lambda _l: None)
+
+    assert not history_path.exists()
+
+
+# ---------------------------------------------------------------------------
 # sweep_remediations engine
 
 
