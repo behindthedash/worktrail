@@ -143,6 +143,7 @@ class SkillDispatchTests(unittest.TestCase):
         self.assertIn("handoff:<id> route:<X>", stderr.getvalue())
         run.assert_not_called()
 
+    @patch.dict(os.environ, {"WORKTRAIL_SKILL_DISPATCH_DEPTH": "0"})
     @patch("worktrail.router.skill_dispatch.subprocess.run")
     def test_internal_executor_child_receives_depth_marker_for_every_provider(self, run):
         run.return_value.returncode = 0

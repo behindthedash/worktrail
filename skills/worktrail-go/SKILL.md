@@ -634,7 +634,43 @@ role.
 shell command, and `native_skill_available` — not the provider name — is what says
 whether this host has it. An embedded Codex session resolves `agent_cli: codex` with no
 `Skill(...)` at all, which is exactly this branch. On it,
-run `worktrail-skill-dispatch` with the resolved `--agent`, `--skill`,
+generate the seeded-dispatch prompt first so the child attaches to this front door's
+existing run record instead of treating raw `handoff:<id> route:<X>` arguments as a
+fresh handoff-seed invocation and opening a second run:
+
+```bash
+DISPATCH_SPEC="${SPEC_ID:-none}"
+if [ -n "${BRIEF_PATH:-}" ]; then
+  DISPATCH_SPEC="${SPEC_ID:-handoff:$HANDOFF_ID}"
+fi
+SEED_ARGS=(
+  --repo "$REPO" --base "$BASE" --route "$ROUTE"
+  --spec "$DISPATCH_SPEC" --run "$RUN"
+  --agent "$INVOCATION_CONTEXT_AGENT"
+)
+if [ -n "${BRIEF_PATH:-}" ]; then
+  SEED_ARGS+=(--brief "$BRIEF_PATH")
+fi
+SEED=$(worktrail-go-seed "${SEED_ARGS[@]}") || {
+  worktrail-run-record finish "$RUN" --status failed_recoverable \
+    --merge-result "adapter seed generation failed; no child launched"
+  exit 1
+}
+worktrail-skill-dispatch \
+  --agent "$INVOCATION_CONTEXT_AGENT" \
+  --skill worktrail-sdd-workflow \
+  --args "$SEED" \
+  --cwd "$REPO"
+```
+
+For authoring routes add the `--write` and provider-specific `--add-dir` flags described
+below to that same dispatch command. The seed's `Run record path:` is authoritative: the
+child enters seeded-dispatch mode, retains `Agent CLI:`, consumes `Brief:` without
+claiming it again, and writes terminal completion to `$RUN`. The parent remains the
+handoff owner identified by `by:$INVOCATION_CONTEXT_DISPATCH_ID`; do not send the raw
+handoff arguments through the adapter after Phase 6 has created `$RUN`.
+
+Run `worktrail-skill-dispatch` with the resolved `--agent`, `--skill`, seeded
 `--args`, `--cwd "$REPO"`, and — for any route that will author, edit, or commit
 files (D/F/G/H) — `--write` values. Without `--write`, a headless claude/opencode
 child has no channel to answer the permission prompts sdd-workflow's own file
