@@ -1743,24 +1743,54 @@ def test_archive_openspec_change_gh_pr_create_failure_raises(tmp_path, monkeypat
             finding, "claude", 30, lambda c, t: SpawnOutcome(0), lambda _l: None)
 
 
-def test_resume_sync_pending_invokes_skill_dispatch_once_per_spec(tmp_path):
-    repo = _make_repo(tmp_path, "repo-a")
-    _write_sync_pending_spec(repo, "spec-a")
-    calls = []
-
+def _fake_sync_spawner(calls: list, exit_codes=None):
+    """Fake `worktrail-skill-dispatch --skill opsx:sync` spawner: writes a
+    marker file into the worktree passed via `--cwd`, mirroring what a real
+    `/opsx:sync` run would leave behind for the subsequent `git commit` to
+    find (same technique as `_fake_gh_and_openspec_archive_subprocess_run`'s
+    ARCHIVED.marker). `exit_codes` supplies one exit code per call in order,
+    defaulting to always-0; a non-zero exit code still records the call but
+    writes no marker, matching a failed sync producing nothing to land."""
     def spawner(cmd, timeout):
+        idx = len(calls)
         calls.append(cmd)
-        return SpawnOutcome(0)
+        exit_code = exit_codes[idx] if exit_codes else 0
+        if exit_code == 0:
+            wt = Path(cmd[cmd.index("--cwd") + 1])
+            (wt / "SYNCED.marker").write_text("synced\n")
+        return SpawnOutcome(exit_code)
+    return spawner
 
+
+def test_resume_sync_pending_invokes_skill_dispatch_once_per_spec(tmp_path, monkeypatch):
+    repo = _init_repo_with_origin(tmp_path, "repo-a")
+    _write_sync_pending_spec(repo, "spec-a")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "seed spec"], check=True)
+    subprocess.run(["git", "-C", str(repo), "push", "-q", "origin", "dev"], check=True)
+
+    monkeypatch.setattr(drain.subprocess, "run",
+                         _fake_gh_subprocess_run("https://example.invalid/pr/9"))
+
+    calls = []
     logs = []
     result = resume_sync_pending(
-        tmp_path, None, "claude", 60, spawner, logs.append)
+        repo.parent, None, "claude", 60, _fake_sync_spawner(calls), logs.append)
     assert len(calls) == 1
+    wt = repo.parent / "repo-a-worktrees" / "sync-spec-a"
     assert calls[0] == ["worktrail-skill-dispatch", "--agent", "claude",
                          "--skill", "opsx:sync", "--args", "spec-a",
-                         "--cwd", str(repo), "--write"]
-    assert result == [{"repo": "repo-a", "spec_id": "spec-a", "exit_code": 0}]
+                         "--cwd", str(wt), "--write"]
+    assert result == [{"repo": "repo-a", "spec_id": "spec-a", "exit_code": 0,
+                        "pr_url": "https://example.invalid/pr/9"}]
     assert any("resume-sync-pending" in line for line in logs)
+    # The sync lands on the fix branch (committed, pushed, PR opened) -- the
+    # canonical checkout's own `dev` is never written to directly, which is
+    # the bug (silent uncommitted write) this test now guards against.
+    committed = subprocess.run(
+        ["git", "-C", str(repo), "show", "chore/sync-spec-a:SYNCED.marker"],
+        capture_output=True, text=True, check=True).stdout
+    assert committed == "synced\n"
 
 
 def test_resume_sync_pending_no_hits_is_noop(tmp_path):
@@ -1772,23 +1802,31 @@ def test_resume_sync_pending_no_hits_is_noop(tmp_path):
     assert result == []
 
 
-def test_resume_sync_pending_one_failure_does_not_block_others(tmp_path):
-    repo_a = _make_repo(tmp_path, "repo-a")
+def test_resume_sync_pending_one_failure_does_not_block_others(tmp_path, monkeypatch):
+    repo_a = _init_repo_with_origin(tmp_path, "repo-a")
     _write_sync_pending_spec(repo_a, "spec-a")
-    repo_b = _make_repo(tmp_path, "repo-b")
+    subprocess.run(["git", "-C", str(repo_a), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo_a), "commit", "-qm", "seed spec"], check=True)
+    subprocess.run(["git", "-C", str(repo_a), "push", "-q", "origin", "dev"], check=True)
+
+    repo_b = _init_repo_with_origin(tmp_path, "repo-b")
     _write_sync_pending_spec(repo_b, "spec-b")
+    subprocess.run(["git", "-C", str(repo_b), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo_b), "commit", "-qm", "seed spec"], check=True)
+    subprocess.run(["git", "-C", str(repo_b), "push", "-q", "origin", "dev"], check=True)
+
+    monkeypatch.setattr(drain.subprocess, "run",
+                         _fake_gh_subprocess_run("https://example.invalid/pr/9"))
+
     calls = []
-
-    def spawner(cmd, timeout):
-        calls.append(cmd)
-        return SpawnOutcome(1 if len(calls) == 1 else 0)
-
     result = resume_sync_pending(
-        tmp_path, None, "claude", 60, spawner, lambda _l: None)
+        repo_a.parent, None, "claude", 60,
+        _fake_sync_spawner(calls, exit_codes=[1, 0]), lambda _l: None)
     assert len(calls) == 2
     assert result == [
-        {"repo": "repo-a", "spec_id": "spec-a", "exit_code": 1},
-        {"repo": "repo-b", "spec_id": "spec-b", "exit_code": 0},
+        {"repo": "repo-a", "spec_id": "spec-a", "exit_code": 1, "pr_url": None},
+        {"repo": "repo-b", "spec_id": "spec-b", "exit_code": 0,
+         "pr_url": "https://example.invalid/pr/9"},
     ]
 
 

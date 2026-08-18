@@ -668,14 +668,60 @@ def build_full_real_resume_command(repo: Path, spec_rel: str, base: str, agent: 
             "--spec", spec_rel, "--base", base, "--agent", agent]
 
 
-def build_sync_command(agent: str, repo: Path, spec_id: str) -> List[str]:
+def build_sync_command(agent: str, wt: Path, spec_id: str) -> List[str]:
     """A sync-pending finding needs `/opsx:sync` re-dispatched against the
     spec, not a full-real resume -- unlike verify-pending/quarantine, there is
     no interrupted worker fan-out to continue. `--write` applies the sync
-    rather than just previewing it."""
+    rather than just previewing it. Dispatched against an isolated worktree
+    (`wt`), never the finding's canonical checkout: `opsx:sync`
+    (openspec-sync-specs/SKILL.md) is a pure agent-driven file-edit
+    operation with no commit step of its own, so writing straight into the
+    live checkout leaves the edit uncommitted -- and this machine's own
+    `git reset --hard origin/main` doctrine after the next merge (see
+    AGENTS.md Git Workflow) silently discards it before anyone notices."""
     return ["worktrail-skill-dispatch", "--agent", agent,
             "--skill", "opsx:sync", "--args", spec_id,
-            "--cwd", str(repo), "--write"]
+            "--cwd", str(wt), "--write"]
+
+
+def _existing_sync_pending_pr(repo: Path, branch: str, timeout: int) -> Optional[str]:
+    """Same best-effort open-PR lookup as `_existing_stale_bookkeeping_pr` --
+    a `gh` failure (network, auth) reads as "no open PR" rather than
+    aborting the finding."""
+    result = subprocess.run(
+        ["gh", "pr", "list", "--head", branch, "--state", "open",
+         "--json", "url", "--jq", ".[0].url"],
+        capture_output=True, text=True, cwd=str(repo), timeout=timeout)
+    if result.returncode != 0:
+        return None
+    url = result.stdout.strip()
+    return url or None
+
+
+def _open_sync_pending_pr(
+    repo: Path, wt: Path, repo_name: str, spec_id: str, base: str, branch: str, timeout: int,
+) -> str:
+    """`gh pr create` for the sync branch, via the same enforced
+    label-resolution path `_open_openspec_archive_pr`/`_open_stale_bookkeeping_pr`
+    use (`_refresh_pr_labels` -> `pre_pr_gate.py --labels-only`), not
+    hand-rolled. Raises rather than returning a fabricated URL when
+    `gh pr create` fails outright."""
+    labels = _refresh_pr_labels(wt, ["go:risk-low"], base) or ["go:risk-low"]
+    cmd = ["gh", "pr", "create", "--base", base, "--head", branch]
+    for label in labels:
+        cmd += ["--label", label]
+    cmd += [
+        "--title", f"chore({spec_id}): sync specs from change",
+        "--body",
+        f"Runs `/opsx:sync {spec_id}` and commits whatever it wrote into "
+        f"main specs.\n\nOpened by drain's sync-pending sweep.",
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(wt), timeout=timeout)
+    out = ((result.stdout or result.stderr).strip().splitlines()[-1]
+           if (result.stdout or result.stderr) else "(no output)")
+    if result.returncode != 0 or not out.startswith("http"):
+        raise RuntimeError(f"gh pr create failed for {repo_name} {spec_id}: {out}")
+    return out
 
 
 def _run_sync_pending(
@@ -685,21 +731,72 @@ def _run_sync_pending(
     spawner: Callable[[List[str], int], SpawnOutcome],
     log: Callable[[str], None],
 ) -> Dict[str, Any]:
-    """A sync-pending finding's remediation: spawn the built
-    `worktrail-skill-dispatch --skill opsx:sync` command, log before/after,
-    and return the result dict. Result shape (`repo`, `spec_id`, `exit_code`)
-    matches `_resume_via_full_real`'s, so `resumed_sync_pending` entries are
-    structurally interchangeable with `resumed_verify_pending` ones for any
-    caller that doesn't branch on which row produced them."""
-    repo, spec_id = finding["repo"], finding["spec_id"]
-    cmd = build_sync_command(agent, repo, spec_id)
-    log(f"resume-sync-pending: {finding['repo_name']} {spec_id} -> /opsx:sync")
-    outcome = spawner(cmd, timeout)
-    log(f"resume-sync-pending result: {finding['repo_name']} {spec_id} "
-        f"exit={outcome.exit_code}")
+    """A sync-pending finding's remediation: dispatch `/opsx:sync` into a
+    short-lived worktree off the target repo's base branch (mirroring
+    `archive_openspec_change`'s pattern -- see `build_sync_command` for why
+    the dispatch itself is never pointed at the canonical checkout), then
+    commit, push, and open a PR for whatever it wrote before tearing the
+    worktree down. Previously this only spawned the skill and reported its
+    bare exit code, which stayed `0` every night even though nothing ever
+    reached `base` -- `pr_url` is the regression signal that was missing:
+    `None` means "ran but produced nothing to land" (a no-op sync, or a
+    non-zero `exit_code`), a real URL means the change is actually on its
+    way to `base`.
+
+    Re-entrant across sweeps like the other worktree-based remediations: an
+    already-open PR for this finding's branch is detected up front and
+    returned as-is, and a worktree/branch left behind by a prior run's
+    mid-flight failure is reset before retrying."""
+    repo, repo_name, spec_id = finding["repo"], finding["repo_name"], finding["spec_id"]
+    base = _base_branch_for(repo)
+    slug = f"sync-{spec_id}"
+    branch = f"chore/{slug}"
+    wt = repo.parent / f"{repo.name}-worktrees" / slug
+
+    existing_pr = _existing_sync_pending_pr(repo, branch, timeout)
+    if existing_pr:
+        log(f"resume-sync-pending: {repo_name} {spec_id} already has an "
+            f"open PR, skipping: {existing_pr}")
+        return {"repo": repo_name, "spec_id": spec_id, "exit_code": 0,
+                "pr_url": existing_pr}
+
+    _reset_stale_bookkeeping_worktree(repo, branch, wt, timeout)
+    _run_git(repo, "worktree", "add", "-b", branch, str(wt), base, timeout=timeout)
+    pr_url: Optional[str] = None
+    try:
+        cmd = build_sync_command(agent, wt, spec_id)
+        log(f"resume-sync-pending: {repo_name} {spec_id} -> /opsx:sync")
+        outcome = spawner(cmd, timeout)
+        log(f"resume-sync-pending result: {repo_name} {spec_id} "
+            f"exit={outcome.exit_code}")
+        if outcome.exit_code == 0:
+            status = subprocess.run(
+                ["git", "status", "--porcelain"],
+                capture_output=True, text=True, cwd=str(wt), timeout=timeout)
+            if status.stdout.strip():
+                _run_git(wt, "add", "-A", timeout=timeout)
+                _run_git(wt, "commit", "-m",
+                         f"chore({spec_id}): sync specs from change", timeout=timeout)
+                # --force: this branch is exclusively owned by this action
+                # and rebuilt from `base` on every retry, mirroring
+                # archive_openspec_change/close_stale_bookkeeping's identical
+                # push.
+                _run_git(wt, "push", "--force", "-u", "origin", branch, timeout=timeout)
+                pr_url = _open_sync_pending_pr(
+                    repo, wt, repo_name, spec_id, base, branch, timeout)
+            else:
+                log(f"resume-sync-pending: {repo_name} {spec_id} produced no "
+                    f"changes to sync")
+    finally:
+        try:
+            subprocess.run(["git", "worktree", "remove", "--force", str(wt)],
+                           capture_output=True, text=True, cwd=str(repo), timeout=timeout)
+        except Exception:
+            pass
+
     return {
-        "repo": finding["repo_name"], "spec_id": spec_id,
-        "exit_code": outcome.exit_code,
+        "repo": repo_name, "spec_id": spec_id,
+        "exit_code": outcome.exit_code, "pr_url": pr_url,
     }
 
 
