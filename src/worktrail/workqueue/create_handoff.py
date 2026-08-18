@@ -46,6 +46,22 @@ def _clean_lines(values: Optional[Iterable[str]]) -> list[str]:
     return [value.strip() for value in (values or []) if value and value.strip()]
 
 
+def _validate_blocked_by(values: Optional[Iterable[str]]) -> list[str]:
+    """Return trimmed dependency references, rejecting empty or comma-joined values."""
+    cleaned: list[str] = []
+    for raw in values or []:
+        value = str(raw).strip()
+        if not value:
+            raise ValueError("blocked-by values must be non-empty dependency references")
+        if "," in value:
+            raise ValueError(
+                "blocked-by accepts exactly one dependency reference per flag; "
+                "repeat --blocked-by for each prerequisite instead of comma-joining values"
+            )
+        cleaned.append(value)
+    return cleaned
+
+
 def _normalize_repo(repo: Optional[str]) -> Optional[str]:
     """Resolve a `--repo` value to an absolute path at capture time.
 
@@ -146,6 +162,7 @@ def create_handoff(
         raise ValueError("change-kind must be new, delta, or bugfix")
     if triage and triage not in work_queue.VALID_TRIAGE:
         raise ValueError("triage must be blocker or deferred")
+    blocked_by_refs = _validate_blocked_by(blocked_by)
 
     base = Path(queue_base or work_queue.base_dir()).expanduser()
     queue = base / "queue"
@@ -182,7 +199,7 @@ def create_handoff(
     ):
         if value:
             frontmatter[key] = value
-    for key, values in (("blocked-by", blocked_by), ("watch", watch)):
+    for key, values in (("blocked-by", blocked_by_refs), ("watch", watch)):
         cleaned = _clean_lines(values)
         if cleaned:
             frontmatter[key] = cleaned
