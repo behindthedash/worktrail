@@ -11,4 +11,4 @@
 ## 3. Verification
 
 - [ ] 3.1 [e2e] Run `PYTHONPATH=src pytest -q tests/router/test_internal_dispatch_lifecycle.py` and confirm the focused lifecycle suite passes.
-- [ ] 3.2 [e2e] Run `worktrail-pre-pr-gate --repo .` and confirm the repository pre-PR gate passes.
+- [x] 3.2 [e2e] Run `worktrail-pre-pr-gate --repo .` and confirm the repository pre-PR gate passes.
