@@ -43,18 +43,30 @@ by every later `apply_run_plan()` call for that run.
 - **THEN** `apply_run_plan()` compiles as before rather than reusing any previous run's
   plan, and pins the newly compiled fingerprint
 
-### Requirement: An unresolvable pin fails the run instead of recompiling
+### Requirement: An unresolvable or mismatched pin fails the run instead of recompiling
 When the run journal records a pinned `plan_fingerprint` but no plan for that fingerprint
 can be loaded from the plan cache, the system SHALL fail the call with an explicit error
 naming the spec, the unresolvable fingerprint, and how to deliberately re-plan. The system
 SHALL NOT silently compile a replacement plan in this case, because task worktrees may
-already have been fanned out under the pinned plan.
+already have been fanned out under the pinned plan. The same failure SHALL occur when the
+pinned plan resolves but its task id set no longer matches the tasks just read from the
+artifact: the system SHALL NOT fall back to `runplan.apply_to_tasks()`'s own drift-rejection
+path (each task's own baseline deps/file-scope for the whole run), because that fallback
+changes group membership and per-task routing inputs just as silently as a recompile would.
 
 #### Scenario: Pinned plan file is missing from the cache
 - **WHEN** the journal records a pin and `runplan.load_cached()` returns `None` for that
   fingerprint
 - **THEN** `apply_run_plan()` raises an error whose message includes the spec id, the
   pinned fingerprint, and the documented way to clear the pin, and no compile is attempted
+
+#### Scenario: Pinned plan resolves but the artifact's task set has drifted
+- **WHEN** the journal records a pin, `runplan.load_cached()` returns a plan for that
+  fingerprint, but the plan's task ids differ from the ids of the tasks just read from the
+  artifact (a task was added, removed, or renamed since the plan was compiled)
+- **THEN** `apply_run_plan()` raises an error whose message includes the spec id, the pinned
+  fingerprint, the missing/unknown task ids, and the documented way to clear the pin, and
+  `runplan.apply_to_tasks()` is never called for this invocation
 
 #### Scenario: An unreadable journal does not block the run
 - **WHEN** the run journal cannot be read or parsed at all

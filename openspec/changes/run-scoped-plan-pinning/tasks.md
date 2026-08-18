@@ -70,3 +70,34 @@
 - [x] 2.2 [cleanup] Run `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate
       check` (the golden record/replay regression) and confirm it is unaffected. Tagged
       `[cleanup]` for the same reason as 2.1.
+
+## 3. Task-set drift closes the gap DEC-003 left open
+
+- [x] 3.1 Task 1.1's fail-closed path only covered a pin whose plan cannot be *loaded*
+      from the cache. It never covered a pin whose plan loads fine but whose task ids no
+      longer match the tasks just read from the artifact — that case still fell through to
+      `runplan.apply_to_tasks()`'s own drift-rejection branch, which silently discards the
+      pinned plan for the whole run and falls back to each task's own baseline
+      deps/file-scope. That is precisely the "fall back to the format's own deps/files"
+      alternative DEC-003 rejected, just reached from a different trigger. Observed live
+      (brief 20260816-214009): for OpenSpec tasks (no native file scope) the fallback
+      starves every task of both a file scope and a dependency edge, which
+      `validate_task_metadata` then refuses several frames later with an unrelated-looking
+      "missing required frontmatter files" `RuntimeError`.
+
+      In `src/worktrail/orchestrator/live.py`'s `apply_run_plan()`, after a pin resolves
+      from the cache and before calling `runplan.apply_to_tasks()`, compare the current
+      tasks' ids against `plan.by_id()`. On a mismatch, raise the same shape of error as
+      the unresolvable-pin case (spec id, pinned fingerprint, the missing/unknown ids, and
+      the DEC-005 re-plan escape hatch) and do not call `apply_to_tasks()`. Extends the
+      requirement "An unresolvable pin fails the run instead of recompiling" (renamed "An
+      unresolvable or mismatched pin fails the run instead of recompiling") with a new
+      scenario in `specs/run-scoped-plan-pinning/spec.md`.
+
+      In `tests/orchestrator/test_apply_run_plan_autocompile.py`, add coverage: a pinned
+      run whose artifact gains a task between phases (drifted task-id set) raises with the
+      spec id, pinned fingerprint, and the drifted id present in the message, and the
+      injectable `spawn` seam (a raising stub) is never invoked.
+- [x] 3.2 [cleanup] Run `PYTHONPATH=src pytest -q` and confirm the full suite is green.
+- [x] 3.3 [cleanup] Run `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate
+      check` (the golden record/replay regression) and confirm it is unaffected.

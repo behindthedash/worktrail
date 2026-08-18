@@ -304,7 +304,21 @@ def apply_run_plan(
     resolves (its cache entry deleted) fails the run rather than silently
     recompiling a possibly-different plan out from under in-progress work;
     the error names the re-plan escape hatch (clear `plan_fingerprint` from
-    the journal) for a deliberate re-plan.
+    the journal) for a deliberate re-plan. The same posture applies when the
+    pin *does* resolve but its task set no longer matches the tasks just
+    read from the artifact (e.g. `tasks.md` was hand-edited between phases
+    or across a resume): `runplan.apply_to_tasks()` would otherwise reject
+    the mismatched plan and silently fall back to each task's own baseline
+    deps/file-scope for the *whole* run -- exactly the "format's own
+    deps/files" fallback DEC-003 of `run-scoped-plan-pinning` rejected as an
+    alternative, because it changes group membership just as much as a
+    recompile while also hiding that it happened. For OpenSpec tasks (no
+    native file scope) that fallback starves every task of both a file scope
+    and a dependency edge, which `validate_task_metadata` then refuses to
+    fan out with an unrelated-looking "missing required frontmatter files"
+    error several frames later. This function catches the mismatch itself
+    and fails the same way as an unresolvable pin, before ever calling
+    `apply_to_tasks`.
 
     When no pin is present yet, `compile_run_plan` pays for a model call only
     when it has to: a cache hit is free, and a format that already declares
@@ -337,6 +351,18 @@ def apply_run_plan(
                 f"run plan: pinned plan {pinned[:12]} for {spec_id} is no longer cached "
                 "and cannot be resolved; refusing to recompile a possibly-different plan "
                 f"mid-run. To deliberately re-plan, clear plan_fingerprint from {jp}."
+            )
+        current_ids = {t["id"] for t in tasks}
+        planned_ids = set(plan.by_id())
+        if current_ids != planned_ids:
+            jp = journal_path_for(repo, spec_rel)
+            missing = sorted(current_ids - planned_ids)
+            extra = sorted(planned_ids - current_ids)
+            raise RuntimeError(
+                f"run plan: pinned plan {pinned[:12]} for {spec_id} no longer matches "
+                f"the current task set (missing={missing or '-'}, unknown={extra or '-'}); "
+                "refusing to silently fall back to unscoped deps mid-run. To deliberately "
+                f"re-plan, clear plan_fingerprint from {jp}."
             )
         print(f"{_ts()} run plan: reusing pinned plan {pinned[:12]}")
     else:

@@ -238,6 +238,62 @@ def test_unresolvable_pin_raises_and_never_compiles(tmp_path):
         assert str(journal_path) in msg
 
 
+def test_pinned_plan_with_task_set_drift_raises_instead_of_falling_back(tmp_path):
+    """Reproduces brief 20260816-214009: a pinned plan that still resolves from the
+    cache, but whose task ids no longer match the artifact's current task set (the
+    artifact was edited between phases/resumes), used to fall through to
+    `runplan.apply_to_tasks()`'s own drift-rejection branch -- which silently
+    discards the pinned plan for the *whole* run and falls back to each task's own
+    baseline deps/file-scope. For OpenSpec tasks (no native file scope) that starves
+    every task of both a file scope and a dependency edge, which
+    `validate_task_metadata` then refuses several frames later with an
+    unrelated-looking "missing required frontmatter files" error. The fix makes
+    `apply_run_plan` detect the mismatch itself and fail the same way an
+    unresolvable pin already does, before ever reaching `apply_to_tasks`."""
+    repo = _init_repo(tmp_path)
+    change = repo / "openspec" / "changes" / "add-thing"
+    change.mkdir(parents=True)
+    (change / "proposal.md").write_text("## Why\nBecause.\n")
+    (change / "tasks.md").write_text(
+        "## 1. Core\n\n- [ ] 1.1 Add the parser\n- [ ] 1.2 Wire the endpoint\n"
+    )
+
+    from worktrail.taskformats import resolve
+
+    spec_rel = str(change.relative_to(repo))
+    spec_id, tasks = resolve.load_spec(str(change))
+
+    spawn = RecordingSpawn(
+        _reply(**{
+            "1.1": {"files": ["src/parser.py"], "deps": []},
+            "1.2": {"files": ["src/api.py"], "deps": ["1.1"]},
+        })
+    )
+    live.apply_run_plan(repo, spec_rel, spec_id, tasks, spawn=spawn)
+    assert spawn.calls == 1, "the first call establishes the pin via a real compile"
+
+    journal_path = live.journal_path_for(repo, spec_rel)
+    pinned_fp = json.loads(journal_path.read_text())["plan_fingerprint"]
+
+    # Artifact drift: a new task lands between phases, so the current task-id set
+    # no longer matches the pinned plan's task-id set.
+    (change / "tasks.md").write_text(
+        "## 1. Core\n\n- [ ] 1.1 Add the parser\n- [ ] 1.2 Wire the endpoint\n"
+        "- [ ] 1.3 Add a third task\n"
+    )
+    _, tasks_drifted = resolve.load_spec(str(change))
+
+    try:
+        live.apply_run_plan(repo, spec_rel, spec_id, tasks_drifted, spawn=RaisingSpawn())
+        assert False, "expected a RuntimeError for a pinned plan with task-set drift"
+    except RuntimeError as exc:
+        msg = str(exc)
+        assert spec_id in msg
+        assert pinned_fp[:12] in msg
+        assert str(journal_path) in msg
+        assert "1.3" in msg, "the missing/unknown ids should be named in the error"
+
+
 def test_unreadable_journal_is_treated_as_no_pin(tmp_path):
     repo = _init_repo(tmp_path)
     change = repo / "openspec" / "changes" / "add-thing"

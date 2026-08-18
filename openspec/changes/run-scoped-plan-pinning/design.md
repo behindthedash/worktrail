@@ -98,6 +98,21 @@ Note this also resolves the pre-existing oddity that a `PLAN DRIFT` warning was 
 on every tail-bearing run — under pinning, one entry is the normal case, so the warning
 becomes meaningful rather than routine.
 
+### DEC-007 — Task-set drift on a resolved pin fails closed the same way
+
+Task 1.1 implemented DEC-003 only for the *unresolvable* pin (plan cannot be loaded).
+Observed live (brief 20260816-214009): a pin that resolves fine, but whose task ids no
+longer match the tasks just read from the artifact, still fell through to
+`runplan.apply_to_tasks()`'s own drift-rejection branch — precisely the "fall back to the
+format's own deps/files" alternative DEC-003 already rejected, reached from a different
+trigger. `apply_run_plan()` now compares the current tasks' ids against `plan.by_id()`
+immediately after a pin resolves, and raises the same shape of error (spec id, pinned
+fingerprint, missing/unknown ids, DEC-005 escape hatch) before ever calling
+`apply_to_tasks()`. This closes the gap without touching `runplan.apply_to_tasks()` itself,
+which stays a shared library function used by `compile.py`'s own diagnostic self-check and
+`dashboard.py`'s read-only render — both of which compile from (and therefore never drift
+against) the very tasks passed in, so the drift branch there remains correct for them.
+
 ## Risks / Trade-offs
 
 - **A stale pin outlives a legitimate content edit.** If an operator edits `tasks.md`
