@@ -264,6 +264,17 @@ class TestDependencyReferenceResolution(QueueTestBase):
         self.assertTrue(res["satisfied"])
         self.assertEqual(res["candidates"], [str(dep.resolve())])
 
+    def test_picked_reference_is_active_when_not_done(self):
+        self.picked.mkdir(parents=True, exist_ok=True)
+        dep = self.picked / "dep.md"
+        dep.write_text(_picked_brief("dep", status="picked"), encoding="utf-8")
+
+        res = q.classify_dependency_reference("dep")
+
+        self.assertEqual(res["state"], "active")
+        self.assertFalse(res["satisfied"])
+        self.assertEqual(res["candidates"], [str(dep.resolve())])
+
     def test_stale_reference_is_satisfied(self):
         res = q.classify_dependency_reference("stale-id-xyz")
 
