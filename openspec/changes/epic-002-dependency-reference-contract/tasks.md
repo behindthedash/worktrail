@@ -4,5 +4,5 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [e2e] Run `PYTHONPATH=src pytest -q tests/workqueue/test_create_handoff.py` and confirm the focused regression suite passes.
-- [ ] 2.2 [e2e] Run `PYTHONPATH=src pytest -q` and `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` and confirm both repository gates pass.
+- [x] 2.1 [e2e] Run `PYTHONPATH=src pytest -q tests/workqueue/test_create_handoff.py` and confirm the focused regression suite passes.
+- [x] 2.2 [e2e] Run `PYTHONPATH=src pytest -q` and `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` and confirm both repository gates pass.
