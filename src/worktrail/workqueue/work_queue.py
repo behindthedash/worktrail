@@ -307,35 +307,99 @@ def _md_files(d: Path) -> List[Path]:
     )
 
 
-def _dep_is_done(dep_id: str) -> bool:
-    """Return True if a prerequisite brief ID is satisfied (done or not found).
+def normalize_dependency_reference(raw: Any) -> str:
+    """Return a cleaned dependency reference, rejecting malformed values.
 
-    Checks picked/ first: done there = satisfied. Found in picked/ but not done =
-    blocked. Found in queue/ = blocked. Not found anywhere = lenient (stale ID) = satisfied.
+    A dependency reference must be a single non-empty string and must not
+    contain commas. Comma-separated values are rejected because callers must
+    spell each prerequisite as its own frontmatter item instead of relying on a
+    lossy split that can silently change eligibility semantics.
     """
-    picked_res = resolve(dep_id, picked_dir())
+    if not isinstance(raw, str):
+        raise ValueError("dependency reference must be a string")
+    ref = raw.strip()
+    if not ref:
+        raise ValueError("dependency reference must not be blank")
+    if "," in ref:
+        raise ValueError("dependency reference must not be comma-joined")
+    return ref
+
+
+def classify_dependency_reference(raw: Any) -> Dict[str, Any]:
+    """Classify one dependency reference against queue/ and picked/.
+
+    Returns a structured result with the original raw value preserved, the
+    normalized reference when shape checking succeeds, a state in
+    ``done`` / ``active`` / ``stale`` / ``ambiguous`` / ``malformed``, the
+    candidate paths that matched, and a ``satisfied`` flag that is true only
+    for ``done`` and ``stale``.
+    """
+    result: Dict[str, Any] = {
+        "raw": raw,
+        "reference": None,
+        "state": "malformed",
+        "candidates": [],
+        "satisfied": False,
+        "error": None,
+    }
+    try:
+        ref = normalize_dependency_reference(raw)
+    except ValueError as exc:
+        result["error"] = str(exc)
+        return result
+
+    result["reference"] = ref
+    queue_res = resolve(ref, queue_dir())
+    picked_res = resolve(ref, picked_dir())
+
+    candidate_paths: List[str] = []
+    if queue_res["status"] == "match":
+        candidate_paths.extend(queue_res["candidates"])
+    elif queue_res["status"] == "ambiguous":
+        candidate_paths.extend(queue_res["candidates"])
     if picked_res["status"] == "match":
-        fm = _read_frontmatter(Path(picked_res["candidates"][0]))
-        return fm.get("status") == "done"
-    if picked_res["status"] == "ambiguous":
-        return False  # can't confirm done
-    queue_res = resolve(dep_id, queue_dir())
-    if queue_res["status"] in ("match", "ambiguous"):
-        return False  # still in queue = not done
-    return True  # not found anywhere -- lenient
+        candidate_paths.extend(picked_res["candidates"])
+    elif picked_res["status"] == "ambiguous":
+        candidate_paths.extend(picked_res["candidates"])
+
+    candidates: List[str] = []
+    seen: set[str] = set()
+    for candidate in candidate_paths:
+        if candidate not in seen:
+            seen.add(candidate)
+            candidates.append(candidate)
+
+    if queue_res["status"] == "ambiguous" or picked_res["status"] == "ambiguous" or len(candidates) > 1:
+        state = "ambiguous"
+    elif not candidates:
+        state = "stale"
+    elif queue_res["status"] == "match":
+        state = "active"
+    else:
+        picked_path = Path(candidates[0])
+        picked_fm = _read_frontmatter(picked_path)
+        state = "done" if str(picked_fm.get("status") or "").strip() == "done" else "active"
+
+    result["reference"] = ref
+    result["candidates"] = candidates
+    result["state"] = state
+    result["satisfied"] = state in ("done", "stale")
+    return result
+
+
+def _blocked_by_refs(fm: Dict[str, Any]) -> List[Any]:
+    deps = fm.get("blocked-by")
+    if deps is None:
+        return []
+    if isinstance(deps, list):
+        return deps
+    return [deps]
 
 
 def _is_blocked(path: Path) -> bool:
-    """Return True if any `blocked-by` prerequisite is not yet done."""
+    """Return True if any `blocked-by` prerequisite is not yet satisfied."""
     fm = _read_frontmatter(path)
-    deps = fm.get("blocked-by")
-    if not deps:
-        return False
-    if isinstance(deps, str):
-        deps = [deps]
-    if not isinstance(deps, list):
-        return False
-    return any(not _dep_is_done(str(dep)) for dep in deps if dep)
+    return any(not classify_dependency_reference(dep)["satisfied"] for dep in _blocked_by_refs(fm))
 
 
 def _is_not_yet_due(path: Path) -> bool:
@@ -559,14 +623,25 @@ def _claim_warnings(path: Path) -> List[str]:
     premise-drift age warning when applicable."""
     fm = _read_frontmatter(path)
     warnings: List[str] = []
-    deps = fm.get("blocked-by")
-    if deps:
-        if isinstance(deps, str):
-            deps = [deps]
-        if isinstance(deps, list):
-            warnings.extend(
-                f"blocked by {dep}" for dep in deps if dep and not _dep_is_done(str(dep))
+    for dep in _blocked_by_refs(fm):
+        resolution = classify_dependency_reference(dep)
+        if resolution["satisfied"]:
+            continue
+        raw_value = resolution["raw"]
+        raw_display = raw_value if isinstance(raw_value, str) else repr(raw_value)
+        state = resolution["state"]
+        if state == "malformed":
+            warnings.append(
+                f"blocked by {raw_display} (malformed dependency reference; raw={resolution['raw']!r})"
             )
+            continue
+        if state == "ambiguous":
+            warnings.append(
+                f"blocked by {raw_display} (ambiguous dependency reference; "
+                f"candidates: {', '.join(resolution['candidates'])})"
+            )
+            continue
+        warnings.append(f"blocked by {raw_display} ({state} dependency reference)")
     awaiting = _awaiting_decision_info(path)
     if awaiting["decision_status"] == "open":
         warnings.append(
