@@ -1,6 +1,6 @@
 ## 1. Wrapper interruption supervision
 
-- [ ] 1.1 Update `src/worktrail/router/skill_dispatch.py` to supervise the provider subprocess, forward wrapper-targeted SIGTERM, tolerate child-exit races, reap the child, and return the same documented interrupted exit outcome as direct child interruption. (Requirements: Interruption produces a recoverable terminal run record; Interruption has a provider-neutral wrapper outcome; Interrupted dispatch leaves no provider child)
+- [x] 1.1 Update `src/worktrail/router/skill_dispatch.py` to supervise the provider subprocess, forward wrapper-targeted SIGTERM, tolerate child-exit races, reap the child, and return the same documented interrupted exit outcome as direct child interruption. (Requirements: Interruption produces a recoverable terminal run record; Interruption has a provider-neutral wrapper outcome; Interrupted dispatch leaves no provider child)
       files: src/worktrail/router/skill_dispatch.py
 
 ## 2. Hermetic provider lifecycle regression
