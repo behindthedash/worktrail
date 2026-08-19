@@ -62,13 +62,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
-_HERE = Path(__file__).resolve().parent
-# work_queue.py is the work-queue subsystem's owner of queue/picked -- now a
-# sibling package within worktrail, resolved relative to this file.
-_WORK_QUEUE = _HERE.parent / "workqueue" / "work_queue.py"
-
 from . import cluster_telemetry
 from ..shared.brief_frontmatter import split_frontmatter, validate_brief_text
+from ..workqueue.invocation import WORK_QUEUE_PY, build_work_queue_argv
 
 _FM_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 _SUGGESTED_APPROACH_RE = re.compile(r"^##\s+Suggested approach\s*$", re.MULTILINE)
@@ -487,14 +483,7 @@ def _run_work_queue_cli(
     """
     env = dict(os.environ)
     env["WORK_QUEUE_DIR"] = str(work_queue_base_dir)
-    # work_queue.py uses package-relative imports (`from ..shared import ...`), so
-    # it must run via `-m`, not as a bare file path (which loses package context)
-    # -- but only for the real installed module; an explicit override path (e.g.
-    # a test double) still runs as a plain script.
-    if work_queue_script == _WORK_QUEUE:
-        argv = [sys.executable, "-m", "worktrail.workqueue.work_queue", *args]
-    else:
-        argv = [sys.executable, str(work_queue_script), *args]
+    argv = build_work_queue_argv(work_queue_script, args)
     try:
         result = subprocess.run(
             argv,
@@ -581,7 +570,7 @@ def execute_consolidation(
     """
     queue_dir = Path(queue_dir)
     picked_dir = Path(picked_dir)
-    wq_script = Path(work_queue_script) if work_queue_script else _WORK_QUEUE
+    wq_script = Path(work_queue_script) if work_queue_script else WORK_QUEUE_PY
     wq_base_dir = queue_dir.parent
 
     if not confirmed:
