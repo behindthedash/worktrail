@@ -74,6 +74,41 @@ def test_added_requirement_referenced_by_name_in_tasks_md_is_covered(tmp_path: P
     assert uncovered == []
 
 
+def test_requirement_title_wrapped_across_line_break_is_still_covered(
+    tmp_path: Path,
+):
+    """Regression: a requirement title word-wrapped across a newline in
+    tasks.md must still count as covered. Before the fix the containment check
+    ran against raw text, so a natural editor reflow (or a long title) split
+    the title mid-phrase and tripped a false 'no task coverage' CI failure;
+    observed live on PR #513 -- had to reword the sentence onto one line.
+    Whitespace (newlines/indentation) is incidental, the wording is not.
+    """
+    change = _change_dir(tmp_path)
+    _write(
+        change / "tasks.md",
+        """\
+        ## 1. Setup
+
+        - [ ] 1.1 Implement An unresolvable or mismatched pin fails the
+            run instead of recompiling per the spec
+        """,
+    )
+    _write(
+        change / "specs" / "widget" / "spec.md",
+        """\
+        ## ADDED Requirements
+
+        ### Requirement: An unresolvable or mismatched pin fails the run instead of recompiling
+        The run SHALL fail on an unresolvable pin.
+        """,
+    )
+
+    uncovered = req_coverage.find_uncovered_requirements(change, change.parents[2])
+
+    assert uncovered == []
+
+
 def test_requirement_declared_only_under_removed_requirements_is_never_enforced(tmp_path: Path):
     change = _change_dir(tmp_path)
     _write(

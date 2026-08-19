@@ -23,8 +23,20 @@ from typing import List, Set
 
 _SECTION_HEADER_RE = re.compile(r"^## (.+?)\s*$", re.MULTILINE)
 _REQUIREMENT_HEADER_RE = re.compile(r"^### Requirement:\s*(.+?)\s*$", re.MULTILINE)
+_WHITESPACE_RE = re.compile(r"\s+")
 
 _DECLARING_SECTIONS = ("ADDED Requirements", "MODIFIED Requirements")
+
+
+def _normalize_whitespace(text: str) -> str:
+    """Collapse every run of whitespace (newlines included) to a single space.
+
+    Coverage is a name-present text match (D1); a requirement's title that gets
+    word-wrapped across a line break in `tasks.md` (long titles, editor reflow)
+    must still match its declared form, so the comparison depends only on the
+    wording, not on incidental text-wrapping.
+    """
+    return _WHITESPACE_RE.sub(" ", text)
 
 
 def _iter_sections(spec_text: str):
@@ -87,7 +99,11 @@ def find_uncovered_requirements(spec_dir: "str | Path", repo: "str | Path") -> L
         return []
 
     tasks_md = spec_dir / "tasks.md"
-    tasks_text_lower = tasks_md.read_text(encoding="utf-8").lower() if tasks_md.is_file() else ""
+    tasks_text_lower = (
+        _normalize_whitespace(tasks_md.read_text(encoding="utf-8")).lower()
+        if tasks_md.is_file()
+        else ""
+    )
 
     repo = Path(repo)
     specs_dir = spec_dir / "specs"
@@ -111,7 +127,8 @@ def find_uncovered_requirements(spec_dir: "str | Path", repo: "str | Path") -> L
         for name in declared:
             if name in existing_names:
                 continue
-            if name.lower() not in tasks_text_lower and name not in uncovered:
+            if _normalize_whitespace(name).lower() not in tasks_text_lower \
+                    and name not in uncovered:
                 uncovered.append(name)
 
     return uncovered
