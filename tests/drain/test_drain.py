@@ -728,6 +728,55 @@ def install_fake_queue(monkeypatch, fake):
     monkeypatch.setattr(drain, "list_queue", lambda *_a, **_k: fake.next_json())
 
 
+def test_list_queue_runs_installed_module_as_package(tmp_path):
+    """Regression: list_queue() must invoke the installed work_queue.py via the
+    package (`-m worktrail.workqueue.work_queue`), not as a bare file path.
+
+    work_queue.py imports from `..shared.brief_frontmatter`, a package-relative
+    import that breaks under bare-file execution ('attempted relative import
+    with no known parent package'). Before the fix drain.py ran it as a plain
+    script and every list_queue() call crashed the drain on its first iteration
+    (observed live during a datalena unattended drain). This test calls
+    list_queue() for real -- no monkeypatching -- against a temp queue.
+    """
+    installed_module = drain.default_work_queue_py()
+    if installed_module is None:
+        pytest.skip("installed worktrail.workqueue.work_queue not resolvable")
+    queue_base = tmp_path / "work-queue"
+    queue_path = queue_base / "queue"
+    queue_path.mkdir(parents=True)
+    (queue_path / "b1.md").write_text(
+        "---\nid: b1\nstatus: queued\n---\n\nbody\n", encoding="utf-8")
+
+    payload = drain.list_queue(installed_module, queue_base)
+
+    filenames = [b["filename"] for b in payload.get("briefs", [])]
+    assert "b1.md" in filenames
+
+
+def test_list_queue_plain_script_override_still_supported(tmp_path):
+    """An explicit non-package override path still runs as a plain script."""
+    queue_base = tmp_path / "work-queue"
+    queue_path = queue_base / "queue"
+    queue_path.mkdir(parents=True)
+    script = tmp_path / "fake_work_queue.py"
+    script.write_text(
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        "def main():\n"
+        "    q = Path(os.environ.get('WORK_QUEUE_DIR', '.')) / 'queue'\n"
+        "    print(json.dumps({'briefs': [{'filename': p.name} for p in sorted(q.glob('*.md'))]}))\n"
+        "main()\n",
+        encoding="utf-8",
+    )
+    (queue_path / "b2.md").write_text(
+        "---\nid: b2\nstatus: queued\n---\n\nbody\n", encoding="utf-8")
+
+    payload = drain.list_queue(script, queue_base)
+
+    assert [b["filename"] for b in payload.get("briefs", [])] == ["b2.md"]
+
+
 def write_run_record(runs_dir, name, final_status, pr=None):
     repo = runs_dir / "repo"
     repo.mkdir(parents=True, exist_ok=True)
