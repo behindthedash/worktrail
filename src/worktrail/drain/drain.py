@@ -278,8 +278,17 @@ def list_queue(work_queue_py: Path, queue_dir: Optional[Path]) -> dict:
     env = dict(os.environ)
     if queue_dir is not None:
         env["WORK_QUEUE_DIR"] = str(queue_dir)
+    # work_queue.py uses package-relative imports (`from ..shared import ...`),
+    # so it must run via `-m`, not as a bare file path (which loses package
+    # context) -- but only for the real installed module; an explicit override
+    # path (e.g. a test double or non-package install) still runs as a plain
+    # script. Mirrors consolidate_cluster._run_work_queue_cli.
+    if work_queue_py == _WORK_QUEUE:
+        argv = [sys.executable, "-m", "worktrail.workqueue.work_queue", "list", "--json"]
+    else:
+        argv = [sys.executable, str(work_queue_py), "list", "--json"]
     out = subprocess.run(
-        [sys.executable, str(work_queue_py), "list", "--json"],
+        argv,
         capture_output=True, text=True, env=env, timeout=60)
     if out.returncode != 0:
         raise RuntimeError(f"work_queue.py list failed: {out.stderr.strip()[:300]}")
@@ -1763,10 +1772,16 @@ def drain(config: DrainConfig,
 # CLI
 
 
+# The work-queue subsystem's owner of queue/picked -- a sibling package within
+# worktrail, resolved relative to this file. list_queue() runs this one via `-m`
+# (package-relative imports break bare-file execution) and any override path as
+# a plain script; mirrors router/consolidate_cluster.py's _WORK_QUEUE.
+_WORK_QUEUE = (Path(__file__).resolve().parent.parent
+               / "workqueue" / "work_queue.py")
+
+
 def default_work_queue_py() -> Optional[Path]:
-    candidate = (Path(__file__).resolve().parent.parent
-                 / "workqueue" / "work_queue.py")
-    return candidate if candidate.is_file() else None
+    return _WORK_QUEUE if _WORK_QUEUE.is_file() else None
 
 
 def main(argv: Optional[List[str]] = None) -> int:
