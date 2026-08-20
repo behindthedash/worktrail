@@ -92,13 +92,6 @@ related:             # optional; omit when there are no related briefs
   - 20260530-093000-jwt-library-upgrade
 ---
 
-## Focus
-
-The auth middleware catches every token-validation error and returns 401 with no logging,
-so expired vs. malformed vs. revoked tokens are indistinguishable in production. Branch on
-the error type and log the reason (without leaking token contents) so failures are
-diagnosable. Surfaced while building the /reports endpoint, where a valid token 401'd.
-
 ## Discovery context
 
 - Found while implementing /reports (PR #214) — a known-valid token returned 401.

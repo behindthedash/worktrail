@@ -43,6 +43,19 @@ Correlation is a heuristic, not proof, matching the brief's own framing
 ("via commit SHA/line correlation or the run record's own decision log") --
 a human reviewing the auto-generated reply can always reopen a
 wrongly-resolved thread.
+
+**Cross-PR resolution (`base_ref`).** The heuristics above only look at the
+currently checked-out `repo`'s own HEAD history and the CURRENT run's
+`decisions` log -- both blind to a finding that was disproved/fixed via a
+SEPARATE PR that later merged into the base branch instead of a commit
+pushed to the checked PR's own branch (worktrail brief 20260820-072846:
+datalena PR #2393's blocking finding was disproved by a regression test
+merged as its own PR #2397, but #2393's own branch never received that
+commit, so re-running this gate against #2393 with no `base_ref` would still
+report the same thread as unaddressed). Pass `base_ref` (e.g. `origin/main`)
+to additionally search that ref's history for a commit touching the
+thread's path since it was opened -- opt-in and additive: omitting it
+reproduces the exact prior behavior.
 """
 from __future__ import annotations
 
@@ -106,10 +119,36 @@ mutation($threadId: ID!) {
 
 DEFAULT_REPLY_BODY = (
     "Resolved automatically by the CI watch loop: the file this comment "
-    "targets was modified by a commit pushed later in this run (or the run "
-    "record documents an explicit decision), so this finding is treated as "
-    "addressed. Reopen if that's wrong."
+    "targets was modified by a commit pushed later in this run, so this "
+    "finding is treated as addressed. Reopen if that's wrong."
 )
+
+DECISION_REPLY_TEMPLATE = (
+    "Resolved automatically by the CI watch loop: the run record's decision "
+    "log explains why this finding is treated as addressed:\n\n"
+    "> {decision}\n\n"
+    "Reopen if that's wrong."
+)
+
+COMMIT_REPLY_TEMPLATE = (
+    "Resolved automatically by the CI watch loop: commit {commit} modified "
+    "the file this comment targets, pushed later in this run, so this "
+    "finding is treated as addressed. Reopen if that's wrong."
+)
+
+
+def _reply_body_for(thread: Dict[str, Any]) -> str:
+    """The reply text for an addressed thread -- the actual decisions-log
+    reasoning when that's how it was correlated, the specific commit SHA
+    when a later commit is how it was correlated, the generic fallback
+    otherwise."""
+    decision = thread.get("_matched_decision")
+    if decision:
+        return DECISION_REPLY_TEMPLATE.format(decision=decision)
+    commit = thread.get("_matched_commit")
+    if commit:
+        return COMMIT_REPLY_TEMPLATE.format(commit=commit[:7])
+    return DEFAULT_REPLY_BODY
 
 
 def _run_gh(args: List[str], timeout: int = GH_TIMEOUT_SECONDS,
@@ -159,38 +198,59 @@ def fetch_review_threads(
 
 
 def _commit_touched_path_since(
-    repo: Path, path: str, since_iso: str, runner: Runner = subprocess.run,
-) -> bool:
+    repo: Path, path: str, since_iso: str, ref: str = "HEAD", runner: Runner = subprocess.run,
+) -> Optional[str]:
+    """The SHA of the most recent commit on `ref` that touched `path` since
+    `since_iso`, or `None` if none did (or the lookup failed)."""
     try:
         result = runner(
-            ["git", "-C", str(repo), "log", f"--since={since_iso}", "--format=%H", "--", path],
+            ["git", "-C", str(repo), "log", ref, f"--since={since_iso}", "--format=%H", "--", path],
             capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return False
-    return result.returncode == 0 and bool(result.stdout.strip())
+        return None
+    if result.returncode != 0:
+        return None
+    output = result.stdout.strip()
+    return output.splitlines()[0] if output else None
 
 
-def _decision_mentions_thread(decisions: List[str], thread: Dict[str, Any]) -> bool:
+def _find_matching_decision(decisions: List[str], thread: Dict[str, Any]) -> Optional[str]:
+    """The first decisions-log entry that names this thread's id or path, or
+    `None`. The matched text (not just a bool) is what lets the reply quote
+    the actual reasoning instead of a generic template."""
     thread_id = thread.get("id") or ""
     path = thread.get("path") or ""
     for decision in decisions:
         if not isinstance(decision, str):
             continue
         if thread_id and thread_id in decision:
-            return True
+            return decision
         if path and path in decision:
-            return True
-    return False
+            return decision
+    return None
 
 
 def correlate(
     repo: Path, threads: List[Dict[str, Any]], decisions: List[str],
-    runner: Runner = subprocess.run,
+    runner: Runner = subprocess.run, base_ref: Optional[str] = None,
 ) -> Dict[str, List[Dict[str, Any]]]:
     """Split a PR's threads into unresolved-and-addressed (safe to auto-reply
     and resolve) vs unresolved-and-unaddressed (blocking). A thread already
-    marked `isResolved` by GitHub is excluded from both -- nothing to do."""
+    marked `isResolved` by GitHub is excluded from both -- nothing to do.
+
+    An addressed thread that matched via the decisions log (rather than a
+    touched-file commit) carries the matched text on `_matched_decision`, and
+    one that matched via a touched-file commit -- on `repo`'s own HEAD, or on
+    `base_ref` as a fallback (see below) -- carries that commit's SHA on
+    `_matched_commit`, so the reply can cite the actual reasoning/commit
+    instead of a generic template.
+
+    `base_ref`, when given, is checked as a fallback after HEAD and the
+    decisions log both miss -- a commit touching the thread's path in that
+    ref's history (e.g. `origin/main`) since the thread opened covers a
+    finding resolved via a separate PR merged into the base branch (see
+    module docstring)."""
     unresolved = [t for t in threads if not t.get("isResolved")]
     addressed: List[Dict[str, Any]] = []
     unaddressed: List[Dict[str, Any]] = []
@@ -199,10 +259,25 @@ def correlate(
         created_at = comments[0].get("createdAt") if comments else None
         path = thread.get("path")
         is_addressed = False
-        if path and created_at and _commit_touched_path_since(repo, path, created_at, runner=runner):
+        matched_commit = (
+            _commit_touched_path_since(repo, path, created_at, runner=runner)
+            if path and created_at else None
+        )
+        if matched_commit:
             is_addressed = True
-        elif _decision_mentions_thread(decisions, thread):
-            is_addressed = True
+            thread = {**thread, "_matched_commit": matched_commit}
+        else:
+            matched_decision = _find_matching_decision(decisions, thread)
+            if matched_decision is not None:
+                is_addressed = True
+                thread = {**thread, "_matched_decision": matched_decision}
+            elif path and created_at and base_ref:
+                base_matched_commit = _commit_touched_path_since(
+                    repo, path, created_at, ref=base_ref, runner=runner
+                )
+                if base_matched_commit:
+                    is_addressed = True
+                    thread = {**thread, "_matched_commit": base_matched_commit}
         (addressed if is_addressed else unaddressed).append(thread)
     return {"unresolved": unresolved, "addressed": addressed, "unaddressed": unaddressed}
 
@@ -250,6 +325,7 @@ def _load_decisions(run_record_path: Optional[Path]) -> Tuple[List[str], Optiona
 def check(
     repo: Path, pr_number: int, run_record_path: Optional[Path] = None,
     owner: Optional[str] = None, name: Optional[str] = None, dry_run: bool = False,
+    base_ref: Optional[str] = None,
     runner: Runner = subprocess.run,
 ) -> Dict[str, Any]:
     """Did this PR leave any unresolved review thread that isn't yet
@@ -261,6 +337,12 @@ def check(
     should stop `finish()` the same way a red required check would -- it also
     stamps `go:no-automerge` on the PR (skipped when `dry_run`) so native
     auto-merge can't race ahead of this gate; see module docstring.
+
+    `base_ref` (e.g. `origin/main`), when given, is additionally searched for
+    a commit resolving a thread whose path/date has no match on `repo`'s own
+    HEAD -- covers a finding resolved via a separate PR merged into the base
+    branch rather than a commit on this PR's own branch. Omitting it (the
+    default) reproduces the exact prior HEAD-only/decisions-log behavior.
     """
     result: Dict[str, Any] = {
         "checked": False,
@@ -287,7 +369,7 @@ def check(
 
     decisions, decisions_warning = _load_decisions(run_record_path)
 
-    grouped = correlate(repo, threads, decisions, runner=runner)
+    grouped = correlate(repo, threads, decisions, runner=runner, base_ref=base_ref)
     result["checked"] = True
     result["unresolved_count"] = len(grouped["unresolved"])
 
@@ -296,7 +378,7 @@ def check(
         if dry_run:
             entry["dry_run"] = True
         else:
-            ok, err = reply_and_resolve(thread["id"], DEFAULT_REPLY_BODY, runner=runner)
+            ok, err = reply_and_resolve(thread["id"], _reply_body_for(thread), runner=runner)
             entry["resolved"] = ok
             if err:
                 entry["error"] = err
@@ -353,6 +435,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--owner", default=None, help="override the git-remote-derived owner")
     p.add_argument("--name", default=None, help="override the git-remote-derived repo name")
     p.add_argument("--run", default=None, help="run record path, for decision-log correlation")
+    p.add_argument("--base-ref", default=None,
+                    help="also search this ref's history (e.g. origin/main) for a commit "
+                         "touching a thread's path since it was opened -- covers a finding "
+                         "resolved via a separate PR merged into the base branch rather than "
+                         "a commit on this PR's own branch (see module docstring)")
     p.add_argument("--dry-run", action="store_true",
                     help="report only; never post replies or resolve threads")
     p.add_argument("--json", action="store_true")
@@ -361,7 +448,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     res = check(
         Path(args.repo), args.pr,
         run_record_path=Path(args.run) if args.run else None,
-        owner=args.owner, name=args.name, dry_run=args.dry_run,
+        owner=args.owner, name=args.name, dry_run=args.dry_run, base_ref=args.base_ref,
     )
 
     if args.json:

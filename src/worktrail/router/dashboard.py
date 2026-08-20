@@ -1237,6 +1237,227 @@ def scan(specs_root: Path) -> List[Dict[str, Any]]:
     return rows
 
 
+# --- epic stage detection (spec epic-dashboard-visibility) -------------------
+#
+# `docs/specs/epics/*.md` decomposition documents are a third artifact
+# category alongside devkit spec folders and OpenSpec changes: each one lists
+# `### Feature N` headings and is "done" once every feature has a citing spec
+# (or its own `**Status:**` line is stamped terminal). This is the shared
+# detector both this module's own dashboard rendering and
+# `workqueue/seed_backlog.py`'s `find_epic_gaps()` project onto -- ported
+# 1:1 from seed_backlog's original `_epic_status` / `_count_features` /
+# `_epic_citation_patterns` / `_citing_spec_ids`, so seeding behavior does not
+# shift when that module is refactored to call this instead of its own copy.
+
+# Canonical epic-id filename convention: `NNN-<slug>.md` under
+# `docs/specs/epics/`. Anything else in that directory (an index/README, a
+# stray note) is not an epic and must be skipped, not misclassified.
+EPIC_ID_RE = re.compile(r"^\d{3}-[a-z0-9][a-z0-9-]*$")
+
+# An epic whose `**Status:**` line matches one of these (case-insensitive) is
+# finished as a planning artifact -- every feature is either specced,
+# delivered, or intentionally dropped, so it stops surfacing as a gap
+# regardless of citation count.
+TERMINAL_EPIC_STATUSES = frozenset({
+    "completed", "complete", "delivered", "done", "closed",
+    "superseded", "cancelled", "abandoned",
+})
+
+_EPIC_STATUS_LINE_RE = re.compile(r"^\*\*Status:\*\*\s*(.+?)\s*$", re.MULTILINE)
+_EPIC_FEATURE_HEADING_RE = re.compile(r"^###\s+Feature\b", re.MULTILINE)
+_EPIC_NUMBER_RE = re.compile(r"^(\d{3})-")
+_EPIC_FUTURE_SPEC_ID_RE = re.compile(
+    r"\*\*Future spec id:\*\*\s*`([a-z][a-z0-9-]*)`", re.IGNORECASE
+)
+
+
+def _epic_status_header(text: str) -> Optional[str]:
+    match = _EPIC_STATUS_LINE_RE.search(text)
+    return match.group(1).strip() if match else None
+
+
+def _count_epic_features(text: str) -> int:
+    return len(_EPIC_FEATURE_HEADING_RE.findall(text))
+
+
+def _epic_citation_patterns(epic_id: str, epic_text: str) -> List[re.Pattern]:
+    """Signals that count a spec/change folder as citing this epic.
+
+    The literal epic id string is the strongest signal, but real citations
+    often reference the epic by prose instead -- an OpenSpec change's
+    proposal.md typically reads "Epic 002 Feature 2 adds..." rather than
+    spelling out the full `002-safe-work-queue-dependency-references` id. A
+    feature's own documented `**Future spec id:**` is an equally strong,
+    unambiguous signal once a citing file names it. Matching only the literal
+    epic id string undercounts real citations.
+    """
+    patterns: List[re.Pattern] = [re.compile(re.escape(epic_id))]
+    number_match = _EPIC_NUMBER_RE.match(epic_id)
+    if number_match:
+        patterns.append(re.compile(
+            rf"\bEpic\s+{number_match.group(1)}\s+Feature\s+\d+\b",
+            re.IGNORECASE))
+    for future_spec_id in _EPIC_FUTURE_SPEC_ID_RE.findall(epic_text):
+        patterns.append(re.compile(re.escape(future_spec_id)))
+    return patterns
+
+
+def _epic_citing_spec_ids(repo: Path, patterns: List[re.Pattern]) -> List[str]:
+    """Spec/change folders whose markdown matches any epic citation pattern.
+
+    Scans both supported spec formats, since an epic's features can ship as
+    either: `docs/specs/<id>/*.md` (devkit, top-level files only) and
+    `openspec/{specs,changes}/**/*.md` (OpenSpec, recursive -- covers
+    `changes/archive/<date>-<slug>/` and its nested `specs/<slug>/spec.md`
+    copy, both of which sit one level deeper than a live change).
+    """
+    citing: List[str] = []
+    seen: set = set()
+
+    def _add(name: str) -> None:
+        if name not in seen:
+            seen.add(name)
+            citing.append(name)
+
+    def _matches(text: str) -> bool:
+        return any(pattern.search(text) for pattern in patterns)
+
+    docs_specs_root = repo / "docs" / "specs"
+    if docs_specs_root.is_dir():
+        for spec_dir in sorted(docs_specs_root.iterdir()):
+            if not spec_dir.is_dir() or spec_dir.name.lower() in {"epics"}:
+                continue
+            for md in spec_dir.glob("*.md"):
+                try:
+                    if _matches(md.read_text(encoding="utf-8")):
+                        _add(spec_dir.name)
+                        break
+                except OSError:
+                    continue
+
+    openspec_root = repo / "openspec"
+    for sub in ("specs", "changes"):
+        sub_root = openspec_root / sub
+        if not sub_root.is_dir():
+            continue
+        for md in sorted(sub_root.glob("**/*.md")):
+            rel_parts = md.relative_to(sub_root).parts
+            if sub == "changes" and rel_parts[0] == "archive":
+                rel_parts = rel_parts[1:]
+            if len(rel_parts) < 2:
+                continue  # loose file directly under specs/ or changes/, not a change/spec folder
+            try:
+                if _matches(md.read_text(encoding="utf-8")):
+                    _add(rel_parts[0])
+            except OSError:
+                continue
+
+    return citing
+
+
+def detect_epic_stage(epic_file: Path, repo: Path) -> Dict[str, Any]:
+    """Stage-detect one `docs/specs/epics/*.md` decomposition document.
+
+    Returns a dict with `stage` one of:
+      - `epic-complete`    -- terminal `**Status:**`, or every `### Feature`
+                              has a citing spec/change.
+      - `epic-gap`         -- fewer citing specs than decomposed features.
+      - `epic-unparseable` -- no `### Feature` headings found at all (with no
+                              feature count there is no terminal condition,
+                              so this must never be conflated with epic-gap).
+    """
+    epic_file = Path(epic_file)
+    repo = Path(repo)
+    epic_id = epic_file.stem
+    text = epic_file.read_text(encoding="utf-8")
+    status = _epic_status_header(text)
+
+    info: Dict[str, Any] = {
+        "id": epic_id,
+        "epic_file": epic_file.name,
+        "status_header": status,
+    }
+
+    if status and status.lower() in TERMINAL_EPIC_STATUSES:
+        info.update(
+            stage="epic-complete",
+            next_action=f"none (terminal status: {status})",
+            features=None,
+            cited=None,
+            citing_specs=[],
+        )
+        return info
+
+    features = _count_epic_features(text)
+    if features == 0:
+        info.update(
+            stage="epic-unparseable",
+            next_action="inspect manually (no ### Feature headings found)",
+            features=0,
+            cited=None,
+            citing_specs=[],
+        )
+        return info
+
+    patterns = _epic_citation_patterns(epic_id, text)
+    citing = _epic_citing_spec_ids(repo, patterns)
+    info["features"] = features
+    info["citing_specs"] = citing
+    info["cited"] = len(citing)
+
+    if len(citing) >= features:
+        info.update(
+            stage="epic-complete",
+            next_action=f"none (fully cited: {len(citing)}/{features} features)",
+        )
+    else:
+        info.update(
+            stage="epic-gap",
+            next_action=(
+                f"spec the next unspecced feature from its decomposition "
+                f"(docs/specs/epics/{epic_id}.md)"
+            ),
+        )
+    return info
+
+
+def _safe_detect_epic_stage(epic_file: Path, repo: Path) -> Dict[str, Any]:
+    """Per-epic-file isolation: one unreadable/unparseable epic file degrades
+    to an `error` row instead of killing the whole epic scan."""
+    try:
+        return detect_epic_stage(epic_file, repo)
+    except Exception as e:  # noqa: BLE001 — degrade, never crash the scan
+        return {
+            "id": Path(epic_file).stem,
+            "epic_file": Path(epic_file).name,
+            "status_header": None,
+            "features": None,
+            "cited": None,
+            "citing_specs": [],
+            "stage": "error",
+            "next_action": f"inspect manually ({type(e).__name__}: {e})",
+        }
+
+
+def scan_epics(repo: Path) -> List[Dict[str, Any]]:
+    """Sibling to `scan()`: one row per `docs/specs/epics/*.md` decomposition
+    document whose stem matches `EPIC_ID_RE`. Non-matching files in that
+    directory (an index/README, a stray note) are skipped, not misclassified.
+    Returns an empty list, not an error, when the repo has no epics directory.
+    """
+    repo = Path(repo)
+    epics_dir = repo / "docs" / "specs" / "epics"
+    if not epics_dir.is_dir():
+        return []
+    epic_files = sorted(
+        f for f in epics_dir.glob("*.md") if EPIC_ID_RE.match(f.stem)
+    )
+    if not epic_files:
+        return []
+    with ThreadPoolExecutor() as ex:
+        return list(ex.map(lambda f: _safe_detect_epic_stage(f, repo), epic_files))
+
+
 def constitution_status(specs_root: Path) -> Dict[str, bool]:
     """Phase 0 architectural DNA lives beside the specs: docs/specs/architecture.md
     + ontology.md (verified: constitution skill writes them there). Advisory only --
@@ -2232,6 +2453,7 @@ def render_dashboard(
     recent_runs: Optional[List[Dict[str, Any]]] = None,
     staleness_warnings: Optional[List[Dict[str, Any]]] = None,
     queue_repo: Optional[str] = None,
+    epic_rows: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """The compact, category-grouped, deterministic dashboard the conductor prints
     verbatim (no LLM rendering). Active specs are grouped by work-category in
@@ -2244,7 +2466,11 @@ def render_dashboard(
     QUARANTINED-group signals (quarantine_selfcheck.py) get their own one-line
     review nudge; post-merge check-failure signals (audit_postmerge.py's
     dashboard_snapshot()) get their own one-line review nudge, only emitted
-    when `postmerge_check_failures` carries at least one flagged PR; when a cluster
+    when `postmerge_check_failures` carries at least one flagged PR; outstanding
+    (`epic-gap` / `epic-unparseable`) `docs/specs/epics/*.md` rows (single-repo
+    mode: `epic_rows`; multi-repo mode: each repo row's own `epics`, scan_epics()'s
+    per-repo result -- see main()) get their own one-line review nudge, omitted
+    entirely when a repo has no outstanding epics; when a cluster
     section is shown and
     `cluster_precision` (cluster_telemetry.summarize()'s result) has at least
     CLUSTER_PRECISION_MIN_DECIDED decided outcomes, an extra precision line is
@@ -2289,6 +2515,7 @@ def render_dashboard(
     quarantine_flags: List[str] = []
     quarantine_resumable_flags: List[str] = []
     stranded_flags: List[str] = []
+    outstanding_epics: List[str] = []
     runs: List[Dict[str, Any]] = []
     if repo_rows is not None:
         for r in repo_rows:
@@ -2311,6 +2538,11 @@ def render_dashboard(
                 f"{r['repo']} ({f['spec_id']}: {f['kind']})"
                 for f in r.get("journal_findings", [])
             )
+            outstanding_epics.extend(
+                f"{r['repo']} ({e['id']}: {e['stage']})"
+                for e in r.get("epics", []) or []
+                if e.get("stage") in ("epic-gap", "epic-unparseable")
+            )
             for run in r.get("recent_runs", []) or []:
                 runs.append({"who": r["repo"], **run})
         runs.sort(key=lambda x: x.get("completed_at") or x.get("started_at") or "", reverse=True)
@@ -2322,6 +2554,11 @@ def render_dashboard(
             elif s["stage"] in _BACKLOG:
                 backlog.append(s["id"])
         runs = list(recent_runs or [])
+        outstanding_epics.extend(
+            f"{e['id']} ({e['stage']})"
+            for e in (epic_rows or [])
+            if e.get("stage") in ("epic-gap", "epic-unparseable")
+        )
 
     lines: List[str] = []
     if staleness_warnings:
@@ -2439,6 +2676,14 @@ def render_dashboard(
         lines.append(
             f"🚩 Stranded runs ({len(stranded_flags)}): {head}{more} "
             "→ resume the run (stranded-tail) or inspect the journal (malformed-journal)"
+        )
+
+    if outstanding_epics:
+        head = ", ".join(outstanding_epics[:4])
+        more = f" … +{len(outstanding_epics) - 4}" if len(outstanding_epics) > 4 else ""
+        lines.append(
+            f"🧭 Outstanding epics ({len(outstanding_epics)}): {head}{more} "
+            "→ spec the next unspecced feature (docs/specs/epics/*.md)"
         )
 
     if quarantine_flags:
@@ -2758,6 +3003,7 @@ def main(argv=None) -> int:
         repo_rows = scan_repos(Path(args.repos), run_record_dir=run_record_dir)
         for row in repo_rows:
             row["recent_runs"] = load_recent_runs(Path(row["path"]), runs_dir=run_record_dir)
+            row["epics"] = scan_epics(Path(row["path"]))
         backlog_total = sum(r.get("backlog", 0) for r in repo_rows)
         inflight = inflight_briefs(picked_dir, stale_hours=args.inflight_stale_hours)
         staleness_warnings = (
@@ -2806,6 +3052,7 @@ def main(argv=None) -> int:
     # Single-repo worktrees live at <repo>/../<repo>-worktrees/. args.root is
     # <repo>/docs/specs, so the repo is its grandparent.
     repo_dir = Path(args.root).resolve().parent.parent
+    epic_rows = scan_epics(repo_dir)
     worktrees = [wt.name for wt in _find_worktrees(repo_dir.parent, repo_dir.name)]
     backlog_total = sum(1 for r in rows if r["stage"] in _BACKLOG)
     inflight = inflight_briefs(picked_dir, stale_hours=args.inflight_stale_hours)
@@ -2823,6 +3070,7 @@ def main(argv=None) -> int:
         # briefs, observed 2026-08-13). The multi-repo overview above stays
         # unfiltered by design.
         queue_repo=repo_dir.name,
+        epic_rows=epic_rows,
     )
     if args.json:
         print(
@@ -2830,6 +3078,7 @@ def main(argv=None) -> int:
                 {
                     "constitution": con,
                     "specs": rows,
+                    "epics": epic_rows,
                     "active_specs": sum(1 for r in rows if r["stage"] in _ACTIVE),
                     "handoff_queue": unblocked_queue_total,
                     "inflight": inflight,

@@ -1828,7 +1828,8 @@ def test_resume_sync_pending_invokes_skill_dispatch_once_per_spec(tmp_path, monk
     calls = []
     logs = []
     result = resume_sync_pending(
-        repo.parent, None, "claude", 60, _fake_sync_spawner(calls), logs.append)
+        repo.parent, None, ["claude"], tmp_path / "capacity.json", 60,
+        _fake_sync_spawner(calls), logs.append)
     assert len(calls) == 1
     wt = repo.parent / "repo-a-worktrees" / "sync-spec-a"
     assert calls[0] == ["worktrail-skill-dispatch", "--agent", "claude",
@@ -1850,7 +1851,8 @@ def test_resume_sync_pending_no_hits_is_noop(tmp_path):
     _make_repo(tmp_path, "repo-a")  # no sync-pending spec at all
     calls = []
     result = resume_sync_pending(
-        tmp_path, None, "claude", 60, lambda c, t: calls.append(c), lambda _l: None)
+        tmp_path, None, ["claude"], tmp_path / "capacity.json", 60,
+        lambda c, t: calls.append(c), lambda _l: None)
     assert calls == []
     assert result == []
 
@@ -1873,7 +1875,7 @@ def test_resume_sync_pending_one_failure_does_not_block_others(tmp_path, monkeyp
 
     calls = []
     result = resume_sync_pending(
-        repo_a.parent, None, "claude", 60,
+        repo_a.parent, None, ["claude"], tmp_path / "capacity.json", 60,
         _fake_sync_spawner(calls, exit_codes=[1, 0]), lambda _l: None)
     assert len(calls) == 2
     assert result == [
@@ -1896,7 +1898,7 @@ def test_resume_verify_pending_invokes_full_real_once_per_spec(tmp_path):
 
     logs = []
     result = resume_verify_pending(
-        tmp_path, None, "claude", 60, spawner, logs.append)
+        tmp_path, None, ["claude"], tmp_path / "capacity.json", 60, spawner, logs.append)
     assert len(calls) == 1
     assert calls[0][:2] == ["worktrail-live", "full-real"]
     assert "--fresh" not in calls[0]
@@ -1908,7 +1910,8 @@ def test_resume_verify_pending_no_hits_is_noop(tmp_path):
     _make_repo(tmp_path, "repo-a")  # no verify-pending spec at all
     calls = []
     result = resume_verify_pending(
-        tmp_path, None, "claude", 60, lambda c, t: calls.append(c), lambda _l: None)
+        tmp_path, None, ["claude"], tmp_path / "capacity.json", 60,
+        lambda c, t: calls.append(c), lambda _l: None)
     assert calls == []
     assert result == []
 
@@ -1929,7 +1932,7 @@ def test_resume_verify_pending_one_failure_does_not_block_others(tmp_path):
         return SpawnOutcome(1 if len(calls) == 1 else 0)
 
     result = resume_verify_pending(
-        tmp_path, None, "claude", 60, spawner, lambda _l: None)
+        tmp_path, None, ["claude"], tmp_path / "capacity.json", 60, spawner, lambda _l: None)
     assert len(calls) == 2
     assert result == [
         {"repo": "repo-a", "spec_id": "spec-a", "exit_code": 1},
@@ -1966,7 +1969,7 @@ def test_resume_quarantined_budget_exhausted_invokes_full_real_once_per_spec(tmp
 
     logs = []
     result = resume_quarantined_budget_exhausted(
-        tmp_path, None, "claude", 60, spawner, logs.append)
+        tmp_path, None, ["claude"], tmp_path / "capacity.json", 60, spawner, logs.append)
     assert len(calls) == 1
     assert calls[0][:2] == ["worktrail-live", "full-real"]
     assert "--fresh" not in calls[0]
@@ -1978,7 +1981,8 @@ def test_resume_quarantined_budget_exhausted_no_resumable_is_noop(tmp_path):
     _make_repo(tmp_path, "repo-a")  # no journal at all
     calls = []
     result = resume_quarantined_budget_exhausted(
-        tmp_path, None, "claude", 60, lambda c, t: calls.append(c), lambda _l: None)
+        tmp_path, None, ["claude"], tmp_path / "capacity.json", 60,
+        lambda c, t: calls.append(c), lambda _l: None)
     assert calls == []
     assert result == []
 
@@ -2226,7 +2230,7 @@ def test_drain_repos_root_none_never_writes_stuck_history(tmp_path, monkeypatch)
 # sweep_remediations engine
 
 
-def test_sweep_remediations_runs_every_table_row(monkeypatch):
+def test_sweep_remediations_runs_every_table_row(monkeypatch, tmp_path):
     calls = []
 
     def make_row(key):
@@ -2243,7 +2247,8 @@ def test_sweep_remediations_runs_every_table_row(monkeypatch):
     monkeypatch.setattr(drain, "REMEDIATION_TABLE", fake_table)
 
     results = sweep_remediations(
-        Path("/fake/root"), None, "claude", 60, lambda c, t: SpawnOutcome(0), lambda _l: None)
+        Path("/fake/root"), None, ["claude"], tmp_path / "capacity.json", 60,
+        lambda c, t: SpawnOutcome(0), lambda _l: None)
 
     assert set(results) == {"row-a", "row-b"}
     assert results["row-a"] == [{"repo": "row-a", "spec_id": "spec-a"}]
@@ -2251,7 +2256,7 @@ def test_sweep_remediations_runs_every_table_row(monkeypatch):
     assert set(calls) == {("row-a", "row-a"), ("row-b", "row-b")}
 
 
-def test_sweep_remediations_isolates_per_finding_failure(monkeypatch):
+def test_sweep_remediations_isolates_per_finding_failure(monkeypatch, tmp_path):
     def failing_finder(repos_root, go_repo):
         return [{"repo_name": "repo-a", "spec_id": "spec-a"},
                 {"repo_name": "repo-b", "spec_id": "spec-b"}]
@@ -2284,7 +2289,8 @@ def test_sweep_remediations_isolates_per_finding_failure(monkeypatch):
     monkeypatch.setattr(drain, "REMEDIATION_TABLE", fake_table)
 
     results = sweep_remediations(
-        Path("/fake/root"), None, "claude", 60, lambda c, t: SpawnOutcome(0), logs.append)
+        Path("/fake/root"), None, ["claude"], tmp_path / "capacity.json", 60,
+        lambda c, t: SpawnOutcome(0), logs.append)
 
     # repo-a's failure is caught and logged; repo-b (same row) still runs.
     assert results["flaky"] == [{"repo": "repo-b", "spec_id": "spec-b"}]
@@ -2296,7 +2302,7 @@ def test_sweep_remediations_isolates_per_finding_failure(monkeypatch):
         {"repo": "repo-d", "spec_id": "add-export", "pr_url": "https://example.invalid/pr/1"}]
 
 
-def test_sweep_remediations_keys_filter_restricts_rows(monkeypatch):
+def test_sweep_remediations_keys_filter_restricts_rows(monkeypatch, tmp_path):
     called_finders = []
 
     def make_row(key):
@@ -2310,7 +2316,8 @@ def test_sweep_remediations_keys_filter_restricts_rows(monkeypatch):
     monkeypatch.setattr(drain, "REMEDIATION_TABLE", fake_table)
 
     results = sweep_remediations(
-        Path("/fake/root"), None, "claude", 60, lambda c, t: SpawnOutcome(0), lambda _l: None,
+        Path("/fake/root"), None, ["claude"], tmp_path / "capacity.json", 60,
+        lambda c, t: SpawnOutcome(0), lambda _l: None,
         keys=["row-b"])
 
     assert set(results) == {"row-b"}
@@ -2326,6 +2333,141 @@ def test_remediation_table_excludes_orchestrator_stuck():
         "stale_bookkeeping", "sync_pending", "openspec_archive",
         "stale_branches",
     }
+
+
+def test_sweep_remediations_falls_back_when_primary_agent_gated(monkeypatch, tmp_path):
+    # Before this fix, every finding in a sweep was locked to whatever single
+    # `agent` string the caller passed in, with no ability to fall back to a
+    # lower-priority candidate the way the main drain loop already can via
+    # `select_available_agent`. Gate "claude" up front and prove the sweep
+    # picks "codex" (the next candidate) instead of stalling or erroring.
+    capacity_cache = tmp_path / "capacity.json"
+    capacity_cache.write_text(json.dumps({"claude": {"status": "gated"}}))
+
+    used_agents = []
+
+    def finder(repos_root, go_repo):
+        return [{"repo_name": "repo-a", "spec_id": "spec-a"}]
+
+    def action(finding, agent, timeout, spawner, log):
+        used_agents.append(agent)
+        return {"repo": finding["repo_name"], "spec_id": finding["spec_id"]}
+
+    fake_table = [StageRemediation("row-a", "label-a", finder, action)]
+    monkeypatch.setattr(drain, "REMEDIATION_TABLE", fake_table)
+
+    logs = []
+    results = sweep_remediations(
+        Path("/fake/root"), None, ["claude", "codex"], capacity_cache, 60,
+        lambda c, t: SpawnOutcome(0), logs.append)
+
+    assert used_agents == ["codex"]
+    assert results["row-a"] == [{"repo": "repo-a", "spec_id": "spec-a"}]
+    assert any("agent switch: claude -> codex (capacity)" in line for line in logs)
+
+
+def test_sweep_remediations_skips_finding_when_every_candidate_gated(monkeypatch, tmp_path):
+    capacity_cache = tmp_path / "capacity.json"
+    capacity_cache.write_text(json.dumps({
+        "claude": {"status": "gated"}, "codex": {"status": "gated"},
+    }))
+
+    def finder(repos_root, go_repo):
+        return [{"repo_name": "repo-a", "spec_id": "spec-a"}]
+
+    def action(finding, agent, timeout, spawner, log):
+        raise AssertionError("action must not run when every candidate is gated")
+
+    fake_table = [StageRemediation("row-a", "label-a", finder, action)]
+    monkeypatch.setattr(drain, "REMEDIATION_TABLE", fake_table)
+
+    logs = []
+    results = sweep_remediations(
+        Path("/fake/root"), None, ["claude", "codex"], capacity_cache, 60,
+        lambda c, t: SpawnOutcome(0), logs.append)
+
+    assert results["row-a"] == []
+    assert any("capacity-gated" in line for line in logs)
+
+
+def test_sweep_remediations_re_reads_capacity_between_findings(monkeypatch, tmp_path):
+    # A long sweep can outlive a capacity gate that was active when it
+    # started -- the second finding should pick up the higher-priority agent
+    # the instant the cache reports it's no longer gated, without needing the
+    # whole sweep (or drain process) to restart.
+    capacity_cache = tmp_path / "capacity.json"
+    capacity_cache.write_text(json.dumps({"claude": {"status": "gated"}}))
+
+    def finder(repos_root, go_repo):
+        return [{"repo_name": "repo-a", "spec_id": "spec-a"},
+                {"repo_name": "repo-b", "spec_id": "spec-b"}]
+
+    used_agents = []
+
+    def action(finding, agent, timeout, spawner, log):
+        used_agents.append(agent)
+        if finding["repo_name"] == "repo-a":
+            capacity_cache.write_text(json.dumps({}))  # gate clears mid-sweep
+        return {"repo": finding["repo_name"], "spec_id": finding["spec_id"]}
+
+    fake_table = [StageRemediation("row-a", "label-a", finder, action)]
+    monkeypatch.setattr(drain, "REMEDIATION_TABLE", fake_table)
+
+    sweep_remediations(
+        Path("/fake/root"), None, ["claude", "codex"], capacity_cache, 60,
+        lambda c, t: SpawnOutcome(0), lambda _l: None)
+
+    assert used_agents == ["codex", "claude"]
+
+
+def test_run_one_shot_kills_whole_process_group_on_timeout(tmp_path):
+    # Regression for the orphaned-grandchild leak: `worktrail-skill-dispatch`
+    # spawns the real provider CLI without redirecting its own stdout/stderr,
+    # so that grandchild inherits the immediate child's pipe fds and (before
+    # this fix) its process group. A plain `subprocess.run(timeout=...)` only
+    # SIGKILLs the immediate child, leaving a still-alive grandchild running
+    # forever. This spawns a short-lived parent that backgrounds a
+    # long-lived, non-child-reaped grandchild sharing its own process group
+    # (mirroring "opencode run" being un-redirected under
+    # worktrail-skill-dispatch), and proves the whole group is gone shortly
+    # after the configured timeout fires -- not just the immediate PID.
+    marker = tmp_path / "grandchild_still_running_after_timeout"
+    script = tmp_path / "spawn_and_hang.sh"
+    script.write_text(
+        "#!/bin/sh\n"
+        # Backgrounded grandchild: touches a marker file every 0.2s forever,
+        # inheriting this script's own (unredirected) stdout/stderr and
+        # process group -- exactly what worktrail-skill-dispatch's own
+        # un-redirected Popen call produces for the real provider CLI.
+        f"( while true; do touch '{marker}'; sleep 0.2; done ) &\n"
+        "GRANDCHILD_PID=$!\n"
+        f"echo $GRANDCHILD_PID > '{tmp_path}/grandchild.pid'\n"
+        # The immediate child itself then hangs (simulating a stuck
+        # worktrail-skill-dispatch waiting on the provider CLI).
+        "while true; do sleep 1; done\n"
+    )
+    script.chmod(0o755)
+
+    outcome = run_one_shot([str(script)], timeout=1)
+    assert outcome.exit_code == 124
+
+    grandchild_pid = int((tmp_path / "grandchild.pid").read_text().strip())
+    # Give the OS a brief moment to actually reap the killed processes, then
+    # confirm the grandchild is gone -- both by PID and by it no longer
+    # touching the marker file. Bounded, not a real-timeout-length wait.
+    import time as _time
+    deadline = _time.time() + 5
+    grandchild_alive = True
+    while _time.time() < deadline:
+        try:
+            os.kill(grandchild_pid, 0)
+        except ProcessLookupError:
+            grandchild_alive = False
+            break
+        _time.sleep(0.1)
+    assert not grandchild_alive, (
+        "grandchild process outlived the parent's timeout -- process-group "
+        "kill did not reach it")
 
 
 # ---------------------------------------------------------------------------

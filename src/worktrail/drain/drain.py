@@ -97,6 +97,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -807,7 +808,8 @@ def _run_sync_pending(
 def resume_sync_pending(
     repos_root: Path,
     go_repo: Optional[str],
-    agent: str,
+    candidates: List[str],
+    capacity_cache: Path,
     timeout: int,
     spawner: Callable[[List[str], int], SpawnOutcome],
     log: Callable[[str], None],
@@ -818,7 +820,7 @@ def resume_sync_pending(
     failing does not stop the others. Thin wrapper over sweep_remediations,
     restricted to this row's key."""
     return sweep_remediations(
-        repos_root, go_repo, agent, timeout, spawner, log,
+        repos_root, go_repo, candidates, capacity_cache, timeout, spawner, log,
         keys=["sync_pending"],
     )["sync_pending"]
 
@@ -851,7 +853,8 @@ def _resume_via_full_real(
 def resume_quarantined_budget_exhausted(
     repos_root: Path,
     go_repo: Optional[str],
-    agent: str,
+    candidates: List[str],
+    capacity_cache: Path,
     timeout: int,
     spawner: Callable[[List[str], int], SpawnOutcome],
     log: Callable[[str], None],
@@ -863,7 +866,7 @@ def resume_quarantined_budget_exhausted(
     the others. Thin wrapper over sweep_remediations, restricted to this
     row's key."""
     return sweep_remediations(
-        repos_root, go_repo, agent, timeout, spawner, log,
+        repos_root, go_repo, candidates, capacity_cache, timeout, spawner, log,
         keys=["quarantined_budget_exhausted"],
     )["quarantined_budget_exhausted"]
 
@@ -871,7 +874,8 @@ def resume_quarantined_budget_exhausted(
 def resume_verify_pending(
     repos_root: Path,
     go_repo: Optional[str],
-    agent: str,
+    candidates: List[str],
+    capacity_cache: Path,
     timeout: int,
     spawner: Callable[[List[str], int], SpawnOutcome],
     log: Callable[[str], None],
@@ -882,7 +886,7 @@ def resume_verify_pending(
     resume failing does not stop the others. Thin wrapper over
     sweep_remediations, restricted to this row's key."""
     return sweep_remediations(
-        repos_root, go_repo, agent, timeout, spawner, log,
+        repos_root, go_repo, candidates, capacity_cache, timeout, spawner, log,
         keys=["verify_pending"],
     )["verify_pending"]
 
@@ -1305,7 +1309,8 @@ REMEDIATION_TABLE: List[StageRemediation] = [
 def sweep_remediations(
     repos_root: Path,
     go_repo: Optional[str],
-    agent: str,
+    candidates: List[str],
+    capacity_cache: Path,
     timeout: int,
     spawner: Callable[[List[str], int], SpawnOutcome],
     log: Callable[[str], None],
@@ -1316,6 +1321,16 @@ def sweep_remediations(
     finding, keyed by each row's `key` -- even a row with zero findings gets
     an empty-list entry, so callers can rely on the key always being present.
 
+    Re-selects an available agent from `candidates` (the same claude -> codex
+    -> opencode capacity fallback chain the main drain loop uses, via
+    `select_available_agent`) before each finding, instead of being handed one
+    fixed agent for the whole sweep -- a sweep can run long after the main
+    loop last picked an agent, and re-reading `capacity_cache` per finding
+    lets a since-recovered higher-priority agent (or a since-gated one) take
+    effect mid-sweep, same as the main loop's own per-iteration re-check. A
+    finding is skipped (logged, not raised) when every candidate is currently
+    gated -- best-effort, matching the rest of this function.
+
     A finding's action raising is caught and logged (`{label} error: ...`)
     without aborting the rest of that row's findings or the other rows --
     the same best-effort guarantee `resume_quarantined_budget_exhausted` and
@@ -1324,12 +1339,23 @@ def sweep_remediations(
     selected = (REMEDIATION_TABLE if wanted is None
                 else [row for row in REMEDIATION_TABLE if row.key in wanted])
     results: Dict[str, List[Dict[str, Any]]] = {}
+    current_agent: Optional[str] = None
     for remediation in selected:
         applied: List[Dict[str, Any]] = []
         for finding in remediation.finder(repos_root, go_repo):
+            chosen = select_available_agent(read_capacity_cache(capacity_cache), candidates)
+            if chosen is None:
+                log(f"{remediation.label}: {finding.get('repo_name')} "
+                    f"{finding.get('spec_id')}: skipped, every candidate agent "
+                    f"is capacity-gated ({', '.join(candidates)})")
+                continue
+            if chosen != current_agent:
+                log(f"agent switch: {current_agent or candidates[0]} -> "
+                    f"{chosen} (capacity)")
+                current_agent = chosen
             try:
                 applied.append(remediation.action(
-                    finding, agent, timeout, spawner, log))
+                    finding, current_agent, timeout, spawner, log))
             except Exception as exc:  # noqa: BLE001 — one finding must not
                                         # block the rest of the sweep
                 log(f"{remediation.label} error: "
@@ -1573,17 +1599,33 @@ class SpawnOutcome:
 def run_one_shot(cmd: List[str], timeout: int,
                  env: Optional[Dict[str, str]] = None,
                  cwd: Optional[Path] = None) -> SpawnOutcome:
+    """Spawn `cmd` (typically `worktrail-skill-dispatch`) and enforce
+    `timeout`. Runs the child in its own session (`start_new_session=True`)
+    so that, on timeout, the whole process group -- not just the immediate
+    child -- can be killed. This matters because `worktrail-skill-dispatch`
+    itself spawns the actual provider CLI (claude/codex/opencode) without
+    redirecting its own stdout/stderr, so that grandchild inherits the
+    immediate child's process group by default; a plain `subprocess.run`
+    timeout only SIGKILLs the immediate child's PID, orphaning a still-live
+    provider-CLI grandchild that never gets cleaned up (confirmed live
+    2026-08-20: a rate-limited opencode session left running indefinitely
+    after its parent `worktrail-skill-dispatch` process was gone)."""
     try:
-        proc = subprocess.run(
-            cmd, timeout=timeout, capture_output=True, text=True, env=env,
-            cwd=str(cwd) if cwd else None)
-        return SpawnOutcome(proc.returncode, proc.stdout or "", proc.stderr or "")
-    except subprocess.TimeoutExpired as exc:
-        stdout = exc.stdout if isinstance(exc.stdout, str) else ""
-        stderr = exc.stderr if isinstance(exc.stderr, str) else ""
-        return SpawnOutcome(124, stdout, stderr)
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env=env, cwd=str(cwd) if cwd else None, start_new_session=True)
     except FileNotFoundError:
         return SpawnOutcome(127)
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+        return SpawnOutcome(proc.returncode, stdout or "", stderr or "")
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        stdout, stderr = proc.communicate()
+        return SpawnOutcome(124, stdout or "", stderr or "")
 
 
 def drain(config: DrainConfig,
@@ -1622,7 +1664,7 @@ def drain(config: DrainConfig,
     try:
         if slot == 0 and config.repos_root is not None and not config.dry_run:
             resumed = sweep_remediations(
-                config.repos_root, config.go_repo, active_agent,
+                config.repos_root, config.go_repo, candidates, config.capacity_cache,
                 config.iteration_timeout, spawner, log)
             if config.seed_backlog:
                 # Top the queue up from backlog invisible to auto mode
@@ -1776,7 +1818,7 @@ def drain(config: DrainConfig,
             # since the pre-loop sweep above, so re-sweeping would just
             # re-invoke full-real for the exact same still-open quarantine.
             post = sweep_remediations(
-                config.repos_root, config.go_repo, active_agent,
+                config.repos_root, config.go_repo, candidates, config.capacity_cache,
                 config.iteration_timeout, spawner, log)
             for key, findings in post.items():
                 resumed.setdefault(key, []).extend(findings)
