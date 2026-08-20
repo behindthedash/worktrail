@@ -203,6 +203,16 @@
       "request": "Standardize the shared helper used by two call sites",
       "resumable_state": false,
       "expect": {"route_source": "classifier"}
+    },
+    {
+      "id": "silent-failure-is-defect-repair",
+      "request": "The migration script silently drops rows that fail the uniqueness constraint instead of raising",
+      "expect": {"route": "F", "confidence": "medium"}
+    },
+    {
+      "id": "missing-safeguard-is-defect-repair",
+      "request": "auto-merge.yml has no docs-only skip gate, so docs-only changes burn CI minutes on every self-hosted job",
+      "expect": {"route": "F", "confidence": "medium"}
     }
   ]
 }
