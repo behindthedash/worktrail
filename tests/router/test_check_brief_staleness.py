@@ -75,6 +75,16 @@ class TestExtractProbesPaths(unittest.TestCase):
             self.assertNotIn(bad, res["paths"])
         self.assertEqual(res["paths"], [])
 
+    def test_short_extension_backtick_paths_still_qualify(self):
+        # The denylist rejects abbreviation-shaped tokens by exact lowercased
+        # match, not by extension length -- a real short-extension path like
+        # `guard.py` must still pass, backtick-quoted or not.
+        text = "See `guard.py`, `README.md`, and `deploy.sh` for details."
+        res = cbs.extract_probes(text)
+        self.assertIn("guard.py", res["paths"])
+        self.assertIn("README.md", res["paths"])
+        self.assertIn("deploy.sh", res["paths"])
+
 
 class TestExtractProbesSymbols(unittest.TestCase):
     def test_dotted_and_underscored_symbol_probes(self):
