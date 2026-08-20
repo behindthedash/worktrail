@@ -668,13 +668,67 @@ def _resolve_journaled_head_branch(name: str, rec: dict, run_id: str) -> tuple[s
     return candidate or owned, None
 
 
-def _group_branch_from_journal(journal_groups: dict, run_id: str) -> tuple[dict, dict]:
+def _group_superseded_by_tail_prs(task_ids: "list[str]", journal_groups: dict) -> str | None:
+    """A quarantine reason when every task originally bundled into a group has
+    independently reached a terminal (merged or PR-opened) state through its own
+    `tail-<task-id>` group record instead of the parent's own PR.
+
+    `reconcile_unreconciled_tail_evidence` (integrate.py) can ship a task that a
+    group dropped (or that the group itself never delivered) through its own
+    synthetic `tail-<task-id>` group across a later `full-real` invocation. When
+    that has happened for every task the parent group ever bundled, the parent's
+    own journal record is stale: it names a branch/PR that no longer represents
+    live, unmerged work, so re-VERIFYing it chases a dead group with no
+    corresponding open PR left on GitHub (brief 20260820-134348, observed on
+    datalena run full-1787247442: group 'feature-1' re-verified via
+    --from-verify long after tasks 2.2/4.1/4.2 had each independently merged
+    through tail-2.2/tail-4.1/tail-4.2's own PRs).
+
+    Returns `None` when `task_ids` is empty (nothing to check -- e.g. a `tail-*`
+    group itself, which has no parent task list of its own) or when any task
+    lacks a terminal `tail-<task-id>` record -- the parent might still be the
+    group actually shipping that task.
+    """
+    if not task_ids:
+        return None
+    tail_names: "list[str]" = []
+    for task_id in task_ids:
+        tail_name = f"tail-{task_id.lower()}"
+        rec = journal_groups.get(tail_name)
+        if not rec or rec.get("state") not in ("MERGED", "OPEN"):
+            return None
+        tail_names.append(tail_name)
+    return (
+        f"superseded: every task ({', '.join(task_ids)}) independently reached "
+        f"a terminal state via its own {', '.join(tail_names)} -- no live PR to verify"
+    )
+
+
+def _group_branch_from_journal(
+    journal_groups: dict, run_id: str, groups: "list[dict] | None" = None
+) -> tuple[dict, dict]:
     """Build a resumed group_branch map from journal records, quarantining any
-    group whose head_branch fails `_resolve_journaled_head_branch` instead of
-    trusting it for VERIFY."""
+    group whose head_branch fails `_resolve_journaled_head_branch`, or whose every
+    originally-bundled task has since independently merged/opened-PR through its
+    own `tail-<task-id>` group (`_group_superseded_by_tail_prs`), instead of
+    trusting either for VERIFY.
+
+    `groups` (optional): the current run's `coordinator.plan_groups(tasks)`
+    output, used only to look up each journal group's original task ids for the
+    supersession check. Omit when that check does not apply (e.g. existing
+    callers/tests exercising only the head_branch validation).
+    """
     group_branch: dict = {}
     quarantined: dict = {}
+    tasks_by_group = {g["name"]: g.get("tasks", []) for g in (groups or [])}
     for name, rec in journal_groups.items():
+        superseded_reason = _group_superseded_by_tail_prs(
+            tasks_by_group.get(name, []), journal_groups
+        )
+        if superseded_reason:
+            quarantined[name] = superseded_reason
+            print(f"{_ts()}   !! GROUP [{name}] {superseded_reason}")
+            continue
         branch, reason = _resolve_journaled_head_branch(name, rec, run_id)
         if reason:
             quarantined[name] = reason
@@ -4925,15 +4979,20 @@ def _full_real_inner(
         for t in tasks:
             t["status"], t["retry_count"] = "done", 0
 
-        # Reconstruct group_branch from journal's per-group integrate records
+        groups = coordinator.plan_groups(tasks, migration_patterns=migration_patterns or ())
+
+        # Reconstruct group_branch from journal's per-group integrate records.
+        # Passing `groups` lets a stale parent group -- every task it ever
+        # bundled already merged/PR-opened individually via its own tail-<id>
+        # group -- get pruned here instead of chased as if it still had live
+        # work to verify.
         journal_groups = journal.get("groups", {})
         group_branch, from_verify_quarantined = _group_branch_from_journal(
-            journal_groups, journal.get("run_id", "unknown")
+            journal_groups, journal.get("run_id", "unknown"), groups=groups
         )
 
         progress.set_phase(journal_path, "verify")
         print("=== VERIFY (from journal, skipping fan-out + integrate) ===")
-        groups = coordinator.plan_groups(tasks, migration_patterns=migration_patterns or ())
         status = {t["id"]: t.get("status", "done") for t in tasks}
         delivered = {
             g["name"]: coordinator.deliverable_subset(g["tasks"], tasks, status)[0] for g in groups
