@@ -15,7 +15,7 @@ from worktrail.router.policy import load_policy
 from worktrail.router.pre_pr_gate import (
     CLARIFICATION_INTEGRITY_DRIFT_EXIT, DOD_VERIFICATION_DRIFT_EXIT,
     REQ_AC_COVERAGE_DRIFT_EXIT, SCOPE_COMPLETENESS_EXIT, SPEC_SYNC_DRIFT_EXIT,
-    UNCONFIGURED_EXIT, is_docs_only, main, resolve_cmd,
+    UNCONFIGURED_EXIT, is_docs_only, is_promotion_pr, main, resolve_cmd,
     scope_review_failures, spec_sync_drift,
 )
 
@@ -320,6 +320,121 @@ class TestDocsOnlySkip(unittest.TestCase):
     def test_empty_diff_is_not_docs_only(self) -> None:
         repo = self._init_repo(self._POLICY)
         self.assertFalse(is_docs_only(Path(repo), load_policy(Path(repo))))
+
+
+class TestPromotionPrSkip(unittest.TestCase):
+    """behindthedash/worktrail brief 20260819-212434: pre_pr_gate.py fails
+    closed on a branch-promotion PR (e.g. a datalena stg->prd 'PRD Release'
+    PR), forcing the full heavy pre_pr_cmd even though every commit on the
+    branch already went through CI on the way onto `origin`. (The bug's
+    original "zero local diff" symptom was itself a coincidence of diffing
+    against policy.base_branch -- e.g. dev -- for a promotion branch that
+    happens to be dev's own ancestor; a real promotion PR against its actual
+    target branch routinely carries many real commits, so the fix keys off
+    HEAD matching its own pushed `origin/<branch>`, not an empty diff.)"""
+
+    def _git(self, repo: str, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", *args], cwd=repo, capture_output=True,
+                              text=True, check=True)
+
+    def _init_repo(self, policy_yaml: str, base_branch: str = "prd") -> str:
+        bare = tempfile.mkdtemp(prefix="prepr-promotion-origin-")
+        subprocess.run(["git", "init", "-q", "--bare", bare], check=True)
+        d = tempfile.mkdtemp(prefix="prepr-promotion-")
+        self._git(d, "init", "-q", "-b", base_branch)
+        self._git(d, "config", "user.email", "test@example.com")
+        self._git(d, "config", "user.name", "Test")
+        self._git(d, "remote", "add", "origin", bare)
+        spec = Path(d) / "docs" / "specs"
+        spec.mkdir(parents=True)
+        (spec / "go-policy.yaml").write_text(policy_yaml, encoding="utf-8")
+        self._git(d, "add", ".")
+        self._git(d, "commit", "-q", "-m", "base")
+        self._git(d, "push", "-q", "origin", base_branch)
+        return d
+
+    def _write(self, repo: str, relpath: str, content: str = "x\n") -> None:
+        path = Path(repo) / relpath
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    def _commit(self, repo: str, message: str) -> None:
+        self._git(repo, "add", ".")
+        self._git(repo, "commit", "-q", "-m", message)
+
+    _POLICY = ('pre_pr_cmd: "exit 9"\n'
+               'promotion_pairs:\n'
+               '  prd: stg\n')
+
+    def test_clean_pushed_promotion_branch_skips_pre_pr_cmd(self) -> None:
+        repo = self._init_repo(self._POLICY)
+        self._git(repo, "checkout", "-q", "-b", "stg")
+        self._write(repo, "src/app.py")
+        self._commit(repo, "real stg content, already CI-vetted on its way onto origin")
+        self._git(repo, "push", "-q", "-u", "origin", "stg")
+        policy = load_policy(Path(repo))
+        self.assertTrue(is_promotion_pr(Path(repo), policy, "prd"))
+        # main() would run "exit 9" if the promotion fast path didn't short-circuit it.
+        self.assertEqual(main(["--repo", repo, "--target-branch", "prd"]), 0)
+
+    def test_non_canonical_head_branch_falls_through(self) -> None:
+        repo = self._init_repo(self._POLICY)
+        self._git(repo, "checkout", "-q", "-b", "feature")
+        self._git(repo, "push", "-q", "-u", "origin", "feature")
+        policy = load_policy(Path(repo))
+        self.assertFalse(is_promotion_pr(Path(repo), policy, "prd"))
+        self.assertEqual(main(["--repo", repo, "--target-branch", "prd"]), 9)
+
+    def test_uncommitted_local_change_falls_through(self) -> None:
+        repo = self._init_repo(self._POLICY)
+        self._git(repo, "checkout", "-q", "-b", "stg")
+        self._git(repo, "push", "-q", "-u", "origin", "stg")
+        self._write(repo, "src/app.py")  # uncommitted, dirty working tree
+        policy = load_policy(Path(repo))
+        self.assertFalse(is_promotion_pr(Path(repo), policy, "prd"))
+        self.assertEqual(main(["--repo", repo, "--target-branch", "prd"]), 9)
+
+    def test_unpushed_local_commit_falls_through(self) -> None:
+        repo = self._init_repo(self._POLICY)
+        self._git(repo, "checkout", "-q", "-b", "stg")
+        self._git(repo, "push", "-q", "-u", "origin", "stg")
+        self._write(repo, "src/app.py")
+        self._commit(repo, "local-only, not yet CI-vetted")
+        policy = load_policy(Path(repo))
+        self.assertFalse(is_promotion_pr(Path(repo), policy, "prd"))
+        self.assertEqual(main(["--repo", repo, "--target-branch", "prd"]), 9)
+
+    def test_unconfigured_promotion_pairs_unaffected(self) -> None:
+        repo = self._init_repo('pre_pr_cmd: "exit 9"\n')
+        self._git(repo, "checkout", "-q", "-b", "stg")
+        self._git(repo, "push", "-q", "-u", "origin", "stg")
+        policy = load_policy(Path(repo))
+        self.assertFalse(is_promotion_pr(Path(repo), policy, "prd"))
+        self.assertEqual(main(["--repo", repo, "--target-branch", "prd"]), 9)
+
+    def test_missing_origin_remote_falls_through(self) -> None:
+        d = tempfile.mkdtemp(prefix="prepr-promotion-noremote-")
+        self._git(d, "init", "-q", "-b", "prd")
+        self._git(d, "config", "user.email", "test@example.com")
+        self._git(d, "config", "user.name", "Test")
+        spec = Path(d) / "docs" / "specs"
+        spec.mkdir(parents=True)
+        (spec / "go-policy.yaml").write_text(self._POLICY, encoding="utf-8")
+        self._git(d, "add", ".")
+        self._git(d, "commit", "-q", "-m", "base")
+        self._git(d, "checkout", "-q", "-b", "stg")
+        policy = load_policy(Path(d))
+        self.assertFalse(is_promotion_pr(Path(d), policy, "prd"))
+        self.assertEqual(main(["--repo", d, "--target-branch", "prd"]), 9)
+
+    def test_target_branch_with_no_configured_pairing_is_not_promotion_pr(self) -> None:
+        repo = self._init_repo(self._POLICY)
+        self._git(repo, "checkout", "-q", "-b", "stg")
+        self._git(repo, "push", "-q", "-u", "origin", "stg")
+        policy = load_policy(Path(repo))
+        # promotion_pairs only maps "prd"; a different target branch has no
+        # configured canonical pairing, even with a clean pushed HEAD.
+        self.assertFalse(is_promotion_pr(Path(repo), policy, "stg-preview"))
 
 
 class TestDocsOnlyRiskCap(unittest.TestCase):

@@ -17,6 +17,22 @@ configured, an unresolvable base ref, an empty diff, or any unmatched path —
 falls through unchanged to running the full command; this is a targeted fast
 path, not a general skip mechanism.
 
+When the repo configures `promotion_pairs` (a map of base branch -> the one
+head branch that canonically promotes into it, e.g. `{"stg": "dev", "prd":
+"stg"}`), the gate also skips `pre_pr_cmd` for a PR whose current branch
+matches the resolved `--target-branch`'s canonical promotion source (e.g. a
+`stg`->`prd` "PRD Release" PR) AND whose HEAD exactly matches its own
+already-pushed `origin/<branch>` with a clean working tree. Unlike
+`docs_only_paths`, this does not require an empty diff against the target
+branch — a real promotion PR routinely carries many real commits relative to
+its target, since promoting content forward is the whole point. The signal
+instead is that HEAD carries nothing local/uncommitted/unpushed: every commit
+on the branch already went through CI on its way onto `origin`, and CI's own
+required checks on the target branch still fully re-verify the promoted
+content. Any ambiguity — no `promotion_pairs` configured, a non-canonical
+head/base pair, an unresolvable `origin/<branch>`, or any local/unpushed
+change — falls through unchanged to running the full command.
+
 Before any of that, the gate runs the spec-sync drift check
 (`check_spec_sync.py`) against the repo's `docs/specs/` tree whenever that
 directory exists — unconditionally, independent of `docs_only_paths`. The
@@ -237,6 +253,60 @@ def is_docs_only(repo: Path, policy: Dict[str, Any]) -> bool:
     return all(_matches_any(path, patterns) for path in paths)
 
 
+def _current_branch(repo: Path) -> Optional[str]:
+    """Current checked-out branch name, or None if unresolvable (e.g. detached HEAD)."""
+    result = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=str(repo), capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return None
+    branch = result.stdout.strip()
+    return branch if branch and branch != "HEAD" else None
+
+
+def _head_matches_pushed_remote(repo: Path, branch: str) -> bool:
+    """True iff HEAD is exactly `origin/<branch>` and the working tree is
+    clean — i.e. nothing local/uncommitted/unpushed that CI hasn't already
+    seen and vetted when this branch's own commits landed on `origin`."""
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(repo),
+                           capture_output=True, text=True)
+    remote = subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"origin/{branch}"],
+                             cwd=str(repo), capture_output=True, text=True)
+    if head.returncode != 0 or remote.returncode != 0:
+        return False
+    if head.stdout.strip() != remote.stdout.strip():
+        return False
+    status = subprocess.run(["git", "status", "--porcelain"], cwd=str(repo),
+                             capture_output=True, text=True)
+    return status.returncode == 0 and not status.stdout.strip()
+
+
+def is_promotion_pr(repo: Path, policy: Dict[str, Any], target_branch: str) -> bool:
+    """True iff the current branch is the repo's own canonical promotion
+    source for `target_branch` (policy `promotion_pairs`) AND HEAD exactly
+    matches its own already-pushed `origin/<branch>` with a clean working
+    tree — nothing local/uncommitted for `pre_pr_cmd` to test that CI hasn't
+    already vetted when this branch's own commits landed on `origin`.
+
+    Deliberately does NOT require an empty diff against `target_branch`
+    itself: a real promotion PR (e.g. `stg`->`prd`) routinely carries many
+    real commits relative to its target — that diff is the whole point of
+    the PR, not a signal anything is untested. `docs_only_paths`'s existing
+    diff, computed against policy's `base_branch` (e.g. `dev`), can come back
+    spuriously empty for a promotion branch that is itself an ancestor of
+    `base_branch` — that coincidence is what caused the original fail-closed
+    bug this function fixes, not a safe general signal to build on.
+    """
+    expected_head = (policy.get("promotion_pairs") or {}).get(target_branch)
+    if not expected_head:
+        return False
+    head_branch = _current_branch(repo)
+    if head_branch != expected_head:
+        return False
+    return _head_matches_pushed_remote(repo, head_branch)
+
+
 def scope_review_failures(run_path: Optional[Path]) -> List[str]:
     """Return unresolved scope-review entries; absent ``--run`` is legacy-compatible."""
     if run_path is None:
@@ -450,6 +520,15 @@ def main(argv=None) -> int:
         print("PRE-PR GATE: DOCS-ONLY SKIP — every changed path matched "
               f"docs_only_paths in {POLICY_RELPATH}. Record this skip in the "
               "PR body's 'Pre-PR Test Gate' section.")
+        return 0
+
+    if not args.print_cmd and is_promotion_pr(repo, policy, args.target_branch):
+        print("PRE-PR GATE: PROMOTION-SHAPED PR SKIP — current branch is the "
+              f"canonical promotion source for {args.target_branch} per "
+              f"promotion_pairs in {POLICY_RELPATH}, and HEAD exactly matches "
+              "its own already-pushed remote with a clean working tree (every "
+              "commit already went through CI on its way onto origin). Record "
+              "this skip in the PR body's 'Pre-PR Test Gate' section.")
         return 0
 
     cmd = resolve_cmd(policy)
