@@ -1,6 +1,6 @@
 ## 1. Journal events for the two repair-path safety nets, plus their aggregation
 
-- [ ] 1.1 In `src/worktrail/orchestrator/live.py`: change
+- [x] 1.1 In `src/worktrail/orchestrator/live.py`: change
       `_carry_squash_merged_dependencies` to return `dict | None` instead of
       `None` unconditionally -- return a `{"event": "checklist_conflict_resolved",
       "task": task["id"], "at": round(time.time(), 3)}` event when
@@ -24,7 +24,7 @@
       keyed on `event.get("task", "unknown")`), and extend `render()` to print
       those breakdowns when non-empty, following the existing
       `dependency_file_drift_by_dep_id` section as the template.
-- [ ] 1.3 Add regression tests: `_carry_squash_merged_dependencies` returns the
+- [x] 1.3 Add regression tests: `_carry_squash_merged_dependencies` returns the
       `checklist_conflict_resolved` event on a tasks.md-only conflict and `None`
       on a normal (no-conflict) carry or a non-tasks.md conflict abort;
       `_require_dependency_files_with_repair` returns a list containing
