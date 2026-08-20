@@ -108,7 +108,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional
 from . import stuck_remediation
 from ..orchestrator import agent_capacity
 from ..orchestrator.integrate import _refresh_pr_labels
-from ..router import dashboard, quarantine_selfcheck
+from ..router import branch_selfcheck, dashboard, quarantine_selfcheck
 from ..router.policy import load_policy
 from ..router.policy_selfcheck import discover_repo_names
 from ..router.pr_labels import ensure_pr_risk_label
@@ -918,6 +918,61 @@ def _run_git(cwd: Path, *args: str, timeout: int) -> None:
             f"git {' '.join(args)} (in {cwd}) failed: {(result.stderr or result.stdout).strip()}")
 
 
+def find_stale_branches(
+    repos_root: Path, go_repo: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """Every locally merged, prunable branch across every repo under
+    `repos_root` (or just `go_repo` when given), flattened to one finding
+    per branch -- `branch_selfcheck.sweep`'s per-repo `prunable` lists merged
+    into drain's usual one-finding-per-remediable-item shape."""
+    names = discover_repo_names(repos_root)
+    if go_repo:
+        names = [n for n in names if n == go_repo]
+    found: List[Dict[str, Any]] = []
+    for name in names:
+        repo_path = repos_root / name
+        report = branch_selfcheck.check_repo(repo_path)
+        for entry in report["prunable"]:
+            found.append({
+                "repo": repo_path, "repo_name": name,
+                "branch": entry["branch"],
+                "worktree_path": entry["worktree_path"],
+                "method": entry["method"],
+            })
+    return found
+
+
+def prune_stale_branch(
+    finding: Dict[str, Any],
+    agent: str,
+    timeout: int,
+    spawner: Callable[[List[str], int], SpawnOutcome],
+    log: Callable[[str], None],
+) -> Dict[str, Any]:
+    """Delete one branch `find_stale_branches` proved is fully merged.
+
+    Removes the branch's worktree first when it has one -- git refuses to
+    delete a branch checked out in any worktree, and `git worktree remove`
+    (no `--force`) is itself the safety net against a branch that went dirty
+    between the finder's read and this action's write: it raises rather than
+    discarding uncommitted changes, which the sweep engine's per-finding
+    try/except catches and logs, leaving the branch for the next sweep to
+    re-evaluate rather than losing work.
+
+    `agent`/`spawner` are unused -- mechanical git only, no one-shot spawn --
+    kept only so the signature matches StageRemediation's uniform `action`
+    shape, same as `close_stale_bookkeeping`."""
+    repo, branch = finding["repo"], finding["branch"]
+    worktree_path = finding.get("worktree_path")
+    if worktree_path:
+        _run_git(repo, "worktree", "remove", worktree_path, timeout=timeout)
+    _run_git(repo, "branch", "-D", branch, timeout=timeout)
+    log(f"branch-selfcheck: pruned {finding['repo_name']} {branch} "
+        f"(method={finding['method']})")
+    return {"repo": finding["repo_name"], "branch": branch,
+            "method": finding["method"], "pruned": True}
+
+
 def _existing_stale_bookkeeping_pr(repo: Path, branch: str, timeout: int) -> Optional[str]:
     """The URL of an already-open PR for `branch`, or None. Best-effort: a
     `gh` failure (network, auth) is treated the same as "no open PR" rather
@@ -1241,6 +1296,9 @@ REMEDIATION_TABLE: List[StageRemediation] = [
     StageRemediation(
         "openspec_archive", "archive-openspec-change",
         find_complete_openspec_changes, archive_openspec_change),
+    StageRemediation(
+        "stale_branches", "branch-selfcheck",
+        find_stale_branches, prune_stale_branch),
 ]
 
 

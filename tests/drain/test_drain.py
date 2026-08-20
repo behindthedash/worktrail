@@ -3,8 +3,10 @@
 import json
 import os
 import subprocess
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -40,10 +42,12 @@ from worktrail.drain.drain import (
     find_complete_openspec_changes,
     find_resumable_quarantines,
     find_stale_bookkeeping_specs,
+    find_stale_branches,
     find_sync_pending_specs,
     find_verify_pending_specs,
     newest_run_record,
     parse_run_record,
+    prune_stale_branch,
     release_lock,
     release_lock_slot,
     resolve_spec_rel,
@@ -2320,6 +2324,7 @@ def test_remediation_table_excludes_orchestrator_stuck():
     assert keys == {
         "quarantined_budget_exhausted", "verify_pending",
         "stale_bookkeeping", "sync_pending", "openspec_archive",
+        "stale_branches",
     }
 
 
@@ -2776,4 +2781,145 @@ def test_main_max_workers_builtin_default_when_neither_present(tmp_path, monkeyp
     rc, config = _run_main(tmp_path, monkeypatch)
     assert rc == 0
     assert config.max_workers == 2
+
+
+# ---------------------------------------------------------------------------
+# Stale-branch finder + prune action
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=str(repo), check=True,
+                    capture_output=True, text=True)
+
+
+def _init_branch_repo(root: Path, name: str) -> Path:
+    repo = root / name
+    repo.mkdir(parents=True)
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "t@t")
+    _git(repo, "config", "user.name", "t")
+    _git(repo, "commit", "--allow-empty", "-m", "init")
+    return repo
+
+
+def _merged_branch(repo: Path, branch: str) -> None:
+    _git(repo, "checkout", "-b", branch, "main")
+    (repo / f"{branch.replace('/', '-')}.txt").write_text("x\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", f"{branch} work")
+    _git(repo, "checkout", "main")
+    _git(repo, "merge", "--no-ff", branch, "-m", f"merge {branch}")
+
+
+def _no_gh(fn, *args, **kwargs):
+    """Runs `fn` with `gh` calls forced to \"no merged PR\" so ancestry/cherry
+    stays the only signal in play -- every fixture below uses plain `--no-ff`
+    merges, which ancestry alone already proves."""
+    real_run = subprocess.run
+
+    def _side_effect(cmd, *a, **k):
+        if cmd and cmd[0] == "gh":
+            return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="")
+        return real_run(cmd, *a, **k)
+
+    with mock.patch("subprocess.run", side_effect=_side_effect):
+        return fn(*args, **kwargs)
+
+
+def test_find_stale_branches_discovers_merged_branch_across_repos(tmp_path):
+    repo_a = _init_branch_repo(tmp_path, "repo-a")
+    _merged_branch(repo_a, "topic")
+    repo_b = _init_branch_repo(tmp_path, "repo-b")  # nothing merged
+
+    found = _no_gh(find_stale_branches, tmp_path)
+
+    assert [f["repo_name"] for f in found] == ["repo-a"]
+    assert found[0]["branch"] == "topic"
+    assert found[0]["method"] == "ancestry"
+    assert found[0]["worktree_path"] is None
+
+
+def test_find_stale_branches_go_repo_filter(tmp_path):
+    repo_a = _init_branch_repo(tmp_path, "repo-a")
+    _merged_branch(repo_a, "topic")
+    repo_b = _init_branch_repo(tmp_path, "repo-b")
+    _merged_branch(repo_b, "topic")
+
+    found = _no_gh(find_stale_branches, tmp_path, go_repo="repo-b")
+
+    assert [f["repo_name"] for f in found] == ["repo-b"]
+
+
+def test_find_stale_branches_excludes_unmerged(tmp_path):
+    repo = _init_branch_repo(tmp_path, "repo-a")
+    _git(repo, "checkout", "-b", "topic", "main")
+    (repo / "topic.txt").write_text("x\n", encoding="utf-8")
+    _git(repo, "add", "topic.txt")
+    _git(repo, "commit", "-m", "topic work")
+    _git(repo, "checkout", "main")
+
+    assert _no_gh(find_stale_branches, tmp_path) == []
+
+
+def test_prune_stale_branch_deletes_branch_with_no_worktree():
+    tmp_path = Path(tempfile.mkdtemp())
+    repo = _init_branch_repo(tmp_path, "repo-a")
+    _merged_branch(repo, "topic")
+    finding = {"repo": repo, "repo_name": "repo-a", "branch": "topic",
+               "worktree_path": None, "method": "ancestry"}
+
+    result = prune_stale_branch(finding, "claude", 30, None, lambda _l: None)
+
+    assert result == {"repo": "repo-a", "branch": "topic",
+                       "method": "ancestry", "pruned": True}
+    remaining = subprocess.run(
+        ["git", "branch", "--format=%(refname:short)"],
+        cwd=str(repo), capture_output=True, text=True, check=True,
+    ).stdout.split()
+    assert "topic" not in remaining
+
+
+def test_prune_stale_branch_removes_worktree_first():
+    tmp_path = Path(tempfile.mkdtemp())
+    repo = _init_branch_repo(tmp_path, "repo-a")
+    _merged_branch(repo, "topic")
+    wt = tmp_path / "repo-a-worktrees" / "topic"
+    _git(repo, "worktree", "add", str(wt), "topic")
+    finding = {"repo": repo, "repo_name": "repo-a", "branch": "topic",
+               "worktree_path": str(wt), "method": "ancestry"}
+
+    result = prune_stale_branch(finding, "claude", 30, None, lambda _l: None)
+
+    assert result["pruned"] is True
+    assert not wt.exists()
+    remaining = subprocess.run(
+        ["git", "branch", "--format=%(refname:short)"],
+        cwd=str(repo), capture_output=True, text=True, check=True,
+    ).stdout.split()
+    assert "topic" not in remaining
+
+
+def test_prune_stale_branch_raises_when_worktree_dirty():
+    """A branch that went dirty between the finder's read and this action's
+    write must not be force-removed -- `git worktree remove` (no `--force`)
+    raises, the sweep engine's per-finding try/except catches it, and the
+    branch survives for the next sweep to re-evaluate."""
+    tmp_path = Path(tempfile.mkdtemp())
+    repo = _init_branch_repo(tmp_path, "repo-a")
+    _merged_branch(repo, "topic")
+    wt = tmp_path / "repo-a-worktrees" / "topic"
+    _git(repo, "worktree", "add", str(wt), "topic")
+    (wt / "uncommitted.txt").write_text("wip\n", encoding="utf-8")
+    finding = {"repo": repo, "repo_name": "repo-a", "branch": "topic",
+               "worktree_path": str(wt), "method": "ancestry"}
+
+    with pytest.raises(RuntimeError):
+        prune_stale_branch(finding, "claude", 30, None, lambda _l: None)
+
+    assert wt.exists()
+    remaining = subprocess.run(
+        ["git", "branch", "--format=%(refname:short)"],
+        cwd=str(repo), capture_output=True, text=True, check=True,
+    ).stdout.split()
+    assert "topic" in remaining
 
