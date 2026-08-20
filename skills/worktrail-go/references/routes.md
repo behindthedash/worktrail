@@ -196,6 +196,10 @@ Behavior violates the spec or an established expectation.
    down the worktree per `subagent-prompts.md#worktree-lifecycle` — the spec
    path's `sync` step (`#change-spec-worktree-setup` → `modify` pipeline) or,
    for unspecced code, `subagent-prompts.md#fix-branch-worktree-teardown`.
+8. If this run's own PR (step 7) differs from a PR the run's own request names as
+   blocked by the finding under investigation, run `ci-watch-loop.md#cross-pr-circle-back`
+   before this brief can be marked done — a disprove/fix that lands as a separate PR does
+   not, by itself, resolve the ORIGINAL blocking PR's own stale review threads.
 
 Completion: `completed_*`; if root cause cannot be proven, reroute to I instead
 of shipping a guess.
