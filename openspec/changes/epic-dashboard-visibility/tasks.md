@@ -19,7 +19,7 @@
       single-repo path and the multi-repo (`--repos`/`scan_repos()`) path, and include the epic
       rows in the JSON payload distinctly from the existing `specs`/`repos` rows in each mode
       (Requirement: Epic rows appear in dashboard JSON output)
-- [ ] 2.2 Extend `render_dashboard()` in `src/worktrail/router/dashboard.py` to accept the epic
+- [x] 2.2 Extend `render_dashboard()` in `src/worktrail/router/dashboard.py` to accept the epic
       rows and render a section for outstanding (`epic-gap` and `epic-unparseable`) epics,
       omitted entirely when a repo has none, alongside the existing spec/backlog/worktree
       sections (Requirement: Epic state renders in the human-readable dashboard)
@@ -35,19 +35,19 @@
 
 ## 4. Tests
 
-- [ ] 4.1 In `tests/router/test_dashboard.py`, add coverage for the epic-gap, epic-unparseable,
+- [x] 4.1 In `tests/router/test_dashboard.py`, add coverage for the epic-gap, epic-unparseable,
       epic-complete-via-terminal-status, and epic-complete-via-full-citation classifications, and
       for a non-epic-named file under `docs/specs/epics/` being ignored (Requirement: Epic files
       are classified into a dashboard stage)
-- [ ] 4.2 In `tests/router/test_dashboard.py`, add coverage for the epic scan's row shape, its
+- [x] 4.2 In `tests/router/test_dashboard.py`, add coverage for the epic scan's row shape, its
       empty-list result when a repo has no `docs/specs/epics/` directory, and an unreadable epic
       file degrading to an `error`-stage row while sibling epic files still scan successfully
       (Requirement: A repo's epics are scanned into one row per epic file) (Requirement: A
       malformed epic file degrades to a per-row error, not a crashed scan)
-- [ ] 4.3 In `tests/router/test_dashboard.py`, add coverage that both single-repo and `--repos`
+- [x] 4.3 In `tests/router/test_dashboard.py`, add coverage that both single-repo and `--repos`
       JSON output include the repo's epic rows (Requirement: Epic rows appear in dashboard JSON
       output)
-- [ ] 4.4 In `tests/router/test_dashboard.py`, add coverage that `render_dashboard()` shows an
+- [x] 4.4 In `tests/router/test_dashboard.py`, add coverage that `render_dashboard()` shows an
       epics section when a repo has an `epic-gap` epic, and shows no epics section when a repo has
       no epic files or only `epic-complete` ones (Requirement: Epic state renders in the
       human-readable dashboard)
