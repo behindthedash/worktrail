@@ -681,12 +681,15 @@ class OriginalCreatedPropagation(ConsolidateClusterTestCase):
 
         _, content = cc._build_consolidated_brief_content(draft)
 
-        self.assertIn(f"original-created: {draft['original_created']}", content)
+        self.assertIn(f"original-created: '{draft['original_created']}'", content)
         raw_yaml = content.split("---", 2)[1]
         fm = yaml.safe_load(raw_yaml)
-        # written bare (unquoted), so it round-trips as a native datetime --
-        # confirm it parses back to the same instant, not just string-equal.
-        self.assertEqual(fm["original-created"].isoformat(), draft["original_created"])
+        # Written through the shared canonical serializer, which single-quotes
+        # an ISO timestamp string (same as `created:`) rather than leaving it
+        # bare -- it round-trips as `str`, not a native datetime, but
+        # `_member_created_at()`'s `isinstance(value, str)` branch already
+        # handles that (it must, for create_handoff.py's own quoted `created:`).
+        self.assertEqual(fm["original-created"], draft["original_created"])
 
     def test_written_brief_omits_original_created_when_draft_lacks_it(self):
         """Unchanged from current behavior: no member's created: parsed (or
@@ -800,8 +803,13 @@ class BlockScalarFocusParsing(ConsolidateClusterTestCase):
         raw_yaml = content.split("---", 2)[1]
         focus_lines = [ln for ln in raw_yaml.splitlines() if ln.startswith("focus:")]
         self.assertEqual(len(focus_lines), 1)
-        self.assertEqual(yaml.safe_load(raw_yaml)["focus"], draft["focus"])
-        # every fm line is a key/list line, never a folded continuation
-        for ln in raw_yaml.splitlines():
-            if ln.strip():
-                self.assertRegex(ln, r"^(\S+:|  - )")
+        # The canonical serializer strips insignificant trailing whitespace
+        # (PyYAML cannot represent it unambiguously in `|` block style), so
+        # compare against the stripped form, not the raw draft input.
+        self.assertEqual(yaml.safe_load(raw_yaml)["focus"], draft["focus"].strip())
+        # Never a folded double-quoted continuation (`\<newline>  \ `) --
+        # canonical style renders `focus:` as a `|-` block scalar, whose
+        # content is one contiguous indented line rather than backslash-
+        # folded fragments.
+        self.assertNotIn("\\\n", raw_yaml)
+        self.assertIn("\n  " + draft["focus"].strip() + "\n", raw_yaml)

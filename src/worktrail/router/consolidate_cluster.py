@@ -60,10 +60,13 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-import yaml
-
 from . import cluster_telemetry
-from ..shared.brief_frontmatter import split_frontmatter, validate_brief_text
+from ..shared.brief_frontmatter import (
+    is_canonical_style,
+    serialize_frontmatter,
+    split_frontmatter,
+    validate_brief_text,
+)
 from ..workqueue.invocation import WORK_QUEUE_PY, build_work_queue_argv
 
 _FM_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
@@ -402,30 +405,26 @@ def _build_consolidated_brief_content(draft: Dict[str, Any]) -> Tuple[str, str]:
     suffix = _member_hash_suffix(member_ids or [title])
     new_brief_id = f"{now.strftime('%Y%m%d-%H%M%S')}-{slug}-{suffix}"
 
-    # yaml.safe_dump (not an f-string) so a focus containing a literal `"`
-    # (pulled verbatim from a source brief's title/text) round-trips as
-    # valid YAML instead of breaking every downstream reader. width=10**9
-    # stops safe_dump's default ~80-column folding: a folded double-quoted
-    # scalar spans continuation lines that line-oriented frontmatter readers
-    # truncate to the first fragment (observed live 2026-08-13 on a
-    # 15-member consolidation whose own focus: line wrapped across three).
-    focus_scalar = yaml.safe_dump(
-        focus, default_style='"', allow_unicode=True, width=10**9).strip()
-    lines = [
-        "---",
-        f"id: {new_brief_id}",
-        f"created: {now.isoformat(timespec='seconds')}",
-        f"focus: {focus_scalar}",
-        "status: queued",
-    ]
+    # Routed through the shared `serialize_frontmatter` (same as
+    # create_handoff.py) instead of a local `yaml.safe_dump(focus,
+    # default_style='"', ...)` call, so a focus containing a literal `"` or
+    # an embedded newline renders as a clean `|-` literal block -- no
+    # quoting, no folding -- identically to every other writer into queue/,
+    # rather than each writer choosing its own scalar style
+    # (`docs/specs/research/queue-frontmatter-cross-writer-drift.md`).
+    frontmatter: Dict[str, Any] = {
+        "id": new_brief_id,
+        "created": now.isoformat(timespec="seconds"),
+        "focus": focus,
+        "status": "queued",
+    }
     original_created = draft.get("original_created")
     if original_created:
-        lines.append(f"original-created: {original_created}")
+        frontmatter["original-created"] = original_created
     if member_ids:
-        lines.append("related:")
-        lines.extend(f"  - {m}" for m in member_ids)
-    lines.append("---")
-    lines.append("")
+        frontmatter["related"] = list(member_ids)
+    fm_text = serialize_frontmatter(frontmatter)
+    lines = ["---", fm_text.rstrip("\n"), "---", ""]
     lines.append("## Focus")
     lines.append("")
     lines.append(focus)
@@ -592,6 +591,8 @@ def execute_consolidation(
     new_brief_id, new_brief_content = _build_consolidated_brief_content(draft)
 
     ok, verr = validate_brief_text(new_brief_content, required=("id", "status", "focus"))
+    if ok and not is_canonical_style(new_brief_content):
+        ok, verr = False, "consolidated brief frontmatter did not serialize to canonical style"
     if not ok:
         return {
             "status": "write-verification-failed",
