@@ -182,6 +182,12 @@ class TestCorrelate(unittest.TestCase):
         grouped = crt.correlate(Path("/repo"), threads, decisions, runner=runner)
         self.assertNotIn("_matched_decision", grouped["addressed"][0])
 
+    def test_commit_match_attaches_matched_commit_sha(self) -> None:
+        threads = [_thread("T_1", "a.py", resolved=False)]
+        runner = _FakeRunner({"git -C": _FakeResult(0, "abc1234567890\n")})
+        grouped = crt.correlate(Path("/repo"), threads, [], runner=runner)
+        self.assertEqual(grouped["addressed"][0]["_matched_commit"], "abc1234567890")
+
 
 class TestReplyBodyFor(unittest.TestCase):
     def test_decision_matched_thread_quotes_decision_text(self) -> None:
@@ -193,6 +199,12 @@ class TestReplyBodyFor(unittest.TestCase):
     def test_commit_matched_thread_uses_default_body(self) -> None:
         thread = {"id": "T_1"}
         self.assertEqual(crt._reply_body_for(thread), crt.DEFAULT_REPLY_BODY)
+
+    def test_commit_matched_thread_cites_commit_sha(self) -> None:
+        thread = {"id": "T_1", "_matched_commit": "abc1234567890"}
+        body = crt._reply_body_for(thread)
+        self.assertIn("abc1234", body)
+        self.assertNotEqual(body, crt.DEFAULT_REPLY_BODY)
 
 
 class TestReplyAndResolve(unittest.TestCase):
@@ -383,6 +395,33 @@ class TestCheck(unittest.TestCase):
         body_args = [arg for arg in reply_calls[0] if arg.startswith("body=")]
         self.assertEqual(len(body_args), 1)
         self.assertIn(decision_text, body_args[0])
+        self.assertNotEqual(body_args[0], f"body={crt.DEFAULT_REPLY_BODY}")
+
+    def test_commit_addressed_thread_reply_cites_commit_sha(self) -> None:
+        calls: List[List[str]] = []
+
+        def runner(cmd: List[str], **kwargs: Any) -> _FakeResult:
+            calls.append(cmd)
+            if cmd[:2] == ["git", "remote"]:
+                return _FakeResult(0, "https://github.com/acme/widgets.git\n")
+            if cmd[:2] == ["gh", "api"] and "reviewThreads" in " ".join(cmd):
+                return _threads_response([_thread("T_1", "a.py", resolved=False)])
+            if cmd[:2] == ["git", "-C"]:
+                return _FakeResult(0, "abc1234567890\n")  # commit touched a.py since thread opened
+            if cmd[:2] == ["gh", "api"]:
+                return _FakeResult(0, "{}")  # reply / resolve mutations
+            raise AssertionError(f"unscripted command: {cmd}")
+
+        res = crt.check(Path("/repo"), 42, runner=runner)
+        self.assertTrue(res["checked"])
+        self.assertFalse(res["blocking"])
+        self.assertEqual(len(res["resolved_now"]), 1)
+        self.assertTrue(res["resolved_now"][0]["resolved"])
+        reply_calls = [c for c in calls if "addPullRequestReviewThreadReply" in " ".join(c)]
+        self.assertEqual(len(reply_calls), 1)
+        body_args = [arg for arg in reply_calls[0] if arg.startswith("body=")]
+        self.assertEqual(len(body_args), 1)
+        self.assertIn("abc1234", body_args[0])
         self.assertNotEqual(body_args[0], f"body={crt.DEFAULT_REPLY_BODY}")
 
     def test_explicit_owner_name_skips_git_remote_lookup(self) -> None:
