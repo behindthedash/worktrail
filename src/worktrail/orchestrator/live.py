@@ -1723,7 +1723,7 @@ def _resolve_tasks_md_checklist_conflict(wt: Path, spec_id: str) -> bool:
 
 def _carry_squash_merged_dependencies(
     repo: Path, spec_id: str, task: dict, by_id: dict, wt: Path, remote: str, base: str
-) -> None:
+) -> "dict | None":
     """Carry a DONE dependency's content into `wt` across a squash-merge boundary.
 
     `dependency_start_ref` falls back to bare `HEAD` for a dependency whose task
@@ -1766,6 +1766,9 @@ def _carry_squash_merged_dependencies(
     short-circuits into a no-op for a dependency whose content is genuinely
     already present -- so gating on it alone is both correct and sufficient;
     the extra file-existence pre-filter only introduced false negatives.
+
+    Returns a `checklist_conflict_resolved` event dict when the tasks.md
+    conflict exception engaged; `None` from every other return point.
     """
     stale_deps = [
         dep_id
@@ -1788,7 +1791,11 @@ def _carry_squash_merged_dependencies(
     m = _git(wt, "merge", "--no-edit", ref, check=False)
     if m.returncode != 0:
         if _resolve_tasks_md_checklist_conflict(wt, spec_id):
-            return
+            return {
+                "event": "checklist_conflict_resolved",
+                "task": task["id"],
+                "at": round(time.time(), 3),
+            }
         _git(wt, "merge", "--abort", check=False)
         print(
             f"{_ts()} WARN: task {task['id']} worktree {wt} squash-merge carry from "
@@ -2846,13 +2853,33 @@ def _require_dependency_files_with_repair(
     in-progress work is preserved. Re-raises unchanged if the repair doesn't
     resolve it: the fail-loud backstop is unchanged for a genuinely
     unresolvable drift.
+
+    On a successful repair, the returned list is prefixed with a
+    `worktree_drift_repaired` event (plus a `checklist_conflict_resolved`
+    event if the carry itself resolved a tasks.md conflict), followed by any
+    `dependency_file_drift` events the re-check fires. If the re-check still
+    raises, the exception propagates unchanged and no event is journaled for
+    this attempt.
     """
     try:
         return _require_dependency_files(wt, task, by_id)
     except WorktreeMissingDependencyFileError:
+        checklist_event = None
         if remote and base:
-            _carry_squash_merged_dependencies(repo, spec_id, task, by_id, wt, remote, base)
-        return _require_dependency_files(wt, task, by_id)
+            checklist_event = _carry_squash_merged_dependencies(
+                repo, spec_id, task, by_id, wt, remote, base
+            )
+        drift_events = _require_dependency_files(wt, task, by_id)
+        repair_events = [
+            {
+                "event": "worktree_drift_repaired",
+                "task": task["id"],
+                "at": round(time.time(), 3),
+            }
+        ]
+        if checklist_event is not None:
+            repair_events.append(checklist_event)
+        return repair_events + drift_events
 
 
 def set_task_status_completed(path: Path) -> bool:
