@@ -160,3 +160,96 @@ def test_render_includes_breakdowns(tmp_path):
 
     assert "dependency_file_drift: 1" in out
     assert "TASK-001: 1" in out
+
+
+def test_scan_aggregates_worktree_drift_repaired_by_task(tmp_path):
+    repo = tmp_path / "myrepo"
+    repo.mkdir()
+    wt = tmp_path / "myrepo-worktrees"
+    wt.mkdir()
+    _write_journal(wt / "run-001-feature.json", {
+        "spec_id": "001-feature",
+        "entries": [
+            {"event": "worktree_drift_repaired", "task": "TASK-002", "at": 1.0},
+        ],
+    })
+    _write_journal(wt / "run-002-feature.json", {
+        "spec_id": "002-feature",
+        "entries": [
+            {"event": "worktree_drift_repaired", "task": "TASK-002", "at": 2.0},
+        ],
+    })
+
+    summary = safety_net_report.scan(repo)
+
+    assert summary["by_event"] == {"worktree_drift_repaired": 2}
+    assert summary["worktree_drift_repaired_by_task"] == {"TASK-002": 2}
+
+
+def test_scan_aggregates_checklist_conflict_resolved_by_task(tmp_path):
+    repo = tmp_path / "myrepo"
+    repo.mkdir()
+    wt = tmp_path / "myrepo-worktrees"
+    wt.mkdir()
+    _write_journal(wt / "run-001-feature.json", {
+        "spec_id": "001-feature",
+        "entries": [
+            {"event": "checklist_conflict_resolved", "task": "TASK-005", "at": 1.0},
+        ],
+    })
+
+    summary = safety_net_report.scan(repo)
+
+    assert summary["by_event"] == {"checklist_conflict_resolved": 1}
+    assert summary["checklist_conflict_resolved_by_task"] == {"TASK-005": 1}
+
+
+def test_scan_combines_repair_events_with_dependency_file_drift_in_one_journal(tmp_path):
+    """`_require_dependency_files_with_repair` can return both
+    `worktree_drift_repaired` and a `dependency_file_drift` in the same
+    returned list (the retry succeeded but the re-check still detected
+    filename drift on a different file) -- both must be counted."""
+    repo = tmp_path / "myrepo"
+    repo.mkdir()
+    wt = tmp_path / "myrepo-worktrees"
+    wt.mkdir()
+    _write_journal(wt / "run-001-feature.json", {
+        "spec_id": "001-feature",
+        "entries": [
+            {"event": "worktree_drift_repaired", "task": "TASK-002", "at": 1.0},
+            {"event": "dependency_file_drift", "task": "TASK-002",
+             "dep_id": "TASK-001", "declared_path": "helper.py",
+             "dep_head_sha": "abc123", "at": 1.0},
+        ],
+    })
+
+    summary = safety_net_report.scan(repo)
+
+    assert summary["by_event"] == {
+        "worktree_drift_repaired": 1, "dependency_file_drift": 1,
+    }
+    assert summary["worktree_drift_repaired_by_task"] == {"TASK-002": 1}
+    assert summary["dependency_file_drift_by_dep_id"] == {"TASK-001": 1}
+
+
+def test_render_includes_repair_event_breakdowns(tmp_path):
+    repo = tmp_path / "myrepo"
+    repo.mkdir()
+    wt = tmp_path / "myrepo-worktrees"
+    wt.mkdir()
+    _write_journal(wt / "run-001-feature.json", {
+        "spec_id": "001-feature",
+        "entries": [
+            {"event": "worktree_drift_repaired", "task": "TASK-002", "at": 1.0},
+            {"event": "checklist_conflict_resolved", "task": "TASK-005", "at": 2.0},
+        ],
+    })
+
+    out = safety_net_report.render(safety_net_report.scan(repo), repo)
+
+    assert "worktree_drift_repaired: 1" in out
+    assert "checklist_conflict_resolved: 1" in out
+    assert "worktree_drift_repaired by task:" in out
+    assert "  TASK-002: 1" in out
+    assert "checklist_conflict_resolved by task:" in out
+    assert "  TASK-005: 1" in out
