@@ -3707,3 +3707,84 @@ class EpicStageDetection(unittest.TestCase):
         )
 
         self.assertEqual(matched, ["001-payments.md"])
+
+
+class EpicScan(unittest.TestCase):
+    """`scan_epics()` -- sibling to `scan()`, one row per `docs/specs/epics/*.md`."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _mk_epic(self, epic_id: str, *, features: int = 1,
+                 status: str | None = None) -> Path:
+        epics = self.repo / "docs" / "specs" / "epics"
+        epics.mkdir(parents=True, exist_ok=True)
+        body = [f"# Epic: {epic_id}", ""]
+        if status is not None:
+            body.append(f"**Status:** {status}")
+            body.append("")
+        for n in range(1, features + 1):
+            body.append(f"### Feature {n}")
+            body.append(f"Feature {n} body.")
+            body.append("")
+        path = epics / f"{epic_id}.md"
+        path.write_text("\n".join(body), encoding="utf-8")
+        return path
+
+    def test_scan_epics_row_shape_matches_detect_epic_stage(self):
+        # scan_epics() must be a thin per-file wrapper: one row per epic file,
+        # identical to calling detect_epic_stage() directly, sorted by filename.
+        epic_a = self._mk_epic("001-payments", features=2)
+        epic_b = self._mk_epic("002-onboarding", features=1)
+        self._mk_citing_spec("020-welcome", "002-onboarding")
+
+        rows = dashboard.scan_epics(self.repo)
+
+        self.assertEqual([r["id"] for r in rows], ["001-payments", "002-onboarding"])
+        self.assertEqual(rows[0], dashboard.detect_epic_stage(epic_a, self.repo))
+        self.assertEqual(rows[1], dashboard.detect_epic_stage(epic_b, self.repo))
+        for row in rows:
+            self.assertEqual(
+                set(row),
+                {"id", "epic_file", "status_header", "stage", "next_action",
+                 "features", "cited", "citing_specs"},
+            )
+
+    def test_scan_epics_returns_empty_list_when_no_epics_dir(self):
+        # No docs/specs/epics/ at all -- a repo that has never adopted the
+        # epic-decomposition convention must not error, just report no epics.
+        self.assertEqual(dashboard.scan_epics(self.repo), [])
+        (self.repo / "docs" / "specs").mkdir(parents=True)
+        self.assertEqual(dashboard.scan_epics(self.repo), [])
+
+    def test_unreadable_epic_degrades_to_error_row_sibling_still_scans(self):
+        # Per-epic-file isolation (mirrors _safe_detect_stage): one malformed
+        # epic file must not take down the whole scan, and its well-formed
+        # sibling must still classify normally.
+        self._mk_epic("001-payments", features=1)
+        epics_dir = self.repo / "docs" / "specs" / "epics"
+        broken = epics_dir / "002-broken.md"
+        broken.write_bytes(b"not valid utf-8: \xff\xfe\x80\x81")
+
+        rows = dashboard.scan_epics(self.repo)
+
+        self.assertEqual([r["id"] for r in rows], ["001-payments", "002-broken"])
+        good, bad = rows
+        self.assertEqual(good["stage"], "epic-gap")  # 1 feature, no citing spec
+        self.assertEqual(bad["stage"], "error")
+        self.assertEqual(bad["epic_file"], "002-broken.md")
+        self.assertIsNone(bad["status_header"])
+        self.assertIsNone(bad["features"])
+        self.assertIsNone(bad["cited"])
+        self.assertEqual(bad["citing_specs"], [])
+        self.assertIn("inspect manually", bad["next_action"])
+
+    def _mk_citing_spec(self, spec_id: str, epic_id: str) -> None:
+        spec_dir = self.repo / "docs" / "specs" / spec_id
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        (spec_dir / "spec.md").write_text(
+            f"# Spec {spec_id}\n\nOwning epic: {epic_id}\n", encoding="utf-8")
