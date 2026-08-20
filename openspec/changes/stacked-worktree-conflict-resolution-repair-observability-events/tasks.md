@@ -1,6 +1,6 @@
 ## 1. Journal events for the two repair-path safety nets, plus their aggregation
 
-- [ ] 1.1 In `src/worktrail/orchestrator/live.py`: change
+- [x] 1.1 In `src/worktrail/orchestrator/live.py`: change
       `_carry_squash_merged_dependencies` to return `dict | None` instead of
       `None` unconditionally -- return a `{"event": "checklist_conflict_resolved",
       "task": task["id"], "at": round(time.time(), 3)}` event when
