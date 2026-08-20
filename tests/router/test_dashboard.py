@@ -3619,3 +3619,242 @@ class DecisionsJsonCLI(unittest.TestCase):
             output = self._run_json(["--root", str(specs_dir), "--json"])
 
             self.assertEqual(output["open_decisions"], [])
+
+
+class EpicStageDetection(unittest.TestCase):
+    """`detect_epic_stage()` classifies one docs/specs/epics/*.md decomposition
+    document -- pins each of its stage outcomes against the shared detector 1.1
+    ported from seed_backlog's originals."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _mk_epic(self, epic_id: str, *, features: int = 1,
+                 status: str | None = None) -> Path:
+        epics = self.repo / "docs" / "specs" / "epics"
+        epics.mkdir(parents=True, exist_ok=True)
+        body = [f"# Epic: {epic_id}", ""]
+        if status is not None:
+            body.append(f"**Status:** {status}")
+            body.append("")
+        for n in range(1, features + 1):
+            body.append(f"### Feature {n}")
+            body.append(f"Feature {n} body.")
+            body.append("")
+        path = epics / f"{epic_id}.md"
+        path.write_text("\n".join(body), encoding="utf-8")
+        return path
+
+    def _mk_citing_spec(self, spec_id: str, epic_id: str) -> None:
+        spec_dir = self.repo / "docs" / "specs" / spec_id
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        (spec_dir / "spec.md").write_text(
+            f"# Spec {spec_id}\n\nOwning epic: {epic_id}\n", encoding="utf-8")
+
+    def test_epic_gap_when_fewer_citing_specs_than_features(self):
+        epic_file = self._mk_epic("001-payments", features=2)
+        self._mk_citing_spec("010-billing", "001-payments")
+
+        result = dashboard.detect_epic_stage(epic_file, self.repo)
+
+        self.assertEqual(result["stage"], "epic-gap")
+        self.assertEqual(result["features"], 2)
+        self.assertEqual(result["cited"], 1)
+        self.assertIn("010-billing", result["citing_specs"])
+
+    def test_epic_unparseable_when_no_feature_headings(self):
+        epic_file = self._mk_epic("002-freeform", features=0)
+
+        result = dashboard.detect_epic_stage(epic_file, self.repo)
+
+        self.assertEqual(result["stage"], "epic-unparseable")
+        self.assertEqual(result["features"], 0)
+        self.assertEqual(result["citing_specs"], [])
+
+    def test_epic_complete_via_terminal_status(self):
+        epic_file = self._mk_epic("003-legacy", features=3, status="Completed")
+
+        result = dashboard.detect_epic_stage(epic_file, self.repo)
+
+        self.assertEqual(result["stage"], "epic-complete")
+        self.assertIn("terminal status", result["next_action"])
+        self.assertEqual(result["citing_specs"], [])
+
+    def test_epic_complete_via_full_citation(self):
+        epic_file = self._mk_epic("004-onboarding", features=1)
+        self._mk_citing_spec("020-welcome", "004-onboarding")
+
+        result = dashboard.detect_epic_stage(epic_file, self.repo)
+
+        self.assertEqual(result["stage"], "epic-complete")
+        self.assertEqual(result["features"], 1)
+        self.assertEqual(result["cited"], 1)
+        self.assertIn("020-welcome", result["citing_specs"])
+
+    def test_non_epic_named_file_is_ignored_by_epic_id_pattern_against_real_directory(self):
+        epic_file = self._mk_epic("001-payments", features=1)
+        epics_dir = epic_file.parent
+        (epics_dir / "README.md").write_text("# Epics index\n", encoding="utf-8")
+        (epics_dir / "index.md").write_text("# Index\n", encoding="utf-8")
+
+        matched = sorted(
+            f.name for f in epics_dir.iterdir()
+            if dashboard.EPIC_ID_RE.match(f.stem)
+        )
+
+        self.assertEqual(matched, ["001-payments.md"])
+
+
+class EpicScan(unittest.TestCase):
+    """`scan_epics()` -- sibling to `scan()`, one row per `docs/specs/epics/*.md`."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _mk_epic(self, epic_id: str, *, features: int = 1,
+                 status: str | None = None) -> Path:
+        epics = self.repo / "docs" / "specs" / "epics"
+        epics.mkdir(parents=True, exist_ok=True)
+        body = [f"# Epic: {epic_id}", ""]
+        if status is not None:
+            body.append(f"**Status:** {status}")
+            body.append("")
+        for n in range(1, features + 1):
+            body.append(f"### Feature {n}")
+            body.append(f"Feature {n} body.")
+            body.append("")
+        path = epics / f"{epic_id}.md"
+        path.write_text("\n".join(body), encoding="utf-8")
+        return path
+
+    def test_scan_epics_row_shape_matches_detect_epic_stage(self):
+        # scan_epics() must be a thin per-file wrapper: one row per epic file,
+        # identical to calling detect_epic_stage() directly, sorted by filename.
+        epic_a = self._mk_epic("001-payments", features=2)
+        epic_b = self._mk_epic("002-onboarding", features=1)
+        self._mk_citing_spec("020-welcome", "002-onboarding")
+
+        rows = dashboard.scan_epics(self.repo)
+
+        self.assertEqual([r["id"] for r in rows], ["001-payments", "002-onboarding"])
+        self.assertEqual(rows[0], dashboard.detect_epic_stage(epic_a, self.repo))
+        self.assertEqual(rows[1], dashboard.detect_epic_stage(epic_b, self.repo))
+        for row in rows:
+            self.assertEqual(
+                set(row),
+                {"id", "epic_file", "status_header", "stage", "next_action",
+                 "features", "cited", "citing_specs"},
+            )
+
+    def test_scan_epics_returns_empty_list_when_no_epics_dir(self):
+        # No docs/specs/epics/ at all -- a repo that has never adopted the
+        # epic-decomposition convention must not error, just report no epics.
+        self.assertEqual(dashboard.scan_epics(self.repo), [])
+        (self.repo / "docs" / "specs").mkdir(parents=True)
+        self.assertEqual(dashboard.scan_epics(self.repo), [])
+
+    def test_unreadable_epic_degrades_to_error_row_sibling_still_scans(self):
+        # Per-epic-file isolation (mirrors _safe_detect_stage): one malformed
+        # epic file must not take down the whole scan, and its well-formed
+        # sibling must still classify normally.
+        self._mk_epic("001-payments", features=1)
+        epics_dir = self.repo / "docs" / "specs" / "epics"
+        broken = epics_dir / "002-broken.md"
+        broken.write_bytes(b"not valid utf-8: \xff\xfe\x80\x81")
+
+        rows = dashboard.scan_epics(self.repo)
+
+        self.assertEqual([r["id"] for r in rows], ["001-payments", "002-broken"])
+        good, bad = rows
+        self.assertEqual(good["stage"], "epic-gap")  # 1 feature, no citing spec
+        self.assertEqual(bad["stage"], "error")
+        self.assertEqual(bad["epic_file"], "002-broken.md")
+        self.assertIsNone(bad["status_header"])
+        self.assertIsNone(bad["features"])
+        self.assertIsNone(bad["cited"])
+        self.assertEqual(bad["citing_specs"], [])
+        self.assertIn("inspect manually", bad["next_action"])
+
+    def _mk_citing_spec(self, spec_id: str, epic_id: str) -> None:
+        spec_dir = self.repo / "docs" / "specs" / spec_id
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        (spec_dir / "spec.md").write_text(
+            f"# Spec {spec_id}\n\nOwning epic: {epic_id}\n", encoding="utf-8")
+
+
+class EpicRowsInDashboardJson(unittest.TestCase):
+    """Epic rows (scan_epics()) must reach `dashboard.main()`'s JSON output in
+    both single-repo (--root) and multi-repo (--repos) mode -- the wiring
+    main() itself does (row["epics"] / top-level "epics" key), not just
+    scan_epics() in isolation."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self._tmp.name) / "repo-a"
+        self.repo.mkdir(parents=True)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    @staticmethod
+    def _mk_epic(repo: Path, epic_id: str, *, features: int = 1) -> Path:
+        epics = repo / "docs" / "specs" / "epics"
+        epics.mkdir(parents=True, exist_ok=True)
+        body = [f"# Epic: {epic_id}", ""]
+        for n in range(1, features + 1):
+            body.append(f"### Feature {n}")
+            body.append(f"Feature {n} body.")
+            body.append("")
+        path = epics / f"{epic_id}.md"
+        path.write_text("\n".join(body), encoding="utf-8")
+        return path
+
+    def _run_json(self, argv) -> dict:
+        import io
+        from contextlib import redirect_stdout
+
+        f = io.StringIO()
+        with redirect_stdout(f):
+            dashboard.main(argv)
+        return json.loads(f.getvalue())
+
+    def test_single_repo_json_includes_epic_rows(self):
+        self._mk_epic(self.repo, "001-payments", features=2)
+        specs_dir = self.repo / "docs" / "specs"
+        output = self._run_json(["--root", str(specs_dir), "--json"])
+
+        self.assertIn("epics", output)
+        self.assertEqual(output["epics"], dashboard.scan_epics(self.repo))
+        self.assertEqual([e["id"] for e in output["epics"]], ["001-payments"])
+
+    def test_single_repo_json_epics_empty_when_no_epics_dir(self):
+        specs_dir = self.repo / "docs" / "specs"
+        specs_dir.mkdir(parents=True)
+        output = self._run_json(["--root", str(specs_dir), "--json"])
+
+        self.assertEqual(output["epics"], [])
+
+    def test_repos_json_includes_per_repo_epic_rows(self):
+        (self.repo / ".git").mkdir(parents=True)  # makes is_git_repo() true
+        self._mk_epic(self.repo, "002-onboarding", features=1)
+        other = self.repo.parent / "repo-b"
+        (other / ".git").mkdir(parents=True)  # no epics dir -- must report []
+
+        parent = self.repo.parent
+        output = self._run_json(["--repos", str(parent), "--json"])
+
+        rows_by_repo = {r["repo"]: r for r in output["repos"]}
+        self.assertIn("epics", rows_by_repo["repo-a"])
+        self.assertEqual(
+            [e["id"] for e in rows_by_repo["repo-a"]["epics"]], ["002-onboarding"]
+        )
+        self.assertEqual(rows_by_repo["repo-a"]["epics"], dashboard.scan_epics(self.repo))
+        self.assertEqual(rows_by_repo["repo-b"]["epics"], [])
