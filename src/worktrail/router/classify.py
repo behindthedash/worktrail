@@ -86,6 +86,10 @@ ROUTE_SIGNALS: Dict[str, List[Tuple[re.Pattern, int, str]]] = {
         _sig(r"\bfix\b", 2, "fix-verb"),
         _sig(r"\bfails?\b|\bfailing\b|\berrors?\b", 2, "fails"),
         _sig(r"\bwrong(ly)?\b|\bincorrect(ly)?\b|\bshould (be|return|show)\b.*\bbut\b", 3, "violates-expectation"),
+        _sig(r"\bsilent(ly)?\b", 2, "silent-failure"),
+        _sig(r"\b(?:no|missing|lacks?|without)\b(?:\s+\S+){0,4}\s+"
+             r"(?:guard|gate|check(?:s|ed)?|rule(?:s)?|coverage|safeguard|validation|skip)\b",
+             2, "missing-safeguard"),
     ],
     "I": [
         _sig(r"\binvestigat\w*\b|\bdiagnos\w*\b|\blook into\b|\bdig into\b", 4, "investigate-verb"),
