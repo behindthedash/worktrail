@@ -119,10 +119,36 @@ mutation($threadId: ID!) {
 
 DEFAULT_REPLY_BODY = (
     "Resolved automatically by the CI watch loop: the file this comment "
-    "targets was modified by a commit pushed later in this run (or the run "
-    "record documents an explicit decision), so this finding is treated as "
-    "addressed. Reopen if that's wrong."
+    "targets was modified by a commit pushed later in this run, so this "
+    "finding is treated as addressed. Reopen if that's wrong."
 )
+
+DECISION_REPLY_TEMPLATE = (
+    "Resolved automatically by the CI watch loop: the run record's decision "
+    "log explains why this finding is treated as addressed:\n\n"
+    "> {decision}\n\n"
+    "Reopen if that's wrong."
+)
+
+COMMIT_REPLY_TEMPLATE = (
+    "Resolved automatically by the CI watch loop: commit {commit} modified "
+    "the file this comment targets, pushed later in this run, so this "
+    "finding is treated as addressed. Reopen if that's wrong."
+)
+
+
+def _reply_body_for(thread: Dict[str, Any]) -> str:
+    """The reply text for an addressed thread -- the actual decisions-log
+    reasoning when that's how it was correlated, the specific commit SHA
+    when a later commit is how it was correlated, the generic fallback
+    otherwise."""
+    decision = thread.get("_matched_decision")
+    if decision:
+        return DECISION_REPLY_TEMPLATE.format(decision=decision)
+    commit = thread.get("_matched_commit")
+    if commit:
+        return COMMIT_REPLY_TEMPLATE.format(commit=commit[:7])
+    return DEFAULT_REPLY_BODY
 
 
 def _run_gh(args: List[str], timeout: int = GH_TIMEOUT_SECONDS,
@@ -173,28 +199,36 @@ def fetch_review_threads(
 
 def _commit_touched_path_since(
     repo: Path, path: str, since_iso: str, ref: str = "HEAD", runner: Runner = subprocess.run,
-) -> bool:
+) -> Optional[str]:
+    """The SHA of the most recent commit on `ref` that touched `path` since
+    `since_iso`, or `None` if none did (or the lookup failed)."""
     try:
         result = runner(
             ["git", "-C", str(repo), "log", ref, f"--since={since_iso}", "--format=%H", "--", path],
             capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return False
-    return result.returncode == 0 and bool(result.stdout.strip())
+        return None
+    if result.returncode != 0:
+        return None
+    output = result.stdout.strip()
+    return output.splitlines()[0] if output else None
 
 
-def _decision_mentions_thread(decisions: List[str], thread: Dict[str, Any]) -> bool:
+def _find_matching_decision(decisions: List[str], thread: Dict[str, Any]) -> Optional[str]:
+    """The first decisions-log entry that names this thread's id or path, or
+    `None`. The matched text (not just a bool) is what lets the reply quote
+    the actual reasoning instead of a generic template."""
     thread_id = thread.get("id") or ""
     path = thread.get("path") or ""
     for decision in decisions:
         if not isinstance(decision, str):
             continue
         if thread_id and thread_id in decision:
-            return True
+            return decision
         if path and path in decision:
-            return True
-    return False
+            return decision
+    return None
 
 
 def correlate(
@@ -204,6 +238,13 @@ def correlate(
     """Split a PR's threads into unresolved-and-addressed (safe to auto-reply
     and resolve) vs unresolved-and-unaddressed (blocking). A thread already
     marked `isResolved` by GitHub is excluded from both -- nothing to do.
+
+    An addressed thread that matched via the decisions log (rather than a
+    touched-file commit) carries the matched text on `_matched_decision`, and
+    one that matched via a touched-file commit -- on `repo`'s own HEAD, or on
+    `base_ref` as a fallback (see below) -- carries that commit's SHA on
+    `_matched_commit`, so the reply can cite the actual reasoning/commit
+    instead of a generic template.
 
     `base_ref`, when given, is checked as a fallback after HEAD and the
     decisions log both miss -- a commit touching the thread's path in that
@@ -218,14 +259,25 @@ def correlate(
         created_at = comments[0].get("createdAt") if comments else None
         path = thread.get("path")
         is_addressed = False
-        if path and created_at and _commit_touched_path_since(repo, path, created_at, runner=runner):
+        matched_commit = (
+            _commit_touched_path_since(repo, path, created_at, runner=runner)
+            if path and created_at else None
+        )
+        if matched_commit:
             is_addressed = True
-        elif _decision_mentions_thread(decisions, thread):
-            is_addressed = True
-        elif path and created_at and base_ref and _commit_touched_path_since(
-            repo, path, created_at, ref=base_ref, runner=runner
-        ):
-            is_addressed = True
+            thread = {**thread, "_matched_commit": matched_commit}
+        else:
+            matched_decision = _find_matching_decision(decisions, thread)
+            if matched_decision is not None:
+                is_addressed = True
+                thread = {**thread, "_matched_decision": matched_decision}
+            elif path and created_at and base_ref:
+                base_matched_commit = _commit_touched_path_since(
+                    repo, path, created_at, ref=base_ref, runner=runner
+                )
+                if base_matched_commit:
+                    is_addressed = True
+                    thread = {**thread, "_matched_commit": base_matched_commit}
         (addressed if is_addressed else unaddressed).append(thread)
     return {"unresolved": unresolved, "addressed": addressed, "unaddressed": unaddressed}
 
@@ -326,7 +378,7 @@ def check(
         if dry_run:
             entry["dry_run"] = True
         else:
-            ok, err = reply_and_resolve(thread["id"], DEFAULT_REPLY_BODY, runner=runner)
+            ok, err = reply_and_resolve(thread["id"], _reply_body_for(thread), runner=runner)
             entry["resolved"] = ok
             if err:
                 entry["error"] = err

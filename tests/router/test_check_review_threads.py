@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import unittest
 from pathlib import Path
 from typing import Any, Dict, List
@@ -167,6 +168,26 @@ class TestCorrelate(unittest.TestCase):
         self.assertEqual(grouped["addressed"], [])
         self.assertEqual([t["id"] for t in grouped["unaddressed"]], ["T_1"])
 
+    def test_decision_log_match_attaches_matched_decision_text(self) -> None:
+        threads = [_thread("T_1", "a.py", resolved=False)]
+        runner = _FakeRunner({"git -C": _FakeResult(0, "")})  # no commit evidence
+        decisions = ["investigated a.py finding, false positive, not fixing"]
+        grouped = crt.correlate(Path("/repo"), threads, decisions, runner=runner)
+        self.assertEqual(grouped["addressed"][0]["_matched_decision"], decisions[0])
+
+    def test_commit_match_does_not_attach_matched_decision(self) -> None:
+        threads = [_thread("T_1", "a.py", resolved=False)]
+        runner = _FakeRunner({"git -C": _FakeResult(0, "abc123\n")})  # commit evidence
+        decisions = ["irrelevant decision text"]
+        grouped = crt.correlate(Path("/repo"), threads, decisions, runner=runner)
+        self.assertNotIn("_matched_decision", grouped["addressed"][0])
+
+    def test_commit_match_attaches_matched_commit_sha(self) -> None:
+        threads = [_thread("T_1", "a.py", resolved=False)]
+        runner = _FakeRunner({"git -C": _FakeResult(0, "abc1234567890\n")})
+        grouped = crt.correlate(Path("/repo"), threads, [], runner=runner)
+        self.assertEqual(grouped["addressed"][0]["_matched_commit"], "abc1234567890")
+
     def test_base_ref_omitted_preserves_prior_behavior(self) -> None:
         threads = [_thread("T_1", "a.py", resolved=False)]
         runner = _FakeRunner({"git -C": _FakeResult(0, "")})  # no commit on HEAD either
@@ -194,6 +215,19 @@ class TestCorrelate(unittest.TestCase):
         self.assertEqual([t["id"] for t in grouped["addressed"]], ["T_1"])
         self.assertEqual(grouped["unaddressed"], [])
         self.assertEqual(len(calls), 2)  # HEAD checked first, then base_ref
+
+    def test_base_ref_match_attaches_matched_commit_sha(self) -> None:
+        threads = [_thread("T_1", "a.py", resolved=False, created_at="2026-08-01T00:00:00Z")]
+
+        def runner(cmd: List[str], **kwargs: Any) -> _FakeResult:
+            if cmd[:5] == ["git", "-C", "/repo", "log", "HEAD"]:
+                return _FakeResult(0, "")
+            if cmd[:5] == ["git", "-C", "/repo", "log", "origin/main"]:
+                return _FakeResult(0, "def4567890abc\n")
+            raise AssertionError(f"unscripted command: {cmd}")
+
+        grouped = crt.correlate(Path("/repo"), threads, [], runner=runner, base_ref="origin/main")
+        self.assertEqual(grouped["addressed"][0]["_matched_commit"], "def4567890abc")
 
     def test_base_ref_not_checked_when_head_already_matches(self) -> None:
         threads = [_thread("T_1", "a.py", resolved=False, created_at="2026-08-01T00:00:00Z")]
@@ -227,6 +261,24 @@ class TestCorrelate(unittest.TestCase):
         grouped = crt.correlate(Path("/repo"), threads, [], runner=runner, base_ref="origin/main")
         self.assertEqual(grouped["addressed"], [])
         self.assertEqual([t["id"] for t in grouped["unaddressed"]], ["T_1"])
+
+
+class TestReplyBodyFor(unittest.TestCase):
+    def test_decision_matched_thread_quotes_decision_text(self) -> None:
+        thread = {"id": "T_1", "_matched_decision": "investigated, false positive, not fixing"}
+        body = crt._reply_body_for(thread)
+        self.assertIn("investigated, false positive, not fixing", body)
+        self.assertNotEqual(body, crt.DEFAULT_REPLY_BODY)
+
+    def test_commit_matched_thread_uses_default_body(self) -> None:
+        thread = {"id": "T_1"}
+        self.assertEqual(crt._reply_body_for(thread), crt.DEFAULT_REPLY_BODY)
+
+    def test_commit_matched_thread_cites_commit_sha(self) -> None:
+        thread = {"id": "T_1", "_matched_commit": "abc1234567890"}
+        body = crt._reply_body_for(thread)
+        self.assertIn("abc1234", body)
+        self.assertNotEqual(body, crt.DEFAULT_REPLY_BODY)
 
 
 class TestReplyAndResolve(unittest.TestCase):
@@ -300,6 +352,26 @@ class TestCheck(unittest.TestCase):
             raise AssertionError(f"unscripted command: {cmd}")
 
         res = crt.check(Path("/repo"), 42, runner=runner)
+        self.assertTrue(res["checked"])
+        self.assertFalse(res["blocking"])
+        self.assertEqual(len(res["resolved_now"]), 1)
+        self.assertTrue(res["resolved_now"][0]["resolved"])
+
+    def test_base_ref_plumbed_through_to_resolve_cross_pr_fix(self) -> None:
+        def runner(cmd: List[str], **kwargs: Any) -> _FakeResult:
+            if cmd[:2] == ["git", "remote"]:
+                return _FakeResult(0, "https://github.com/acme/widgets.git\n")
+            if cmd[:2] == ["gh", "api"] and "reviewThreads" in " ".join(cmd):
+                return _threads_response([_thread("T_1", "a.py", resolved=False)])
+            if cmd[:5] == ["git", "-C", "/repo", "log", "HEAD"]:
+                return _FakeResult(0, "")  # nothing on this PR's own branch
+            if cmd[:5] == ["git", "-C", "/repo", "log", "origin/main"]:
+                return _FakeResult(0, "def4567890abc\n")  # fixed via a separate merged PR
+            if cmd[:2] == ["gh", "api"]:
+                return _FakeResult(0, "{}")  # reply / resolve mutations
+            raise AssertionError(f"unscripted command: {cmd}")
+
+        res = crt.check(Path("/repo"), 42, base_ref="origin/main", runner=runner)
         self.assertTrue(res["checked"])
         self.assertFalse(res["blocking"])
         self.assertEqual(len(res["resolved_now"]), 1)
@@ -383,25 +455,68 @@ class TestCheck(unittest.TestCase):
         self.assertFalse(res["blocking"])
         self.assertTrue(res["resolved_now"][0]["dry_run"])
 
-    def test_base_ref_plumbed_through_to_resolve_cross_pr_fix(self) -> None:
+    def test_decision_log_addressed_thread_reply_quotes_decision_text(self) -> None:
+        decision_text = "investigated a.py finding, false positive, not fixing"
+        calls: List[List[str]] = []
+
         def runner(cmd: List[str], **kwargs: Any) -> _FakeResult:
+            calls.append(cmd)
             if cmd[:2] == ["git", "remote"]:
                 return _FakeResult(0, "https://github.com/acme/widgets.git\n")
             if cmd[:2] == ["gh", "api"] and "reviewThreads" in " ".join(cmd):
                 return _threads_response([_thread("T_1", "a.py", resolved=False)])
-            if cmd[:5] == ["git", "-C", "/repo", "log", "HEAD"]:
-                return _FakeResult(0, "")  # nothing on this PR's own branch
-            if cmd[:5] == ["git", "-C", "/repo", "log", "origin/main"]:
-                return _FakeResult(0, "def456\n")  # fixed via a separate merged PR
+            if cmd[:2] == ["git", "-C"]:
+                return _FakeResult(0, "")  # no commit touched the path
             if cmd[:2] == ["gh", "api"]:
                 return _FakeResult(0, "{}")  # reply / resolve mutations
             raise AssertionError(f"unscripted command: {cmd}")
 
-        res = crt.check(Path("/repo"), 42, base_ref="origin/main", runner=runner)
+        with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
+            f.write(f'decisions:\n  - "{decision_text}"\n')
+            run_record_path = Path(f.name)
+
+        try:
+            res = crt.check(Path("/repo"), 42, run_record_path=run_record_path, runner=runner)
+        finally:
+            run_record_path.unlink()
+
         self.assertTrue(res["checked"])
         self.assertFalse(res["blocking"])
         self.assertEqual(len(res["resolved_now"]), 1)
         self.assertTrue(res["resolved_now"][0]["resolved"])
+        reply_calls = [c for c in calls if "addPullRequestReviewThreadReply" in " ".join(c)]
+        self.assertEqual(len(reply_calls), 1)
+        body_args = [arg for arg in reply_calls[0] if arg.startswith("body=")]
+        self.assertEqual(len(body_args), 1)
+        self.assertIn(decision_text, body_args[0])
+        self.assertNotEqual(body_args[0], f"body={crt.DEFAULT_REPLY_BODY}")
+
+    def test_commit_addressed_thread_reply_cites_commit_sha(self) -> None:
+        calls: List[List[str]] = []
+
+        def runner(cmd: List[str], **kwargs: Any) -> _FakeResult:
+            calls.append(cmd)
+            if cmd[:2] == ["git", "remote"]:
+                return _FakeResult(0, "https://github.com/acme/widgets.git\n")
+            if cmd[:2] == ["gh", "api"] and "reviewThreads" in " ".join(cmd):
+                return _threads_response([_thread("T_1", "a.py", resolved=False)])
+            if cmd[:2] == ["git", "-C"]:
+                return _FakeResult(0, "abc1234567890\n")  # commit touched a.py since thread opened
+            if cmd[:2] == ["gh", "api"]:
+                return _FakeResult(0, "{}")  # reply / resolve mutations
+            raise AssertionError(f"unscripted command: {cmd}")
+
+        res = crt.check(Path("/repo"), 42, runner=runner)
+        self.assertTrue(res["checked"])
+        self.assertFalse(res["blocking"])
+        self.assertEqual(len(res["resolved_now"]), 1)
+        self.assertTrue(res["resolved_now"][0]["resolved"])
+        reply_calls = [c for c in calls if "addPullRequestReviewThreadReply" in " ".join(c)]
+        self.assertEqual(len(reply_calls), 1)
+        body_args = [arg for arg in reply_calls[0] if arg.startswith("body=")]
+        self.assertEqual(len(body_args), 1)
+        self.assertIn("abc1234", body_args[0])
+        self.assertNotEqual(body_args[0], f"body={crt.DEFAULT_REPLY_BODY}")
 
     def test_explicit_owner_name_skips_git_remote_lookup(self) -> None:
         def runner(cmd: List[str], **kwargs: Any) -> _FakeResult:
