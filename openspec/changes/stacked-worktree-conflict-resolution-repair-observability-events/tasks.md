@@ -18,7 +18,7 @@
       (`ensure_wt`, `_ensure_wt`) already extend `entries` and call
       `record()`/`_record()` with whatever list they get back, so no change is
       needed at either call site itself.
-- [ ] 1.2 In `src/worktrail/orchestrator/safety_net_report.py`: extend `scan()` to
+- [x] 1.2 In `src/worktrail/orchestrator/safety_net_report.py`: extend `scan()` to
       also break down `worktree_drift_repaired` and `checklist_conflict_resolved`
       fire counts by `task` (mirroring `dependency_file_drift_by_dep_id`'s shape,
       keyed on `event.get("task", "unknown")`), and extend `render()` to print
