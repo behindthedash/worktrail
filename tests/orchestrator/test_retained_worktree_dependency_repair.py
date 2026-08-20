@@ -120,7 +120,10 @@ class RetainedWorktreeRepairsOnDrift(unittest.TestCase):
                 wt, task, by_id, repo, "102-x", "origin", "main"
             )
 
-            self.assertEqual(events, [])
+            self.assertEqual(
+                events,
+                [{"event": "worktree_drift_repaired", "task": "TASK-002", "at": mock.ANY}],
+            )
             self.assertEqual((wt / "dep_file.py").read_text(), "dependency content\n")
             status = _git(wt, "status", "--porcelain").stdout
             self.assertEqual(status.strip(), "", "the repair leaves a clean tree")

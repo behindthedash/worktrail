@@ -27,6 +27,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -287,10 +288,15 @@ class TasksMdChecklistConflictResolvesViaUnion(unittest.TestCase):
                 tmp, bare, "## 1. Group A\n\n- [ ] 1.1 foo\n- [x] 1.2 bar\n"
             )
 
-            live._carry_squash_merged_dependencies(
+            event = live._carry_squash_merged_dependencies(
                 repo, "102-x", task, by_id, wt, "origin", "main"
             )
 
+            self.assertEqual(
+                event,
+                {"event": "checklist_conflict_resolved", "task": "TASK-002", "at": mock.ANY},
+                "resolving the checklist-union exception must report a structured event",
+            )
             self.assertEqual(
                 (wt_tasks_dir / "tasks.md").read_text(),
                 "## 1. Group A\n\n- [x] 1.1 foo\n- [x] 1.2 bar\n",
@@ -338,10 +344,13 @@ class TasksMdConflictPlusOtherFileFailsLoud(unittest.TestCase):
                 also_touch_shared="line1\nline2-from-dependency\nline3\n",
             )
 
-            live._carry_squash_merged_dependencies(
+            event = live._carry_squash_merged_dependencies(
                 repo, "102-x", task, by_id, wt, "origin", "main"
             )
 
+            self.assertIsNone(
+                event, "an aborted merge (conflict beyond tasks.md alone) reports no event"
+            )
             status = _git(wt, "status", "--porcelain").stdout
             self.assertEqual(status.strip(), "", "an aborted merge leaves a clean tree")
             self.assertEqual(
