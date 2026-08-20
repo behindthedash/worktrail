@@ -2979,6 +2979,7 @@ def main(argv=None) -> int:
         repo_rows = scan_repos(Path(args.repos), run_record_dir=run_record_dir)
         for row in repo_rows:
             row["recent_runs"] = load_recent_runs(Path(row["path"]), runs_dir=run_record_dir)
+            row["epics"] = scan_epics(Path(row["path"]))
         backlog_total = sum(r.get("backlog", 0) for r in repo_rows)
         inflight = inflight_briefs(picked_dir, stale_hours=args.inflight_stale_hours)
         staleness_warnings = (
@@ -3027,6 +3028,7 @@ def main(argv=None) -> int:
     # Single-repo worktrees live at <repo>/../<repo>-worktrees/. args.root is
     # <repo>/docs/specs, so the repo is its grandparent.
     repo_dir = Path(args.root).resolve().parent.parent
+    epic_rows = scan_epics(repo_dir)
     worktrees = [wt.name for wt in _find_worktrees(repo_dir.parent, repo_dir.name)]
     backlog_total = sum(1 for r in rows if r["stage"] in _BACKLOG)
     inflight = inflight_briefs(picked_dir, stale_hours=args.inflight_stale_hours)
@@ -3051,6 +3053,7 @@ def main(argv=None) -> int:
                 {
                     "constitution": con,
                     "specs": rows,
+                    "epics": epic_rows,
                     "active_specs": sum(1 for r in rows if r["stage"] in _ACTIVE),
                     "handoff_queue": unblocked_queue_total,
                     "inflight": inflight,
