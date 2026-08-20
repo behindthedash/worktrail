@@ -579,6 +579,91 @@ class GroupBranchFromJournal(unittest.TestCase):
         self.assertIn("feature-1", quarantined)
         self.assertIn("stg", quarantined["feature-1"])
 
+    def test_group_superseded_by_merged_tail_prs_is_pruned(self):
+        """Brief 20260820-134348: a group whose every originally-bundled task has
+        independently merged through its own tail-<id> group must be excluded from
+        group_branch entirely -- --from-verify must not chase its stale PR/branch."""
+        journal_groups = {
+            "feature-1": {
+                "pr_url": "https://github.com/o/r/pull/2400",
+                "head_branch": "full-1787247442/feature-1",
+                "state": "OPEN",
+            },
+            "tail-2.2": {"pr_url": "https://github.com/o/r/pull/2409", "head_branch": "full-1787247442/tail-2.2", "state": "MERGED"},
+            "tail-4.1": {"pr_url": "https://github.com/o/r/pull/2410", "head_branch": "full-1787247442/tail-4.1", "state": "MERGED"},
+            "tail-4.2": {"pr_url": "https://github.com/o/r/pull/2411", "head_branch": "full-1787247442/tail-4.2", "state": "OPEN"},
+        }
+        groups = [_mock_group("feature-1", ["2.2", "4.1", "4.2"])]
+        group_branch, quarantined = live._group_branch_from_journal(
+            journal_groups, "full-1787247442", groups=groups
+        )
+        self.assertNotIn("feature-1", group_branch,
+                         "a group superseded by its own tasks' tail-* PRs must never be VERIFY-eligible")
+        self.assertIn("feature-1", quarantined)
+        self.assertIn("tail-2.2", quarantined["feature-1"])
+        self.assertIn("tail-4.1", quarantined["feature-1"])
+        self.assertIn("tail-4.2", quarantined["feature-1"])
+        # The tail-* groups themselves have no parent task list (they are not
+        # part of coordinator.plan_groups' output) -- never pruned as "superseded";
+        # each remains independently VERIFY-eligible on its own valid head_branch.
+        self.assertNotIn("tail-2.2", quarantined)
+        self.assertIn("tail-2.2", group_branch)
+
+    def test_group_not_superseded_when_a_task_has_no_tail_group(self):
+        """Only some of a group's tasks reconciled through their own tail-<id>
+        group -- the parent might still be shipping the rest; it stays eligible."""
+        journal_groups = {
+            "feature-1": {
+                "pr_url": "https://github.com/o/r/pull/2400",
+                "head_branch": "full-1787247442/feature-1",
+                "state": "OPEN",
+            },
+            "tail-2.2": {"pr_url": "https://github.com/o/r/pull/2409", "head_branch": "tail-2.2", "state": "MERGED"},
+            # no tail-4.1 / tail-4.2 records at all
+        }
+        groups = [_mock_group("feature-1", ["2.2", "4.1", "4.2"])]
+        group_branch, quarantined = live._group_branch_from_journal(
+            journal_groups, "full-1787247442", groups=groups
+        )
+        self.assertIn("feature-1", group_branch)
+        self.assertNotIn("feature-1", quarantined)
+
+    def test_group_not_superseded_when_tail_group_still_quarantined(self):
+        """A tail-<id> group that itself only reached QUARANTINED is not a
+        terminal (merged/PR-opened) state -- the parent stays eligible."""
+        journal_groups = {
+            "feature-1": {
+                "pr_url": "https://github.com/o/r/pull/2400",
+                "head_branch": "full-1787247442/feature-1",
+                "state": "OPEN",
+            },
+            "tail-2.2": {"pr_url": "", "head_branch": "tail-2.2", "state": "QUARANTINED"},
+        }
+        groups = [_mock_group("feature-1", ["2.2"])]
+        group_branch, quarantined = live._group_branch_from_journal(
+            journal_groups, "full-1787247442", groups=groups
+        )
+        self.assertIn("feature-1", group_branch)
+        self.assertNotIn("feature-1", quarantined)
+
+    def test_no_groups_arg_preserves_prior_behavior(self):
+        """Existing callers that omit `groups` (e.g. unit tests exercising only
+        head_branch validation) must see identical behavior to before this fix --
+        the supersession check never fires without a task-list source."""
+        journal_groups = {
+            "feature-1": {
+                "pr_url": "https://github.com/o/r/pull/2400",
+                "head_branch": "full-1787247442/feature-1",
+                "state": "OPEN",
+            },
+            "tail-2.2": {"pr_url": "https://github.com/o/r/pull/2409", "head_branch": "tail-2.2", "state": "MERGED"},
+        }
+        group_branch, quarantined = live._group_branch_from_journal(
+            journal_groups, "full-1787247442"
+        )
+        self.assertIn("feature-1", group_branch)
+        self.assertNotIn("feature-1", quarantined)
+
 
 class ResumeNeverVerifiesCorruptedBranch(unittest.TestCase):
     """End-to-end proof (mirroring the resume-path closure structure used by the
