@@ -26,7 +26,7 @@
 
 ## 3. Deduplicate backlog-seeding's epic parsing
 
-- [ ] 3.1 Refactor `find_epic_gaps()` in `src/worktrail/workqueue/seed_backlog.py` to call the
+- [x] 3.1 Refactor `find_epic_gaps()` in `src/worktrail/workqueue/seed_backlog.py` to call the
       dashboard's shared epic-stage detector/scan from section 1 instead of its own
       `_epic_status`/`_count_features`/`_epic_citation_patterns`/`_citing_spec_ids`
       implementations, removing the now-unused duplicated helpers while preserving
