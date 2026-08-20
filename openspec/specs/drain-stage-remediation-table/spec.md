@@ -92,7 +92,7 @@ run.
 - **THEN** the returned summary dict contains non-empty
   `resumed_quarantines`, `resumed_verify_pending`,
   `resumed_stale_bookkeeping`, `resumed_sync_pending`, and
-  `resumed_openspec_archive` lists, each shaped like the existing four keys'
+  `resumed_openspec_archive` lists, each shaped like the existing keys'
   result dicts
 
 #### Scenario: Summary dict when no identity is stuck
