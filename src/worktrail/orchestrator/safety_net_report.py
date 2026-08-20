@@ -67,6 +67,8 @@ def scan(repo: Path) -> Dict[str, Any]:
     by_event: Counter[str] = Counter()
     drift_by_dep: Counter[str] = Counter()
     preflight_by_outcome: Counter[str] = Counter()
+    worktree_drift_repaired_by_task: Counter[str] = Counter()
+    checklist_conflict_resolved_by_task: Counter[str] = Counter()
     runs_scanned = 0
     runs_with_events = 0
 
@@ -84,6 +86,10 @@ def scan(repo: Path) -> Dict[str, Any]:
                 drift_by_dep[event.get("dep_id", "unknown")] += 1
             elif kind == "automerge_preflight_fallback":
                 preflight_by_outcome[event.get("outcome", "unknown")] += 1
+            elif kind == "worktree_drift_repaired":
+                worktree_drift_repaired_by_task[event.get("task", "unknown")] += 1
+            elif kind == "checklist_conflict_resolved":
+                checklist_conflict_resolved_by_task[event.get("task", "unknown")] += 1
         if fired_here:
             runs_with_events += 1
 
@@ -93,6 +99,8 @@ def scan(repo: Path) -> Dict[str, Any]:
         "by_event": dict(by_event),
         "dependency_file_drift_by_dep_id": dict(drift_by_dep),
         "automerge_preflight_fallback_by_outcome": dict(preflight_by_outcome),
+        "worktree_drift_repaired_by_task": dict(worktree_drift_repaired_by_task),
+        "checklist_conflict_resolved_by_task": dict(checklist_conflict_resolved_by_task),
     }
 
 
@@ -120,6 +128,20 @@ def render(summary: Dict[str, Any], repo: Path) -> str:
             summary["automerge_preflight_fallback_by_outcome"].items(), key=lambda kv: -kv[1]
         ):
             lines.append(f"  {outcome}: {count}")
+    if summary["worktree_drift_repaired_by_task"]:
+        lines.append("")
+        lines.append("worktree_drift_repaired by task:")
+        for task, count in sorted(
+            summary["worktree_drift_repaired_by_task"].items(), key=lambda kv: -kv[1]
+        ):
+            lines.append(f"  {task}: {count}")
+    if summary["checklist_conflict_resolved_by_task"]:
+        lines.append("")
+        lines.append("checklist_conflict_resolved by task:")
+        for task, count in sorted(
+            summary["checklist_conflict_resolved_by_task"].items(), key=lambda kv: -kv[1]
+        ):
+            lines.append(f"  {task}: {count}")
     return "\n".join(lines)
 
 
