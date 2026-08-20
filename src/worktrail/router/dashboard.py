@@ -2453,6 +2453,7 @@ def render_dashboard(
     recent_runs: Optional[List[Dict[str, Any]]] = None,
     staleness_warnings: Optional[List[Dict[str, Any]]] = None,
     queue_repo: Optional[str] = None,
+    epic_rows: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """The compact, category-grouped, deterministic dashboard the conductor prints
     verbatim (no LLM rendering). Active specs are grouped by work-category in
@@ -2465,7 +2466,11 @@ def render_dashboard(
     QUARANTINED-group signals (quarantine_selfcheck.py) get their own one-line
     review nudge; post-merge check-failure signals (audit_postmerge.py's
     dashboard_snapshot()) get their own one-line review nudge, only emitted
-    when `postmerge_check_failures` carries at least one flagged PR; when a cluster
+    when `postmerge_check_failures` carries at least one flagged PR; outstanding
+    (`epic-gap` / `epic-unparseable`) `docs/specs/epics/*.md` rows (single-repo
+    mode: `epic_rows`; multi-repo mode: each repo row's own `epics`, scan_epics()'s
+    per-repo result -- see main()) get their own one-line review nudge, omitted
+    entirely when a repo has no outstanding epics; when a cluster
     section is shown and
     `cluster_precision` (cluster_telemetry.summarize()'s result) has at least
     CLUSTER_PRECISION_MIN_DECIDED decided outcomes, an extra precision line is
@@ -2510,6 +2515,7 @@ def render_dashboard(
     quarantine_flags: List[str] = []
     quarantine_resumable_flags: List[str] = []
     stranded_flags: List[str] = []
+    outstanding_epics: List[str] = []
     runs: List[Dict[str, Any]] = []
     if repo_rows is not None:
         for r in repo_rows:
@@ -2532,6 +2538,11 @@ def render_dashboard(
                 f"{r['repo']} ({f['spec_id']}: {f['kind']})"
                 for f in r.get("journal_findings", [])
             )
+            outstanding_epics.extend(
+                f"{r['repo']} ({e['id']}: {e['stage']})"
+                for e in r.get("epics", []) or []
+                if e.get("stage") in ("epic-gap", "epic-unparseable")
+            )
             for run in r.get("recent_runs", []) or []:
                 runs.append({"who": r["repo"], **run})
         runs.sort(key=lambda x: x.get("completed_at") or x.get("started_at") or "", reverse=True)
@@ -2543,6 +2554,11 @@ def render_dashboard(
             elif s["stage"] in _BACKLOG:
                 backlog.append(s["id"])
         runs = list(recent_runs or [])
+        outstanding_epics.extend(
+            f"{e['id']} ({e['stage']})"
+            for e in (epic_rows or [])
+            if e.get("stage") in ("epic-gap", "epic-unparseable")
+        )
 
     lines: List[str] = []
     if staleness_warnings:
@@ -2660,6 +2676,14 @@ def render_dashboard(
         lines.append(
             f"🚩 Stranded runs ({len(stranded_flags)}): {head}{more} "
             "→ resume the run (stranded-tail) or inspect the journal (malformed-journal)"
+        )
+
+    if outstanding_epics:
+        head = ", ".join(outstanding_epics[:4])
+        more = f" … +{len(outstanding_epics) - 4}" if len(outstanding_epics) > 4 else ""
+        lines.append(
+            f"🧭 Outstanding epics ({len(outstanding_epics)}): {head}{more} "
+            "→ spec the next unspecced feature (docs/specs/epics/*.md)"
         )
 
     if quarantine_flags:
@@ -3046,6 +3070,7 @@ def main(argv=None) -> int:
         # briefs, observed 2026-08-13). The multi-repo overview above stays
         # unfiltered by design.
         queue_repo=repo_dir.name,
+        epic_rows=epic_rows,
     )
     if args.json:
         print(
