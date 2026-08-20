@@ -59,6 +59,32 @@ class TestExtractProbesPaths(unittest.TestCase):
         self.assertEqual(res["symbols"], [])
         self.assertEqual(res["dropped"], 0)
 
+    def test_prose_abbreviations_are_not_path_probes(self):
+        # `e.g.`/`i.e.`/`a.k.a.` are prose, not paths -- once a trailing
+        # period is stripped by `_strip_punct`, `e.g` looks like a bogus `.g`
+        # extension to a naive `_EXT_RE` test. Covers both trailing-period
+        # and bare forms, and mixed case, per the denylist's case-insensitive
+        # check in `_is_path_token`.
+        text = (
+            "See e.g. the router, i.e. the same module, a.k.a. the guard. "
+            "Also E.g without a trailing period, and I.E. in caps, and A.K.A "
+            "bare and uppercase."
+        )
+        res = cbs.extract_probes(text)
+        for bad in ("e.g", "i.e", "a.k.a", "E.g", "I.E", "A.K.A"):
+            self.assertNotIn(bad, res["paths"])
+        self.assertEqual(res["paths"], [])
+
+    def test_short_extension_backtick_paths_still_qualify(self):
+        # The denylist rejects abbreviation-shaped tokens by exact lowercased
+        # match, not by extension length -- a real short-extension path like
+        # `guard.py` must still pass, backtick-quoted or not.
+        text = "See `guard.py`, `README.md`, and `deploy.sh` for details."
+        res = cbs.extract_probes(text)
+        self.assertIn("guard.py", res["paths"])
+        self.assertIn("README.md", res["paths"])
+        self.assertIn("deploy.sh", res["paths"])
+
 
 class TestExtractProbesSymbols(unittest.TestCase):
     def test_dotted_and_underscored_symbol_probes(self):
