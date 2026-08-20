@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from worktrail.shared.brief_frontmatter import read_frontmatter, validate_brief
-from worktrail.workqueue.create_handoff import create_handoff, main
+from worktrail.workqueue.create_handoff import _slugify, create_handoff, main
 
 
 def test_create_handoff_writes_valid_brief_and_classifies(tmp_path: Path):
@@ -240,3 +240,38 @@ def test_create_handoff_leaves_existing_malformed_queue_brief_untouched_on_succe
         "20260701-000001-alpha",
         "20260701-000002",
     ]
+
+
+def test_create_handoff_body_omits_duplicate_focus_section(tmp_path: Path):
+    # handoff 20260820-073044: frontmatter `focus:` is the sole source now;
+    # the body no longer repeats it under a `## Focus` heading.
+    result = create_handoff(
+        "Fix the broken handoff dashboard",
+        queue_base=tmp_path,
+        approach="Reproduce and add a regression test.",
+    )
+    body = Path(result["path"]).read_text(encoding="utf-8")
+    assert "## Focus" not in body
+    assert "## Suggested approach" in body
+    assert read_frontmatter(Path(result["path"]))["focus"] == "Fix the broken handoff dashboard"
+
+
+def test_slugify_caps_character_length():
+    long_focus = " ".join(["supercalifragilisticexpialidocious"] * 5)
+    slug = _slugify(long_focus)
+    assert len(slug) <= 60
+    assert not slug.endswith("-")
+
+
+def test_slugify_strips_possessive_apostrophe_instead_of_stray_token():
+    slug = _slugify("ci-watch-loop.md's review-thread gate is unreachable")
+    # "md's" tokenizes to the single word "md" (no stray "s" token wasting a
+    # slot), so the 5-word budget reaches "review" instead of stopping at "s".
+    assert slug == "ci-watch-loop-md-review"
+    assert "-s-" not in f"-{slug}-"
+
+
+def test_slugify_filters_single_character_tokens():
+    slug = _slugify("a fix for the x y bug")
+    words = slug.split("-")
+    assert all(len(w) > 1 for w in words)

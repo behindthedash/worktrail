@@ -38,9 +38,17 @@ def _represent_literal_str(dumper: yaml.SafeDumper, data: str) -> yaml.ScalarNod
 yaml.SafeDumper.add_representer(_LiteralStr, _represent_literal_str)
 
 
+_SLUG_MAX_CHARS = 60
+
+
 def _slugify(focus: str) -> str:
-    words = re.findall(r"[a-z0-9]+", focus.lower())[:5]
-    return "-".join(words) or "handoff"
+    # Strip a trailing possessive "'s" from each word before tokenizing, so
+    # "md's" yields the single word "md" instead of splitting into "md" and
+    # a stray "s" that burns a slot in the word-count budget below.
+    text = re.sub(r"(?<=[a-z0-9])'s(?=\s|$)", "", focus.lower())
+    words = [w for w in re.findall(r"[a-z0-9]+", text) if len(w) > 1][:5]
+    slug = "-".join(words) or "handoff"
+    return slug[:_SLUG_MAX_CHARS].rstrip("-") or "handoff"
 
 
 def _clean_lines(values: Optional[Iterable[str]]) -> list[str]:
@@ -115,7 +123,6 @@ def _route_for(focus: str, requested: Optional[str]) -> Optional[str]:
 
 
 def _brief_body(
-    focus: str,
     context: Optional[str],
     approach: Optional[str],
     artifacts: Optional[str],
@@ -123,8 +130,7 @@ def _brief_body(
     skills: Iterable[str],
 ) -> str:
     return (
-        f"## Focus\n\n{focus.strip()}\n"
-        + _section("Discovery context", context)
+        _section("Discovery context", context)
         + _section("Suggested approach", approach)
         + _section("Key artifacts", artifacts)
         + _section("Open questions / blockers", questions)
@@ -208,7 +214,7 @@ def create_handoff(
 
     content = "---\n" + yaml.safe_dump(
         frontmatter, sort_keys=False, default_flow_style=False, allow_unicode=True
-    ) + "---\n\n" + _brief_body(focus, context, approach, artifacts, questions, skills)
+    ) + "---\n\n" + _brief_body(context, approach, artifacts, questions, skills)
     path.write_text(content, encoding="utf-8")
     valid, error = validate_brief(path)
     if not valid:
