@@ -176,17 +176,35 @@ not the change under test, is why the loop stopped.
        `mergeStateStatus`. Bounded to 2 rerun attempts total (each targets a fresh
        `CANCELLED` entry if one remains) — does **not** increment `PATCH_ITER` (no code
        changed, nothing was actually diagnosed as broken). Still `BLOCKED` after 2 rounds,
-       or no matching cancelled/success pair found: this is not self-healable by this
-       loop — `worktrail-run-record finish "$RUN" --status "blocked_product_decision"
-       --merge-result "mergeStateStatus stuck BLOCKED after merge-state guard; needs
-       manual branch-protection/ruleset inspection: <raw statusCheckRollup summary>"` and
-       stop.
+       or no matching cancelled/success pair found: **do not finish yet — run the
+       review-thread gate below now**, before giving up. A repo enforcing
+       `required_review_thread_resolution: true` (fleet-wide since 2026-08-06) can hold
+       `mergeStateStatus` at `BLOCKED` for unresolved review threads alone, with every
+       check green and no stray CANCELLED/SUCCESS pairing to find — the remedy above
+       cannot self-heal that case, and stopping here without ever running
+       `worktrail-check-review-threads` was itself the defect (worktrail brief
+       20260820-072246: datalena PR #2401's `mergeStateStatus` cleared the instant the
+       last of 5 review threads resolved, in the same GraphQL round-trip as an
+       already-armed auto-merge — this loop never reached that tool because it finished
+       `blocked_product_decision` first). Run the review-thread gate's steps now; if it
+       resolves outstanding threads and a follow-up `mergeStateStatus` re-query clears to
+       a non-`BLOCKED` value, that IS case 1's normal all-pass completion, not a
+       blocked-product-decision — continue to the "Once the gate clears" branches below.
+       Only if the review-thread gate itself reports `checked: false` (no signal) or
+       `blocking: false` (nothing to resolve) and `mergeStateStatus` is *still* `BLOCKED`
+       after that are the merge-state guard and the review-thread gate both exhausted with
+       no remaining explanation: `worktrail-run-record finish "$RUN" --status
+       "blocked_product_decision" --merge-result "mergeStateStatus stuck BLOCKED after
+       merge-state guard AND review-thread gate both exhausted; needs manual
+       branch-protection/ruleset inspection: <raw statusCheckRollup summary>"` and stop.
      - Any other value (`CLEAN`, `HAS_HOOKS`, `UNSTABLE`, `UNKNOWN`) — proceed to the
        review-thread gate unchanged.
      - `DIRTY` or `DRAFT` — a real blocker (merge conflict, draft PR), not this guard's
        target; treat as case 4 below.
-   - **Review-thread gate (mandatory before either branch below, after the merge-state
-     guard above clears):** a
+   - **Review-thread gate (mandatory before either branch below):** reached either after
+     the merge-state guard above clears to a non-`BLOCKED` value, or directly from the
+     `BLOCKED` sub-case above once its own CANCELLED/SUCCESS remedy is exhausted — never
+     skip straight past it to `blocked_product_decision` from either path. A
      required check going green only proves check pass/fail, never that reviewer findings
      (e.g. `security-review-llm`'s line comments) were actually resolved — datalena PR #2133
      accumulated 9 unresolved review threads across 4 rounds of findings that were all
