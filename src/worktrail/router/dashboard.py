@@ -1439,6 +1439,25 @@ def _safe_detect_epic_stage(epic_file: Path, repo: Path) -> Dict[str, Any]:
         }
 
 
+def scan_epics(repo: Path) -> List[Dict[str, Any]]:
+    """Sibling to `scan()`: one row per `docs/specs/epics/*.md` decomposition
+    document whose stem matches `EPIC_ID_RE`. Non-matching files in that
+    directory (an index/README, a stray note) are skipped, not misclassified.
+    Returns an empty list, not an error, when the repo has no epics directory.
+    """
+    repo = Path(repo)
+    epics_dir = repo / "docs" / "specs" / "epics"
+    if not epics_dir.is_dir():
+        return []
+    epic_files = sorted(
+        f for f in epics_dir.glob("*.md") if EPIC_ID_RE.match(f.stem)
+    )
+    if not epic_files:
+        return []
+    with ThreadPoolExecutor() as ex:
+        return list(ex.map(lambda f: _safe_detect_epic_stage(f, repo), epic_files))
+
+
 def constitution_status(specs_root: Path) -> Dict[str, bool]:
     """Phase 0 architectural DNA lives beside the specs: docs/specs/architecture.md
     + ontology.md (verified: constitution skill writes them there). Advisory only --
