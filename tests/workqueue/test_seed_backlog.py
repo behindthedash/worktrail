@@ -28,13 +28,18 @@ def _mk_needs_tasks_spec(repo: Path, spec_id: str) -> Path:
 
 
 def _mk_epic(repo: Path, epic_id: str, features: int,
-             status: str = "Proposed") -> Path:
+             status: str = "Proposed",
+             future_spec_ids: dict = None) -> Path:
     epics = repo / "docs" / "specs" / "epics"
     epics.mkdir(parents=True, exist_ok=True)
     body = [f"# Epic: {epic_id}", "", f"**Epic ID:** {epic_id}",
             f"**Status:** {status}", "", "## Feature Decomposition", ""]
+    future_spec_ids = future_spec_ids or {}
     for n in range(1, features + 1):
-        body += [f"### Feature {n} — thing {n}", "", f"Feature {n} body.", ""]
+        body += [f"### Feature {n} — thing {n}", ""]
+        if n in future_spec_ids:
+            body += [f"**Future spec id:** `{future_spec_ids[n]}`", ""]
+        body += [f"Feature {n} body.", ""]
     path = epics / f"{epic_id}.md"
     path.write_text("\n".join(body), encoding="utf-8")
     return path
@@ -66,6 +71,30 @@ def _mk_citing_openspec_change(repo: Path, slug: str, epic_id: str,
     change_dir.mkdir(parents=True)
     (change_dir / "proposal.md").write_text(
         f"# {slug}\n\nOwning epic: {epic_id}\n\n## Why\n", encoding="utf-8")
+
+
+def _mk_citing_openspec_change_by_prose(repo: Path, slug: str, epic_number: str,
+                                         feature_num: int) -> None:
+    """A change folder that cites its epic only via 'Epic <NNN> Feature <M>'
+    prose, never the literal epic id string -- the shape a live epic-002
+    change actually used (openspec/changes/work-queue-conservative-
+    dependency-resolution/proposal.md)."""
+    change_dir = repo / "openspec" / "changes" / slug
+    change_dir.mkdir(parents=True)
+    (change_dir / "proposal.md").write_text(
+        f"# {slug}\n\nEpic {epic_number} Feature {feature_num} adds this.\n",
+        encoding="utf-8")
+
+
+def _mk_citing_openspec_change_by_future_spec_id(repo: Path, slug: str,
+                                                  future_spec_id: str) -> None:
+    """A change folder that cites its epic only via the feature's documented
+    future spec id, never the literal epic id string or 'Epic N Feature M'
+    prose."""
+    change_dir = repo / "openspec" / "changes" / slug
+    change_dir.mkdir(parents=True)
+    (change_dir / "proposal.md").write_text(
+        f"# {slug}\n\nDelivers {future_spec_id}.\n", encoding="utf-8")
 
 
 def _mk_openspec_needs_tasks_change(repo: Path, slug: str) -> Path:
@@ -292,6 +321,55 @@ def test_mixed_format_citations_are_not_undercounted(tmp_path):
     summary = seed_backlog.seed_backlog(
         repos_root, queue_base=tmp_path / "wq", log=lambda _m: None)
     assert summary["seeded"] == []
+
+
+def test_epic_number_feature_prose_citation_counts_toward_epic(tmp_path):
+    # Regression for the live 2026-08-19 false-stale incident: brief
+    # 20260819-021834-epic-002-safe-work-queue claimed "only 1 spec cites it"
+    # for epic 002 even though Feature 2's change (work-queue-conservative-
+    # dependency-resolution) was already implemented and merged -- its
+    # proposal.md cites the epic only via "Epic 002 Feature 2" prose, never
+    # the literal epic id string.
+    repos_root = tmp_path / "projects"
+    repo = _mk_repo(repos_root, "repo-a")
+    _mk_epic(repo, "002-payments", features=2)
+    _mk_citing_spec(repo, "020-payments-core", "002-payments")
+    _mk_citing_openspec_change_by_prose(repo, "payments-refunds", "002", 2)
+
+    summary = seed_backlog.seed_backlog(
+        repos_root, queue_base=tmp_path / "wq", log=lambda _m: None)
+    assert summary["seeded"] == []
+
+
+def test_future_spec_id_citation_counts_toward_epic(tmp_path):
+    repos_root = tmp_path / "projects"
+    repo = _mk_repo(repos_root, "repo-a")
+    _mk_epic(repo, "001-payments", features=1,
+             future_spec_ids={1: "payments-core-ledger"})
+    _mk_citing_openspec_change_by_future_spec_id(
+        repo, "payments-ledger", "payments-core-ledger")
+
+    summary = seed_backlog.seed_backlog(
+        repos_root, queue_base=tmp_path / "wq", log=lambda _m: None)
+    assert summary["seeded"] == []
+
+
+def test_bare_epic_number_mention_is_not_a_citation(tmp_path):
+    # A bare mention of the epic's leading number, with no "Epic"/"Feature"
+    # framing and no literal epic id or future-spec-id, must not count --
+    # otherwise any unrelated "002" mention (e.g. "see PR 002") would count.
+    repos_root = tmp_path / "projects"
+    repo = _mk_repo(repos_root, "repo-a")
+    _mk_epic(repo, "002-payments", features=1)
+    spec_dir = repo / "docs" / "specs" / "020-unrelated"
+    spec_dir.mkdir(parents=True)
+    (spec_dir / "spec.md").write_text(
+        "# Spec 020-unrelated\n\nSee PR 002 open items.\n", encoding="utf-8")
+
+    summary = seed_backlog.seed_backlog(
+        repos_root, queue_base=tmp_path / "wq", log=lambda _m: None)
+    assert "repo-a:epic:002-payments:cited=0" in [
+        s["seed_key"] for s in summary["seeded"]]
 
 
 def test_fully_cited_epic_is_not_seeded(tmp_path):
