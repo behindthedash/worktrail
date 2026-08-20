@@ -3695,9 +3695,15 @@ class EpicStageDetection(unittest.TestCase):
         self.assertEqual(result["cited"], 1)
         self.assertIn("020-welcome", result["citing_specs"])
 
-    def test_non_epic_named_file_is_not_matched_by_epic_id_pattern(self):
-        # Index/README/stray notes under docs/specs/epics/ are not epics --
-        # a scan must skip them via EPIC_ID_RE rather than classifying them.
-        self.assertIsNone(dashboard.EPIC_ID_RE.match("README"))
-        self.assertIsNone(dashboard.EPIC_ID_RE.match("index"))
-        self.assertIsNotNone(dashboard.EPIC_ID_RE.match("001-payments"))
+    def test_non_epic_named_file_is_ignored_by_epic_id_pattern_against_real_directory(self):
+        epic_file = self._mk_epic("001-payments", features=1)
+        epics_dir = epic_file.parent
+        (epics_dir / "README.md").write_text("# Epics index\n", encoding="utf-8")
+        (epics_dir / "index.md").write_text("# Index\n", encoding="utf-8")
+
+        matched = sorted(
+            f.name for f in epics_dir.iterdir()
+            if dashboard.EPIC_ID_RE.match(f.stem)
+        )
+
+        self.assertEqual(matched, ["001-payments.md"])
