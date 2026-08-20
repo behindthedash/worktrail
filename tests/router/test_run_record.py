@@ -347,6 +347,128 @@ class TestLifecycle(unittest.TestCase):
         self.assertEqual(rec["final_status"], "completed_pr_open")
         self.assertIn("pull/5", rec["pull_request"])
 
+    def test_finish_blocks_on_blocked_merge_state(self):
+        """`ci-watch-loop.md`'s merge-state guard documents `mergeStateStatus:
+        BLOCKED` as a hard stop (worktrail PR #393: a stray CANCELLED run
+        alongside a later SUCCESS run of the same context held branch
+        protection at BLOCKED with every check green -- the loop finished
+        anyway and the merge stalled indefinitely), but nothing previously
+        re-checked it from here -- an agent that skipped the SKILL.md-prose
+        guard could finish with the merge still blocked. This proves the
+        code-enforced backstop actually blocks."""
+        res = _start(self.tmp, route="F")
+        _complete_scope_review(res["path"])
+
+        def blocked(*_a, **_k):
+            return {"state": "OPEN", "mergeStateStatus": "BLOCKED"}
+
+        with patch("worktrail.router.run_record._query_merge_state", blocked):
+            with self.assertRaises(SystemExit):
+                main(["finish", res["path"], "--status", "completed_pr_open",
+                      "--pr", "https://github.com/x/y/pull/10"])
+        rec = _load(Path(res["path"]))
+        self.assertIsNone(rec["final_status"])
+        self.assertEqual(rec["status"], "route_selected")
+
+    def test_finish_proceeds_when_merge_state_clean(self):
+        res = _start(self.tmp, route="F")
+        _complete_scope_review(res["path"])
+
+        def clean(*_a, **_k):
+            return {"state": "OPEN", "mergeStateStatus": "CLEAN"}
+
+        def review_clean(*_a, **_k):
+            return {"checked": True, "blocking": False, "unresolved_count": 0,
+                    "unaddressed": []}
+
+        with patch("worktrail.router.run_record._query_merge_state", clean), \
+             patch("worktrail.router.check_review_threads.check", review_clean):
+            out = StringIO()
+            with patch("sys.stdout", out):
+                rc = main(["finish", res["path"], "--status", "completed_pr_open",
+                           "--pr", "https://github.com/x/y/pull/11"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(_load(Path(res["path"]))["final_status"], "completed_pr_open")
+
+    def test_finish_proceeds_when_merge_state_check_unavailable(self):
+        """`_query_merge_state` returning None (gh unavailable, network
+        hiccup, unresolvable owner/repo) is 'no signal', never treated as
+        'blocked' -- finish must not block on it."""
+        res = _start(self.tmp, route="F")
+        _complete_scope_review(res["path"])
+
+        def review_clean(*_a, **_k):
+            return {"checked": True, "blocking": False, "unresolved_count": 0,
+                    "unaddressed": []}
+
+        with patch("worktrail.router.run_record._query_merge_state", lambda *a, **k: None), \
+             patch("worktrail.router.check_review_threads.check", review_clean):
+            out = StringIO()
+            with patch("sys.stdout", out):
+                rc = main(["finish", res["path"], "--status", "completed_pr_open",
+                           "--pr", "https://github.com/x/y/pull/12"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(_load(Path(res["path"]))["final_status"], "completed_pr_open")
+
+    def test_finish_proceeds_when_pr_already_merged_despite_blocked(self):
+        """A merged PR is gone -- `mergeStateStatus` on a closed/merged PR is
+        meaningless (GitHub can report a stale BLOCKED right up to the merge
+        event); `state == MERGED` must short-circuit before the BLOCKED
+        check, mirroring ci-watch-loop.md's own 'PR is gone' skip branch."""
+        res = _start(self.tmp, route="F")
+        _complete_scope_review(res["path"])
+
+        def merged_but_stale_blocked(*_a, **_k):
+            return {"state": "MERGED", "mergeStateStatus": "BLOCKED"}
+
+        def review_clean(*_a, **_k):
+            return {"checked": True, "blocking": False, "unresolved_count": 0,
+                    "unaddressed": []}
+
+        with patch("worktrail.router.run_record._query_merge_state", merged_but_stale_blocked), \
+             patch("worktrail.router.check_review_threads.check", review_clean):
+            out = StringIO()
+            with patch("sys.stdout", out):
+                rc = main(["finish", res["path"], "--status", "completed_and_merged",
+                           "--pr", "https://github.com/x/y/pull/13"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(_load(Path(res["path"]))["final_status"], "completed_and_merged")
+
+    def test_finish_skips_merge_state_check_when_no_pr(self):
+        res = _start(self.tmp, route="F")
+
+        def unexpected(*_a, **_k):
+            raise AssertionError("must not be called when finish carries no PR")
+
+        with patch("worktrail.router.run_record._query_merge_state", unexpected):
+            out = StringIO()
+            with patch("sys.stdout", out):
+                main(["finish", res["path"], "--status", "investigation_complete"])
+
+    def test_finish_survives_merge_state_check_crash(self):
+        """A crash inside the check (import error, unexpected exception) must
+        never block `finish` -- same fail-open posture as the review-thread
+        gate; a query failure is the intended 'no signal' path, but an
+        outright exception must not escalate into a block either."""
+        res = _start(self.tmp, route="F")
+        _complete_scope_review(res["path"])
+
+        def boom(*_a, **_k):
+            raise FileNotFoundError(2, "No such file or directory", "gh")
+
+        def review_clean(*_a, **_k):
+            return {"checked": True, "blocking": False, "unresolved_count": 0,
+                    "unaddressed": []}
+
+        with patch("worktrail.router.run_record._query_merge_state", boom), \
+             patch("worktrail.router.check_review_threads.check", review_clean):
+            out = StringIO()
+            with patch("sys.stdout", out):
+                rc = main(["finish", res["path"], "--status", "completed_pr_open",
+                           "--pr", "https://github.com/x/y/pull/14"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(_load(Path(res["path"]))["final_status"], "completed_pr_open")
+
     def test_finish_blocks_on_unresolved_review_threads(self):
         """The review-thread gate (`check_review_threads.py`) documents itself
         as meant to stop `finish()` the same way a failing check does, but
