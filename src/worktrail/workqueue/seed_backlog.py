@@ -36,7 +36,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -53,20 +52,6 @@ from . import work_queue
 # briefs at once. Dropped candidates are reported (never silent) and the next
 # sweep picks them up in the same deterministic order.
 DEFAULT_MAX_SEEDS = 5
-
-# An epic whose `**Status:**` line matches one of these (case-insensitive) is
-# finished as a planning artifact -- nothing left to spec, nothing to seed.
-TERMINAL_EPIC_STATUSES = frozenset({
-    "completed", "complete", "delivered", "done", "closed",
-    "superseded", "cancelled", "abandoned",
-})
-
-_EPIC_FILE_RE = re.compile(r"^\d{3}-[a-z0-9][a-z0-9-]*$")
-_STATUS_LINE_RE = re.compile(r"^\*\*Status:\*\*\s*(.+?)\s*$", re.MULTILINE)
-_FEATURE_HEADING_RE = re.compile(r"^###\s+Feature\b", re.MULTILINE)
-_EPIC_NUMBER_RE = re.compile(r"^(\d{3})-")
-_FUTURE_SPEC_ID_RE = re.compile(
-    r"\*\*Future spec id:\*\*\s*`([a-z][a-z0-9-]*)`", re.IGNORECASE)
 
 
 def resolve_spec_rel(repo: Path, spec_id: str) -> Optional[str]:
@@ -165,107 +150,21 @@ def find_ready_specs(
     return found
 
 
-def _epic_status(text: str) -> Optional[str]:
-    match = _STATUS_LINE_RE.search(text)
-    return match.group(1).strip() if match else None
-
-
-def _count_features(text: str) -> int:
-    return len(_FEATURE_HEADING_RE.findall(text))
-
-
-def _epic_citation_patterns(epic_id: str, epic_text: str) -> List["re.Pattern"]:
-    """Signals that count a spec/change folder as citing this epic.
-
-    The literal epic id string is the strongest signal, but real citations
-    often reference the epic by prose instead -- an OpenSpec change's
-    proposal.md typically reads "Epic 002 Feature 2 adds..." rather than
-    spelling out the full `002-safe-work-queue-dependency-references` id
-    (live example: openspec/changes/work-queue-conservative-dependency-
-    resolution/proposal.md). A feature's own documented `**Future spec
-    id:**` is an equally strong, unambiguous signal once a citing file names
-    it. Matching only the literal epic id string undercounts real citations
-    and produces false "only N spec(s) cite it" seeded briefs.
-    """
-    patterns: List["re.Pattern"] = [re.compile(re.escape(epic_id))]
-    number_match = _EPIC_NUMBER_RE.match(epic_id)
-    if number_match:
-        patterns.append(re.compile(
-            rf"\bEpic\s+{number_match.group(1)}\s+Feature\s+\d+\b",
-            re.IGNORECASE))
-    for future_spec_id in _FUTURE_SPEC_ID_RE.findall(epic_text):
-        patterns.append(re.compile(re.escape(future_spec_id)))
-    return patterns
-
-
-def _citing_spec_ids(repo: Path, patterns: List["re.Pattern"]) -> List[str]:
-    """Spec/change folders whose markdown matches any epic citation pattern.
-
-    Route C requires the spec header to cite its owning epic, so a citation
-    anywhere in a spec folder's own top-level .md files (spec.md,
-    user-request.md, addenda) counts the feature as specced. Archived and
-    delivered specs still on disk count too -- shipped features are exactly
-    the ones that must not be re-seeded.
-
-    Scans both supported spec formats, since an epic's features can ship as
-    either: `docs/specs/<id>/*.md` (devkit, top-level files only) and
-    `openspec/{specs,changes}/**/*.md` (OpenSpec, recursive -- covers
-    `changes/archive/<date>-<slug>/` and its nested `specs/<slug>/spec.md`
-    copy, both of which sit one level deeper than a live change).
-    """
-    citing: List[str] = []
-    seen: set = set()
-
-    def _add(name: str) -> None:
-        if name not in seen:
-            seen.add(name)
-            citing.append(name)
-
-    def _matches(text: str) -> bool:
-        return any(pattern.search(text) for pattern in patterns)
-
-    docs_specs_root = repo / "docs" / "specs"
-    if docs_specs_root.is_dir():
-        for spec_dir in sorted(docs_specs_root.iterdir()):
-            if not spec_dir.is_dir() or spec_dir.name.lower() in {"epics"}:
-                continue
-            for md in spec_dir.glob("*.md"):
-                try:
-                    if _matches(md.read_text(encoding="utf-8")):
-                        _add(spec_dir.name)
-                        break
-                except OSError:
-                    continue
-
-    openspec_root = repo / "openspec"
-    for sub in ("specs", "changes"):
-        sub_root = openspec_root / sub
-        if not sub_root.is_dir():
-            continue
-        for md in sorted(sub_root.glob("**/*.md")):
-            rel_parts = md.relative_to(sub_root).parts
-            if sub == "changes" and rel_parts[0] == "archive":
-                rel_parts = rel_parts[1:]
-            if len(rel_parts) < 2:
-                continue  # loose file directly under specs/ or changes/, not a change/spec folder
-            try:
-                if _matches(md.read_text(encoding="utf-8")):
-                    _add(rel_parts[0])
-            except OSError:
-                continue
-
-    return citing
-
-
 def find_epic_gaps(
     repos_root: Path, go_repo: Optional[str] = None
 ) -> List[Dict[str, Any]]:
     """Every epic under `docs/specs/epics/` with fewer citing specs than
     decomposed `### Feature` headings and a non-terminal `**Status:**`.
 
+    Delegates per-epic classification to the dashboard's shared
+    `dashboard.scan_epics()`/`detect_epic_stage()` so this module carries no
+    duplicated status/feature-count/citation parsing of its own.
+
     An epic file with no parseable feature decomposition is skipped and
     reported (`unparseable: True`) rather than seeded -- with no feature count
-    there is no terminal condition, and seeding it would loop forever.
+    there is no terminal condition, and seeding it would loop forever. An
+    unreadable epic file (dashboard stage `error`) is skipped silently, same
+    as before this module delegated to the dashboard's scan.
     """
     names = discover_repo_names(repos_root)
     if go_repo:
@@ -273,40 +172,26 @@ def find_epic_gaps(
     found: List[Dict[str, Any]] = []
     for name in names:
         repo_path = repos_root / name
-        specs_root = repo_path / "docs" / "specs"
-        epics_dir = specs_root / "epics"
-        if not epics_dir.is_dir():
-            continue
-        for epic_file in sorted(epics_dir.glob("*.md")):
-            epic_id = epic_file.stem
-            if not _EPIC_FILE_RE.match(epic_id):
-                continue  # index/readme files are not epics
-            try:
-                text = epic_file.read_text(encoding="utf-8")
-            except OSError:
+        for row in dashboard.scan_epics(repo_path):
+            stage = row["stage"]
+            if stage in ("epic-complete", "error"):
                 continue
-            status = _epic_status(text)
-            if status and status.lower() in TERMINAL_EPIC_STATUSES:
-                continue
-            features = _count_features(text)
-            if features == 0:
+            epic_id = row["id"]
+            if stage == "epic-unparseable":
                 found.append({
                     "kind": "epic", "repo": repo_path, "repo_name": name,
                     "id": epic_id, "unparseable": True,
                 })
                 continue
-            patterns = _epic_citation_patterns(epic_id, text)
-            cited = _citing_spec_ids(repo_path, patterns)
-            if len(cited) >= features:
-                continue
+            cited = row["citing_specs"]
             found.append({
                 "kind": "epic",
                 "repo": repo_path, "repo_name": name,
                 "id": epic_id,
-                "features": features,
-                "cited": len(cited),
+                "features": row["features"],
+                "cited": row["cited"],
                 "citing_specs": cited,
-                "seed_key": f"{name}:epic:{epic_id}:cited={len(cited)}",
+                "seed_key": f"{name}:epic:{epic_id}:cited={row['cited']}",
             })
     return found
 
