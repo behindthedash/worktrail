@@ -76,6 +76,8 @@ def _stale_head_sha(repo: Path) -> str:
     journaled at all -- a fresh, --fresh-style run, not a resume)."""
     orphan = Path(str(repo) + "-orphan-scratch")
     subprocess.run(["git", "clone", "-q", str(repo), str(orphan)], check=True)
+    _git(orphan, "config", "user.email", "t@example.com")
+    _git(orphan, "config", "user.name", "Test")
     _git(orphan, "checkout", "-q", "--orphan", "throwaway")
     (orphan / "unrelated.txt").write_text("unrelated\n")
     _git(orphan, "add", "-A")
