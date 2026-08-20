@@ -3858,3 +3858,46 @@ class EpicRowsInDashboardJson(unittest.TestCase):
         )
         self.assertEqual(rows_by_repo["repo-a"]["epics"], dashboard.scan_epics(self.repo))
         self.assertEqual(rows_by_repo["repo-b"]["epics"], [])
+
+
+class EpicsSectionInRenderDashboard(unittest.TestCase):
+    """`render_dashboard()` -- the "🧭 Outstanding epics" section shown/omitted
+    based on epic rows' stage, in both single-repo (`epic_rows`) and multi-repo
+    (`repo_rows`' own per-repo "epics" list) modes."""
+
+    def test_shown_for_epic_gap_single_repo(self):
+        epic_rows = [{"id": "001-payments", "stage": "epic-gap"}]
+        out = dashboard.render_dashboard(None, [], [], [], epic_rows=epic_rows)
+        self.assertIn("🧭 Outstanding epics (1): 001-payments (epic-gap)", out)
+
+    def test_omitted_when_no_epic_files_single_repo(self):
+        baseline = dashboard.render_dashboard(None, [], [], [])
+        self.assertNotIn("Outstanding epics", baseline)
+        with_empty = dashboard.render_dashboard(None, [], [], [], epic_rows=[])
+        self.assertNotIn("Outstanding epics", with_empty)
+        with_none = dashboard.render_dashboard(None, [], [], [], epic_rows=None)
+        self.assertNotIn("Outstanding epics", with_none)
+
+    def test_omitted_when_only_epic_complete_single_repo(self):
+        epic_rows = [{"id": "003-legacy", "stage": "epic-complete"}]
+        out = dashboard.render_dashboard(None, [], [], [], epic_rows=epic_rows)
+        self.assertNotIn("Outstanding epics", out)
+
+    def test_shown_for_epic_gap_multi_repo(self):
+        repo_rows = [
+            {"repo": "repo-a", "epics": [{"id": "001-payments", "stage": "epic-gap"}]},
+        ]
+        out = dashboard.render_dashboard(repo_rows, None, [], [])
+        self.assertIn("🧭 Outstanding epics (1): repo-a (001-payments: epic-gap)", out)
+
+    def test_omitted_when_no_epic_files_multi_repo(self):
+        repo_rows = [{"repo": "repo-a", "epics": []}]
+        out = dashboard.render_dashboard(repo_rows, None, [], [])
+        self.assertNotIn("Outstanding epics", out)
+
+    def test_omitted_when_only_epic_complete_multi_repo(self):
+        repo_rows = [
+            {"repo": "repo-a", "epics": [{"id": "003-legacy", "stage": "epic-complete"}]},
+        ]
+        out = dashboard.render_dashboard(repo_rows, None, [], [])
+        self.assertNotIn("Outstanding epics", out)
