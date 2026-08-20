@@ -188,6 +188,80 @@ class TestCorrelate(unittest.TestCase):
         grouped = crt.correlate(Path("/repo"), threads, [], runner=runner)
         self.assertEqual(grouped["addressed"][0]["_matched_commit"], "abc1234567890")
 
+    def test_base_ref_omitted_preserves_prior_behavior(self) -> None:
+        threads = [_thread("T_1", "a.py", resolved=False)]
+        runner = _FakeRunner({"git -C": _FakeResult(0, "")})  # no commit on HEAD either
+        grouped = crt.correlate(Path("/repo"), threads, [], runner=runner)
+        self.assertEqual(grouped["addressed"], [])
+        self.assertEqual([t["id"] for t in grouped["unaddressed"]], ["T_1"])
+        # only one git log call (HEAD) -- no base_ref given, so no second lookup
+        self.assertEqual(len(runner.calls), 1)
+
+    def test_base_ref_commit_marks_addressed_when_head_has_no_match(self) -> None:
+        # Cross-PR case (brief 20260820-072846): the fix landed on the base
+        # branch via a SEPARATE PR, never on this PR's own HEAD.
+        threads = [_thread("T_1", "a.py", resolved=False, created_at="2026-08-01T00:00:00Z")]
+        calls: List[List[str]] = []
+
+        def runner(cmd: List[str], **kwargs: Any) -> _FakeResult:
+            calls.append(cmd)
+            if cmd[:5] == ["git", "-C", "/repo", "log", "HEAD"]:
+                return _FakeResult(0, "")  # nothing on this PR's own branch
+            if cmd[:5] == ["git", "-C", "/repo", "log", "origin/main"]:
+                return _FakeResult(0, "def456\n")  # merged separately into base
+            raise AssertionError(f"unscripted command: {cmd}")
+
+        grouped = crt.correlate(Path("/repo"), threads, [], runner=runner, base_ref="origin/main")
+        self.assertEqual([t["id"] for t in grouped["addressed"]], ["T_1"])
+        self.assertEqual(grouped["unaddressed"], [])
+        self.assertEqual(len(calls), 2)  # HEAD checked first, then base_ref
+
+    def test_base_ref_match_attaches_matched_commit_sha(self) -> None:
+        threads = [_thread("T_1", "a.py", resolved=False, created_at="2026-08-01T00:00:00Z")]
+
+        def runner(cmd: List[str], **kwargs: Any) -> _FakeResult:
+            if cmd[:5] == ["git", "-C", "/repo", "log", "HEAD"]:
+                return _FakeResult(0, "")
+            if cmd[:5] == ["git", "-C", "/repo", "log", "origin/main"]:
+                return _FakeResult(0, "def4567890abc\n")
+            raise AssertionError(f"unscripted command: {cmd}")
+
+        grouped = crt.correlate(Path("/repo"), threads, [], runner=runner, base_ref="origin/main")
+        self.assertEqual(grouped["addressed"][0]["_matched_commit"], "def4567890abc")
+
+    def test_base_ref_not_checked_when_head_already_matches(self) -> None:
+        threads = [_thread("T_1", "a.py", resolved=False, created_at="2026-08-01T00:00:00Z")]
+
+        def runner(cmd: List[str], **kwargs: Any) -> _FakeResult:
+            if cmd[:5] == ["git", "-C", "/repo", "log", "HEAD"]:
+                return _FakeResult(0, "abc123\n")
+            raise AssertionError(f"base_ref should not be checked when HEAD already matched: {cmd}")
+
+        grouped = crt.correlate(Path("/repo"), threads, [], runner=runner, base_ref="origin/main")
+        self.assertEqual([t["id"] for t in grouped["addressed"]], ["T_1"])
+
+    def test_base_ref_not_checked_when_decision_already_matches(self) -> None:
+        threads = [_thread("T_1", "a.py", resolved=False, created_at="2026-08-01T00:00:00Z")]
+        decisions = ["thread T_1 addressed: dismissed as intentional design"]
+
+        def runner(cmd: List[str], **kwargs: Any) -> _FakeResult:
+            if cmd[:5] == ["git", "-C", "/repo", "log", "HEAD"]:
+                return _FakeResult(0, "")
+            raise AssertionError(f"base_ref should not be checked when decision already matched: {cmd}")
+
+        grouped = crt.correlate(Path("/repo"), threads, decisions, runner=runner, base_ref="origin/main")
+        self.assertEqual([t["id"] for t in grouped["addressed"]], ["T_1"])
+
+    def test_base_ref_still_unaddressed_when_neither_ref_matches(self) -> None:
+        threads = [_thread("T_1", "a.py", resolved=False, created_at="2026-08-01T00:00:00Z")]
+
+        def runner(cmd: List[str], **kwargs: Any) -> _FakeResult:
+            return _FakeResult(0, "")  # neither HEAD nor base_ref has a touching commit
+
+        grouped = crt.correlate(Path("/repo"), threads, [], runner=runner, base_ref="origin/main")
+        self.assertEqual(grouped["addressed"], [])
+        self.assertEqual([t["id"] for t in grouped["unaddressed"]], ["T_1"])
+
 
 class TestReplyBodyFor(unittest.TestCase):
     def test_decision_matched_thread_quotes_decision_text(self) -> None:
@@ -278,6 +352,26 @@ class TestCheck(unittest.TestCase):
             raise AssertionError(f"unscripted command: {cmd}")
 
         res = crt.check(Path("/repo"), 42, runner=runner)
+        self.assertTrue(res["checked"])
+        self.assertFalse(res["blocking"])
+        self.assertEqual(len(res["resolved_now"]), 1)
+        self.assertTrue(res["resolved_now"][0]["resolved"])
+
+    def test_base_ref_plumbed_through_to_resolve_cross_pr_fix(self) -> None:
+        def runner(cmd: List[str], **kwargs: Any) -> _FakeResult:
+            if cmd[:2] == ["git", "remote"]:
+                return _FakeResult(0, "https://github.com/acme/widgets.git\n")
+            if cmd[:2] == ["gh", "api"] and "reviewThreads" in " ".join(cmd):
+                return _threads_response([_thread("T_1", "a.py", resolved=False)])
+            if cmd[:5] == ["git", "-C", "/repo", "log", "HEAD"]:
+                return _FakeResult(0, "")  # nothing on this PR's own branch
+            if cmd[:5] == ["git", "-C", "/repo", "log", "origin/main"]:
+                return _FakeResult(0, "def4567890abc\n")  # fixed via a separate merged PR
+            if cmd[:2] == ["gh", "api"]:
+                return _FakeResult(0, "{}")  # reply / resolve mutations
+            raise AssertionError(f"unscripted command: {cmd}")
+
+        res = crt.check(Path("/repo"), 42, base_ref="origin/main", runner=runner)
         self.assertTrue(res["checked"])
         self.assertFalse(res["blocking"])
         self.assertEqual(len(res["resolved_now"]), 1)

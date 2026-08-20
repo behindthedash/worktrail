@@ -24,6 +24,48 @@ Enter this loop on every PR-owning route before closing the run record. Track
 patch iterations with `PATCH_ITER=0`; ceiling is **5**. Track `$PUSH_SHA` (unset
 until a fixup is pushed) for the stale-head merge guard in case 1.
 
+## Cross-PR circle-back {#cross-pr-circle-back}
+
+**Mandatory before calling `finish()` on this run (any of cases 1–5 below), whenever this
+run's own target PR differs from a PR the run's own `request_summary` or handoff Focus
+names as blocked** (e.g. "blocking PR #N", "disproves the finding blocking PR #N") **by
+the finding this run is investigating/fixing.** This is the disprove/fix-via-a-separate-PR
+shape: reproducing, regression-testing, or fixing the finding concluded as this run's OWN
+PR rather than as a push to the originally-blocked PR's own branch (worktrail brief
+20260820-072846: a Route F run disproved the `security-review-llm` finding blocking
+datalena PR #2393 and merged the disproving regression test as its own PR #2397, but
+nothing told the agent to go back and resolve PR #2393's own 8 stale threads referencing
+the same finding — the run finished `blocked_external_dependency` on PR #2397 and PR #2393
+sat with unreplied, unresolved threads for ~7 hours until a human noticed).
+
+1. Append a `decisions` entry to **this** run's record summarizing the disprove/fix and
+   naming the ORIGINAL blocking PR plus the specific thread(s)/finding(s) it resolves —
+   do this regardless of which case below this run's own PR ends up in:
+   ```bash
+   worktrail-run-record append "$RUN" decisions \
+     "PR #<this-run's-PR> disproves/fixes <finding>, which was blocking PR #<original-PR>'s thread(s) <ids-or-paths>"
+   ```
+2. Once this run's own PR merges (tracked by the normal case classification below), run
+   the review-thread gate scoped to the ORIGINAL blocking PR, passing `--base-ref` so
+   `correlate()` can find the fix commit even though it never landed on the original PR's
+   own branch — it merged into the base branch via this run's separate PR instead:
+   ```bash
+   worktrail-check-review-threads --repo "$PWD" --pr <original-PR> --owner "$OWNER" \
+     --name "$REPO_NAME" --run "$RUN" --base-ref "origin/$BASE" --json
+   ```
+   Read and act on the result exactly like the review-thread gate below (`checked: true`
+   + `blocking: false` means the tool already replied+resolved the correlated threads;
+   `blocking: true` needs either a further fix or an explicit `decisions` entry on the
+   ORIGINAL PR's own thread, then a re-run — same rules as the gate below).
+3. The brief/handoff that named the original blocking PR is not done until step 2's gate
+   reports `blocking: false` (or `checked: false` — no signal) **for the original PR**,
+   not only for this run's own PR having merged.
+
+If this run's own PR never merges (case 4 or 5 below), step 2 has nothing to circle back
+to yet — record the decision from step 1 anyway so a later resumption of this brief (or a
+human) has the pointer, and do not run the review-thread gate against the original PR
+until the fix actually lands on the base branch.
+
 ## Waiting for checks
 
 **Use `--watch`, never a hand-rolled sleep loop** (the harness blocks `sleep`,

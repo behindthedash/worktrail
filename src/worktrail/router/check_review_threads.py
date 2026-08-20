@@ -43,6 +43,19 @@ Correlation is a heuristic, not proof, matching the brief's own framing
 ("via commit SHA/line correlation or the run record's own decision log") --
 a human reviewing the auto-generated reply can always reopen a
 wrongly-resolved thread.
+
+**Cross-PR resolution (`base_ref`).** The heuristics above only look at the
+currently checked-out `repo`'s own HEAD history and the CURRENT run's
+`decisions` log -- both blind to a finding that was disproved/fixed via a
+SEPARATE PR that later merged into the base branch instead of a commit
+pushed to the checked PR's own branch (worktrail brief 20260820-072846:
+datalena PR #2393's blocking finding was disproved by a regression test
+merged as its own PR #2397, but #2393's own branch never received that
+commit, so re-running this gate against #2393 with no `base_ref` would still
+report the same thread as unaddressed). Pass `base_ref` (e.g. `origin/main`)
+to additionally search that ref's history for a commit touching the
+thread's path since it was opened -- opt-in and additive: omitting it
+reproduces the exact prior behavior.
 """
 from __future__ import annotations
 
@@ -185,13 +198,13 @@ def fetch_review_threads(
 
 
 def _commit_touched_path_since(
-    repo: Path, path: str, since_iso: str, runner: Runner = subprocess.run,
+    repo: Path, path: str, since_iso: str, ref: str = "HEAD", runner: Runner = subprocess.run,
 ) -> Optional[str]:
-    """The SHA of the most recent commit that touched `path` since `since_iso`,
-    or `None` if none did (or the lookup failed)."""
+    """The SHA of the most recent commit on `ref` that touched `path` since
+    `since_iso`, or `None` if none did (or the lookup failed)."""
     try:
         result = runner(
-            ["git", "-C", str(repo), "log", f"--since={since_iso}", "--format=%H", "--", path],
+            ["git", "-C", str(repo), "log", ref, f"--since={since_iso}", "--format=%H", "--", path],
             capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -220,7 +233,7 @@ def _find_matching_decision(decisions: List[str], thread: Dict[str, Any]) -> Opt
 
 def correlate(
     repo: Path, threads: List[Dict[str, Any]], decisions: List[str],
-    runner: Runner = subprocess.run,
+    runner: Runner = subprocess.run, base_ref: Optional[str] = None,
 ) -> Dict[str, List[Dict[str, Any]]]:
     """Split a PR's threads into unresolved-and-addressed (safe to auto-reply
     and resolve) vs unresolved-and-unaddressed (blocking). A thread already
@@ -228,9 +241,16 @@ def correlate(
 
     An addressed thread that matched via the decisions log (rather than a
     touched-file commit) carries the matched text on `_matched_decision`, and
-    one that matched via a touched-file commit carries that commit's SHA on
+    one that matched via a touched-file commit -- on `repo`'s own HEAD, or on
+    `base_ref` as a fallback (see below) -- carries that commit's SHA on
     `_matched_commit`, so the reply can cite the actual reasoning/commit
-    instead of a generic template."""
+    instead of a generic template.
+
+    `base_ref`, when given, is checked as a fallback after HEAD and the
+    decisions log both miss -- a commit touching the thread's path in that
+    ref's history (e.g. `origin/main`) since the thread opened covers a
+    finding resolved via a separate PR merged into the base branch (see
+    module docstring)."""
     unresolved = [t for t in threads if not t.get("isResolved")]
     addressed: List[Dict[str, Any]] = []
     unaddressed: List[Dict[str, Any]] = []
@@ -251,6 +271,13 @@ def correlate(
             if matched_decision is not None:
                 is_addressed = True
                 thread = {**thread, "_matched_decision": matched_decision}
+            elif path and created_at and base_ref:
+                base_matched_commit = _commit_touched_path_since(
+                    repo, path, created_at, ref=base_ref, runner=runner
+                )
+                if base_matched_commit:
+                    is_addressed = True
+                    thread = {**thread, "_matched_commit": base_matched_commit}
         (addressed if is_addressed else unaddressed).append(thread)
     return {"unresolved": unresolved, "addressed": addressed, "unaddressed": unaddressed}
 
@@ -298,6 +325,7 @@ def _load_decisions(run_record_path: Optional[Path]) -> Tuple[List[str], Optiona
 def check(
     repo: Path, pr_number: int, run_record_path: Optional[Path] = None,
     owner: Optional[str] = None, name: Optional[str] = None, dry_run: bool = False,
+    base_ref: Optional[str] = None,
     runner: Runner = subprocess.run,
 ) -> Dict[str, Any]:
     """Did this PR leave any unresolved review thread that isn't yet
@@ -309,6 +337,12 @@ def check(
     should stop `finish()` the same way a red required check would -- it also
     stamps `go:no-automerge` on the PR (skipped when `dry_run`) so native
     auto-merge can't race ahead of this gate; see module docstring.
+
+    `base_ref` (e.g. `origin/main`), when given, is additionally searched for
+    a commit resolving a thread whose path/date has no match on `repo`'s own
+    HEAD -- covers a finding resolved via a separate PR merged into the base
+    branch rather than a commit on this PR's own branch. Omitting it (the
+    default) reproduces the exact prior HEAD-only/decisions-log behavior.
     """
     result: Dict[str, Any] = {
         "checked": False,
@@ -335,7 +369,7 @@ def check(
 
     decisions, decisions_warning = _load_decisions(run_record_path)
 
-    grouped = correlate(repo, threads, decisions, runner=runner)
+    grouped = correlate(repo, threads, decisions, runner=runner, base_ref=base_ref)
     result["checked"] = True
     result["unresolved_count"] = len(grouped["unresolved"])
 
@@ -401,6 +435,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--owner", default=None, help="override the git-remote-derived owner")
     p.add_argument("--name", default=None, help="override the git-remote-derived repo name")
     p.add_argument("--run", default=None, help="run record path, for decision-log correlation")
+    p.add_argument("--base-ref", default=None,
+                    help="also search this ref's history (e.g. origin/main) for a commit "
+                         "touching a thread's path since it was opened -- covers a finding "
+                         "resolved via a separate PR merged into the base branch rather than "
+                         "a commit on this PR's own branch (see module docstring)")
     p.add_argument("--dry-run", action="store_true",
                     help="report only; never post replies or resolve threads")
     p.add_argument("--json", action="store_true")
@@ -409,7 +448,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     res = check(
         Path(args.repo), args.pr,
         run_record_path=Path(args.run) if args.run else None,
-        owner=args.owner, name=args.name, dry_run=args.dry_run,
+        owner=args.owner, name=args.name, dry_run=args.dry_run, base_ref=args.base_ref,
     )
 
     if args.json:
