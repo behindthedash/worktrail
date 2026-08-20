@@ -1,16 +1,19 @@
 ## 1. Repair retained-worktree drift, safely carry checklist conflicts, and stamp terminal_status for failed reports
 
-- [ ] 1.1 `ensure_wt` (live_run_real) and `_ensure_wt` (`_pipeline_scheduler`): in the
-      retained-worktree (`else`) branch, catch `WorktreeMissingDependencyFileError` from
-      the first `_require_dependency_files` call, re-attempt
-      `_carry_squash_merged_dependencies` once (when `remote`/`base` are available), and
-      re-run `_require_dependency_files`; re-raise only if it still fails
-      (src/worktrail/orchestrator/live.py). `_carry_squash_merged_dependencies`: before
-      the fail-loud abort on a merge conflict, detect via `git diff --name-only
-      --diff-filter=U` whether the conflict is confined entirely to
-      `openspec/changes/<change_id>/tasks.md`; if so, resolve deterministically by
-      taking the union of checked task lines from both sides, commit, and continue
-      instead of aborting (src/worktrail/orchestrator/live.py). `_apply_step_commit` and
+- [x] 1.1 Implement requirement "Repair a retained worktree missing dependency content
+      on resume": `ensure_wt` (live_run_real) and `_ensure_wt` (`_pipeline_scheduler`),
+      in the retained-worktree (`else`) branch, catch
+      `WorktreeMissingDependencyFileError` from the first `_require_dependency_files`
+      call, re-attempt `_carry_squash_merged_dependencies` once (when `remote`/`base`
+      are available), and re-run `_require_dependency_files`; re-raise only if it still
+      fails (src/worktrail/orchestrator/live.py). Implement the modified requirement
+      "Carry already-merged dependency content across a squash-merge boundary":
+      `_carry_squash_merged_dependencies`, before the fail-loud abort on a merge
+      conflict, detects via `git diff --name-only --diff-filter=U` whether the conflict
+      is confined entirely to `openspec/changes/<change_id>/tasks.md`; if so, resolves
+      deterministically by taking the union of checked task lines from both sides,
+      commits, and continues instead of aborting (src/worktrail/orchestrator/live.py).
+      `_apply_step_commit` and
       `live_run()`'s `drive()` closure: stamp `report_fields["terminal_status"] =
       "failed"` when the coordinator transition's new status is `"failed"`, mirroring
       the existing `"escalated"` stamp (src/worktrail/orchestrator/live.py). Add

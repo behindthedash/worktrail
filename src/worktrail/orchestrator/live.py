@@ -31,6 +31,7 @@ import copy
 import inspect
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1653,6 +1654,73 @@ def _stack_resolve_attempt(
     return False
 
 
+_CHECKLIST_LINE_RE = re.compile(r"^(?P<prefix>\s*-\s*\[)(?P<mark>[ xX])(?P<suffix>\]\s*)(?P<text>.*)$")
+
+
+def _union_merge_checklist(ours: str, theirs: str) -> str:
+    """Line-union two versions of a checklist file: a task line is checked if
+    EITHER side checked it, keyed by its post-checkbox text. A checklist line
+    present on only one side is kept as-is (from `ours`, or appended from
+    `theirs` if `ours` lacks it); non-checklist lines are taken from `ours`
+    unchanged. Never removes a checkmark either side already had, so no
+    completed work is ever hidden by the merge.
+    """
+    def parse(text: str) -> tuple[dict, list]:
+        checked: dict = {}
+        order: list = []
+        for line in text.splitlines():
+            m = _CHECKLIST_LINE_RE.match(line)
+            if m:
+                key = m.group("text")
+                checked[key] = m.group("mark") in ("x", "X")
+                order.append((key, line))
+            else:
+                order.append((None, line))
+        return checked, order
+
+    ours_checked, ours_order = parse(ours)
+    theirs_checked, theirs_order = parse(theirs)
+
+    merged_lines = []
+    seen = set()
+    for key, line in ours_order:
+        if key is None:
+            merged_lines.append(line)
+            continue
+        seen.add(key)
+        m = _CHECKLIST_LINE_RE.match(line)
+        mark = "x" if (ours_checked.get(key, False) or theirs_checked.get(key, False)) else " "
+        merged_lines.append(f"{m.group('prefix')}{mark}{m.group('suffix')}{key}")
+    for key, line in theirs_order:
+        if key is not None and key not in seen:
+            merged_lines.append(line)
+
+    result = "\n".join(merged_lines)
+    if ours.endswith("\n") or theirs.endswith("\n"):
+        result += "\n"
+    return result
+
+
+def _resolve_tasks_md_checklist_conflict(wt: Path, spec_id: str) -> bool:
+    """If the in-progress conflicted merge in `wt` is confined entirely to this
+    change's own `openspec/changes/<spec_id>/tasks.md`, resolve it deterministically
+    by taking the union of checked task lines from both sides and conclude the
+    merge. Returns True if resolved (merge committed); False if the conflict is
+    not this narrow case -- caller aborts exactly as before this change.
+    """
+    unmerged = _git(wt, "diff", "--name-only", "--diff-filter=U", check=False).stdout.split()
+    expected = f"openspec/changes/{spec_id}/tasks.md"
+    if unmerged != [expected]:
+        return False
+    ours = _git(wt, "show", f":2:{expected}", check=False)
+    theirs = _git(wt, "show", f":3:{expected}", check=False)
+    if ours.returncode != 0 or theirs.returncode != 0:
+        return False
+    (wt / expected).write_text(_union_merge_checklist(ours.stdout, theirs.stdout))
+    _git(wt, "add", expected, check=False)
+    return _git(wt, "commit", "--no-edit", check=False).returncode == 0
+
+
 def _carry_squash_merged_dependencies(
     repo: Path, spec_id: str, task: dict, by_id: dict, wt: Path, remote: str, base: str
 ) -> None:
@@ -1679,7 +1747,12 @@ def _carry_squash_merged_dependencies(
     dependency-branch-gone fallback in PR #475). A merge failure -- whether from a
     genuine conflict or any other git error -- aborts and falls through with a
     WARN: `_require_dependency_files` stays the fail-loud backstop when the
-    content genuinely isn't available.
+    content genuinely isn't available. One narrow, deterministic exception: a
+    conflict confined entirely to this change's own `openspec/changes/<id>/tasks.md`
+    (each concurrently-merged group independently checks off its own tasks in that
+    shared checklist, so squash-merge history loses the common ancestor and produces
+    a routine add/add conflict there) resolves via `_resolve_tasks_md_checklist_conflict`
+    by taking the union of checked boxes, instead of aborting.
 
     Deliberately does NOT gate on `_dependency_file_declared_path_exists` --
     that is a bare path-existence check, which is a broken proxy for "content
@@ -1714,6 +1787,8 @@ def _carry_squash_merged_dependencies(
 
     m = _git(wt, "merge", "--no-edit", ref, check=False)
     if m.returncode != 0:
+        if _resolve_tasks_md_checklist_conflict(wt, spec_id):
+            return
         _git(wt, "merge", "--abort", check=False)
         print(
             f"{_ts()} WARN: task {task['id']} worktree {wt} squash-merge carry from "
@@ -2333,14 +2408,18 @@ def live_run(
                 break
             old, new = dispatch.apply_report(tasks, rep, role)
             report_fields = {k: rep.get(k) for k in orchestrate._REPORT_FIELDS}
-            if new == "escalated":
-                # The review 3-strikes circuit breaker (dispatch.transition) computes
-                # this status in-memory only -- stamp it onto the entry that actually
-                # trips it, not only onto downstream dependency-gate entries it blocks,
-                # so clear_tasks()'s terminal_status match can find it. Same fix as
-                # _apply_step_commit() (#496), applied here to live_run's own separate
-                # (pre-#498) entry-construction path.
-                report_fields["terminal_status"] = "escalated"
+            if new in ("escalated", "failed"):
+                # dispatch.transition computes this status in-memory only -- stamp it
+                # onto the entry that actually produced it, not only onto downstream
+                # dependency-gate entries it blocks, so clear_tasks()'s terminal_status
+                # match can find it. Covers both the review 3-strikes circuit breaker
+                # ("escalated") and a normal role's terminal "failed" report (e.g. a
+                # fix-role worker that legitimately declines an out-of-scope change) --
+                # previously only "escalated" was stamped here, so clear_tasks()
+                # refused a "failed" entry even though task status already read
+                # "failed". Same fix as _apply_step_commit() (#496), applied here to
+                # live_run's own separate (pre-#498) entry-construction path.
+                report_fields["terminal_status"] = new
             entries.append(
                 {
                     "task": rep["task"],
@@ -2744,6 +2823,38 @@ def _require_dependency_files(wt: Path, task: dict, by_id: dict) -> "list[dict]"
     return events
 
 
+def _require_dependency_files_with_repair(
+    wt: Path,
+    task: dict,
+    by_id: dict,
+    repo: Path,
+    spec_id: str,
+    remote: str | None,
+    base: str | None,
+) -> "list[dict]":
+    """`_require_dependency_files`, but for a RETAINED (already-existing) task
+    worktree on resume: on `WorktreeMissingDependencyFileError`, retries the
+    squash-merge carry once before re-raising.
+
+    A dependency may have squash-merged (and had its branch deleted) after this
+    worktree was created, so it never got carried at creation time -- every
+    subsequent resume would otherwise re-hit the identical error forever, since
+    the retained-worktree path previously only re-validated, never repaired.
+    `_carry_squash_merged_dependencies` is idempotent (no-ops via its own
+    `merge-base --is-ancestor` check when nothing changed) and repairs the
+    worktree in place via `git merge` -- no worktree recreation, so any
+    in-progress work is preserved. Re-raises unchanged if the repair doesn't
+    resolve it: the fail-loud backstop is unchanged for a genuinely
+    unresolvable drift.
+    """
+    try:
+        return _require_dependency_files(wt, task, by_id)
+    except WorktreeMissingDependencyFileError:
+        if remote and base:
+            _carry_squash_merged_dependencies(repo, spec_id, task, by_id, wt, remote, base)
+        return _require_dependency_files(wt, task, by_id)
+
+
 def set_task_status_completed(path: Path) -> bool:
     """Compatibility wrapper for callers that still pass a legacy task file."""
     return taskformats.mark_status_completed(path)
@@ -2813,12 +2924,16 @@ def _apply_step_commit(
     transition. Caller must hold state_lock for the duration."""
     old, new = dispatch.apply_report(tasks, rep, role)
     report_fields = {k: rep.get(k) for k in orchestrate._REPORT_FIELDS}
-    if new == "escalated":
-        # The review 3-strikes circuit breaker (dispatch.transition) computes
-        # this status in-memory only -- stamp it onto the entry that actually
-        # trips it, not only onto downstream dependency-gate entries it blocks,
-        # so clear_tasks()'s terminal_status match can find it.
-        report_fields["terminal_status"] = "escalated"
+    if new in ("escalated", "failed"):
+        # dispatch.transition computes this status in-memory only -- stamp it onto
+        # the entry that actually produced it, not only onto downstream
+        # dependency-gate entries it blocks, so clear_tasks()'s terminal_status
+        # match can find it. Covers both the review 3-strikes circuit breaker
+        # ("escalated") and a normal role's terminal "failed" report (e.g. a
+        # fix-role worker that legitimately declines an out-of-scope change) --
+        # previously only "escalated" was stamped here, so clear_tasks() refused a
+        # "failed" entry even though task status already read "failed".
+        report_fields["terminal_status"] = new
     entry: dict = {
         "task": rep["task"],
         "role": rep["step"],
@@ -3115,7 +3230,9 @@ def live_run_real(
                     f"{expected_branch}; repair it explicitly before resuming"
                 )
             _validate_retained_task_branch(repo, branch, start, expected_head_sha)
-            drift_events = _require_dependency_files(wt, task, by_id)
+            drift_events = _require_dependency_files_with_repair(
+                wt, task, by_id, repo, spec_id, remote, base
+            )
             if drift_events:
                 with state_lock:
                     entries.extend(drift_events)
@@ -4247,7 +4364,9 @@ def _pipeline_scheduler(
                     f"{expected_branch}; repair it explicitly before resuming"
                 )
             _validate_retained_task_branch(repo, branch, start, expected_head_sha)
-            drift_events = _require_dependency_files(wt, task, by_id)
+            drift_events = _require_dependency_files_with_repair(
+                wt, task, by_id, repo, spec_id, remote, base
+            )
             if drift_events:
                 with state_lock:
                     entries.extend(drift_events)

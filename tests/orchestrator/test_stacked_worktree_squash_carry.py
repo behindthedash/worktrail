@@ -242,5 +242,126 @@ class CarrySquashMergedDependenciesExistingFileStaleness(unittest.TestCase):
             )
 
 
+def _push_upstream_tasks_md(tmp, bare, content: str, *, also_touch_shared: str | None = None):
+    """Simulate a squash-merged group independently adding
+    `openspec/changes/102-x/tasks.md` (from a clone with no local knowledge of
+    the worktree's own addition of the same path -- squash-merge history
+    losing the common ancestor is exactly what makes this an add/add
+    conflict, not a clean 3-way merge)."""
+    upstream_edit = Path(tmp) / "upstream_edit"
+    subprocess.run(["git", "clone", "-q", str(bare), str(upstream_edit)], check=True)
+    _git(upstream_edit, "config", "user.email", "t@example.com")
+    _git(upstream_edit, "config", "user.name", "Test")
+    tasks_dir = upstream_edit / "openspec" / "changes" / "102-x"
+    tasks_dir.mkdir(parents=True)
+    (tasks_dir / "tasks.md").write_text(content)
+    if also_touch_shared is not None:
+        (upstream_edit / "shared.py").write_text(also_touch_shared)
+    _git(upstream_edit, "add", "-A")
+    _git(upstream_edit, "commit", "-q", "-m", "group squash-merge onto main")
+    _git(upstream_edit, "push", "-q", "origin", "main")
+
+
+class TasksMdChecklistConflictResolvesViaUnion(unittest.TestCase):
+    def test_conflict_confined_to_tasks_md_resolves_via_checked_union(self):
+        """Both sides independently 'add' the change's own tasks.md (squash-merge
+        lost the common ancestor), each checking off a different subset of the
+        same task lines. The carry must resolve this deterministically by
+        taking the union of checked boxes, rather than aborting."""
+        with tempfile.TemporaryDirectory() as tmp:
+            bare, repo = _init_bare_and_repo(tmp)
+
+            task, by_id = _by_id_and_task()
+            wt = Path(tmp) / "wt" / "102-x-task-002"
+            wt.parent.mkdir(parents=True)
+            _git(repo, "worktree", "add", "-b", "102-x/task-002", str(wt), "main")
+            wt_tasks_dir = wt / "openspec" / "changes" / "102-x"
+            wt_tasks_dir.mkdir(parents=True)
+            (wt_tasks_dir / "tasks.md").write_text(
+                "## 1. Group A\n\n- [x] 1.1 foo\n- [ ] 1.2 bar\n"
+            )
+            _git(wt, "add", "-A")
+            _git(wt, "commit", "-q", "-m", "TASK-002 checks off 1.1")
+
+            _push_upstream_tasks_md(
+                tmp, bare, "## 1. Group A\n\n- [ ] 1.1 foo\n- [x] 1.2 bar\n"
+            )
+
+            live._carry_squash_merged_dependencies(
+                repo, "102-x", task, by_id, wt, "origin", "main"
+            )
+
+            self.assertEqual(
+                (wt_tasks_dir / "tasks.md").read_text(),
+                "## 1. Group A\n\n- [x] 1.1 foo\n- [x] 1.2 bar\n",
+                "the union of checked boxes from both sides must be kept",
+            )
+            status = _git(wt, "status", "--porcelain").stdout
+            self.assertEqual(status.strip(), "", "the resolved merge leaves a clean tree")
+            self.assertEqual(
+                subprocess.run(
+                    ["git", "-C", str(wt), "rev-parse", "-q", "--verify", "MERGE_HEAD"],
+                    capture_output=True,
+                ).returncode,
+                1,
+                "no lingering MERGE_HEAD after the merge commits",
+            )
+
+
+class TasksMdConflictPlusOtherFileFailsLoud(unittest.TestCase):
+    def test_conflict_touching_tasks_md_and_another_file_still_aborts(self):
+        """The checklist-union exception is confined to a conflict touching
+        ONLY tasks.md. If the same squash-merge also conflicts on another
+        file, the whole merge must still abort and fail loud -- exactly the
+        general case -- rather than applying the union resolution to
+        tasks.md while some other conflict is silently left unresolved."""
+        with tempfile.TemporaryDirectory() as tmp:
+            bare, repo = _init_bare_and_repo(tmp)
+
+            task, by_id = _by_id_and_task()
+            wt = Path(tmp) / "wt" / "102-x-task-002"
+            wt.parent.mkdir(parents=True)
+            _git(repo, "worktree", "add", "-b", "102-x/task-002", str(wt), "main")
+            wt_tasks_dir = wt / "openspec" / "changes" / "102-x"
+            wt_tasks_dir.mkdir(parents=True)
+            (wt_tasks_dir / "tasks.md").write_text(
+                "## 1. Group A\n\n- [x] 1.1 foo\n- [ ] 1.2 bar\n"
+            )
+            (wt / "shared.py").write_text("line1\nline2-STALE-LOCAL\nline3\n")
+            _git(wt, "add", "-A")
+            _git(wt, "commit", "-q", "-m", "TASK-002 checks off 1.1 and edits shared.py")
+
+            _push_upstream_tasks_md(
+                tmp,
+                bare,
+                "## 1. Group A\n\n- [ ] 1.1 foo\n- [x] 1.2 bar\n",
+                also_touch_shared="line1\nline2-from-dependency\nline3\n",
+            )
+
+            live._carry_squash_merged_dependencies(
+                repo, "102-x", task, by_id, wt, "origin", "main"
+            )
+
+            status = _git(wt, "status", "--porcelain").stdout
+            self.assertEqual(status.strip(), "", "an aborted merge leaves a clean tree")
+            self.assertEqual(
+                subprocess.run(
+                    ["git", "-C", str(wt), "rev-parse", "-q", "--verify", "MERGE_HEAD"],
+                    capture_output=True,
+                ).returncode,
+                1,
+                "no lingering MERGE_HEAD after the abort",
+            )
+            # Neither side was applied -- tasks.md keeps the worktree's own
+            # pre-merge content, not the union, since the whole merge aborted.
+            self.assertEqual(
+                (wt_tasks_dir / "tasks.md").read_text(),
+                "## 1. Group A\n\n- [x] 1.1 foo\n- [ ] 1.2 bar\n",
+            )
+            self.assertEqual(
+                (wt / "shared.py").read_text(), "line1\nline2-STALE-LOCAL\nline3\n"
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
