@@ -127,7 +127,15 @@ ROUTE_SIGNALS: Dict[str, List[Tuple[re.Pattern, int, str]]] = {
         _sig(r"\busers? (should|can|need)\b", 2, "user-capability"),
     ],
     "B": [
-        _sig(r"\bepic\b", 4, "epic-word"),
+        # Requires epic-planning INTENT ("plan an epic", "create an epic for
+        # X"), not a bare mention of the word -- a bare `\bepic\b` fired on
+        # any prose describing existing epic-related work (e.g. "Route B
+        # epic-closure has no check for X", "epic 001 was closed"), which
+        # scored B purely from keyword collision (20260819-215848).
+        _sig(r"\b(?:plan|create|start|scope) (?:an? |the )?epic\b"
+             r"|\bas an epic\b|\binto an epic\b|\bepic (?:for|covering|around)\b"
+             r"|\bnew epic\b|\bbreak (?:this |it )?down into (?:an? )?epic\b",
+             4, "epic-intent"),
         _sig(r"\broadmap\b|\bmulti[- ]phase\b|\bphased\b", 3, "phased"),
         _sig(r"\bplatform\b|\bsuite\b|\bsystem for\b|\bend[- ]to[- ]end (capability|solution)\b", 3, "platform-scale"),
         _sig(r"\bseveral features\b|\bmultiple features\b|\bbreak (this |it )?down into features\b", 4, "multi-feature"),

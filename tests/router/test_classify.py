@@ -289,6 +289,47 @@ class TestResumableState(unittest.TestCase):
         self.assertEqual(r["route_source"], "no-signal-default")
 
 
+class TestEpicWordIntent(unittest.TestCase):
+    """The B ('epic-planning') scoring previously fired its 'epic-word' signal on
+    any bare mention of the word "epic", not just a genuine epic-planning request.
+    Reproduces the 20260819-212544 dispatch: a defect report about Route B's own
+    epic-closure check (three incidental mentions of "epic" -- a compound
+    descriptor and a numbered id reference, no planning intent) organically
+    scored B=4 purely from keyword collision."""
+
+    INCIDENT_TEXT = (
+        "worktrail-go/sdd-workflow's Route B epic-closure has no check for "
+        "unresolved PROVISIONAL decisions before marking status: completed. "
+        "Pullhook epic 001 was closed by PR #72 while its own Feature C "
+        "decision still said PROVISIONAL pending spec 002 shipping -- it sat "
+        "stale across 3 doc locations for weeks, undetected. This can recur "
+        "silently in any repo using Route B: add a check to the epic-closure "
+        "step that scans an epic's linked decision/research docs for an "
+        "unresolved PROVISIONAL marker and blocks status: completed until "
+        "it's resolved."
+    )
+
+    def test_incidental_epic_mentions_do_not_score_b(self):
+        r = classify(self.INCIDENT_TEXT)
+        self.assertNotIn("B", r["scores"])
+
+    def test_genuine_epic_planning_request_still_scores_b(self):
+        r = classify("Plan an epic: a donor management platform with several "
+                      "features delivered across phases")
+        self.assertEqual(r["route"], "B")
+        self.assertEqual(r["confidence"], "high")
+
+    def test_break_down_into_epic_phrasing_scores_b(self):
+        r = classify("Break this down into an epic with several independently "
+                      "valuable features")
+        self.assertIn("B", r["scores"])
+
+    def test_create_epic_for_phrasing_scores_b(self):
+        r = classify("Create an epic for the donor portal covering signup, "
+                      "payments, and reporting")
+        self.assertIn("B", r["scores"])
+
+
 class TestCitedPrStates(unittest.TestCase):
     """cited_pr_states/_pr_state — the only live-I/O boundary in this module,
     exercised here with an injected fake runner (no real `gh`/network calls)."""
