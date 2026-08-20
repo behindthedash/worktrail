@@ -41,15 +41,18 @@ finish PATH --status completed_pr_open [--pr URL] [--merge-result ...]
             code-enforced here instead of relying on every route/dispatch
             surface to call `worktrail-ensure-pr-label` itself. Same
             best-effort posture: a correction failure never affects `finish`'s
-            exit code or JSON output. Also code-enforces the review-thread
-            gate (`check_review_threads.check`) whenever the record carries a
+            exit code or JSON output. Also code-enforces the merge-state gate
+            (`_enforce_merge_state_gate`) and the review-thread gate
+            (`check_review_threads.check`) whenever the record carries a
             `pull_request` and `--status` is one of the three implementation-
-            completion states -- `blocking: true` raises `SystemExit`
-            (`_enforce_review_thread_gate`), a real block rather than a
-            best-effort correction, since ci-watch-loop.md documents this gate
-            as meant to stop `finish` the same way a failing check does.
-            `checked: false` (gh unavailable/network) still fails open. Also
-            code-enforces `pre_pr_gate.py`'s scope-completeness review
+            completion states -- a still-`BLOCKED` `mergeStateStatus`, or
+            `blocking: true`, each raise `SystemExit` (a real block rather
+            than a best-effort correction), since ci-watch-loop.md documents
+            both gates as meant to stop `finish` the same way a failing check
+            does (worktrail PR #393 for the former, datalena PR #2133 for the
+            latter). Either check failing to answer (gh unavailable/network)
+            still fails open. Also code-enforces `pre_pr_gate.py`'s
+            scope-completeness review
             (`scope_review_failures`) whenever `--status` is one of the three
             implementation-completion states, unconditional on route or PR
             presence -- a real block, not fail-open, since it reads only the
@@ -581,6 +584,76 @@ def _enforce_review_thread_gate(record: Dict[str, Any], path: Path, pr_url: str,
             f"with '{status}'.")
 
 
+def _query_merge_state(repo: str, owner: str, name: str, number: str,
+                        runner=subprocess.run) -> Optional[Dict[str, Any]]:
+    """`gh pr view --json state,mergeStateStatus` for the finish-time merge-state
+    backstop below. Returns None on any failure (gh missing, timeout, non-zero
+    exit, unparseable JSON) -- the caller treats that as no signal."""
+    try:
+        result = runner(
+            ["gh", "pr", "view", str(number), "--repo", f"{owner}/{name}",
+             "--json", "state,mergeStateStatus"],
+            cwd=repo, capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+
+
+def _enforce_merge_state_gate(record: Dict[str, Any], path: Path, pr_url: str, status: str) -> None:
+    """Code-enforced backstop for `ci-watch-loop.md`'s merge-state guard.
+
+    That section documents `mergeStateStatus: BLOCKED` as a hard stop --
+    `gh pr checks --watch` reporting all-green, or `autoMergeRequest` being
+    armed, says nothing about whether GitHub will actually let the merge
+    through (worktrail PR #393, 2026-08-14: a stray `CANCELLED` run alongside
+    a later `SUCCESS` run of the same required-check context held branch
+    protection at `BLOCKED` with every check green; the loop finished
+    `completed_pr_open` anyway and the merge stalled indefinitely until a
+    human noticed). Unlike the review-thread gate above, this check was never
+    backstopped in code -- nothing here re-queried `mergeStateStatus` before
+    `finish`, so an agent under the same time pressure that produced PR #393
+    originally can still reproduce it today despite the doc's prose fix.
+    `checked` (i.e. the query itself failing -- gh missing, network hiccup,
+    unresolvable owner/repo) is "no signal" and must never block; only a
+    definite still-`BLOCKED` result on a not-yet-merged PR does. This does
+    not attempt the loop's own CANCELLED/SUCCESS rerun remediation or the
+    review-thread-gate detour (those stay the primary, doc-driven path) --
+    it exists only to catch an agent that skipped the guard entirely, the
+    same posture as `_enforce_review_thread_gate`.
+    """
+    from .pr_labels import _owner_repo_number
+
+    repo = str(record.get("repository") or path.parent)
+    try:
+        parsed = _owner_repo_number(repo, pr_url)
+        if parsed is None:
+            return
+        owner, name, number = parsed
+        data = _query_merge_state(repo, owner, name, number)
+    except Exception as exc:  # noqa: BLE001 - fail-open, see docstring
+        print(f"warning: run_record: merge-state gate check failed for "
+              f"{pr_url}: {exc}", file=sys.stderr)
+        return
+    if data is None:
+        return
+    if data.get("state") == "MERGED":
+        return
+    if data.get("mergeStateStatus") == "BLOCKED":
+        raise SystemExit(
+            f"merge_state_gate: {pr_url} has mergeStateStatus=BLOCKED -- "
+            "GitHub will not let this merge through as-is. Run "
+            "ci-watch-loop.md's merge-state guard (rerun any stray "
+            "CANCELLED check alongside a SUCCESS run of the same context, "
+            "then the review-thread gate if still BLOCKED after 2 rounds) "
+            f"before finishing with '{status}'.")
+
+
 def cmd_finish(args: argparse.Namespace) -> int:
     if args.status not in COMPLETION_STATES:
         raise SystemExit(
@@ -602,6 +675,7 @@ def cmd_finish(args: argparse.Namespace) -> int:
         _enforce_scope_completeness_gate(record, path, args.status)
     pending_pr_url = args.pr or record.get("pull_request")
     if pending_pr_url and args.status in IMPLEMENTATION_COMPLETION_STATES:
+        _enforce_merge_state_gate(record, path, pending_pr_url, args.status)
         _enforce_review_thread_gate(record, path, pending_pr_url, args.status)
     record["completed_at"] = _now()
     record["status"] = "done"
