@@ -64,6 +64,9 @@ TERMINAL_EPIC_STATUSES = frozenset({
 _EPIC_FILE_RE = re.compile(r"^\d{3}-[a-z0-9][a-z0-9-]*$")
 _STATUS_LINE_RE = re.compile(r"^\*\*Status:\*\*\s*(.+?)\s*$", re.MULTILINE)
 _FEATURE_HEADING_RE = re.compile(r"^###\s+Feature\b", re.MULTILINE)
+_EPIC_NUMBER_RE = re.compile(r"^(\d{3})-")
+_FUTURE_SPEC_ID_RE = re.compile(
+    r"\*\*Future spec id:\*\*\s*`([a-z][a-z0-9-]*)`", re.IGNORECASE)
 
 
 def resolve_spec_rel(repo: Path, spec_id: str) -> Optional[str]:
@@ -171,8 +174,32 @@ def _count_features(text: str) -> int:
     return len(_FEATURE_HEADING_RE.findall(text))
 
 
-def _citing_spec_ids(repo: Path, epic_id: str) -> List[str]:
-    """Spec/change folders whose markdown mentions the epic id.
+def _epic_citation_patterns(epic_id: str, epic_text: str) -> List["re.Pattern"]:
+    """Signals that count a spec/change folder as citing this epic.
+
+    The literal epic id string is the strongest signal, but real citations
+    often reference the epic by prose instead -- an OpenSpec change's
+    proposal.md typically reads "Epic 002 Feature 2 adds..." rather than
+    spelling out the full `002-safe-work-queue-dependency-references` id
+    (live example: openspec/changes/work-queue-conservative-dependency-
+    resolution/proposal.md). A feature's own documented `**Future spec
+    id:**` is an equally strong, unambiguous signal once a citing file names
+    it. Matching only the literal epic id string undercounts real citations
+    and produces false "only N spec(s) cite it" seeded briefs.
+    """
+    patterns: List["re.Pattern"] = [re.compile(re.escape(epic_id))]
+    number_match = _EPIC_NUMBER_RE.match(epic_id)
+    if number_match:
+        patterns.append(re.compile(
+            rf"\bEpic\s+{number_match.group(1)}\s+Feature\s+\d+\b",
+            re.IGNORECASE))
+    for future_spec_id in _FUTURE_SPEC_ID_RE.findall(epic_text):
+        patterns.append(re.compile(re.escape(future_spec_id)))
+    return patterns
+
+
+def _citing_spec_ids(repo: Path, patterns: List["re.Pattern"]) -> List[str]:
+    """Spec/change folders whose markdown matches any epic citation pattern.
 
     Route C requires the spec header to cite its owning epic, so a citation
     anywhere in a spec folder's own top-level .md files (spec.md,
@@ -194,6 +221,9 @@ def _citing_spec_ids(repo: Path, epic_id: str) -> List[str]:
             seen.add(name)
             citing.append(name)
 
+    def _matches(text: str) -> bool:
+        return any(pattern.search(text) for pattern in patterns)
+
     docs_specs_root = repo / "docs" / "specs"
     if docs_specs_root.is_dir():
         for spec_dir in sorted(docs_specs_root.iterdir()):
@@ -201,7 +231,7 @@ def _citing_spec_ids(repo: Path, epic_id: str) -> List[str]:
                 continue
             for md in spec_dir.glob("*.md"):
                 try:
-                    if epic_id in md.read_text(encoding="utf-8"):
+                    if _matches(md.read_text(encoding="utf-8")):
                         _add(spec_dir.name)
                         break
                 except OSError:
@@ -219,7 +249,7 @@ def _citing_spec_ids(repo: Path, epic_id: str) -> List[str]:
             if len(rel_parts) < 2:
                 continue  # loose file directly under specs/ or changes/, not a change/spec folder
             try:
-                if epic_id in md.read_text(encoding="utf-8"):
+                if _matches(md.read_text(encoding="utf-8")):
                     _add(rel_parts[0])
             except OSError:
                 continue
@@ -265,7 +295,8 @@ def find_epic_gaps(
                     "id": epic_id, "unparseable": True,
                 })
                 continue
-            cited = _citing_spec_ids(repo_path, epic_id)
+            patterns = _epic_citation_patterns(epic_id, text)
+            cited = _citing_spec_ids(repo_path, patterns)
             if len(cited) >= features:
                 continue
             found.append({
