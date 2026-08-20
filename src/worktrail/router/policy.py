@@ -109,6 +109,18 @@ DEFAULTS: Dict[str, Any] = {
     # every changed path in the diff matches one of these patterns. Empty by default:
     # the docs-only fast path is opt-in per repo, since bypass rules differ per repo.
     "docs_only_paths": [],
+    # Optional map of base branch -> the one head branch that canonically
+    # promotes into it (e.g. {"stg": "dev", "prd": "stg"}), mirroring each
+    # repo's own promotion-pairing CI guard (e.g. datalena's
+    # check_promotion_target.py's `_CANONICAL_PAIRINGS`). pre_pr_gate.py's
+    # is_promotion_pr() uses it to skip the heavy pre_pr_cmd for a genuinely
+    # zero-local-diff PR whose head branch matches the target branch's
+    # canonical promotion source -- content already went through CI on the
+    # way into the head branch, so there is nothing local left to test; CI's
+    # own required checks on the target branch (e.g. stg-predeploy-gate)
+    # still fully cover it. Empty by default: promotion pairing is
+    # repo-specific, not a worktrail convention.
+    "promotion_pairs": {},
     # Optional shell command the parallel-orchestrator runs in each freshly-created
     # per-task worktree, right after `git worktree add` and before a worker is spawned
     # into it, to install local dependencies (e.g. "npm ci", "cd app && npm ci"). Task
@@ -754,6 +766,22 @@ def load_policy(repo: Path) -> Dict[str, Any]:
                     f"merge_method_by_base.{branch} '{method}' invalid "
                     f"(allowed: {VALID_MERGE_METHODS}); dropped")
         policy["merge_method_by_base"] = cleaned
+    pp = policy.get("promotion_pairs")
+    if not isinstance(pp, dict):
+        if pp:
+            meta["warnings"].append(
+                "promotion_pairs must be a mapping (branch: head_branch); "
+                f"got {pp!r} — ignored, defaults kept")
+        policy["promotion_pairs"] = {}
+    else:
+        cleaned_pp: Dict[str, Any] = {}
+        for branch, head in pp.items():
+            if isinstance(head, str) and head.strip():
+                cleaned_pp[branch] = head
+            else:
+                meta["warnings"].append(
+                    f"promotion_pairs.{branch} must be a non-empty string; dropped")
+        policy["promotion_pairs"] = cleaned_pp
     # Nudge: a repo with specs but no integrated-smoke command ships group PRs whose
     # cross-task integration is only checked at CI/merge — the per-task review loop is
     # structurally blind to it. Surface once; do not block.

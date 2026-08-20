@@ -162,6 +162,16 @@ GATE_PARITY = {
         "does strictly MORE work than the one-off path here, never less -- the safe "
         "direction for a skip to diverge in.",
     ),
+    "is_promotion_pr": (
+        "exempt",
+        "skip-only mechanism (never fails the gate), same shape as is_docs_only above: the "
+        "orchestrator's _run_integration_smoke() always runs integrate_smoke_cmd "
+        "unconditionally regardless of this check, so it does strictly MORE work than the "
+        "one-off path's promotion-PR skip, never less. Also structurally inapplicable to the "
+        "orchestrator path: group PRs target the repo's own base branch (feature work), not a "
+        "policy-declared promotion_pairs head/base pair, so is_promotion_pr() would never "
+        "return True there even if invoked.",
+    ),
     "resolve_cmd": (
         "exempt",
         "the orchestrator runs a deliberately separate, policy-documented command "
