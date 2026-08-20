@@ -106,10 +106,26 @@ mutation($threadId: ID!) {
 
 DEFAULT_REPLY_BODY = (
     "Resolved automatically by the CI watch loop: the file this comment "
-    "targets was modified by a commit pushed later in this run (or the run "
-    "record documents an explicit decision), so this finding is treated as "
-    "addressed. Reopen if that's wrong."
+    "targets was modified by a commit pushed later in this run, so this "
+    "finding is treated as addressed. Reopen if that's wrong."
 )
+
+DECISION_REPLY_TEMPLATE = (
+    "Resolved automatically by the CI watch loop: the run record's decision "
+    "log explains why this finding is treated as addressed:\n\n"
+    "> {decision}\n\n"
+    "Reopen if that's wrong."
+)
+
+
+def _reply_body_for(thread: Dict[str, Any]) -> str:
+    """The reply text for an addressed thread -- the actual decisions-log
+    reasoning when that's how it was correlated, the generic commit-based
+    template otherwise."""
+    decision = thread.get("_matched_decision")
+    if decision:
+        return DECISION_REPLY_TEMPLATE.format(decision=decision)
+    return DEFAULT_REPLY_BODY
 
 
 def _run_gh(args: List[str], timeout: int = GH_TIMEOUT_SECONDS,
@@ -171,17 +187,20 @@ def _commit_touched_path_since(
     return result.returncode == 0 and bool(result.stdout.strip())
 
 
-def _decision_mentions_thread(decisions: List[str], thread: Dict[str, Any]) -> bool:
+def _find_matching_decision(decisions: List[str], thread: Dict[str, Any]) -> Optional[str]:
+    """The first decisions-log entry that names this thread's id or path, or
+    `None`. The matched text (not just a bool) is what lets the reply quote
+    the actual reasoning instead of a generic template."""
     thread_id = thread.get("id") or ""
     path = thread.get("path") or ""
     for decision in decisions:
         if not isinstance(decision, str):
             continue
         if thread_id and thread_id in decision:
-            return True
+            return decision
         if path and path in decision:
-            return True
-    return False
+            return decision
+    return None
 
 
 def correlate(
@@ -190,7 +209,11 @@ def correlate(
 ) -> Dict[str, List[Dict[str, Any]]]:
     """Split a PR's threads into unresolved-and-addressed (safe to auto-reply
     and resolve) vs unresolved-and-unaddressed (blocking). A thread already
-    marked `isResolved` by GitHub is excluded from both -- nothing to do."""
+    marked `isResolved` by GitHub is excluded from both -- nothing to do.
+
+    An addressed thread that matched via the decisions log (rather than a
+    touched-file commit) carries the matched text on `_matched_decision`, so
+    the reply can quote the actual reasoning instead of a generic template."""
     unresolved = [t for t in threads if not t.get("isResolved")]
     addressed: List[Dict[str, Any]] = []
     unaddressed: List[Dict[str, Any]] = []
@@ -201,8 +224,11 @@ def correlate(
         is_addressed = False
         if path and created_at and _commit_touched_path_since(repo, path, created_at, runner=runner):
             is_addressed = True
-        elif _decision_mentions_thread(decisions, thread):
-            is_addressed = True
+        else:
+            matched_decision = _find_matching_decision(decisions, thread)
+            if matched_decision is not None:
+                is_addressed = True
+                thread = {**thread, "_matched_decision": matched_decision}
         (addressed if is_addressed else unaddressed).append(thread)
     return {"unresolved": unresolved, "addressed": addressed, "unaddressed": unaddressed}
 
@@ -296,7 +322,7 @@ def check(
         if dry_run:
             entry["dry_run"] = True
         else:
-            ok, err = reply_and_resolve(thread["id"], DEFAULT_REPLY_BODY, runner=runner)
+            ok, err = reply_and_resolve(thread["id"], _reply_body_for(thread), runner=runner)
             entry["resolved"] = ok
             if err:
                 entry["error"] = err
