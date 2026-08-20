@@ -145,6 +145,11 @@ _TRAILING_PUNCT = ")]}.,;:!?\"'("
 # all look path-shaped to a naive `/`-or-extension test.
 _HAS_LETTER_RE = re.compile(r"[A-Za-z]")
 
+# Abbreviations that are prose, not paths, but are dot-shaped enough to slip
+# past `_EXT_RE` (`e.g` -> a bogus `.g` extension) once `_strip_punct` has
+# already dropped the trailing period a sentence hung off them.
+_PATH_TOKEN_DENYLIST = frozenset({"e.g", "i.e", "etc", "vs", "a.k.a"})
+
 
 def _strip_punct(token: str) -> str:
     token = token.strip()
@@ -163,6 +168,10 @@ def _is_path_token(token: str) -> bool:
     # chain (`2.1->2.2->2.3->2.4`); neither is searchable as a pathspec, and
     # both crowd out real probes under PATH_PROBE_CAP.
     if any(c in token for c in "()<>"):
+        return False
+    # `e.g.`/`i.e.`/`etc.`/`vs.`/`a.k.a.` are prose, not paths, however a
+    # brief happens to punctuate or capitalize them.
+    if token.lower() in _PATH_TOKEN_DENYLIST:
         return False
     # An absolute or home-relative path names something outside the repo being
     # searched -- a brief's `Repo: /home/...` line is the usual source. Passing
