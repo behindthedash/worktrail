@@ -103,10 +103,29 @@ ROUTE_SIGNALS: Dict[str, List[Tuple[re.Pattern, int, str]]] = {
         _sig(r"\bshould now\b|\bfrom now on\b|\bno longer\b", 3, "new-rule"),
         _sig(r"\bdeprecate\b|\bsunset\b|\bretire\b", 3, "deprecate"),
         _sig(r"\bupdate the spec\b|\brevise the spec\b|\bspec(ification)? change\b", 4, "spec-update"),
-        _sig(r"\bchange\b.*\bfrom\b.*\bto\b", 3, "from-to"),
+        # Requires change-request INTENT ("change X from A to B" as a command,
+        # or "should/please/need to change ... from ... to ..."), not a bare
+        # mention of a value that merely can/does transition -- the unbounded
+        # `\bchange\b.*\bfrom\b.*\bto\b` fired on incidental descriptions of
+        # existing or automatic state changes anywhere the three words
+        # happened to appear in order (20260820-005527, same shape as B's
+        # epic-word bug, 20260819-215848/PR #552).
+        _sig(r"(?:^|\b(?:please|should|we should|need(?:s)? to|want(?:s)? to"
+             r"|let'?s|plan(?:s)? to|going to))\s*"
+             r"change\b(?:\s+\S+){0,3}\s+from\b.{0,30}\bto\b",
+             3, "from-to"),
     ],
     "H": [
-        _sig(r"\brefactor(ing)?\b", 4, "refactor-word"),
+        # Requires refactor-request INTENT (an imperative "refactor ... to/into
+        # ...", a leading imperative, or a should/please/need-to/want-to/let's
+        # request), not a bare mention of the word -- the bare
+        # `\brefactor(ing)?\b` fired on prose merely describing prior refactor
+        # work or its absence (20260820-005527, same shape as B's epic-word
+        # bug, 20260819-215848/PR #552).
+        _sig(r"(?:^|\b(?:please|should|we should|need(?:s)? to|want(?:s)? to"
+             r"|let'?s|plan(?:s)? to|going to))\s*refactor(?:ing)?\b"
+             r"|\brefactor(?:ing)?\b(?:\s+\S+){0,4}\s+(?:to|into)\b",
+             4, "refactor-word"),
         _sig(r"\btech(nical)? debt\b", 4, "tech-debt"),
         _sig(r"\bclean[- ]?up\b|\btidy\b", 3, "cleanup"),
         _sig(r"\bsimplify\b|\bextract\b|\bconsolidate\b|\breorganiz(e|ation)\b|\bmoderniz(e|ation)\b", 2, "restructure"),
@@ -120,7 +139,16 @@ ROUTE_SIGNALS: Dict[str, List[Tuple[re.Pattern, int, str]]] = {
         _sig(r"\bstart (the )?(implementation|coding)\b", 3, "start-impl"),
     ],
     "C": [
-        _sig(r"\bnew feature\b|\bfeature\b", 2, "feature-word"),
+        # Requires feature-request INTENT (a new/add/build/create/support/
+        # ship/implement/need/want/request verb co-occurring with "feature"),
+        # not a bare mention of the word -- the bare `\bfeature\b` fired on
+        # prose describing an existing feature (e.g. a bug report naming "the
+        # login feature") purely from keyword collision (20260820-005527,
+        # same shape as B's epic-word bug, 20260819-215848/PR #552).
+        _sig(r"\b(?:new|add(?:ing)?|build(?:ing)?|creat(?:e|ing)|support(?:ing)?"
+             r"|ship(?:ping)?|implement(?:ing)?|need(?:s|ed)?|want(?:s|ed)?"
+             r"|request(?:ing|ed)?)\b(?:\s+\S+){0,4}\s+feature\b",
+             2, "feature-word"),
         _sig(r"\badd\b|\bsupport\b|\benable\b|\ballow (users?|admins?|people)\b", 2, "add-capability"),
         _sig(r"\bplan\b", 2, "plan-verb"),
         _sig(r"\bspec( |-)?(out|up)?\b.*\bfor\b|\bwrite a spec\b", 3, "spec-authoring"),

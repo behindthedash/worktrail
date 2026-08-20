@@ -10,7 +10,12 @@ import unittest
 from pathlib import Path
 
 from worktrail.router import classify as _classify_mod
-from worktrail.router.classify import classify, classify_risk, protected_operations
+from worktrail.router.classify import (
+    _score_routes,
+    classify,
+    classify_risk,
+    protected_operations,
+)
 
 CASSETTE = Path(_classify_mod.__file__).resolve().parent / "cassettes" / "routing_cassette.json"
 
@@ -328,6 +333,102 @@ class TestEpicWordIntent(unittest.TestCase):
         r = classify("Create an epic for the donor portal covering signup, "
                       "payments, and reporting")
         self.assertIn("B", r["scores"])
+
+
+class TestRefactorWordIntent(unittest.TestCase):
+    """The H ('refactor-debt') scoring previously fired its bare 'refactor-word'
+    signal on any mention of the word "refactor"/"refactoring", not just a
+    genuine refactor request. Same false-positive shape as B's epic-word bug
+    (20260819-215848, PR #552): a defect report or status update that merely
+    names refactor-related work could outscore the correct route purely from
+    keyword collision (20260820-005527)."""
+
+    INCIDENT_TEXT = (
+        "Worktrail's Route H scoring has a bug: its refactor-word signal fires "
+        "on any bare mention of the word 'refactor', including a bug report "
+        "that only describes a prior refactor that already happened, or a PR "
+        "title that says no refactor was performed. This misroutes plain "
+        "defect reports into refactor/tech-debt work the requester never "
+        "asked for."
+    )
+
+    def test_incidental_refactor_mentions_do_not_score_h(self):
+        hits = _score_routes(self.INCIDENT_TEXT)[1]
+        self.assertNotIn("refactor-word", hits["H"])
+
+    def test_imperative_refactor_request_still_scores_h(self):
+        r = classify("Refactor the email module to extract a shared client — "
+                      "no behavior change")
+        self.assertEqual(r["route"], "H")
+        self.assertEqual(r["confidence"], "high")
+
+    def test_refactor_the_x_to_y_phrasing_scores_h(self):
+        hits = _score_routes("Please refactor the payments module to remove "
+                              "the duplicated retry logic")[1]
+        self.assertIn("refactor-word", hits["H"])
+
+    def test_should_refactor_phrasing_scores_h(self):
+        hits = _score_routes("We should refactor the auth middleware before "
+                              "the next release")[1]
+        self.assertIn("refactor-word", hits["H"])
+
+
+class TestFeatureWordIntent(unittest.TestCase):
+    """The C ('feature-planning') scoring previously fired its bare
+    'feature-word' signal on any mention of the word "feature", not just a
+    genuine new-feature request. Same false-positive shape as B's epic-word
+    bug (20260819-215848, PR #552, 20260820-005527)."""
+
+    INCIDENT_TEXT = (
+        "The login feature is broken after the last deploy — clicking submit "
+        "throws a 500 error. Just a bug in the existing feature; it needs a "
+        "fix, not a redesign."
+    )
+
+    def test_incidental_feature_mentions_do_not_score_c(self):
+        hits = _score_routes(self.INCIDENT_TEXT)[1]
+        self.assertNotIn("feature-word", hits["C"])
+
+    def test_new_feature_phrasing_still_scores_c(self):
+        r = classify("Plan a new feature: allow users to export reports as CSV")
+        self.assertEqual(r["route"], "C")
+        self.assertEqual(r["confidence"], "high")
+
+    def test_new_noun_feature_phrasing_still_scores_c(self):
+        r = classify("Add a new admin settings feature behind login")
+        self.assertEqual(r["route"], "C")
+
+    def test_build_a_feature_phrasing_scores_c(self):
+        hits = _score_routes("Build a feature for exporting audit logs")[1]
+        self.assertIn("feature-word", hits["C"])
+
+
+class TestChangeFromToIntent(unittest.TestCase):
+    """The G ('spec-change') scoring previously fired its bare
+    'change ... from ... to' signal on any text where those three words
+    happened to appear in order, anywhere in the request, not just a genuine
+    spec-change request. Same false-positive shape as B's epic-word bug
+    (20260819-215848, PR #552, 20260820-005527)."""
+
+    INCIDENT_TEXT = (
+        "Investigate why the dropdown default value can silently change from "
+        "Draft to Published when a user refreshes the page during autosave. "
+        "This looks like a state-management bug, not a requested behavior "
+        "change."
+    )
+
+    def test_incidental_change_from_to_does_not_score_g(self):
+        hits = _score_routes(self.INCIDENT_TEXT)[1]
+        self.assertNotIn("from-to", hits["G"])
+
+    def test_imperative_change_from_to_scores_g(self):
+        hits = _score_routes("Change the retry limit from 3 to 5")[1]
+        self.assertIn("from-to", hits["G"])
+
+    def test_should_change_from_to_phrasing_scores_g(self):
+        hits = _score_routes("We should change the default timeout from 30s "
+                              "to 60s")[1]
+        self.assertIn("from-to", hits["G"])
 
 
 class TestCitedPrStates(unittest.TestCase):
