@@ -11,8 +11,8 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [e2e] Run `PYTHONPATH=src pytest -q tests/workqueue/test_seed_backlog.py` and confirm
+- [x] 2.1 [e2e] Run `PYTHONPATH=src pytest -q tests/workqueue/test_seed_backlog.py` and confirm
   all citation-matching tests (existing and new) pass; depends on 1.1.
-- [ ] 2.2 [e2e] Run `PYTHONPATH=src pytest -q` and `PYTHONPATH=src python3 -m
+- [x] 2.2 [e2e] Run `PYTHONPATH=src pytest -q` and `PYTHONPATH=src python3 -m
   worktrail.orchestrator.orchestrate check` and confirm both repository gates pass; depends on
   2.1.
