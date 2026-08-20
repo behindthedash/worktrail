@@ -3619,3 +3619,91 @@ class DecisionsJsonCLI(unittest.TestCase):
             output = self._run_json(["--root", str(specs_dir), "--json"])
 
             self.assertEqual(output["open_decisions"], [])
+
+
+class EpicStageDetection(unittest.TestCase):
+    """`detect_epic_stage()` classifies one docs/specs/epics/*.md decomposition
+    document -- pins each of its stage outcomes against the shared detector 1.1
+    ported from seed_backlog's originals."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _mk_epic(self, epic_id: str, *, features: int = 1,
+                 status: str | None = None) -> Path:
+        epics = self.repo / "docs" / "specs" / "epics"
+        epics.mkdir(parents=True, exist_ok=True)
+        body = [f"# Epic: {epic_id}", ""]
+        if status is not None:
+            body.append(f"**Status:** {status}")
+            body.append("")
+        for n in range(1, features + 1):
+            body.append(f"### Feature {n}")
+            body.append(f"Feature {n} body.")
+            body.append("")
+        path = epics / f"{epic_id}.md"
+        path.write_text("\n".join(body), encoding="utf-8")
+        return path
+
+    def _mk_citing_spec(self, spec_id: str, epic_id: str) -> None:
+        spec_dir = self.repo / "docs" / "specs" / spec_id
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        (spec_dir / "spec.md").write_text(
+            f"# Spec {spec_id}\n\nOwning epic: {epic_id}\n", encoding="utf-8")
+
+    def test_epic_gap_when_fewer_citing_specs_than_features(self):
+        epic_file = self._mk_epic("001-payments", features=2)
+        self._mk_citing_spec("010-billing", "001-payments")
+
+        result = dashboard.detect_epic_stage(epic_file, self.repo)
+
+        self.assertEqual(result["stage"], "epic-gap")
+        self.assertEqual(result["features"], 2)
+        self.assertEqual(result["cited"], 1)
+        self.assertIn("010-billing", result["citing_specs"])
+
+    def test_epic_unparseable_when_no_feature_headings(self):
+        epic_file = self._mk_epic("002-freeform", features=0)
+
+        result = dashboard.detect_epic_stage(epic_file, self.repo)
+
+        self.assertEqual(result["stage"], "epic-unparseable")
+        self.assertEqual(result["features"], 0)
+        self.assertEqual(result["citing_specs"], [])
+
+    def test_epic_complete_via_terminal_status(self):
+        epic_file = self._mk_epic("003-legacy", features=3, status="Completed")
+
+        result = dashboard.detect_epic_stage(epic_file, self.repo)
+
+        self.assertEqual(result["stage"], "epic-complete")
+        self.assertIn("terminal status", result["next_action"])
+        self.assertEqual(result["citing_specs"], [])
+
+    def test_epic_complete_via_full_citation(self):
+        epic_file = self._mk_epic("004-onboarding", features=1)
+        self._mk_citing_spec("020-welcome", "004-onboarding")
+
+        result = dashboard.detect_epic_stage(epic_file, self.repo)
+
+        self.assertEqual(result["stage"], "epic-complete")
+        self.assertEqual(result["features"], 1)
+        self.assertEqual(result["cited"], 1)
+        self.assertIn("020-welcome", result["citing_specs"])
+
+    def test_non_epic_named_file_is_ignored_by_epic_id_pattern_against_real_directory(self):
+        epic_file = self._mk_epic("001-payments", features=1)
+        epics_dir = epic_file.parent
+        (epics_dir / "README.md").write_text("# Epics index\n", encoding="utf-8")
+        (epics_dir / "index.md").write_text("# Index\n", encoding="utf-8")
+
+        matched = sorted(
+            f.name for f in epics_dir.iterdir()
+            if dashboard.EPIC_ID_RE.match(f.stem)
+        )
+
+        self.assertEqual(matched, ["001-payments.md"])
