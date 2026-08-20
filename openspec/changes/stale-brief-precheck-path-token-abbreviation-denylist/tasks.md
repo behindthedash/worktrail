@@ -1,6 +1,6 @@
 ## 1. Implementation
 
-- [ ] 1.1 In `src/worktrail/router/check_brief_staleness.py`, add a module-level
+- [x] 1.1 In `src/worktrail/router/check_brief_staleness.py`, add a module-level
   `_PATH_TOKEN_DENYLIST` frozenset containing `e.g`, `i.e`, `etc`, `vs`, `a.k.a`, and add a
   case-insensitive check in `_is_path_token()` that rejects a token whose lowercased form is in
   the denylist, alongside the existing absolute-path/parens/no-letter exclusions. (Requirement:
