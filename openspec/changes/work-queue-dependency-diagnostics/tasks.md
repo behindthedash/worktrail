@@ -1,0 +1,18 @@
+## 1. Listing Diagnostics Data
+
+- [ ] 1.1 In `src/worktrail/workqueue/work_queue.py`, add an additive per-brief diagnostics field to `list_queue()`'s `_brief_dict()` holding one entry (`raw`, `reference`, `state`, `candidates`) per unsatisfied `blocked-by` reference from `classify_dependency_reference()`, reusing one classification pass for both the existing `blocked` flag and the new field, emitting nothing for done/valid-stale references, and leaving every existing field's name and meaning unchanged; cover the malformed, ambiguous, active, all-satisfied, and open-decision-without-dependency-entries cases plus existing-field preservation in `tests/workqueue/test_work_queue.py`. (Requirement: Queue listing data exposes unresolved dependency diagnostics)
+
+## 2. Automatic-Selection Skip Reason
+
+- [ ] 2.1 In `src/worktrail/router/dashboard.py`, qualify `auto_pick_brief()`'s `blocked` skip reason from the new listing field as `blocked:malformed-dependency` / `blocked:ambiguous-dependency` (malformed outranking ambiguous when both are present), leaving the bare `blocked` reason for active-dependency and open-decision blocking and leaving gate ordering — including `unparsable-frontmatter` precedence — unchanged; cover both qualified reasons, the unqualified fallback, and `log_auto_pick_miss()` still bucketing the qualified reasons under the coarse `blocked` category in `tests/router/test_dashboard.py`; depends on 1.1. (Requirement: Automatic selection reports a dependency-specific skip reason)
+- [ ] 2.2 Update the auto-mode skip-reason enumeration in `skills/worktrail-go/references/auto-mode.md` to include the two dependency-qualified reasons and what an operator should do about them; depends on 2.1.
+
+## 3. Operator-Facing Output
+
+- [ ] 3.1 In `src/worktrail/workqueue/work_queue.py`, extend `_print_human()`'s `list` blocked section with a repair warning naming the affected brief and, for a malformed reference, its raw stored value with quoting that keeps embedded commas and trailing whitespace unambiguous, emitting nothing for briefs blocked only by satisfied-or-active references; cover the malformed warning text, the ambiguous case, and the no-warning case in `tests/workqueue/test_work_queue.py`; depends on 1.1. (Requirement: Operator output names the affected brief and the invalid value)
+- [ ] 3.2 In `src/worktrail/router/dashboard.py`, replace the rendered queue block's `[blocked]` tag with a distinct dependency-reference-problem tag for affected briefs — same line, no new section, block height unchanged — and cover the tag and the untouched ordinary-blocked tag in `tests/router/test_dashboard.py`; depends on 1.1.
+
+## 4. End-to-End Regression and Verification
+
+- [ ] 4.1 Add `tests/router/test_auto_pick_dependency_diagnostics_e2e.py` reproducing the 2026-08-18 incident against a real `$WORK_QUEUE_DIR` fixture — an active prerequisite brief, a clean eligible brief, and a brief whose single `blocked-by` item comma-joins that still-queued prerequisite's ID with two others — driving the real `list_queue()` output into the real `auto_pick_brief()`, asserting the malformed brief is skipped with the malformed-dependency reason rather than picked, that the clean brief is returned as the pick, and that the malformed brief's bytes and location are unchanged after listing, selection, and human output all run; depends on 2.1, 3.1, and 3.2. (Requirement: Malformed dependency references never reach an automatic pick) (Requirement: Diagnostics are produced without modifying stored briefs)
+- [ ] 4.2 [e2e] Run `PYTHONPATH=src pytest -q` and `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` and confirm both repository gates pass; depends on 4.1.
