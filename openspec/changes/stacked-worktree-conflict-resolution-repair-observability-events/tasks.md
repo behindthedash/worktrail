@@ -18,13 +18,13 @@
       (`ensure_wt`, `_ensure_wt`) already extend `entries` and call
       `record()`/`_record()` with whatever list they get back, so no change is
       needed at either call site itself.
-- [ ] 1.2 In `src/worktrail/orchestrator/safety_net_report.py`: extend `scan()` to
+- [x] 1.2 In `src/worktrail/orchestrator/safety_net_report.py`: extend `scan()` to
       also break down `worktree_drift_repaired` and `checklist_conflict_resolved`
       fire counts by `task` (mirroring `dependency_file_drift_by_dep_id`'s shape,
       keyed on `event.get("task", "unknown")`), and extend `render()` to print
       those breakdowns when non-empty, following the existing
       `dependency_file_drift_by_dep_id` section as the template.
-- [ ] 1.3 Add regression tests: `_carry_squash_merged_dependencies` returns the
+- [x] 1.3 Add regression tests: `_carry_squash_merged_dependencies` returns the
       `checklist_conflict_resolved` event on a tasks.md-only conflict and `None`
       on a normal (no-conflict) carry or a non-tasks.md conflict abort;
       `_require_dependency_files_with_repair` returns a list containing
