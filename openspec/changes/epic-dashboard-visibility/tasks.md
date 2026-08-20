@@ -56,5 +56,5 @@
 
 - [ ] 5.1 [e2e] Run `PYTHONPATH=src pytest tests/workqueue/test_seed_backlog.py -q` and confirm
       every existing epic-gap seeding test still passes unchanged against the section-3 refactor.
-- [ ] 5.2 [e2e] Run `PYTHONPATH=src pytest -q && PYTHONPATH=src python3 -m
+- [x] 5.2 [e2e] Run `PYTHONPATH=src pytest -q && PYTHONPATH=src python3 -m
       worktrail.orchestrator.orchestrate check` and confirm both succeed.
