@@ -24,9 +24,14 @@ effect for backtick-quoted tokens.
 
 A token SHALL NOT qualify as a path probe when it is an absolute or home-relative path (it
 names something outside the repository being searched), when it contains parentheses or angle
-brackets (a prose call-site list or task chain, not a pathspec), or when its apparent path
+brackets (a prose call-site list or task chain, not a pathspec), when its apparent path
 structure carries no letters (a task id such as `1.1` or `2.1/2.2/2.3`, which is the single
-most common token shape in a brief).
+most common token shape in a brief), or when its stripped, lowercased form exactly matches a
+fixed denylist of common non-path prose abbreviations (`e.g`, `i.e`, `etc`, `vs`, `a.k.a`) —
+these abbreviations end in a genuine dot-plus-letters sequence (`.g`, `.e`, `.a`) that is
+indistinguishable in shape from a legitimate one- or two-character file extension, but they name
+no file and MUST NOT be searched as path probes regardless of what the extension-shape rule
+above would otherwise admit.
 
 Bare-filename path probes SHALL be searched with a pathspec that matches the file at the
 repository root as well as nested beneath it.
@@ -72,6 +77,17 @@ repository root as well as nested beneath it.
 - **WHEN** a brief's focus text contains `1.1`, `2.1/2.2/2.3/2.4`, and a `repo:` line naming an
   absolute path
 - **THEN** none of them are extracted as path probes
+
+#### Scenario: Common prose abbreviations are not path probes
+- **WHEN** a brief's focus text contains the unbackticked prose "see e.g. the router", "i.e. the
+  same module", and "a.k.a. the guard"
+- **THEN** none of `e.g`, `i.e`, or `a.k.a` are extracted as path probes, even though each looks
+  path-shaped after trailing punctuation is stripped
+
+#### Scenario: Legitimate short extensions are still path probes
+- **WHEN** a brief's focus text contains the backtick-quoted tokens `guard.py`, `README.md`, and
+  `deploy.sh`
+- **THEN** all three are extracted as path probes, unaffected by the abbreviation denylist
 
 #### Scenario: Pull-request references are extracted with their number
 - **WHEN** a brief's focus text contains `devops PR #89` and `behindthedash/devops#89`
