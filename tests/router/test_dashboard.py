@@ -3788,3 +3788,73 @@ class EpicScan(unittest.TestCase):
         spec_dir.mkdir(parents=True, exist_ok=True)
         (spec_dir / "spec.md").write_text(
             f"# Spec {spec_id}\n\nOwning epic: {epic_id}\n", encoding="utf-8")
+
+
+class EpicRowsInDashboardJson(unittest.TestCase):
+    """Epic rows (scan_epics()) must reach `dashboard.main()`'s JSON output in
+    both single-repo (--root) and multi-repo (--repos) mode -- the wiring
+    main() itself does (row["epics"] / top-level "epics" key), not just
+    scan_epics() in isolation."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self._tmp.name) / "repo-a"
+        self.repo.mkdir(parents=True)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    @staticmethod
+    def _mk_epic(repo: Path, epic_id: str, *, features: int = 1) -> Path:
+        epics = repo / "docs" / "specs" / "epics"
+        epics.mkdir(parents=True, exist_ok=True)
+        body = [f"# Epic: {epic_id}", ""]
+        for n in range(1, features + 1):
+            body.append(f"### Feature {n}")
+            body.append(f"Feature {n} body.")
+            body.append("")
+        path = epics / f"{epic_id}.md"
+        path.write_text("\n".join(body), encoding="utf-8")
+        return path
+
+    def _run_json(self, argv) -> dict:
+        import io
+        from contextlib import redirect_stdout
+
+        f = io.StringIO()
+        with redirect_stdout(f):
+            dashboard.main(argv)
+        return json.loads(f.getvalue())
+
+    def test_single_repo_json_includes_epic_rows(self):
+        self._mk_epic(self.repo, "001-payments", features=2)
+        specs_dir = self.repo / "docs" / "specs"
+        output = self._run_json(["--root", str(specs_dir), "--json"])
+
+        self.assertIn("epics", output)
+        self.assertEqual(output["epics"], dashboard.scan_epics(self.repo))
+        self.assertEqual([e["id"] for e in output["epics"]], ["001-payments"])
+
+    def test_single_repo_json_epics_empty_when_no_epics_dir(self):
+        specs_dir = self.repo / "docs" / "specs"
+        specs_dir.mkdir(parents=True)
+        output = self._run_json(["--root", str(specs_dir), "--json"])
+
+        self.assertEqual(output["epics"], [])
+
+    def test_repos_json_includes_per_repo_epic_rows(self):
+        (self.repo / ".git").mkdir(parents=True)  # makes is_git_repo() true
+        self._mk_epic(self.repo, "002-onboarding", features=1)
+        other = self.repo.parent / "repo-b"
+        (other / ".git").mkdir(parents=True)  # no epics dir -- must report []
+
+        parent = self.repo.parent
+        output = self._run_json(["--repos", str(parent), "--json"])
+
+        rows_by_repo = {r["repo"]: r for r in output["repos"]}
+        self.assertIn("epics", rows_by_repo["repo-a"])
+        self.assertEqual(
+            [e["id"] for e in rows_by_repo["repo-a"]["epics"]], ["002-onboarding"]
+        )
+        self.assertEqual(rows_by_repo["repo-a"]["epics"], dashboard.scan_epics(self.repo))
+        self.assertEqual(rows_by_repo["repo-b"]["epics"], [])
