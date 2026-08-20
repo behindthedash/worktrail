@@ -11,31 +11,11 @@ import sys
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
-import yaml
-
 from ..router.classify import classify
-from ..shared.brief_frontmatter import validate_brief
+from ..shared.brief_frontmatter import is_canonical_style, serialize_frontmatter, validate_brief
 from . import score_candidates
 from . import work_queue
 from .work_queue import normalize_dependency_reference
-
-
-class _LiteralStr(str):
-    """Marker subclass so the YAML dumper renders this value as a literal
-    block scalar (``|``) instead of a quoted flow scalar.
-
-    Free-text fields like ``focus`` routinely contain a colon+space or a
-    space+``#`` (both of which force PyYAML to quote a plain scalar) and
-    apostrophes (which single-quote style then escapes by doubling, e.g.
-    ``PR #2010''s``). A literal block scalar needs no escaping at all.
-    """
-
-
-def _represent_literal_str(dumper: yaml.SafeDumper, data: str) -> yaml.ScalarNode:
-    return dumper.represent_scalar("tag:yaml.org,2002:str", data, style="|")
-
-
-yaml.SafeDumper.add_representer(_LiteralStr, _represent_literal_str)
 
 
 _SLUG_MAX_CHARS = 60
@@ -187,7 +167,7 @@ def create_handoff(
     frontmatter: dict[str, Any] = {
         "id": path.stem,
         "created": now.isoformat(timespec="seconds"),
-        "focus": _LiteralStr(focus),
+        "focus": focus,
         "repo": _normalize_repo(repo) or None,
         "remote": remote or None,
         "base-branch": base_branch or None,
@@ -212,14 +192,20 @@ def create_handoff(
         if cleaned:
             frontmatter[key] = cleaned
 
-    content = "---\n" + yaml.safe_dump(
-        frontmatter, sort_keys=False, default_flow_style=False, allow_unicode=True
-    ) + "---\n\n" + _brief_body(context, approach, artifacts, questions, skills)
+    content = (
+        "---\n"
+        + serialize_frontmatter(frontmatter)
+        + "---\n\n"
+        + _brief_body(context, approach, artifacts, questions, skills)
+    )
     path.write_text(content, encoding="utf-8")
     valid, error = validate_brief(path)
     if not valid:
         path.unlink(missing_ok=True)
         raise RuntimeError(f"created brief failed validation: {error}")
+    if not is_canonical_style(content):
+        path.unlink(missing_ok=True)
+        raise RuntimeError("created brief did not serialize to canonical frontmatter style")
 
     previous_env = os.environ.get("WORK_QUEUE_DIR")
     os.environ["WORK_QUEUE_DIR"] = str(base)

@@ -9,6 +9,8 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
+import yaml
+
 from worktrail.shared import brief_frontmatter as bf
 
 
@@ -134,6 +136,67 @@ class ValidateBrief(unittest.TestCase):
         ok, err = bf.validate_brief(Path("/no/such/file.md"))
         self.assertFalse(ok)
         self.assertIn("cannot read", err)
+
+
+class SerializeFrontmatter(unittest.TestCase):
+    def test_focus_renders_as_literal_block(self):
+        text = bf.serialize_frontmatter({"id": "a", "focus": "fix the thing", "status": "queued"})
+        self.assertIn("focus: |-\n  fix the thing\n", text)
+
+    def test_focus_with_colon_and_hash_needs_no_quoting(self):
+        # A plain scalar would be forced into a quoted style by a colon+space
+        # or space+# in the value; the literal block needs neither.
+        text = bf.serialize_frontmatter({"focus": "fix: the bug #123 (P1)"})
+        self.assertIn("focus: |-\n", text)
+        self.assertNotIn('"', text)
+
+    def test_embedded_newline_stays_a_single_block_no_folding(self):
+        focus = "first line\nsecond line, " + ("padding " * 20).strip()
+        text = bf.serialize_frontmatter({"focus": focus})
+        self.assertNotIn("\\\n", text)  # no double-quoted fold continuation
+        self.assertEqual(yaml.safe_load(text)["focus"], focus)
+
+    def test_trailing_whitespace_is_stripped(self):
+        text = bf.serialize_frontmatter({"focus": "  padded on both sides   "})
+        self.assertEqual(yaml.safe_load(text)["focus"], "padded on both sides")
+
+    def test_non_literal_keys_use_normal_pyyaml_styling(self):
+        text = bf.serialize_frontmatter({"id": "a", "status": "queued", "focus": "x"})
+        self.assertIn("id: a\n", text)
+        self.assertIn("status: queued\n", text)
+
+    def test_created_timestamp_is_quoted(self):
+        text = bf.serialize_frontmatter({"created": "2026-08-20T09:00:00-07:00", "focus": "x"})
+        self.assertIn("created: '2026-08-20T09:00:00-07:00'\n", text)
+
+    def test_unicode_round_trips(self):
+        text = bf.serialize_frontmatter({"focus": "an em dash — right here"})
+        self.assertEqual(yaml.safe_load(text)["focus"], "an em dash — right here")
+        self.assertNotIn("\\u2014", text)  # allow_unicode: literal char, not an escape
+
+
+class IsCanonicalStyle(unittest.TestCase):
+    def test_serialize_frontmatter_output_is_canonical(self):
+        text = bf.serialize_frontmatter({"id": "a", "focus": "fix the thing", "status": "queued"})
+        self.assertTrue(bf.is_canonical_style("---\n" + text + "---\n\nbody\n"))
+
+    def test_double_quoted_folded_focus_is_not_canonical(self):
+        # The exact non-canonical shape from the cited live example: a
+        # double-quoted, ~80-column-folded focus scalar.
+        content = (
+            "---\n"
+            'focus: "first line continues\\\n'
+            '  \\ onto a folded second line"\n'
+            "status: queued\n"
+            "---\n\nbody\n"
+        )
+        self.assertFalse(bf.is_canonical_style(content))
+
+    def test_unparseable_yaml_is_not_canonical(self):
+        self.assertFalse(bf.is_canonical_style("---\nfocus: [unterminated\n---\n\nbody\n"))
+
+    def test_no_frontmatter_block_is_not_canonical(self):
+        self.assertFalse(bf.is_canonical_style("no frontmatter here\n"))
 
 
 if __name__ == "__main__":

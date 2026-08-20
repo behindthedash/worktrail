@@ -9,6 +9,87 @@ from typing import Any, Dict, Optional, Sequence, Tuple
 import yaml
 
 
+class LiteralStr(str):
+    """Marker subclass so the YAML dumper renders this value as a literal
+    block scalar (``|``) instead of a quoted flow scalar.
+
+    Free-text fields like ``focus`` routinely contain a colon+space or a
+    space+``#`` (both of which force PyYAML to quote a plain scalar), an
+    apostrophe (which single-quote style then escapes by doubling), or an
+    embedded newline (which a default-width double-quoted scalar folds at
+    ~80 columns with backslash-continuation lines a line-oriented reader
+    truncates). A literal block scalar needs none of that escaping/folding.
+
+    The single canonical marker for every writer into ``queue/``/``picked/``
+    — do not define a second copy of this class elsewhere; two independently
+    registered representers for the "same" marker is exactly the kind of
+    per-writer drift `serialize_frontmatter` exists to prevent.
+    """
+
+
+def _represent_literal_str(dumper: yaml.SafeDumper, data: str) -> yaml.ScalarNode:
+    return dumper.represent_scalar("tag:yaml.org,2002:str", data, style="|")
+
+
+yaml.SafeDumper.add_representer(LiteralStr, _represent_literal_str)
+
+
+def serialize_frontmatter(
+    frontmatter: Dict[str, Any], *, literal_keys: Sequence[str] = ("focus",)
+) -> str:
+    """Canonically serialize a brief frontmatter dict to YAML text (no ``---`` fences).
+
+    Every writer into ``queue/``/``picked/`` should route its frontmatter through
+    this function instead of hand-rolling its own `yaml.safe_dump` call, so the
+    exact YAML *style* (scalar style, quoting, unicode handling) stays identical
+    across writers regardless of which tool produced the brief. String-valued
+    keys named in `literal_keys` are stripped of leading/trailing whitespace and
+    wrapped in `LiteralStr` so they render as a clean ``|-`` block scalar; every
+    other value uses PyYAML's normal styling.
+
+    Trailing whitespace on a literal_keys value is stripped, not just cosmetic
+    trimming: PyYAML's emitter cannot represent trailing whitespace on a block
+    scalar's final line unambiguously and silently falls back to a folded,
+    double-quoted scalar for such a value even though `LiteralStr` requested
+    ``|`` style -- exactly the non-canonical shape this function exists to rule
+    out.
+    """
+    wrapped = dict(frontmatter)
+    for key in literal_keys:
+        value = wrapped.get(key)
+        if isinstance(value, str):
+            wrapped[key] = LiteralStr(value.strip())
+    return yaml.safe_dump(
+        wrapped, sort_keys=False, default_flow_style=False, allow_unicode=True
+    )
+
+
+def is_canonical_style(
+    content: str, *, literal_keys: Sequence[str] = ("focus",)
+) -> bool:
+    """Return whether `content`'s frontmatter block matches what
+    `serialize_frontmatter` would produce for the same parsed values.
+
+    Re-serializes the parsed frontmatter and compares it against the raw YAML
+    block actually on disk. `False` means the file was not written through
+    `serialize_frontmatter` — wrong scalar style, wrong quoting, line-folding —
+    even though it may still parse fine; this is a style check, not a parse
+    check (`validate_brief_text` already covers parseability).
+    """
+    found = _find_frontmatter_block(content)
+    if found is None:
+        return False
+    raw_yaml, _ = found
+    try:
+        parsed = yaml.safe_load(raw_yaml)
+    except yaml.YAMLError:
+        return False
+    if not isinstance(parsed, dict):
+        return False
+    canonical = serialize_frontmatter(parsed, literal_keys=literal_keys)
+    return raw_yaml.strip("\n") == canonical.strip("\n")
+
+
 def _find_frontmatter_block(content: str) -> Optional[Tuple[str, str]]:
     """Return ``(raw_yaml_text, body)`` for a ``---``-fenced block, or None.
 
