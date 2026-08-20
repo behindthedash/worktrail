@@ -33,11 +33,14 @@ and on which tasks/specs" without grepping raw logs across every run journal.
 
 ## Capabilities
 
-### Modified Capabilities
-- `stacked-worktree-conflict-resolution`: the retained-worktree repair retry and
-  the tasks.md checklist-union carry exception each fire a structured,
-  cross-run-aggregable journal event when they engage, instead of only a
-  single-run `WARN:` log line.
+No SHALL-level requirement changes: the merge/resolve behavior of both repair
+paths (`stacked-worktree-conflict-resolution`) is unchanged. This adds an
+observability side effect only -- a structured journal event on top of the
+existing `WARN:` log line -- following the same precedent as the existing,
+also-unspecced `dependency_file_drift` event (`_require_dependency_files`)
+and its `safety_net_report.py` aggregation, neither of which is modeled as a
+spec requirement either. `skip_specs: true` is set in `.openspec.yaml`
+accordingly.
 
 ## Impact
 
