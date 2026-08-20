@@ -117,14 +117,24 @@ DECISION_REPLY_TEMPLATE = (
     "Reopen if that's wrong."
 )
 
+COMMIT_REPLY_TEMPLATE = (
+    "Resolved automatically by the CI watch loop: commit {commit} modified "
+    "the file this comment targets, pushed later in this run, so this "
+    "finding is treated as addressed. Reopen if that's wrong."
+)
+
 
 def _reply_body_for(thread: Dict[str, Any]) -> str:
     """The reply text for an addressed thread -- the actual decisions-log
-    reasoning when that's how it was correlated, the generic commit-based
-    template otherwise."""
+    reasoning when that's how it was correlated, the specific commit SHA
+    when a later commit is how it was correlated, the generic fallback
+    otherwise."""
     decision = thread.get("_matched_decision")
     if decision:
         return DECISION_REPLY_TEMPLATE.format(decision=decision)
+    commit = thread.get("_matched_commit")
+    if commit:
+        return COMMIT_REPLY_TEMPLATE.format(commit=commit[:7])
     return DEFAULT_REPLY_BODY
 
 
@@ -176,15 +186,20 @@ def fetch_review_threads(
 
 def _commit_touched_path_since(
     repo: Path, path: str, since_iso: str, runner: Runner = subprocess.run,
-) -> bool:
+) -> Optional[str]:
+    """The SHA of the most recent commit that touched `path` since `since_iso`,
+    or `None` if none did (or the lookup failed)."""
     try:
         result = runner(
             ["git", "-C", str(repo), "log", f"--since={since_iso}", "--format=%H", "--", path],
             capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return False
-    return result.returncode == 0 and bool(result.stdout.strip())
+        return None
+    if result.returncode != 0:
+        return None
+    output = result.stdout.strip()
+    return output.splitlines()[0] if output else None
 
 
 def _find_matching_decision(decisions: List[str], thread: Dict[str, Any]) -> Optional[str]:
@@ -212,8 +227,10 @@ def correlate(
     marked `isResolved` by GitHub is excluded from both -- nothing to do.
 
     An addressed thread that matched via the decisions log (rather than a
-    touched-file commit) carries the matched text on `_matched_decision`, so
-    the reply can quote the actual reasoning instead of a generic template."""
+    touched-file commit) carries the matched text on `_matched_decision`, and
+    one that matched via a touched-file commit carries that commit's SHA on
+    `_matched_commit`, so the reply can cite the actual reasoning/commit
+    instead of a generic template."""
     unresolved = [t for t in threads if not t.get("isResolved")]
     addressed: List[Dict[str, Any]] = []
     unaddressed: List[Dict[str, Any]] = []
@@ -222,8 +239,13 @@ def correlate(
         created_at = comments[0].get("createdAt") if comments else None
         path = thread.get("path")
         is_addressed = False
-        if path and created_at and _commit_touched_path_since(repo, path, created_at, runner=runner):
+        matched_commit = (
+            _commit_touched_path_since(repo, path, created_at, runner=runner)
+            if path and created_at else None
+        )
+        if matched_commit:
             is_addressed = True
+            thread = {**thread, "_matched_commit": matched_commit}
         else:
             matched_decision = _find_matching_decision(decisions, thread)
             if matched_decision is not None:
