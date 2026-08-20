@@ -69,6 +69,19 @@ Each decomposed feature lists its future spec id (lineage downward). Then route
 each feature through Route C as it is picked up — do not spec all features up
 front. Completion: `planned_ready_for_implementation`.
 
+**Closing an epic (`status: completed`).** Before flipping an epic doc's
+`status:` to `completed` — via the `close-stale` dispatch path or by hand once
+every decomposed feature has shipped — grep the epic doc itself plus every
+decision/research doc it links or cites (`research/*.md`, the `architecture.md`
+sections it references) for an unresolved `PROVISIONAL`/`pending <spec or
+feature>` marker (case-insensitive). A hit blocks the status flip: either
+resolve the underlying decision first, or, if the flag is genuinely obsolete,
+have a human explicitly re-confirm and clear it in the same PR. The same
+marker is often duplicated across the research doc, `architecture.md`, and
+the epic's own outcome section — update every copy, not just the first one
+found; a closure that clears one copy and misses another leaves the rest
+silently stale (pullhook epic 001/PR #72 vs. #73–#74).
+
 ## Route C — Feature Planning
 
 One coherent feature, spec first, optionally continuing into implementation.
