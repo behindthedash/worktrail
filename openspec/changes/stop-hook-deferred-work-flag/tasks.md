@@ -21,7 +21,7 @@
 
 ## 2. Hook integration
 
-- [ ] 2.1 Extend `hooks/suggest_next_step.py`'s existing transcript line-loop
+- [x] 2.1 Extend `hooks/suggest_next_step.py`'s existing transcript line-loop
       (`entry_has_work`/`substantive_work`) to also collect unique
       `~/.worktrail/runs/**/*.yaml`-shaped path literals from the same read pass, without a
       second file read (Requirement: Run-Record Discovery Via Transcript Grep)
