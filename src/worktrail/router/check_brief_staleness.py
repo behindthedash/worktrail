@@ -840,7 +840,8 @@ def check(repo: Path, text: str, since: Any, base: Optional[str] = None) -> Dict
     `repo`'s base branch, at or after `since`?
 
     Returns `{"checked": bool, "probes": {...}, "matches": [...],
-    "pull_requests": [...], "warning": str|None}`. `probes` is
+    "pull_requests": [...], "research_notes": [...], "warning": str|None}`.
+    `probes` is
     `extract_probes()`'s output. `matches` is a list of
     `{"sha", "date", "subject", "probe", "kind"}` per matching commit,
     restricted to commits at or after `since` minus `RACE_GRACE_SECONDS` on
@@ -854,6 +855,12 @@ def check(repo: Path, text: str, since: Any, base: Optional[str] = None) -> Dict
     lookup is independently degradable -- `gh` missing, unauthenticated,
     erroring, or timing out yields `pull_requests: []` plus a warning
     appended alongside any git-side warning, without discarding `matches`.
+    `research_notes` is `_search_research_notes()`'s backward-looking
+    complement, run under the same gating `probes["paths"] or
+    probes["symbols"]` (a probe set with only `pull_requests` has nothing a
+    note's content could match), independently degradable the same way the
+    `gh` phase is -- its own warning merges into `result["warning"]` without
+    touching `checked`, `matches`, or `pull_requests` on failure.
 
     Never raises. `checked` is `false` when the question could not be
     answered at all: `repo` is not a git repository, `since` is missing or
@@ -869,6 +876,7 @@ def check(repo: Path, text: str, since: Any, base: Optional[str] = None) -> Dict
         "probes": {"paths": [], "symbols": [], "pull_requests": [], "dropped": 0},
         "matches": [],
         "pull_requests": [],
+        "research_notes": [],
         "warning": None,
     }
 
@@ -945,6 +953,23 @@ def check(repo: Path, text: str, since: Any, base: Optional[str] = None) -> Dict
     result["pull_requests"] = pull_requests
     if gh_warning:
         result["warning"] = f"{result['warning']}; {gh_warning}" if result["warning"] else gh_warning
+
+    # Same gating as the forward-looking history search above: a probe set
+    # with only `pull_requests` (no `paths`/`symbols`) has nothing a research
+    # note's content could match against, so the search is skipped rather
+    # than run to find nothing. A failure here (`research_warning`) is merged
+    # into `result["warning"]` the same way `gh_warning` is above, but never
+    # touches `checked`, `matches`, or `pull_requests` -- this phase is
+    # independently degradable, just like the `gh` phase.
+    if probes["paths"] or probes["symbols"]:
+        research_notes, research_warning = _search_research_notes(
+            repo, base_ref, probes, since_str, SUBPROCESS_TIMEOUT_SECONDS
+        )
+        result["research_notes"] = research_notes
+        if research_warning:
+            result["warning"] = (
+                f"{result['warning']}; {research_warning}" if result["warning"] else research_warning
+            )
 
     return result
 
@@ -1134,6 +1159,7 @@ def main(argv=None) -> int:
             "probes": {"paths": [], "symbols": [], "pull_requests": [], "dropped": 0},
             "matches": [],
             "pull_requests": [],
+            "research_notes": [],
             "warning": read_error,
         }
     else:
