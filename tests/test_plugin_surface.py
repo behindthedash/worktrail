@@ -209,8 +209,26 @@ def test_handoff_dispatch_includes_explicit_executor_route():
     """The SDD executor's direct-invocation guard requires route:X even for handoffs."""
     go_skill = SKILLS_DIR / "worktrail-go" / "SKILL.md"
     text = go_skill.read_text()
-    assert 'Skill("worktrail-sdd-workflow", args="handoff:<id> route:<X> by:<dispatch-id>")' in text
+    assert 'Skill("worktrail-sdd-workflow", args="handoff:<id> route:<X> by:<dispatch-id> run:<run-path>")' in text
     assert 'Skill("worktrail-sdd-workflow", args="handoff:<id>")' not in text
+
+
+def test_native_skill_dispatch_threads_run_record():
+    """The native-skill dispatch contract must thread the parent's run record path.
+
+    Without a `run:` token, sdd-workflow's own Phase 6 falls through to a fresh
+    `worktrail-run-record start` and permanently orphans the parent's record at
+    `route_selected` (docs/specs/research/dead-dispatch-backlog-investigation.md,
+    observations 5/6). Pin both example forms in the Dispatch Contract, and the
+    corresponding parse/reuse instructions on the executor side.
+    """
+    go_text = (SKILLS_DIR / "worktrail-go" / "SKILL.md").read_text()
+    assert 'Skill("worktrail-sdd-workflow", args="<repo-path> route:<X> [spec-folder] run:<run-path>")' in go_text
+    assert "run:$RUN" in go_text
+
+    sdd_text = (SKILLS_DIR / "worktrail-sdd-workflow" / "SKILL.md").read_text()
+    assert "$GO_RUN_PATH" in sdd_text
+    assert "reuse it instead of starting a second run record" in sdd_text
 
 
 def test_adapter_dispatch_seeds_the_parent_run_record():

@@ -984,8 +984,15 @@ def _cite_pull_request(pr: Dict[str, Any]) -> str:
     return f"PR #{pr['number']}"
 
 
+def _cite_research_note(note: Dict[str, Any]) -> str:
+    return f"{note['path']} ({note['kind']} probe: {note['probe']})"
+
+
 def format_verified_absent_evidence(
-    matches: List[Dict[str, Any]], pull_requests: List[Dict[str, Any]], finding: str
+    matches: List[Dict[str, Any]],
+    pull_requests: List[Dict[str, Any]],
+    finding: str,
+    research_notes: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """Build the exact evidence line for the skill doc's file-state
     verification step's `verifiably-absent` outcome (see
@@ -1011,17 +1018,26 @@ def format_verified_absent_evidence(
     cleared.
     """
     citations = [_cite_match(m) for m in matches] + [_cite_pull_request(pr) for pr in pull_requests]
+    count_sentence = (
+        f"despite {len(matches)} matched commit(s) and "
+        f"{len(pull_requests)} matched pull request(s)"
+    )
+    if research_notes:
+        citations += [_cite_research_note(n) for n in research_notes]
+        count_sentence += f" and {len(research_notes)} matched research note(s)"
     cited = ", ".join(citations)
     return (
         f"File-state verification found the brief's described work "
-        f"verifiably absent despite {len(matches)} matched commit(s) and "
-        f"{len(pull_requests)} matched pull request(s) ({cited}): {finding}. "
+        f"verifiably absent {count_sentence} ({cited}): {finding}. "
         "Proceeded automatically without an operator prompt."
     )
 
 
 def format_verified_present_closure_note(
-    matches: List[Dict[str, Any]], pull_requests: List[Dict[str, Any]], finding: str
+    matches: List[Dict[str, Any]],
+    pull_requests: List[Dict[str, Any]],
+    finding: str,
+    research_notes: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """Build the exact closure note for the skill doc's file-state
     verification step's `verifiably-present` outcome (see
@@ -1044,12 +1060,18 @@ def format_verified_present_closure_note(
     confirmed it.
     """
     citations = [_cite_match(m) for m in matches] + [_cite_pull_request(pr) for pr in pull_requests]
+    confirmed_sentence = (
+        f"confirmed by {len(matches)} matched commit(s) and "
+        f"{len(pull_requests)} matched pull request(s)"
+    )
+    if research_notes:
+        citations += [_cite_research_note(n) for n in research_notes]
+        confirmed_sentence += f" and {len(research_notes)} matched research note(s)"
     cited = ", ".join(citations)
     return (
         "Closed as already-delivered: file-state verification found the "
-        f"brief's described work verifiably present, confirmed by "
-        f"{len(matches)} matched commit(s) and {len(pull_requests)} matched "
-        f"pull request(s) ({cited}): {finding}. Surfaced by the file-state "
+        f"brief's described work verifiably present, {confirmed_sentence} "
+        f"({cited}): {finding}. Surfaced by the file-state "
         "verification step; closed automatically without an operator "
         "prompt."
     )
@@ -1106,19 +1128,26 @@ def _format_human(res: Dict[str, object]) -> str:
 
     raw_matches = res["matches"]
     raw_prs = res["pull_requests"]
+    raw_notes = res.get("research_notes")
     matches: List[Dict[str, Any]] = list(raw_matches) if isinstance(raw_matches, list) else []
     prs: List[Dict[str, Any]] = list(raw_prs) if isinstance(raw_prs, list) else []
-    if not matches and not prs:
+    notes: List[Dict[str, Any]] = list(raw_notes) if isinstance(raw_notes, list) else []
+    if not matches and not prs and not notes:
         line = "no evidence: probes searched, nothing landed since the brief was captured"
         if res.get("warning"):
             line += f"\n  warning: {res['warning']}"
         return line
 
-    lines = [f"EVIDENCE: {len(matches)} commit(s), {len(prs)} merged pull request(s)"]
+    lines = [
+        f"EVIDENCE: {len(matches)} commit(s), {len(prs)} merged pull request(s), "
+        f"{len(notes)} research note(s)"
+    ]
     for m in matches:
         lines.append(f"  {m['sha']}  {m['date']}  {m['subject']}   [{m['kind']} probe: {m['probe']}]")
     for pr in prs:
         lines.append(f"  PR #{pr['number']}  {pr.get('merged_at') or '?'}  {pr.get('title') or ''}")
+    for n in notes:
+        lines.append(f"  {n['path']}  {n.get('date') or '?'}   [{n['kind']} probe: {n['probe']}]")
     lines.append("  -> surface these to the operator; never close the brief on this signal alone")
     if res.get("warning"):
         lines.append(f"  warning: {res['warning']}")
