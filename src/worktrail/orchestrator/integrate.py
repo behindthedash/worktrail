@@ -58,6 +58,13 @@ QUARANTINE_PRE_PR_DRIFT = "pre_pr_drift"
 # (see `addons.runner.AddOnFailure`, per design D4). A non-required add-on's
 # failure is logged and skipped instead of quarantining the group.
 QUARANTINE_ADDON_FAILURE = "addon_failure"
+# The group's deliverable task branch(es) merged cleanly but produced no content
+# change vs the group's own base -- a delegate self-reported completion (task
+# status "done") without actually implementing anything. Code-enforced backstop
+# for worktrail-go's `#post-delegation-verification` mandate, which until now was
+# prose-only and relied on an agent remembering to run its own `git status`
+# check before trusting a delegate's report.
+QUARANTINE_EMPTY_DIFF = "empty_diff"
 
 
 _HERE = Path(__file__).resolve().parent
@@ -1092,6 +1099,24 @@ def integrate_one(
                 quarantined[name] = f"merge conflict integrating {conflict}"
                 print(f"  SKIP [{name:9}] -- {quarantined[name]}")
                 _do_journal(name, "", gb, "QUARANTINED", QUARANTINE_MERGE_CONFLICT)
+                return None
+            # Empty-diff guard: merging the deliverable task branch(es) into a
+            # freshly-built group branch (still at `target`, its own start ref, per
+            # `_integration_worktree`) must produce a real content change. A clean
+            # merge with zero diff means every deliverable task's branch was itself
+            # already identical to `target` -- the delegate reported "done" and
+            # changed nothing (the exact self-report-without-verification failure
+            # `#post-delegation-verification` names). Checked here, before any
+            # orchestrator-added bookkeeping commit (status write, add-ons) that
+            # would otherwise mask a true no-op as a non-empty diff.
+            empty_diff = _git(iw, "diff", "--quiet", target, check=False)
+            if empty_diff.returncode == 0:
+                quarantined[name] = (
+                    f"empty diff vs {target} after merging "
+                    f"{', '.join(deliverable)} -- no changes to integrate"
+                )
+                print(f"  SKIP [{name:9}] -- {quarantined[name]}")
+                _do_journal(name, "", gb, "QUARANTINED", QUARANTINE_EMPTY_DIFF)
                 return None
             if strip_spec_folder:
                 _strip_spec_folder_to_base(iw, spec_id, target)

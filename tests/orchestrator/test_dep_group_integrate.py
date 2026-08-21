@@ -65,7 +65,11 @@ class _GitDispatch:
 
     def __init__(self, responses=None):
         self.calls: list = []
-        self._resp = responses or {}
+        # git diff --quiet <target> (empty-diff-vs-base guard) defaults to "real
+        # changes exist" (returncode 1), matching every other scripted response's
+        # implicit assumption that a merge delivered content; a caller-supplied
+        # ("diff", "--quiet") entry overrides this.
+        self._resp = {("diff", "--quiet"): Proc(1, "", ""), **(responses or {})}
         self._default = Proc(0, "", "")
 
     def __call__(self, *args, **_kw):

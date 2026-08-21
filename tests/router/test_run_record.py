@@ -757,6 +757,107 @@ class TestLifecycle(unittest.TestCase):
             main(["scope-review", res["path"], "--item", "smoke", "--status", "complete"])
 
 
+class TestScopeReviewEmptyDiffCrossCheck(unittest.TestCase):
+    """`_scope_review_worktree_empty_diff` cross-checks a `complete` scope-review
+    entry against the actual worktree it describes -- the run-level counterpart
+    to `#post-delegation-verification`'s own mandate (a self-reported string is
+    not proof). Fail-open backstop: only fires when worktree + base_commit are
+    both known and the worktree still exists on disk."""
+
+    def setUp(self):
+        # Run records live in a directory separate from the git repo being
+        # diffed -- `_start(repo=...)` would otherwise write the run record
+        # YAML itself as an untracked file inside `self.repo_dir`, masking a
+        # true empty-diff case behind a `git status --porcelain` false positive.
+        self.tmp = tempfile.mkdtemp()
+        self.repo_dir = Path(tempfile.mkdtemp()) / "repo"
+        self.repo_dir.mkdir()
+        self._git("init", "-b", "main")
+        self._git("config", "user.email", "test@example.com")
+        self._git("config", "user.name", "Test")
+        (self.repo_dir / "tracked.md").write_text("tracked", encoding="utf-8")
+        self._git("add", "tracked.md")
+        self._git("commit", "-m", "initial")
+        self.base_commit = subprocess.run(
+            ["git", "-C", str(self.repo_dir), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+
+    def _git(self, *args):
+        subprocess.run(["git", "-C", str(self.repo_dir), *args], check=True,
+                        capture_output=True)
+
+    def test_no_complete_entry_is_fail_open(self):
+        record = {"scope_review": [], "worktree": str(self.repo_dir),
+                   "base_commit": self.base_commit}
+        self.assertIsNone(run_record._scope_review_worktree_empty_diff(record))
+
+    def test_missing_worktree_field_is_fail_open(self):
+        record = {"scope_review": ["complete | x | evidence"],
+                   "worktree": None, "base_commit": self.base_commit}
+        self.assertIsNone(run_record._scope_review_worktree_empty_diff(record))
+
+    def test_missing_base_commit_is_fail_open(self):
+        record = {"scope_review": ["complete | x | evidence"],
+                   "worktree": str(self.repo_dir), "base_commit": None}
+        self.assertIsNone(run_record._scope_review_worktree_empty_diff(record))
+
+    def test_worktree_gone_is_fail_open(self):
+        record = {"scope_review": ["complete | x | evidence"],
+                   "worktree": str(Path(self.tmp) / "gone"),
+                   "base_commit": self.base_commit}
+        self.assertIsNone(run_record._scope_review_worktree_empty_diff(record))
+
+    def test_real_diff_vs_base_passes(self):
+        (self.repo_dir / "tracked.md").write_text("changed", encoding="utf-8")
+        self._git("add", "tracked.md")
+        self._git("commit", "-m", "real change")
+        record = {"scope_review": ["complete | x | evidence"],
+                   "worktree": str(self.repo_dir), "base_commit": self.base_commit}
+        self.assertIsNone(run_record._scope_review_worktree_empty_diff(record))
+
+    def test_untracked_new_file_counts_as_real_diff(self):
+        """The gap `#post-delegation-verification` names: `git diff` alone never
+        shows a brand-new untracked file, so the check must also honor `git
+        status --porcelain`."""
+        (self.repo_dir / "new.md").write_text("new", encoding="utf-8")
+        record = {"scope_review": ["complete | x | evidence"],
+                   "worktree": str(self.repo_dir), "base_commit": self.base_commit}
+        self.assertIsNone(run_record._scope_review_worktree_empty_diff(record))
+
+    def test_empty_diff_and_no_untracked_files_flags_mismatch(self):
+        record = {"scope_review": ["complete | x | evidence"],
+                   "worktree": str(self.repo_dir), "base_commit": self.base_commit}
+        result = run_record._scope_review_worktree_empty_diff(record)
+        self.assertIsNotNone(result)
+        self.assertIn("empty diff", result)
+
+    def test_finish_blocks_when_worktree_confirms_empty_diff(self):
+        res = _start(self.tmp, repo=str(self.repo_dir))
+        argv = ["set", res["path"], "worktree", str(self.repo_dir)]
+        main(argv)
+        main(["set", res["path"], "base_commit", self.base_commit])
+        _complete_scope_review(res["path"])
+        with self.assertRaises(SystemExit):
+            main(["finish", res["path"], "--status", "completed_pr_open"])
+        self.assertIsNone(_load(Path(res["path"]))["final_status"])
+
+    def test_finish_proceeds_when_worktree_confirms_real_diff(self):
+        (self.repo_dir / "tracked.md").write_text("changed", encoding="utf-8")
+        self._git("add", "tracked.md")
+        self._git("commit", "-m", "real change")
+        res = _start(self.tmp, repo=str(self.repo_dir))
+        main(["set", res["path"], "worktree", str(self.repo_dir)])
+        main(["set", res["path"], "base_commit", self.base_commit])
+        _complete_scope_review(res["path"])
+        out = StringIO()
+        with patch("sys.stdout", out):
+            rc = main(["finish", res["path"], "--status", "completed_pr_open"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            _load(Path(res["path"]))["final_status"], "completed_pr_open")
+
+
 class TestExtractPathCandidate(unittest.TestCase):
     def test_clean_path_returned_unchanged(self):
         self.assertEqual(

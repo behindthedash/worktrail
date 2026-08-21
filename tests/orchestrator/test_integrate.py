@@ -173,6 +173,12 @@ class FakeRun:
         if "push" in cmd:
             return Proc(0, "", "")
 
+        # git diff --quiet <target> (empty-diff-vs-base guard): default to "real
+        # changes exist" (returncode 1) so a scripted merge is presumed to have
+        # delivered content, matching every other fixture's implicit assumption.
+        if cmd[:2] == ["diff", "--quiet"]:
+            return Proc(1, "", "")
+
         # pre_pr_gate --labels-only call
         if len(cmd) >= 6 and "--labels-only" in cmd:
             # Return the risk-level label as the pre-PR gate would
@@ -1056,6 +1062,8 @@ class EdgeCases(unittest.TestCase):
                             return Proc(0, "", "")
                         if "pr" in cmd and "create" in cmd:
                             return Proc(0, "https://github.com/o/r/pull/99\n", "")
+                        if cmd[:2] == ["diff", "--quiet"]:
+                            return Proc(1, "", "")
                         return Proc(0, "", "")
 
                     mock_git.side_effect = run_side_effect
@@ -1878,6 +1886,88 @@ class PrePrDriftGate(unittest.TestCase):
 
         self.assertFalse(ok)
         self.assertIn("timed out", detail)
+
+
+class EmptyDiffGuard(unittest.TestCase):
+    """Code-enforced backstop for `#post-delegation-verification` (PR #587,
+    prose-only): a deliverable task branch that merges cleanly but changes
+    nothing vs the group's base must never reach a PR -- the delegate
+    self-reported "done" without implementing anything."""
+
+    def _run_group(self, run, journal_path):
+        with patch("worktrail.orchestrator.integrate.coordinator.plan_groups") as mock_groups:
+            with patch("worktrail.orchestrator.integrate._git", side_effect=run):
+                with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
+                    mock_groups.return_value = [mock_group("base", ["T001"])]
+                    integrate_groups(
+                        Path("/repo"), "spec-001", [mock_task("T001")], "origin",
+                        "run-empty-diff", "main", cleanup=False,
+                        pr_labels=["go:risk-low"], journal_path=journal_path,
+                    )
+
+    def test_empty_diff_quarantines_and_opens_no_pr(self):
+        """A clean merge with zero diff vs base quarantines the group instead
+        of pushing the branch or opening a PR."""
+        run = FakeRun(pr_view_responses={}, ls_remote_responses={})
+
+        def no_op_diff(*args, **kwargs):
+            cmd = list(args[1:]) if args and isinstance(args[0], (str, Path)) else (
+                args[0] if args else [])
+            if cmd[:2] == ["diff", "--quiet"]:
+                run.calls.append(cmd)
+                return Proc(0, "", "")  # identical to base -- no-op
+            return run(*args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            journal_path = str(Path(tmpdir) / "journal.json")
+            self._run_group(no_op_diff, journal_path)
+
+            self.assertEqual(run.find_calls("push"), [],
+                             "an empty-diff group must never push its branch")
+            self.assertEqual(run.find_calls("gh", "pr", "create"), [],
+                             "an empty-diff group must never open a PR")
+            record = json.loads(Path(journal_path).read_text())["groups"]["base"]
+            self.assertEqual(record["state"], "QUARANTINED")
+            self.assertEqual(record["quarantine_reason"], integrate.QUARANTINE_EMPTY_DIFF)
+
+    def test_non_empty_diff_still_pushes_and_opens_pr(self):
+        """REQUIREMENT: the guard must not false-positive on real work -- the
+        default FakeRun response (a non-empty diff) proceeds normally."""
+        run = FakeRun(pr_view_responses={}, ls_remote_responses={})
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            journal_path = str(Path(tmpdir) / "journal.json")
+            self._run_group(run, journal_path)
+
+            self.assertEqual(len(run.find_calls("gh", "pr", "create")), 1)
+            record = json.loads(Path(journal_path).read_text())["groups"]["base"]
+            self.assertEqual(record["state"], "OPEN")
+
+    def test_empty_diff_check_short_circuits_before_status_write_and_drift_gate(self):
+        """The check runs right after the merge loop, before `_write_group_task_status`
+        or the drift gate -- so orchestrator-added bookkeeping never masks a true
+        no-op as a non-empty diff, and a drift-gate run is never paid for on an
+        empty-diff group."""
+        run = FakeRun(pr_view_responses={}, ls_remote_responses={})
+        gate_calls = []
+
+        def no_op_diff(*args, **kwargs):
+            cmd = list(args[1:]) if args and isinstance(args[0], (str, Path)) else (
+                args[0] if args else [])
+            if cmd[:2] == ["diff", "--quiet"]:
+                run.calls.append(cmd)
+                return Proc(0, "", "")
+            if "--checks-only" in cmd:
+                gate_calls.append(cmd)
+            return run(*args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            journal_path = str(Path(tmpdir) / "journal.json")
+            with patch("worktrail.orchestrator.integrate._resolve_pre_pr_gate",
+                       return_value=Path("/fake/pre_pr_gate.py")):
+                self._run_group(no_op_diff, journal_path)
+
+        self.assertEqual(gate_calls, [], "drift gate must never run for an empty-diff group")
 
 
 if __name__ == "__main__":

@@ -128,6 +128,12 @@ class FakeRunWithOperator(unittest.TestCase):
             if "push" in cmd:
                 return Proc(0, "", "")
 
+            # git diff --quiet <target> (empty-diff-vs-base guard): default to
+            # "real changes exist" (returncode 1), matching every other
+            # fixture's implicit assumption that a scripted merge delivered content.
+            if cmd[:2] == ["diff", "--quiet"]:
+                return Proc(1, "", "")
+
             # Default: success
             return Proc(0, "", "")
 
@@ -919,6 +925,12 @@ class ReconcileUnreconciledTailEvidence(unittest.TestCase):
 
             if "merge" in cmd or "push" in cmd or "checkout" in cmd:
                 return Proc(0, "", "")
+
+            # git diff --quiet <target> (empty-diff-vs-base guard): default to
+            # "real changes exist" (returncode 1), matching every other
+            # fixture's implicit assumption that a scripted merge delivered content.
+            if cmd[:2] == ["diff", "--quiet"]:
+                return Proc(1, "", "")
 
             return Proc(0, "", "")
 
