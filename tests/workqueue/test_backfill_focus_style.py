@@ -16,6 +16,8 @@ Run:
 from __future__ import annotations
 
 import importlib
+import io
+import json
 import os
 import tempfile
 import unittest
@@ -434,6 +436,43 @@ class ExecuteApplyTestCase(unittest.TestCase):
         self.assertIn("rolled back", result["skipped"][0]["reason"])
         # Content restored exactly to its pre-write state.
         self.assertEqual(path.read_text(encoding="utf-8"), content)
+
+
+class MainCliTestCase(unittest.TestCase):
+    """CLI coverage per task 2.4: `execute` must accept the preview payload
+    via stdin, not only `--preview`, since a full-corpus preview routinely
+    exceeds the shell argv size limit."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self._tmp.name)
+        self.queue_dir = self.tmp_path / "queue"
+        self.queue_dir.mkdir(parents=True)
+        os.environ["WORK_QUEUE_DIR"] = str(self.tmp_path)
+        importlib.reload(q)
+        importlib.reload(bf)
+
+    def tearDown(self):
+        os.environ.pop("WORK_QUEUE_DIR", None)
+        self._tmp.cleanup()
+
+    def test_execute_reads_preview_from_stdin_when_flag_omitted(self):
+        brief_id = "20260301-000006-f"
+        content = _make_brief(brief_id, PLAIN_SCALAR_FOCUS_LINES)
+        path = self.queue_dir / f"{brief_id}.md"
+        path.write_text(content, encoding="utf-8")
+
+        preview = bf.build_preview(self.tmp_path)
+        preview_json = json.dumps(preview)
+
+        with mock.patch("sys.stdin", io.StringIO(preview_json)):
+            rc = bf.main(["execute", "--queue-dir", str(self.tmp_path), "--confirm"])
+
+        self.assertEqual(rc, 0)
+        rewritten = path.read_text(encoding="utf-8")
+        self.assertIn(f"focus: |-\n  {FOCUS_VALUE}\n", rewritten)
+        post_preview = bf.build_preview(self.tmp_path)
+        self.assertEqual(post_preview["proposals"], [])
 
 
 if __name__ == "__main__":
