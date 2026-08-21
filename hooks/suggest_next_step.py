@@ -11,10 +11,15 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
 STATE_DIR = Path(os.path.expanduser("~/.claude/state/worktrail-suggest-next"))
+
+DEFERRED_WORK_HANDOFF_BINARY = "worktrail-check-deferred-work-handoff"
+DEFERRED_WORK_TIMEOUT_SECONDS = 5
 
 WORK_TOOLS = {"Edit", "MultiEdit", "Write", "NotebookEdit"}
 WORK_BASH_MARKERS = ("git commit", "gh pr create", "gh pr merge", "git push")
@@ -109,6 +114,41 @@ def substantive_work(transcript_path: str) -> bool:
     return has_work
 
 
+def check_deferred_work(run_record_paths: list[str]) -> list[dict]:
+    """Flagged deferred-work entries for `run_record_paths`, via the
+    `worktrail-check-deferred-work-handoff` CLI.
+
+    Fails open to `[]` on every non-happy path -- missing binary, non-zero
+    exit, timeout, or unparseable JSON -- per Requirement: Fail-Open And
+    Headless-Excluded. Never raises.
+    """
+    if not run_record_paths:
+        return []
+    binary = shutil.which(DEFERRED_WORK_HANDOFF_BINARY)
+    if not binary:
+        return []
+    args = [binary, "--json"]
+    for path in run_record_paths:
+        args.extend(["--run-record", path])
+    try:
+        result = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            timeout=DEFERRED_WORK_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired, subprocess.SubprocessError):
+        return []
+    if result.returncode != 0:
+        return []
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return []
+    flagged = data.get("flagged") if isinstance(data, dict) else None
+    return flagged if isinstance(flagged, list) else []
+
+
 def main() -> int:
     if os.environ.get("CC_HEADLESS") == "1":
         return 0
@@ -123,10 +163,12 @@ def main() -> int:
         transcript_path = data.get("transcript_path") or ""
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         sentinel = STATE_DIR / f"{session_id}.done"
-        if sentinel.exists() or not substantive_work(transcript_path):
+        has_work, run_record_paths = scan_transcript(transcript_path)
+        if sentinel.exists() or not has_work:
             return 0
 
         sentinel.write_text("1", encoding="utf-8")
+        flagged = check_deferred_work(run_record_paths)
         print(json.dumps({"decision": "block", "reason": INSTRUCTION}))
     except Exception:
         # Hooks must never break a session.
