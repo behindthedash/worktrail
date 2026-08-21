@@ -562,7 +562,7 @@ Dispatch policy is simple:
   | `dispatch_mode` | action |
   |---|---|
   | `in-session-resume` | continue the route in this session (see the Route E bullet below) |
-  | `native-skill` | call `Skill("worktrail-sdd-workflow", ...)` directly |
+  | `native-skill` | call `Skill("worktrail-sdd-workflow", ...)` directly, appending `run:$RUN` (Phase 6's run record path) per the Dispatch Contract below |
   | `adapter` | run `worktrail-skill-dispatch` with `$INVOCATION_CONTEXT_AGENT` (see the adapter section below) |
   | `blocked` | stop; report the resolver's `blocked_reason` verbatim |
 
@@ -762,8 +762,8 @@ decision → `blocked_product_decision`; ceiling → `failed_recoverable`.
 ## Dispatch Contract (to worktrail-sdd-workflow)
 
 ```
-Skill("worktrail-sdd-workflow", args="<repo-path> route:<X> [spec-folder]")
-Skill("worktrail-sdd-workflow", args="handoff:<id> route:<X> by:<dispatch-id>")
+Skill("worktrail-sdd-workflow", args="<repo-path> route:<X> [spec-folder] run:<run-path>")
+Skill("worktrail-sdd-workflow", args="handoff:<id> route:<X> by:<dispatch-id> run:<run-path>")
 ```
 
 sdd-workflow requires the resolved `route:X` on every dispatch, including handoff-seed
@@ -774,6 +774,17 @@ threads it through as `--by` so `claim()` can tell "this dispatch already owns t
 apart from a different, possibly concurrent, dispatch (`same_owner` in the claim response;
 see the Invocation Context section above). Omit the `by:` token only for the non-handoff
 form, which never calls `claim()`.
+
+Every native-skill dispatch (both forms) MUST also append `run:$RUN` — Phase 6's
+already-open run record path. Without it, sdd-workflow's own Phase 6 falls through to a
+fresh `worktrail-run-record start` and permanently orphans the parent's record at
+`route_selected`, since the child's record becomes the only one anything ever calls
+`finish()` on (`docs/specs/research/dead-dispatch-backlog-investigation.md`, observations
+5/6). This mirrors the adapter path's `--run "$RUN"` threading
+(`worktrail-go-seed`'s seeded-dispatch prompt) for the native-skill dispatch surface,
+which carries no such prompt of its own to thread it through otherwise. Never omit `run:`
+to mean "let the child open its own" — that recreates the orphaned-record bug this token
+exists to close.
 
 ## Related Briefs
 
