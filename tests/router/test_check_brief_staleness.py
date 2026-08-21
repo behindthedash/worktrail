@@ -843,6 +843,171 @@ class TestResearchNoteIndependentDegradation(unittest.TestCase):
         self.assertEqual(found[0]["sha"], sha)
 
 
+class TestSearchResearchNotesCaps(unittest.TestCase):
+    """Task 4.3 -- `RESEARCH_NOTE_CAP`/`RESEARCH_MATCH_CAP` drop-and-count
+    behavior: candidates/matches beyond the cap are dropped, not silently
+    discarded -- the drop count is reported in the combined warning, mirroring
+    `PR_RESULT_CAP`/`_cap()`'s existing "keep the most relevant, count the
+    rest" pattern."""
+
+    def _write_note(self, repo: str, path: str, content: str, date_iso: str) -> str:
+        _write(repo, path, content)
+        return _commit(repo, f"Add {path}", date_iso)
+
+    def test_candidates_beyond_research_note_cap_are_dropped_and_counted(self):
+        repo = _init_repo()
+        # Three candidates, all inside the lookback window; the cap is
+        # patched to 2 so the oldest (least-recently-touched) of the three is
+        # dropped without a `git log` call ever fetching its content.
+        self._write_note(
+            repo, "docs/specs/research/a.md", "Covers widget.py in depth.\n", "2026-05-10T00:00:00+00:00",
+        )
+        sha_b = self._write_note(
+            repo, "docs/specs/research/b.md", "Covers widget.py in depth.\n", "2026-05-15T00:00:00+00:00",
+        )
+        sha_c = self._write_note(
+            repo, "docs/specs/research/c.md", "Covers widget.py in depth.\n", "2026-05-20T00:00:00+00:00",
+        )
+
+        real_cap = cbs.RESEARCH_NOTE_CAP
+        cbs.RESEARCH_NOTE_CAP = 2
+        try:
+            probes = {"paths": ["widget.py"], "symbols": []}
+            matches, warning = cbs._search_research_notes(
+                Path(repo), "main", probes, "2026-06-01T00:00:00+00:00", cbs.SUBPROCESS_TIMEOUT_SECONDS,
+            )
+        finally:
+            cbs.RESEARCH_NOTE_CAP = real_cap
+
+        matched_paths = {m["path"]: m["sha"] for m in matches}
+        self.assertEqual(matched_paths, {
+            "docs/specs/research/b.md": sha_b,
+            "docs/specs/research/c.md": sha_c,
+        })
+        self.assertNotIn("docs/specs/research/a.md", matched_paths)
+        self.assertIn("1 additional research note(s) exceeded RESEARCH_NOTE_CAP=2 and were not searched", warning)
+
+    def test_matches_beyond_research_match_cap_are_dropped_and_counted(self):
+        repo = _init_repo()
+        # A single candidate whose content matches two distinct probes
+        # produces two match entries -- enough to exercise the match-side cap
+        # without needing more than one candidate note.
+        self._write_note(
+            repo, "docs/specs/research/investigation.md",
+            "Covers widget.py and helper.py in depth.\n", "2026-05-15T00:00:00+00:00",
+        )
+
+        real_cap = cbs.RESEARCH_MATCH_CAP
+        cbs.RESEARCH_MATCH_CAP = 1
+        try:
+            probes = {"paths": ["widget.py", "helper.py"], "symbols": []}
+            matches, warning = cbs._search_research_notes(
+                Path(repo), "main", probes, "2026-06-01T00:00:00+00:00", cbs.SUBPROCESS_TIMEOUT_SECONDS,
+            )
+        finally:
+            cbs.RESEARCH_MATCH_CAP = real_cap
+
+        self.assertEqual(len(matches), 1)
+        self.assertIn("1 additional research-note match(es) exceeded RESEARCH_MATCH_CAP=1 and were dropped", warning)
+
+
+class TestFormatHumanResearchNotes(unittest.TestCase):
+    """Task 4.3 -- `_format_human()` reports `research_notes` matches (count
+    and per-item lines, mirroring `matches`/`pull_requests`) and treats a
+    non-empty `research_notes` the same as non-empty `matches`/
+    `pull_requests` for the "no evidence" vs. "EVIDENCE" branch."""
+
+    def test_research_note_only_evidence_triggers_evidence_branch(self):
+        res = {
+            "checked": True,
+            "matches": [],
+            "pull_requests": [],
+            "research_notes": [
+                {"path": "docs/specs/research/investigation.md", "date": "2026-05-15",
+                 "kind": "path", "probe": "widget.py"},
+            ],
+            "warning": None,
+        }
+        out = cbs._format_human(res)
+        self.assertNotIn("no evidence", out)
+        self.assertIn("EVIDENCE: 0 commit(s), 0 merged pull request(s), 1 research note(s)", out)
+        self.assertIn(
+            "  docs/specs/research/investigation.md  2026-05-15   [path probe: widget.py]", out,
+        )
+
+    def test_all_three_evidence_kinds_render_together(self):
+        res = {
+            "checked": True,
+            "matches": [
+                {"sha": "abc1234", "date": "2026-06-01", "subject": "Add widget support",
+                 "probe": "src/widget.py", "kind": "path"},
+            ],
+            "pull_requests": [
+                {"number": 42, "merged_at": "2026-06-01T00:00:00+00:00", "title": "ship it"},
+            ],
+            "research_notes": [
+                {"path": "docs/specs/research/investigation.md", "date": "2026-05-15",
+                 "kind": "path", "probe": "widget.py"},
+            ],
+            "warning": None,
+        }
+        out = cbs._format_human(res)
+        self.assertEqual(
+            out,
+            "EVIDENCE: 1 commit(s), 1 merged pull request(s), 1 research note(s)\n"
+            "  abc1234  2026-06-01  Add widget support   [path probe: src/widget.py]\n"
+            "  PR #42  2026-06-01T00:00:00+00:00  ship it\n"
+            "  docs/specs/research/investigation.md  2026-05-15   [path probe: widget.py]\n"
+            "  -> surface these to the operator; never close the brief on this signal alone",
+        )
+
+    def test_no_matches_prs_or_research_notes_is_no_evidence(self):
+        res = {
+            "checked": True,
+            "matches": [],
+            "pull_requests": [],
+            "research_notes": [],
+            "warning": None,
+        }
+        out = cbs._format_human(res)
+        self.assertEqual(out, "no evidence: probes searched, nothing landed since the brief was captured")
+
+
+class TestCliResearchNotes(unittest.TestCase):
+    """Task 4.3 -- CLI `--json` output includes `research_notes` and reflects
+    a real research-note match end to end."""
+
+    def _run(self, argv):
+        import contextlib
+        import io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = cbs.main(argv)
+        return code, buf.getvalue()
+
+    def test_json_output_includes_research_notes_key(self):
+        repo = _init_repo()
+        code, out = self._run(["--repo", repo, "--text", "Touches src/widget.py.",
+                               "--since", "2026-01-01T00:00:00", "--json"])
+        self.assertEqual(code, 0)
+        data = json.loads(out)
+        self.assertIn("research_notes", data)
+
+    def test_json_output_surfaces_matched_research_note(self):
+        repo = _init_repo()
+        _write(repo, "docs/specs/research/investigation.md", "Covers widget.py in depth.\n")
+        sha = _commit(repo, "Add research note", "2026-01-15T00:00:00+00:00")
+
+        code, out = self._run(["--repo", repo, "--text", "The fix lives in widget.py somewhere.",
+                               "--since", "2026-01-20T00:00:00+00:00", "--json"])
+
+        self.assertEqual(code, 0)
+        data = json.loads(out)
+        found = [n for n in data["research_notes"] if n["path"] == "docs/specs/research/investigation.md"]
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]["sha"], sha)
+
+
 class TestFormatVerifiedAbsentEvidence(unittest.TestCase):
     """Task 1.3 -- coverage for `format_verified_absent_evidence`, mirroring
     `test_check_brief_predicate.py`'s style of asserting on the exact
@@ -850,6 +1015,7 @@ class TestFormatVerifiedAbsentEvidence(unittest.TestCase):
 
     MATCH = {"sha": "abc1234", "kind": "path", "probe": "src/widget.py"}
     PR = {"number": 42, "title": "close race", "url": "https://example/42"}
+    NOTE = {"path": "docs/specs/research/investigation.md", "kind": "path", "probe": "src/widget.py"}
 
     def test_matches_only(self):
         out = cbs.format_verified_absent_evidence([self.MATCH], [], "already removed on disk")
@@ -893,6 +1059,46 @@ class TestFormatVerifiedAbsentEvidence(unittest.TestCase):
             "automatically without an operator prompt.",
         )
 
+    def test_research_notes_alongside_matches_and_pull_requests(self):
+        out = cbs.format_verified_absent_evidence(
+            [self.MATCH], [self.PR], "no trace remains", research_notes=[self.NOTE],
+        )
+        self.assertEqual(
+            out,
+            "File-state verification found the brief's described work "
+            "verifiably absent despite 1 matched commit(s) and 1 matched "
+            "pull request(s) and 1 matched research note(s) "
+            "(abc1234 (path probe: src/widget.py), PR #42, "
+            "docs/specs/research/investigation.md (path probe: src/widget.py)): "
+            "no trace remains. Proceeded automatically without an operator "
+            "prompt.",
+        )
+
+    def test_research_notes_only(self):
+        out = cbs.format_verified_absent_evidence([], [], "nothing else was matched", research_notes=[self.NOTE])
+        self.assertEqual(
+            out,
+            "File-state verification found the brief's described work "
+            "verifiably absent despite 0 matched commit(s) and 0 matched "
+            "pull request(s) and 1 matched research note(s) "
+            "(docs/specs/research/investigation.md (path probe: src/widget.py)): "
+            "nothing else was matched. Proceeded automatically without an "
+            "operator prompt.",
+        )
+
+    def test_empty_research_notes_list_omits_research_note_sentence(self):
+        # An explicit `[]` (as opposed to the default `None`) must render
+        # identically to omitting the argument -- both are falsy.
+        out = cbs.format_verified_absent_evidence([self.MATCH], [], "already removed on disk", research_notes=[])
+        self.assertEqual(
+            out,
+            "File-state verification found the brief's described work "
+            "verifiably absent despite 1 matched commit(s) and 0 matched "
+            "pull request(s) (abc1234 (path probe: src/widget.py)): "
+            "already removed on disk. Proceeded automatically without an "
+            "operator prompt.",
+        )
+
 
 class TestFormatVerifiedPresentClosureNote(unittest.TestCase):
     """Task 1.3 -- coverage for `format_verified_present_closure_note`,
@@ -901,6 +1107,7 @@ class TestFormatVerifiedPresentClosureNote(unittest.TestCase):
 
     MATCH = {"sha": "abc1234", "kind": "symbol", "probe": "apply_to_tasks"}
     PR = {"number": 89, "title": "ship the feature", "url": "https://example/89"}
+    NOTE = {"path": "docs/specs/research/investigation.md", "kind": "symbol", "probe": "apply_to_tasks"}
 
     def test_matches_only(self):
         out = cbs.format_verified_present_closure_note([self.MATCH], [], "helper exists and is wired in")
@@ -948,6 +1155,51 @@ class TestFormatVerifiedPresentClosureNote(unittest.TestCase):
             "confirmed by direct inspection. Surfaced by the file-state "
             "verification step; closed automatically without an operator "
             "prompt.",
+        )
+
+    def test_research_notes_alongside_matches_and_pull_requests(self):
+        out = cbs.format_verified_present_closure_note(
+            [self.MATCH], [self.PR], "confirmed on disk and in PR", research_notes=[self.NOTE],
+        )
+        self.assertEqual(
+            out,
+            "Closed as already-delivered: file-state verification found "
+            "the brief's described work verifiably present, confirmed by "
+            "1 matched commit(s) and 1 matched pull request(s) and 1 "
+            "matched research note(s) (abc1234 (symbol probe: "
+            "apply_to_tasks), PR #89, docs/specs/research/investigation.md "
+            "(symbol probe: apply_to_tasks)): confirmed on disk and in PR. "
+            "Surfaced by the file-state verification step; closed "
+            "automatically without an operator prompt.",
+        )
+
+    def test_research_notes_only(self):
+        out = cbs.format_verified_present_closure_note(
+            [], [], "confirmed by the research note alone", research_notes=[self.NOTE],
+        )
+        self.assertEqual(
+            out,
+            "Closed as already-delivered: file-state verification found "
+            "the brief's described work verifiably present, confirmed by "
+            "0 matched commit(s) and 0 matched pull request(s) and 1 "
+            "matched research note(s) (docs/specs/research/investigation.md "
+            "(symbol probe: apply_to_tasks)): confirmed by the research "
+            "note alone. Surfaced by the file-state verification step; "
+            "closed automatically without an operator prompt.",
+        )
+
+    def test_empty_research_notes_list_omits_research_note_sentence(self):
+        out = cbs.format_verified_present_closure_note(
+            [self.MATCH], [], "helper exists and is wired in", research_notes=[],
+        )
+        self.assertEqual(
+            out,
+            "Closed as already-delivered: file-state verification found "
+            "the brief's described work verifiably present, confirmed by "
+            "1 matched commit(s) and 0 matched pull request(s) "
+            "(abc1234 (symbol probe: apply_to_tasks)): helper exists and "
+            "is wired in. Surfaced by the file-state verification step; "
+            "closed automatically without an operator prompt.",
         )
 
 
