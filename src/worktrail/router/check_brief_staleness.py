@@ -99,6 +99,50 @@ GH_PHASE_BUDGET_SECONDS = 20
 # match either way.
 RACE_GRACE_SECONDS = 300
 
+# Pathspec for this repo's existing, uncommitted-to-a-schema convention for
+# Route-I investigation notes: plain prose files under `docs/specs/research/`,
+# each documenting one investigation's findings, committed to the base branch
+# like any other file. No code globbed or searched this directory before this
+# constant existed; it was previously referenced only in comments/docstrings
+# pointing a human reader at prior art.
+RESEARCH_NOTES_GLOB = "docs/specs/research/*.md"
+
+# How many days before a brief's `since_str` (not wall-clock "now") the
+# backward-looking research-note search window opens. Anchored to the
+# brief's own capture time so a recheck run later searches the same window
+# the original dispatch did -- anchoring to "now" instead would make the
+# check non-reproducible across reruns and would miss the actual failure
+# mode this search exists to catch: a note that predates the brief by weeks.
+# Chosen wide enough to cover a queue backlog measured in days-to-weeks (the
+# motivating incident was 68 minutes; a month covers the much more common
+# case) without scanning the entire multi-month history of
+# `docs/specs/research/` on every dispatch. Mirrors `audit_postmerge.py`'s
+# existing `DEFAULT_LOOKBACK_DAYS` precedent for "a fixed, named, overridable
+# default", not a data-derived value -- see design.md's Risks for why that's
+# an accepted gap.
+RESEARCH_LOOKBACK_DAYS = 30
+
+# Bound on how many candidate notes get a `git show` + last-touch `git log
+# -1` call: the `RESEARCH_NOTE_CAP` most-recently-touched are kept, the rest
+# are counted and dropped -- mirrors `_cap()`'s "keep the most
+# distinctive/recent, count the rest" pattern already used for probes and
+# `PR_RESULT_CAP`.
+RESEARCH_NOTE_CAP = 20
+
+# Bound on the final reported `research_notes` match list, the same way
+# `PR_RESULT_CAP` bounds `pull_requests`. Drops beyond this cap are counted,
+# never silently discarded.
+RESEARCH_MATCH_CAP = 20
+
+# Aggregate wall-clock budget for the whole research-note search phase,
+# mirroring `GH_PHASE_BUDGET_SECONDS`. Each candidate note costs two
+# subprocess calls (content + last-touch), so `RESEARCH_NOTE_CAP` alone does
+# not bound worst-case wall time if every call times out individually at
+# `SUBPROCESS_TIMEOUT_SECONDS`. Notes not reached before the deadline are
+# skipped and counted in a warning, exactly like
+# `_resolve_pr_number_probes`'s existing deadline pattern.
+RESEARCH_PHASE_BUDGET_SECONDS = 20
+
 _LOG_FORMAT = "%h\x1f%ad\x1f%s"
 
 
