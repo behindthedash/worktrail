@@ -87,8 +87,26 @@ Unrecognised value → warn once and fall back.
 | 2 | `route:A`..`route:J` | explicit route override |
 | 3 | spec folder name (e.g. `003-payments`) | skips spec picker |
 | any | `by:<dispatch-id>` (labeled, matched by prefix — not positional) | handoff-seed mode only: the caller's `$INVOCATION_CONTEXT_DISPATCH_ID`. Hold as `$GO_DISPATCH_ID` and pass `--by "$GO_DISPATCH_ID"` on the handoff-seed claim call (`#handoff-seed` Step 3) so `claim()`'s `same_owner` result can tell this dispatch's own claim apart from a different dispatch's. Every `handoff:<id>` dispatch from `worktrail-go` carries this token (Dispatch Contract, `worktrail-go/SKILL.md`); its absence means an older caller or a non-`/go` invocation — fall back to an unqualified claim call (no `--by`), which yields `same_owner: null` and must be treated as "not confirmed mine," never as true. |
+| any | `run:<path>` (labeled, matched by prefix — not positional) | native-skill dispatch only (both the handoff-seed and direct-intent forms): the caller's already-open run record path, i.e. `worktrail-go`'s own Phase 6 `$RUN`. Hold as `$GO_RUN_PATH` — Phase 6 below reuses it instead of starting a second run record. Its absence means an older caller or a non-`/go` invocation; fall back to Phase 6's normal `start` call. The seeded-dispatch entry path is unaffected — it already carries `$RUN` directly from the seed and never reaches this token. |
 
 ### Phase 6 — Start the run record
+
+If `$GO_RUN_PATH` was parsed in Phase 1 (native-skill dispatch — see the Dispatch Contract
+in `worktrail-go/SKILL.md`), **reuse it instead of starting a second run record** — this is
+the fix for the orphaned-parent-record bug documented in
+`docs/specs/research/dead-dispatch-backlog-investigation.md` (observations 5/6: every
+native-skill dispatch that instead called `start` here left the parent's record stuck at
+`route_selected` forever, since only the child's record ever reached `finish()`):
+
+```bash
+RUN="$GO_RUN_PATH"
+worktrail-run-record set "$RUN" base_branch "$BASE"
+worktrail-run-record set "$RUN" base_commit "$(git -C "$REPO" rev-parse --short HEAD)"
+```
+
+Otherwise — no `$GO_RUN_PATH` (an older caller or a non-`/go` invocation; the
+seeded-dispatch path already skipped straight here in Phase 1 with its own attached `$RUN`
+and never reaches this branch either) — start a fresh run record as before:
 
 ```bash
 worktrail-run-record start --repo "$REPO" --request "<summary>" \

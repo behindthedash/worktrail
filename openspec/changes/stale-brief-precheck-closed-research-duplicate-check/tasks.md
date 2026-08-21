@@ -1,24 +1,24 @@
 ## 1. Backward-looking research-note search
 
-- [ ] 1.1 In `check_brief_staleness.py`, add module-level constants `RESEARCH_NOTES_GLOB`
+- [x] 1.1 In `check_brief_staleness.py`, add module-level constants `RESEARCH_NOTES_GLOB`
       (`"docs/specs/research/*.md"`), `RESEARCH_LOOKBACK_DAYS` (default `30`),
       `RESEARCH_NOTE_CAP` (default `20`), `RESEARCH_MATCH_CAP` (default `20`), and
       `RESEARCH_PHASE_BUDGET_SECONDS` (default `20`), each documented with the same
       rationale-in-comment style as the existing `PATH_PROBE_CAP`/`GH_PHASE_BUDGET_SECONDS`/
       `RACE_GRACE_SECONDS` constants (design.md - "Decisions").
-- [ ] 1.2 Add `_offset_since(since_str, seconds)`: parses `since_str` via `_to_utc_datetime()`
+- [x] 1.2 Add `_offset_since(since_str, seconds)`: parses `since_str` via `_to_utc_datetime()`
       and returns an ISO string shifted by `seconds` (positive = later, negative = earlier),
       falling back to `since_str` unchanged when it does not parse — same fail-open posture as
       `_widen_since()`. Leave `_widen_since()` itself untouched.
-- [ ] 1.3 Add `_list_recent_research_notes(repo, base_ref, window_since, window_until, timeout)`:
+- [x] 1.3 Add `_list_recent_research_notes(repo, base_ref, window_since, window_until, timeout)`:
       one `_run_git()` call — `git log <base_ref> --since=<window_since> --until=<window_until>
       --name-only --format= -- '<RESEARCH_NOTES_GLOB>'` — returning the touched note paths
       deduplicated in first-seen (most-recently-touched-first) order, or `None` on failure.
-- [ ] 1.4 Add `_note_last_touch(repo, base_ref, path, timeout)` (one `git log -1 --format=%h
+- [x] 1.4 Add `_note_last_touch(repo, base_ref, path, timeout)` (one `git log -1 --format=%h
       %x1f%ad --date=short <base_ref> -- <path>` call, returns `(sha, date)` or `None`) and
       `_read_note_content(repo, base_ref, path, timeout)` (one `git show <base_ref>:<path>`
       call, returns content or `None`).
-- [ ] 1.5 Add `_search_research_notes(repo, base_ref, probes, since_str, timeout)`: computes the
+- [x] 1.5 Add `_search_research_notes(repo, base_ref, probes, since_str, timeout)`: computes the
       window via `_offset_since()` (`since_str` minus `RESEARCH_LOOKBACK_DAYS` days, `since_str`
       plus `RACE_GRACE_SECONDS`), lists candidates via `_list_recent_research_notes()`, caps them
       at `RESEARCH_NOTE_CAP` (reporting the drop count), and — bounded by a
@@ -28,7 +28,7 @@
       `{"sha", "date", "path", "probe", "kind"}`) capped at `RESEARCH_MATCH_CAP` (reporting the
       drop count), plus a combined warning string or `None`. Never raises.
       (Requirement: Backward-Looking Research-Note Search Complements The History Search)
-- [ ] 1.6 Wire `_search_research_notes()` into `check()`: call it whenever `probes["paths"]` or
+- [x] 1.6 Wire `_search_research_notes()` into `check()`: call it whenever `probes["paths"]` or
       `probes["symbols"]` is non-empty (the same gating condition already used for the
       forward-looking history search), add its result to `result["research_notes"]`, and merge
       its warning into `result["warning"]` the same way the `gh` phase's warning is merged today
@@ -41,13 +41,13 @@
 
 ## 2. Formatting and CLI surface
 
-- [ ] 2.1 Add `_cite_research_note(note)` (parallel to `_cite_match`:
+- [x] 2.1 Add `_cite_research_note(note)` (parallel to `_cite_match`:
       `f"{note['path']} ({note['kind']} probe: {note['probe']})"`). Extend
       `format_verified_absent_evidence()` and `format_verified_present_closure_note()` with an
       optional `research_notes: Optional[List[Dict[str, Any]]] = None` parameter, appending its
       citations alongside the existing commit/PR citations and including its count in the
       evidence-count sentence, when non-empty.
-- [ ] 2.2 Update `_format_human()` to report `research_notes` matches (count and per-item lines,
+- [x] 2.2 Update `_format_human()` to report `research_notes` matches (count and per-item lines,
       mirroring the existing `matches`/`pull_requests` rendering) and to treat a non-empty
       `research_notes` the same as non-empty `matches`/`pull_requests` for the "no evidence"
       vs. "EVIDENCE" branch.

@@ -99,6 +99,50 @@ GH_PHASE_BUDGET_SECONDS = 20
 # match either way.
 RACE_GRACE_SECONDS = 300
 
+# Pathspec for this repo's existing, uncommitted-to-a-schema convention for
+# Route-I investigation notes: plain prose files under `docs/specs/research/`,
+# each documenting one investigation's findings, committed to the base branch
+# like any other file. No code globbed or searched this directory before this
+# constant existed; it was previously referenced only in comments/docstrings
+# pointing a human reader at prior art.
+RESEARCH_NOTES_GLOB = "docs/specs/research/*.md"
+
+# How many days before a brief's `since_str` (not wall-clock "now") the
+# backward-looking research-note search window opens. Anchored to the
+# brief's own capture time so a recheck run later searches the same window
+# the original dispatch did -- anchoring to "now" instead would make the
+# check non-reproducible across reruns and would miss the actual failure
+# mode this search exists to catch: a note that predates the brief by weeks.
+# Chosen wide enough to cover a queue backlog measured in days-to-weeks (the
+# motivating incident was 68 minutes; a month covers the much more common
+# case) without scanning the entire multi-month history of
+# `docs/specs/research/` on every dispatch. Mirrors `audit_postmerge.py`'s
+# existing `DEFAULT_LOOKBACK_DAYS` precedent for "a fixed, named, overridable
+# default", not a data-derived value -- see design.md's Risks for why that's
+# an accepted gap.
+RESEARCH_LOOKBACK_DAYS = 30
+
+# Bound on how many candidate notes get a `git show` + last-touch `git log
+# -1` call: the `RESEARCH_NOTE_CAP` most-recently-touched are kept, the rest
+# are counted and dropped -- mirrors `_cap()`'s "keep the most
+# distinctive/recent, count the rest" pattern already used for probes and
+# `PR_RESULT_CAP`.
+RESEARCH_NOTE_CAP = 20
+
+# Bound on the final reported `research_notes` match list, the same way
+# `PR_RESULT_CAP` bounds `pull_requests`. Drops beyond this cap are counted,
+# never silently discarded.
+RESEARCH_MATCH_CAP = 20
+
+# Aggregate wall-clock budget for the whole research-note search phase,
+# mirroring `GH_PHASE_BUDGET_SECONDS`. Each candidate note costs two
+# subprocess calls (content + last-touch), so `RESEARCH_NOTE_CAP` alone does
+# not bound worst-case wall time if every call times out individually at
+# `SUBPROCESS_TIMEOUT_SECONDS`. Notes not reached before the deadline are
+# skipped and counted in a warning, exactly like
+# `_resolve_pr_number_probes`'s existing deadline pattern.
+RESEARCH_PHASE_BUDGET_SECONDS = 20
+
 _LOG_FORMAT = "%h\x1f%ad\x1f%s"
 
 
@@ -406,6 +450,163 @@ def _widen_since(since_str: str, grace_seconds: int) -> str:
     return (since_dt - datetime.timedelta(seconds=grace_seconds)).isoformat()
 
 
+def _offset_since(since_str: str, seconds: int) -> str:
+    """Return `since_str` shifted by `seconds` (positive = later, negative =
+    earlier), as an ISO string.
+
+    Falls back to `since_str` unchanged when it does not parse -- the same
+    fail-open posture as `_widen_since`.
+    """
+    since_dt = _to_utc_datetime(since_str)
+    if since_dt is None:
+        return since_str
+    return (since_dt + datetime.timedelta(seconds=seconds)).isoformat()
+
+
+def _list_recent_research_notes(
+    repo: Path, base_ref: str, window_since: str, window_until: str, timeout: int,
+) -> Optional[List[str]]:
+    """List research-note paths (matching `RESEARCH_NOTES_GLOB`) touched on
+    `base_ref` within `[window_since, window_until]`, deduplicated in
+    first-seen order -- `git log` visits commits newest-first, so first-seen
+    is most-recently-touched-first. Returns `None` on failure, mirroring
+    `_search_probe()`.
+    """
+    out = _run_git(
+        repo,
+        [
+            "log", base_ref,
+            f"--since={window_since}", f"--until={window_until}",
+            "--name-only", "--format=",
+            "--", RESEARCH_NOTES_GLOB,
+        ],
+        timeout,
+    )
+    if out is None or out.returncode != 0:
+        return None
+    seen: List[str] = []
+    seen_set = set()
+    for line in out.stdout.splitlines():
+        path = line.strip()
+        if not path or path in seen_set:
+            continue
+        seen_set.add(path)
+        seen.append(path)
+    return seen
+
+
+def _note_last_touch(repo: Path, base_ref: str, path: str, timeout: int) -> Optional[Tuple[str, str]]:
+    """Return `(sha, date)` for `path`'s most recent commit on `base_ref`, or
+    `None` if the lookup fails or `path` has no history there."""
+    out = _run_git(
+        repo,
+        ["log", "-1", "--format=%h\x1f%ad", "--date=short", base_ref, "--", path],
+        timeout,
+    )
+    if out is None or out.returncode != 0:
+        return None
+    line = out.stdout.strip()
+    if not line:
+        return None
+    parts = line.split("\x1f", 1)
+    if len(parts) != 2:
+        return None
+    return parts[0], parts[1]
+
+
+def _read_note_content(repo: Path, base_ref: str, path: str, timeout: int) -> Optional[str]:
+    """Return the content of `path` as of `base_ref`, or `None` if the
+    lookup fails (e.g. the path doesn't exist at that ref)."""
+    out = _run_git(repo, ["show", f"{base_ref}:{path}"], timeout)
+    if out is None or out.returncode != 0:
+        return None
+    return out.stdout
+
+
+def _search_research_notes(
+    repo: Path, base_ref: str, probes: Dict[str, Any], since_str: str, timeout: int,
+) -> Tuple[List[Dict[str, str]], Optional[str]]:
+    """Backward-looking complement to the forward-looking git-history search
+    in `check()`: does an existing research note under `RESEARCH_NOTES_GLOB`
+    already document one of `probes["paths"]`/`probes["symbols"]`? Catches
+    the failure mode a delivering-commit search cannot: an investigation
+    note that already answered the brief's question, with no code change to
+    find.
+
+    Searches notes touched on `base_ref` within `[since_str -
+    RESEARCH_LOOKBACK_DAYS days, since_str + RACE_GRACE_SECONDS]` (see
+    `_offset_since`) -- anchored to `since_str`, not wall-clock "now", for
+    the reproducibility reason `RESEARCH_LOOKBACK_DAYS` documents; the upper
+    bound admits the same same-session-race grace window the forward search
+    applies via `RACE_GRACE_SECONDS`. Candidates are capped at
+    `RESEARCH_NOTE_CAP` (`_list_recent_research_notes` already orders them
+    most-recently-touched-first, so a plain slice keeps the most relevant),
+    and the whole phase is bounded by `RESEARCH_PHASE_BUDGET_SECONDS`; a
+    candidate not reached before the deadline is skipped and counted, never
+    silently dropped -- mirrors `_resolve_pr_number_probes`'s deadline
+    pattern. Each reached candidate's content is checked for each probe as a
+    literal substring -- no regex, no word-boundary logic, matching the
+    "was this string ever written down" bar `check()`'s own commit search
+    applies. Results are capped at `RESEARCH_MATCH_CAP`, mirroring
+    `PR_RESULT_CAP`.
+
+    Never raises. Returns `([], warning)` when the note-listing `git log`
+    itself fails; a per-candidate content/last-touch fetch failure instead
+    drops just that candidate (its content may simply not exist at
+    `base_ref` in this edge of the window) and is folded into the combined
+    warning string alongside the cap/deadline warnings above.
+    """
+    warnings: List[str] = []
+    window_since = _offset_since(since_str, -RESEARCH_LOOKBACK_DAYS * 86400)
+    window_until = _offset_since(since_str, RACE_GRACE_SECONDS)
+
+    candidates = _list_recent_research_notes(repo, base_ref, window_since, window_until, timeout)
+    if candidates is None:
+        return [], "git log failed or timed out while listing research notes"
+
+    if len(candidates) > RESEARCH_NOTE_CAP:
+        dropped_candidates = len(candidates) - RESEARCH_NOTE_CAP
+        candidates = candidates[:RESEARCH_NOTE_CAP]
+        warnings.append(
+            f"{dropped_candidates} additional research note(s) exceeded RESEARCH_NOTE_CAP="
+            f"{RESEARCH_NOTE_CAP} and were not searched"
+        )
+
+    paths = probes.get("paths") or []
+    symbols = probes.get("symbols") or []
+
+    matches: List[Dict[str, str]] = []
+    deadline = time.monotonic() + RESEARCH_PHASE_BUDGET_SECONDS
+    for i, path in enumerate(candidates):
+        if time.monotonic() >= deadline:
+            warnings.append(
+                f"research-note phase budget exceeded; skipped {len(candidates) - i} candidate(s)"
+            )
+            break
+        content = _read_note_content(repo, base_ref, path, timeout)
+        last_touch = _note_last_touch(repo, base_ref, path, timeout)
+        if content is None or last_touch is None:
+            warnings.append(f"could not read research note {path!r}")
+            continue
+        sha, date = last_touch
+        for probe in paths:
+            if probe in content:
+                matches.append({"sha": sha, "date": date, "path": path, "probe": probe, "kind": "path"})
+        for probe in symbols:
+            if probe in content:
+                matches.append({"sha": sha, "date": date, "path": path, "probe": probe, "kind": "symbol"})
+
+    if len(matches) > RESEARCH_MATCH_CAP:
+        dropped_matches = len(matches) - RESEARCH_MATCH_CAP
+        matches = matches[:RESEARCH_MATCH_CAP]
+        warnings.append(
+            f"{dropped_matches} additional research-note match(es) exceeded RESEARCH_MATCH_CAP="
+            f"{RESEARCH_MATCH_CAP} and were dropped"
+        )
+
+    return matches, ("; ".join(warnings) if warnings else None)
+
+
 def _parse_log(output: str, probe: str, kind: str) -> List[Dict[str, str]]:
     matches: List[Dict[str, str]] = []
     for line in output.splitlines():
@@ -639,7 +840,8 @@ def check(repo: Path, text: str, since: Any, base: Optional[str] = None) -> Dict
     `repo`'s base branch, at or after `since`?
 
     Returns `{"checked": bool, "probes": {...}, "matches": [...],
-    "pull_requests": [...], "warning": str|None}`. `probes` is
+    "pull_requests": [...], "research_notes": [...], "warning": str|None}`.
+    `probes` is
     `extract_probes()`'s output. `matches` is a list of
     `{"sha", "date", "subject", "probe", "kind"}` per matching commit,
     restricted to commits at or after `since` minus `RACE_GRACE_SECONDS` on
@@ -653,6 +855,12 @@ def check(repo: Path, text: str, since: Any, base: Optional[str] = None) -> Dict
     lookup is independently degradable -- `gh` missing, unauthenticated,
     erroring, or timing out yields `pull_requests: []` plus a warning
     appended alongside any git-side warning, without discarding `matches`.
+    `research_notes` is `_search_research_notes()`'s backward-looking
+    complement, run under the same gating `probes["paths"] or
+    probes["symbols"]` (a probe set with only `pull_requests` has nothing a
+    note's content could match), independently degradable the same way the
+    `gh` phase is -- its own warning merges into `result["warning"]` without
+    touching `checked`, `matches`, or `pull_requests` on failure.
 
     Never raises. `checked` is `false` when the question could not be
     answered at all: `repo` is not a git repository, `since` is missing or
@@ -668,6 +876,7 @@ def check(repo: Path, text: str, since: Any, base: Optional[str] = None) -> Dict
         "probes": {"paths": [], "symbols": [], "pull_requests": [], "dropped": 0},
         "matches": [],
         "pull_requests": [],
+        "research_notes": [],
         "warning": None,
     }
 
@@ -745,6 +954,23 @@ def check(repo: Path, text: str, since: Any, base: Optional[str] = None) -> Dict
     if gh_warning:
         result["warning"] = f"{result['warning']}; {gh_warning}" if result["warning"] else gh_warning
 
+    # Same gating as the forward-looking history search above: a probe set
+    # with only `pull_requests` (no `paths`/`symbols`) has nothing a research
+    # note's content could match against, so the search is skipped rather
+    # than run to find nothing. A failure here (`research_warning`) is merged
+    # into `result["warning"]` the same way `gh_warning` is above, but never
+    # touches `checked`, `matches`, or `pull_requests` -- this phase is
+    # independently degradable, just like the `gh` phase.
+    if probes["paths"] or probes["symbols"]:
+        research_notes, research_warning = _search_research_notes(
+            repo, base_ref, probes, since_str, SUBPROCESS_TIMEOUT_SECONDS
+        )
+        result["research_notes"] = research_notes
+        if research_warning:
+            result["warning"] = (
+                f"{result['warning']}; {research_warning}" if result["warning"] else research_warning
+            )
+
     return result
 
 
@@ -758,8 +984,15 @@ def _cite_pull_request(pr: Dict[str, Any]) -> str:
     return f"PR #{pr['number']}"
 
 
+def _cite_research_note(note: Dict[str, Any]) -> str:
+    return f"{note['path']} ({note['kind']} probe: {note['probe']})"
+
+
 def format_verified_absent_evidence(
-    matches: List[Dict[str, Any]], pull_requests: List[Dict[str, Any]], finding: str
+    matches: List[Dict[str, Any]],
+    pull_requests: List[Dict[str, Any]],
+    finding: str,
+    research_notes: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """Build the exact evidence line for the skill doc's file-state
     verification step's `verifiably-absent` outcome (see
@@ -785,17 +1018,26 @@ def format_verified_absent_evidence(
     cleared.
     """
     citations = [_cite_match(m) for m in matches] + [_cite_pull_request(pr) for pr in pull_requests]
+    count_sentence = (
+        f"despite {len(matches)} matched commit(s) and "
+        f"{len(pull_requests)} matched pull request(s)"
+    )
+    if research_notes:
+        citations += [_cite_research_note(n) for n in research_notes]
+        count_sentence += f" and {len(research_notes)} matched research note(s)"
     cited = ", ".join(citations)
     return (
         f"File-state verification found the brief's described work "
-        f"verifiably absent despite {len(matches)} matched commit(s) and "
-        f"{len(pull_requests)} matched pull request(s) ({cited}): {finding}. "
+        f"verifiably absent {count_sentence} ({cited}): {finding}. "
         "Proceeded automatically without an operator prompt."
     )
 
 
 def format_verified_present_closure_note(
-    matches: List[Dict[str, Any]], pull_requests: List[Dict[str, Any]], finding: str
+    matches: List[Dict[str, Any]],
+    pull_requests: List[Dict[str, Any]],
+    finding: str,
+    research_notes: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """Build the exact closure note for the skill doc's file-state
     verification step's `verifiably-present` outcome (see
@@ -818,12 +1060,18 @@ def format_verified_present_closure_note(
     confirmed it.
     """
     citations = [_cite_match(m) for m in matches] + [_cite_pull_request(pr) for pr in pull_requests]
+    confirmed_sentence = (
+        f"confirmed by {len(matches)} matched commit(s) and "
+        f"{len(pull_requests)} matched pull request(s)"
+    )
+    if research_notes:
+        citations += [_cite_research_note(n) for n in research_notes]
+        confirmed_sentence += f" and {len(research_notes)} matched research note(s)"
     cited = ", ".join(citations)
     return (
         "Closed as already-delivered: file-state verification found the "
-        f"brief's described work verifiably present, confirmed by "
-        f"{len(matches)} matched commit(s) and {len(pull_requests)} matched "
-        f"pull request(s) ({cited}): {finding}. Surfaced by the file-state "
+        f"brief's described work verifiably present, {confirmed_sentence} "
+        f"({cited}): {finding}. Surfaced by the file-state "
         "verification step; closed automatically without an operator "
         "prompt."
     )
@@ -880,19 +1128,26 @@ def _format_human(res: Dict[str, object]) -> str:
 
     raw_matches = res["matches"]
     raw_prs = res["pull_requests"]
+    raw_notes = res.get("research_notes")
     matches: List[Dict[str, Any]] = list(raw_matches) if isinstance(raw_matches, list) else []
     prs: List[Dict[str, Any]] = list(raw_prs) if isinstance(raw_prs, list) else []
-    if not matches and not prs:
+    notes: List[Dict[str, Any]] = list(raw_notes) if isinstance(raw_notes, list) else []
+    if not matches and not prs and not notes:
         line = "no evidence: probes searched, nothing landed since the brief was captured"
         if res.get("warning"):
             line += f"\n  warning: {res['warning']}"
         return line
 
-    lines = [f"EVIDENCE: {len(matches)} commit(s), {len(prs)} merged pull request(s)"]
+    lines = [
+        f"EVIDENCE: {len(matches)} commit(s), {len(prs)} merged pull request(s), "
+        f"{len(notes)} research note(s)"
+    ]
     for m in matches:
         lines.append(f"  {m['sha']}  {m['date']}  {m['subject']}   [{m['kind']} probe: {m['probe']}]")
     for pr in prs:
         lines.append(f"  PR #{pr['number']}  {pr.get('merged_at') or '?'}  {pr.get('title') or ''}")
+    for n in notes:
+        lines.append(f"  {n['path']}  {n.get('date') or '?'}   [{n['kind']} probe: {n['probe']}]")
     lines.append("  -> surface these to the operator; never close the brief on this signal alone")
     if res.get("warning"):
         lines.append(f"  warning: {res['warning']}")
@@ -933,6 +1188,7 @@ def main(argv=None) -> int:
             "probes": {"paths": [], "symbols": [], "pull_requests": [], "dropped": 0},
             "matches": [],
             "pull_requests": [],
+            "research_notes": [],
             "warning": read_error,
         }
     else:
