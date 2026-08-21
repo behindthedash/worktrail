@@ -23,7 +23,7 @@ WORK_BASH_MARKERS = ("git commit", "gh pr create", "gh pr merge", "git push")
 # run-record layout (`worktrail_home()/runs/<repo>/<run-id>.yaml`, normally
 # `~/.worktrail/runs/**/*.yaml` -- see run_record.py), as it appears verbatim
 # inside a transcript line's JSON text (tool inputs/outputs, assistant text).
-RUN_RECORD_PATH_RE = re.compile(r'[^\s"\'<>]*\.worktrail/runs/[^\s"\'<>]*\.yaml')
+RUN_RECORD_PATH_RE = re.compile(r'''(?:~|/)[^\s"'`<>*(),;:]*\.worktrail/runs/[^\s"'`<>*(),;:]*\.yaml''')
 
 INSTRUCTION = (
     "SESSION WRAP-UP — proactive next-step suggestion (auto-triggered by the Worktrail Stop hook).\n\n"
