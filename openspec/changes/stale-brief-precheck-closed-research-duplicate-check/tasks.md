@@ -51,7 +51,7 @@
       mirroring the existing `matches`/`pull_requests` rendering) and to treat a non-empty
       `research_notes` the same as non-empty `matches`/`pull_requests` for the "no evidence"
       vs. "EVIDENCE" branch.
-- [ ] 2.3 Confirm `main()`'s CLI JSON output (`--json`) and its non-JSON fallback both reflect
+- [ ] 2.3 [e2e] Confirm `main()`'s CLI JSON output (`--json`) and its non-JSON fallback both reflect
       the new `research_notes` field with no CLI flag changes required (the field flows through
       `check()`'s existing return dict, read by the already-generic `json.dumps(res)` /
       `_format_human(res)` calls).
