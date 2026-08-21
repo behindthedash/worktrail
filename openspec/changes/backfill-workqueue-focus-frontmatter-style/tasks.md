@@ -50,7 +50,7 @@
 
 ## 3. Corpus backfill
 
-- [ ] 3.1 [e2e] Run `worktrail-backfill-focus-style preview` against the real
+- [x] 3.1 [e2e] Run `worktrail-backfill-focus-style preview` against the real
       `$WORK_QUEUE_DIR` corpus; inspect the proposal count and a sample of proposed diffs before
       proceeding.
 - [ ] 3.2 [e2e] Run `worktrail-backfill-focus-style execute --confirm` against the real corpus
