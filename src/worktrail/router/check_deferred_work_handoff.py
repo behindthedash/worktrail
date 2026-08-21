@@ -24,7 +24,7 @@ from typing import Any, Dict, Iterable, List, Union
 
 from ..workqueue import work_queue as _wq
 from ..workqueue.work_queue import _focus_of as _wq_focus_of
-from .check_brief_staleness import _PR_RE, extract_probes
+from .check_brief_staleness import extract_probes
 from .run_record import _load_lenient
 
 # Deliberately narrow per proposal.md's non-goals: v1 ships a small starting
@@ -106,37 +106,25 @@ def has_handoff_coverage(text: str) -> bool:
     deferred-work entry `text`?
 
     Extracts `text`'s path/symbol/pull-request Evidence Probes via
-    `check_brief_staleness.extract_probes`. Path and symbol probes are
-    matched as a case-insensitive substring of some brief's focus text.
-    Pull-request probes are bare numbers (`"12"`, `"593"`) and would
-    substring-match ordinary digit runs (dates, version strings) if tested
-    the same way, so they are instead matched only where they appear as an
-    actual PR reference in the focus text, via `check_brief_staleness`'s own
-    `_PR_RE` -- the same pattern `extract_probes` used to find them in the
-    first place. Checked under `work_queue.queue_dir()` or
-    `work_queue.picked_dir()`. No probes extracted, or no briefs
-    found/readable in either directory, means no coverage -- never treated
-    as a match.
+    `check_brief_staleness.extract_probes` and matches each, case-
+    insensitively, as a substring of some brief's focus text -- per the
+    task brief, the same technique for all three probe kinds. Checked
+    under `work_queue.queue_dir()` or `work_queue.picked_dir()`. No probes
+    extracted, or no briefs found/readable in either directory, means no
+    coverage -- never treated as a match.
     """
     probes = extract_probes(text)
-    substring_candidates: List[str] = [
+    candidates: List[str] = [
         *probes.get("paths", []),
         *probes.get("symbols", []),
+        *probes.get("pull_requests", []),
     ]
-    pr_candidates: List[str] = probes.get("pull_requests", [])
-    if not substring_candidates and not pr_candidates:
+    if not candidates:
         return False
 
     focus_texts = _brief_focus_texts(_wq.queue_dir()) + _brief_focus_texts(_wq.picked_dir())
     for focus in focus_texts:
         lowered_focus = focus.lower()
-        if any(str(probe).lower() in lowered_focus for probe in substring_candidates):
+        if any(str(probe).lower() in lowered_focus for probe in candidates):
             return True
-        if pr_candidates:
-            focus_pr_numbers = {
-                match.group("num1") or match.group("num2")
-                for match in _PR_RE.finditer(focus)
-            }
-            if any(str(num) in focus_pr_numbers for num in pr_candidates):
-                return True
     return False
