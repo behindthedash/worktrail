@@ -77,7 +77,10 @@ jobs:
       - name: Install package
         run: pip install -e ".[dev]"
       - name: Test
-        run: pytest -q
+        # The classifier coverage ratchet runs in its own advisory job below
+        # (not yet in required_status_checks) so its baseline can be
+        # recalibrated over a PR or two without blocking this required job.
+        run: pytest -q --ignore=tests/router/test_classifier_coverage_ratchet.py
       - name: Golden regression (orchestrator)
         run: python3 -m worktrail.orchestrator.orchestrate check
       - name: Build
@@ -105,6 +108,24 @@ jobs:
               status: "completed",
               conclusion: "success",
             });
+
+  classifier-coverage-ratchet:
+    name: "Classifier Coverage Ratchet"
+    needs: changes
+    if: needs.changes.outputs.bookkeeping == 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - name: Install package
+        run: pip install -e ".[dev]"
+      - name: Test
+        # Advisory: not in required_status_checks yet (protect-main.json) so
+        # tests/fixtures/classifier_corpus.json's baseline can be recalibrated
+        # over a PR or two before this becomes a merge-blocking gate.
+        run: pytest -q tests/router/test_classifier_coverage_ratchet.py
 
   installed-package-drain-smoke:
     name: "Installed drain smoke (${{ matrix.agent }})"

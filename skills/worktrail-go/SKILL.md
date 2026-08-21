@@ -214,7 +214,7 @@ Resolve the user's choice and dispatch by its `action`:
 |---|---|
 | `resume` | stalled in-flight brief (claimed ≥48h ago with no completion — likely an abandoned session; freshly-claimed briefs are hidden as actively owned). Before continuing, verify what the prior session already landed (merged PRs / commits / spec status referencing the brief id) so you resume the remainder, not redo it → Phase 3 (no re-claim) |
 | `implement` | active spec → `Skill("worktrail-sdd-workflow", args="<path> route:E <spec_id>")`, where `<path>` is the item's `path` (multi-repo) or `$REPO` (in-repo) |
-| `close-stale` | stale-bookkeeping spec → **do NOT run the orchestrator** (files already merged on base). If the spec being closed is an epic doc under `docs/specs/epics/` (or is linked from one), first run the epic-closure PROVISIONAL check (`references/routes.md` §B "Closing an epic") before flipping any `status:` to `completed`. Confirm the spec's pending impl tasks are truly shipped (their `files:` exist + are git-tracked on the base branch — `next_action` lists the task ids), then flip those `TASK-*.md` `status:` → `completed` and land a docs-only PR (the way the 068 stale-status case was closed). Re-run the dashboard to confirm the spec drops to sync/complete. **After the docs-only PR lands**, this spec's task/verify worktrees are otherwise never revisited by anything (the orchestrator's own `cleanup_group()` only runs on the delivered-merge path, which this action deliberately skips) — run `references/worktree-cleanup.md`'s scoped invocation against `<spec_id>-*` to tear them down through its normal classify-then-confirm flow. Skip the teardown (report it, don't fail) when `<spec_id>-*` has no worktrees on disk. |
+| `close-stale` | stale-bookkeeping spec → **do NOT run the orchestrator** (files already merged on base). If the spec being closed is an epic doc under `docs/specs/epics/` (or is linked from one), first run the epic-closure PROVISIONAL check (`references/routes.md` §B "Closing an epic") before flipping any status to completed. Confirm the spec's pending impl tasks are truly shipped, then branch on the item's `format`: **devkit** (`files:` exist + are git-tracked on the base branch — `next_action` lists the task ids) — flip those `TASK-*.md` `status:` → `completed` and land a docs-only PR (the way the 068 stale-status case was closed). **openspec** — OpenSpec's `tasks.md` carries no per-task `files:` frontmatter, so confirming "truly shipped" stays a judgment call (re-run the referenced tests, check the citing PR); once confirmed, create a fix-branch worktree (`references/subagent-prompts.md#fix-branch-worktree-setup`, slug e.g. `close-stale-<spec_id>`) and run `worktrail-close-stale-openspec --worktree "$WT" --change-id <spec_id> [--task-ids <comma-joined stale_task_ids>] --json` — it flips the checkboxes and runs `openspec archive -y --json` in one step (defaults to every pending task id when `--task-ids` is omitted). Land the same PR through the normal Phase 8 flow (pre-PR gate, `go:risk-*` labels, CI watch loop) — never a hand-rolled `gh pr create`, which would bypass the label-enforcement hook (mirrors PR #547/#548's shape, scripted instead of hand-rolled each time). Both branches: re-run the dashboard to confirm the spec drops to sync/complete. **After the docs-only PR lands**, this spec's task/verify worktrees are otherwise never revisited by anything (the orchestrator's own `cleanup_group()` only runs on the delivered-merge path, which this action deliberately skips) — run `references/worktree-cleanup.md`'s scoped invocation against `<spec_id>-*` to tear them down through its normal classify-then-confirm flow. Skip the teardown (report it, don't fail) when `<spec_id>-*` has no worktrees on disk. |
 | `claim` | queue item → batch-claim it plus any related queued briefs (see **Batch consumption** below), then Phase 3 |
 | `answer-decision` | open decision → present it interactively and record the answer — see `references/answer-decision.md` |
 | `consolidate-cluster` | detected brief cluster → run `consolidate_cluster.py preview <members...>` to re-validate + draft a consolidated brief, show the draft via `AskUserQuestion` requiring an explicit confirm (no default-yes), then run `consolidate_cluster.py execute <members...> --draft '<preview JSON>' --confirm` (or `--decline`, which performs zero writes) |
@@ -562,7 +562,7 @@ Dispatch policy is simple:
   | `dispatch_mode` | action |
   |---|---|
   | `in-session-resume` | continue the route in this session (see the Route E bullet below) |
-  | `native-skill` | call `Skill("worktrail-sdd-workflow", ...)` directly |
+  | `native-skill` | call `Skill("worktrail-sdd-workflow", ...)` directly, appending `run:$RUN` (Phase 6's run record path) per the Dispatch Contract below |
   | `adapter` | run `worktrail-skill-dispatch` with `$INVOCATION_CONTEXT_AGENT` (see the adapter section below) |
   | `blocked` | stop; report the resolver's `blocked_reason` verbatim |
 
@@ -762,8 +762,8 @@ decision → `blocked_product_decision`; ceiling → `failed_recoverable`.
 ## Dispatch Contract (to worktrail-sdd-workflow)
 
 ```
-Skill("worktrail-sdd-workflow", args="<repo-path> route:<X> [spec-folder]")
-Skill("worktrail-sdd-workflow", args="handoff:<id> route:<X> by:<dispatch-id>")
+Skill("worktrail-sdd-workflow", args="<repo-path> route:<X> [spec-folder] run:<run-path>")
+Skill("worktrail-sdd-workflow", args="handoff:<id> route:<X> by:<dispatch-id> run:<run-path>")
 ```
 
 sdd-workflow requires the resolved `route:X` on every dispatch, including handoff-seed
@@ -774,6 +774,17 @@ threads it through as `--by` so `claim()` can tell "this dispatch already owns t
 apart from a different, possibly concurrent, dispatch (`same_owner` in the claim response;
 see the Invocation Context section above). Omit the `by:` token only for the non-handoff
 form, which never calls `claim()`.
+
+Every native-skill dispatch (both forms) MUST also append `run:$RUN` — Phase 6's
+already-open run record path. Without it, sdd-workflow's own Phase 6 falls through to a
+fresh `worktrail-run-record start` and permanently orphans the parent's record at
+`route_selected`, since the child's record becomes the only one anything ever calls
+`finish()` on (`docs/specs/research/dead-dispatch-backlog-investigation.md`, observations
+5/6). This mirrors the adapter path's `--run "$RUN"` threading
+(`worktrail-go-seed`'s seeded-dispatch prompt) for the native-skill dispatch surface,
+which carries no such prompt of its own to thread it through otherwise. Never omit `run:`
+to mean "let the child open its own" — that recreates the orphaned-record bug this token
+exists to close.
 
 ## Related Briefs
 
