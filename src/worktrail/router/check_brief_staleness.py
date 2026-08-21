@@ -984,8 +984,15 @@ def _cite_pull_request(pr: Dict[str, Any]) -> str:
     return f"PR #{pr['number']}"
 
 
+def _cite_research_note(note: Dict[str, Any]) -> str:
+    return f"{note['path']} ({note['kind']} probe: {note['probe']})"
+
+
 def format_verified_absent_evidence(
-    matches: List[Dict[str, Any]], pull_requests: List[Dict[str, Any]], finding: str
+    matches: List[Dict[str, Any]],
+    pull_requests: List[Dict[str, Any]],
+    finding: str,
+    research_notes: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """Build the exact evidence line for the skill doc's file-state
     verification step's `verifiably-absent` outcome (see
@@ -1011,17 +1018,26 @@ def format_verified_absent_evidence(
     cleared.
     """
     citations = [_cite_match(m) for m in matches] + [_cite_pull_request(pr) for pr in pull_requests]
+    count_sentence = (
+        f"despite {len(matches)} matched commit(s) and "
+        f"{len(pull_requests)} matched pull request(s)"
+    )
+    if research_notes:
+        citations += [_cite_research_note(n) for n in research_notes]
+        count_sentence += f" and {len(research_notes)} matched research note(s)"
     cited = ", ".join(citations)
     return (
         f"File-state verification found the brief's described work "
-        f"verifiably absent despite {len(matches)} matched commit(s) and "
-        f"{len(pull_requests)} matched pull request(s) ({cited}): {finding}. "
+        f"verifiably absent {count_sentence} ({cited}): {finding}. "
         "Proceeded automatically without an operator prompt."
     )
 
 
 def format_verified_present_closure_note(
-    matches: List[Dict[str, Any]], pull_requests: List[Dict[str, Any]], finding: str
+    matches: List[Dict[str, Any]],
+    pull_requests: List[Dict[str, Any]],
+    finding: str,
+    research_notes: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """Build the exact closure note for the skill doc's file-state
     verification step's `verifiably-present` outcome (see
@@ -1044,12 +1060,18 @@ def format_verified_present_closure_note(
     confirmed it.
     """
     citations = [_cite_match(m) for m in matches] + [_cite_pull_request(pr) for pr in pull_requests]
+    confirmed_sentence = (
+        f"confirmed by {len(matches)} matched commit(s) and "
+        f"{len(pull_requests)} matched pull request(s)"
+    )
+    if research_notes:
+        citations += [_cite_research_note(n) for n in research_notes]
+        confirmed_sentence += f" and {len(research_notes)} matched research note(s)"
     cited = ", ".join(citations)
     return (
         "Closed as already-delivered: file-state verification found the "
-        f"brief's described work verifiably present, confirmed by "
-        f"{len(matches)} matched commit(s) and {len(pull_requests)} matched "
-        f"pull request(s) ({cited}): {finding}. Surfaced by the file-state "
+        f"brief's described work verifiably present, {confirmed_sentence} "
+        f"({cited}): {finding}. Surfaced by the file-state "
         "verification step; closed automatically without an operator "
         "prompt."
     )
