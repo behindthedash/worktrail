@@ -116,8 +116,9 @@ fail-open contract it exists to honor. Never test its exit code; read `checked`.
 ## File-state verification
 
 Runs only when there is both something to verify and no earlier step that already decided the
-outcome: `STALENESS_JSON`'s `matches` or `pull_requests` is non-empty (`checked: true` with both
-empty is a definite negative with nothing to verify — see "Reading the result" below), and the
+outcome: `STALENESS_JSON`'s `matches`, `pull_requests`, or `research_notes` is non-empty
+(`checked: true` with all three empty is a definite negative with nothing to verify — see
+"Reading the result" below), and the
 predicate re-check above did not already determine the outcome (any `attempted`/`outcome`
 combination other than `still-true`/`resolved` reaches this step unchanged). When both hold,
 before showing the operator anything, read or grep the brief's named paths and symbols — the
@@ -145,14 +146,16 @@ next step, documented below.
 ```json
 {"checked": true, "probes": {"paths": [], "symbols": [], "pull_requests": [], "dropped": 0},
  "matches": [{"sha": "", "date": "", "subject": "", "probe": "", "kind": "path|symbol"}],
- "pull_requests": [{"number": 0, "title": "", "url": "", "merged_at": ""}], "warning": null}
+ "pull_requests": [{"number": 0, "title": "", "url": "", "merged_at": ""}],
+ "research_notes": [{"sha": "", "date": "", "path": "", "probe": "", "kind": "path|symbol"}],
+ "warning": null}
 ```
 
 | Result | Meaning | Action |
 |---|---|---|
 | `checked: false` | The question could not be asked — not a git checkout, missing/malformed `created:`, no probes extracted, or a git failure. | **Proceed.** Treat as no signal, never as "nothing landed". Do not prompt. |
-| `checked: true`, `matches` and `pull_requests` both empty | Probes were searched; nothing landed since capture. A definite negative. | **Proceed.** Do not prompt. |
-| `checked: true`, `matches` or `pull_requests` non-empty | Evidence exists that something touched the brief's named files/symbols since capture. | Run **File-state verification** (above) before showing anything to the operator. |
+| `checked: true`, `matches`, `pull_requests`, and `research_notes` all empty | Probes were searched; nothing landed since capture. A definite negative. | **Proceed.** Do not prompt. |
+| `checked: true`, `matches`, `pull_requests`, or `research_notes` non-empty | Evidence exists that something touched the brief's named files/symbols since capture, or that an existing research note already documents them. | Run **File-state verification** (above) before showing anything to the operator. |
 
 `warning` may be non-null on any of these rows and never changes the action on its own — it
 carries partial-degradation detail (a timed-out probe, `gh` unavailable, results capped). Surface
@@ -164,13 +167,15 @@ common case, and it is why the operator decides.
 
 ## The operator prompt
 
-Show the matching commits and PRs, then ask exactly one question. Two outcomes, both first-class:
+Show the matching commits, PRs, and research notes, then ask exactly one question. Two outcomes,
+both first-class:
 
 ```
 AskUserQuestion(
   questions=[{
     question: "This brief may already be delivered. Since it was captured ({created}), "
-              "{N} commit(s) and {M} merged PR(s) touched what it names:\n"
+              "{N} commit(s), {M} merged PR(s), and {K} research note(s) touched or documented "
+              "what it names:\n"
               "{evidence lines}\n\nIs this brief already done?",
     header: "Brief staleness",
     options: [
