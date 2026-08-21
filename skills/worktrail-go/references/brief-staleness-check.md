@@ -259,6 +259,16 @@ aggregate budget for the network-dependent `gh` phase — all module-level const
 nobody weighs whether to run it. Anything dropped by a cap is *counted* (`probes.dropped`, and
 warnings for capped PR results and skipped probes), never silently discarded.
 
+The backward-looking research-note search has the same shape of bounds, also module-level
+constants in `check_brief_staleness.py`, also deliberately not policy knobs:
+`RESEARCH_LOOKBACK_DAYS` (30) bounds how far back a note's last touch can be and still count as a
+match; `RESEARCH_NOTE_CAP` (20) bounds how many most-recently-touched candidate notes get
+searched at all; `RESEARCH_MATCH_CAP` (20) bounds the final reported `research_notes` match list,
+mirroring `PR_RESULT_CAP`; and `RESEARCH_PHASE_BUDGET_SECONDS` (20) is the aggregate wall-clock
+budget for the whole phase, mirroring `GH_PHASE_BUDGET_SECONDS`. As with the probe caps above,
+anything dropped by these — capped candidates, capped matches, or candidates not reached before
+the deadline — is counted in a warning, never silently discarded.
+
 The predicate re-check above (`check_brief_predicate.py`) adds no comparable cost: it spawns no
 subprocess and hits no network, only `Path.read_text` on the task files named in the brief's own
 `drift-findings` — bounded by however many findings the drift sweep that filed the brief captured,
