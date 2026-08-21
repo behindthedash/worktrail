@@ -24,6 +24,24 @@ from typing import Any, Dict, Iterable, List, Union
 
 from .run_record import _load_lenient
 
+# Deliberately narrow per proposal.md's non-goals: v1 ships a small starting
+# list and expects follow-up tuning from observed false positives/negatives,
+# not a front-loaded exhaustive vocabulary.
+DEFERRAL_PHRASES = (
+    "advisory for now",
+    "deferred",
+    "once calibrated",
+    "follow-up",
+    "follow up",
+    "in a later pr",
+)
+
+
+def matches_deferral_phrase(text: str) -> bool:
+    """Case-insensitive substring match of `text` against `DEFERRAL_PHRASES`."""
+    lowered = text.lower()
+    return any(phrase in lowered for phrase in DEFERRAL_PHRASES)
+
 
 def load_deferred_work_entries(run_record_paths: Iterable[Union[str, Path]]) -> List[Dict[str, str]]:
     """Read only the `deferred_work` list off each run record in `run_record_paths`.
