@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -17,6 +18,12 @@ STATE_DIR = Path(os.path.expanduser("~/.claude/state/worktrail-suggest-next"))
 
 WORK_TOOLS = {"Edit", "MultiEdit", "Write", "NotebookEdit"}
 WORK_BASH_MARKERS = ("git commit", "gh pr create", "gh pr merge", "git push")
+
+# Matches an absolute or relative path literal shaped like the default GO v2
+# run-record layout (`worktrail_home()/runs/<repo>/<run-id>.yaml`, normally
+# `~/.worktrail/runs/**/*.yaml` -- see run_record.py), as it appears verbatim
+# inside a transcript line's JSON text (tool inputs/outputs, assistant text).
+RUN_RECORD_PATH_RE = re.compile(r'''(?:~|/)[^\s"'`<>*(),;:]*\.worktrail/runs/[^\s"'`<>*(),;:]*\.yaml''')
 
 INSTRUCTION = (
     "SESSION WRAP-UP — proactive next-step suggestion (auto-triggered by the Worktrail Stop hook).\n\n"
@@ -62,24 +69,44 @@ def entry_has_work(entry: dict) -> bool:
     return False
 
 
-def substantive_work(transcript_path: str) -> bool:
+def scan_transcript(transcript_path: str) -> tuple[bool, list[str]]:
+    """One pass over the transcript: whether it shows substantive work, and the
+    unique run-record path literals (see `RUN_RECORD_PATH_RE`) it mentions.
+
+    Both signals come out of the same line-by-line read so a caller that needs
+    either or both never opens the transcript file twice.
+    """
+    has_work = False
+    run_record_paths: list[str] = []
+    seen_paths: set[str] = set()
     if not transcript_path or not os.path.exists(transcript_path):
-        return False
+        return has_work, run_record_paths
     try:
         with open(transcript_path, "r", encoding="utf-8", errors="ignore") as handle:
             for line in handle:
                 line = line.strip()
                 if not line:
                     continue
+                for path in RUN_RECORD_PATH_RE.findall(line):
+                    if path not in seen_paths:
+                        seen_paths.add(path)
+                        run_record_paths.append(path)
+                if has_work:
+                    continue
                 try:
                     entry = json.loads(line)
                 except json.JSONDecodeError:
                     continue
                 if entry_has_work(entry):
-                    return True
+                    has_work = True
     except OSError:
-        return False
-    return False
+        return False, []
+    return has_work, run_record_paths
+
+
+def substantive_work(transcript_path: str) -> bool:
+    has_work, _ = scan_transcript(transcript_path)
+    return has_work
 
 
 def main() -> int:
