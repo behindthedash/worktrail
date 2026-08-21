@@ -31,6 +31,9 @@ so a batch rewrite of already-authored briefs is never silent:
 
 from __future__ import annotations
 
+import argparse
+import json
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -221,3 +224,58 @@ def execute_apply(preview: Dict[str, Any], queue_base: Path, confirm: bool) -> D
         stamped.append(item["id"])
 
     return {"stamped": stamped, "skipped": skipped}
+
+
+def _resolve_preview_payload(raw: str) -> Dict[str, Any]:
+    """Parse `--preview`, accepting either `preview`'s full payload or a bare
+    `{"proposals": [...]}` dict -- same shape-tolerance rationale as
+    consolidate_cluster.py's `_resolve_draft_payload`."""
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"--preview is not valid JSON: {exc}") from exc
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("proposals"), list):
+        raise ValueError("--preview must be a JSON object with a 'proposals' list")
+    return parsed
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    p = argparse.ArgumentParser(description="backfill focus: frontmatter scalar style on existing handoff briefs")
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--queue-dir", default=None, help="override the queue base dir containing queue/ and picked/ (default: WORK_QUEUE_DIR)")
+    subs = p.add_subparsers(dest="cmd")
+    subs.required = True
+
+    subs.add_parser("preview", parents=[common], help="scan queue/ + picked/ for non-canonical focus: spans; write nothing")
+
+    execute_p = subs.add_parser("execute", parents=[common], help="rewrite focus: spans from a preview")
+    execute_p.add_argument(
+        "--preview",
+        help="preview's JSON stdout; omit to read it from stdin instead "
+        "(a full-corpus preview routinely exceeds the shell argv size limit)",
+    )
+    confirm_grp = execute_p.add_mutually_exclusive_group(required=True)
+    confirm_grp.add_argument("--confirm", action="store_true", help="write the canonicalized focus: spans")
+    confirm_grp.add_argument("--decline", action="store_true", help="perform zero writes")
+
+    args = p.parse_args(argv)
+    queue_base = Path(args.queue_dir) if args.queue_dir else wq.base_dir()
+
+    if args.cmd == "preview":
+        result = build_preview(queue_base)
+        print(json.dumps(result, indent=2))
+        return 0
+
+    try:
+        preview = _resolve_preview_payload(args.preview if args.preview is not None else sys.stdin.read())
+    except ValueError as exc:
+        print(json.dumps({"error": str(exc)}), file=sys.stderr)
+        return 2
+
+    result = execute_apply(preview, queue_base, args.confirm)
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
