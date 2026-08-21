@@ -22,6 +22,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Union
 
+from ..workqueue import work_queue as _wq
+from ..workqueue.work_queue import _focus_of as _wq_focus_of
+from .check_brief_staleness import extract_probes
 from .run_record import _load_lenient
 
 # Deliberately narrow per proposal.md's non-goals: v1 ships a small starting
@@ -72,3 +75,50 @@ def load_deferred_work_entries(run_record_paths: Iterable[Union[str, Path]]) -> 
             if isinstance(item, str) and item.strip():
                 entries.append({"text": item, "run_record": str(path)})
     return entries
+
+
+def _brief_focus_texts(directory: Path) -> List[str]:
+    """Best-effort focus text for every `*.md` brief directly under `directory`.
+
+    A missing or unreadable `directory` yields no texts. `_focus_of` already
+    degrades an unparseable individual brief to `""` rather than raising, so
+    one bad file never drops the rest of the scan.
+    """
+    try:
+        paths = sorted(directory.glob("*.md"))
+    except OSError:
+        return []
+    texts: List[str] = []
+    for path in paths:
+        focus = _wq_focus_of(path)
+        if focus:
+            texts.append(focus)
+    return texts
+
+
+def has_handoff_coverage(text: str) -> bool:
+    """Does an existing `queue/` or `picked/` brief already cover the
+    deferred-work entry `text`?
+
+    Extracts `text`'s path/symbol/pull-request Evidence Probes via
+    `check_brief_staleness.extract_probes` and checks whether any of them
+    is a case-insensitive substring of some brief's focus text under
+    `work_queue.queue_dir()` or `work_queue.picked_dir()`. No probes
+    extracted, or no briefs found/readable in either directory, means no
+    coverage -- never treated as a match.
+    """
+    probes = extract_probes(text)
+    candidates: List[str] = [
+        *probes.get("paths", []),
+        *probes.get("symbols", []),
+        *probes.get("pull_requests", []),
+    ]
+    if not candidates:
+        return False
+
+    focus_texts = _brief_focus_texts(_wq.queue_dir()) + _brief_focus_texts(_wq.picked_dir())
+    for focus in focus_texts:
+        lowered_focus = focus.lower()
+        if any(str(probe).lower() in lowered_focus for probe in candidates):
+            return True
+    return False
