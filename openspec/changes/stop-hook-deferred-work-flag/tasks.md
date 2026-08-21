@@ -6,7 +6,7 @@
 - [ ] 1.2 Add a `DEFERRAL_PHRASES` module-level constant and a case-insensitive
       substring-match function over `deferred_work` entry text (Requirement: Deferral-Phrase
       Matching)
-- [ ] 1.3 Implement the handoff cross-check: import `extract_probes` from
+- [x] 1.3 Implement the handoff cross-check: import `extract_probes` from
       `worktrail.router.check_brief_staleness`, run it against each phrase-matching entry,
       and search `queue/*.md` + `picked/*.md` (via `work_queue.queue_dir()` /
       `work_queue.picked_dir()`) focus text for a probe substring match; unreadable/missing
