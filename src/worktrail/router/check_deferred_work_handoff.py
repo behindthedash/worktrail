@@ -24,7 +24,7 @@ from typing import Any, Dict, Iterable, List, Union
 
 from ..workqueue import work_queue as _wq
 from ..workqueue.work_queue import _focus_of as _wq_focus_of
-from .check_brief_staleness import extract_probes
+from .check_brief_staleness import _PR_RE, extract_probes
 from .run_record import _load_lenient
 
 # Deliberately narrow per proposal.md's non-goals: v1 ships a small starting
@@ -80,9 +80,11 @@ def load_deferred_work_entries(run_record_paths: Iterable[Union[str, Path]]) -> 
 def _brief_focus_texts(directory: Path) -> List[str]:
     """Best-effort focus text for every `*.md` brief directly under `directory`.
 
-    A missing or unreadable `directory` yields no texts. `_focus_of` already
-    degrades an unparseable individual brief to `""` rather than raising, so
-    one bad file never drops the rest of the scan.
+    A missing or unreadable `directory` yields no texts. `_focus_of` degrades
+    a malformed-YAML brief to `""` rather than raising, but a non-UTF-8 brief
+    raises `UnicodeDecodeError` out of `Path.read_text`, so that call is
+    wrapped per-brief too -- one bad file must never drop the rest of the
+    scan.
     """
     try:
         paths = sorted(directory.glob("*.md"))
@@ -90,7 +92,10 @@ def _brief_focus_texts(directory: Path) -> List[str]:
         return []
     texts: List[str] = []
     for path in paths:
-        focus = _wq_focus_of(path)
+        try:
+            focus = _wq_focus_of(path)
+        except (OSError, UnicodeDecodeError):
+            continue
         if focus:
             texts.append(focus)
     return texts
@@ -101,24 +106,37 @@ def has_handoff_coverage(text: str) -> bool:
     deferred-work entry `text`?
 
     Extracts `text`'s path/symbol/pull-request Evidence Probes via
-    `check_brief_staleness.extract_probes` and checks whether any of them
-    is a case-insensitive substring of some brief's focus text under
-    `work_queue.queue_dir()` or `work_queue.picked_dir()`. No probes
-    extracted, or no briefs found/readable in either directory, means no
-    coverage -- never treated as a match.
+    `check_brief_staleness.extract_probes`. Path and symbol probes are
+    matched as a case-insensitive substring of some brief's focus text.
+    Pull-request probes are bare numbers (`"12"`, `"593"`) and would
+    substring-match ordinary digit runs (dates, version strings) if tested
+    the same way, so they are instead matched only where they appear as an
+    actual PR reference in the focus text, via `check_brief_staleness`'s own
+    `_PR_RE` -- the same pattern `extract_probes` used to find them in the
+    first place. Checked under `work_queue.queue_dir()` or
+    `work_queue.picked_dir()`. No probes extracted, or no briefs
+    found/readable in either directory, means no coverage -- never treated
+    as a match.
     """
     probes = extract_probes(text)
-    candidates: List[str] = [
+    substring_candidates: List[str] = [
         *probes.get("paths", []),
         *probes.get("symbols", []),
-        *probes.get("pull_requests", []),
     ]
-    if not candidates:
+    pr_candidates: List[str] = probes.get("pull_requests", [])
+    if not substring_candidates and not pr_candidates:
         return False
 
     focus_texts = _brief_focus_texts(_wq.queue_dir()) + _brief_focus_texts(_wq.picked_dir())
     for focus in focus_texts:
         lowered_focus = focus.lower()
-        if any(str(probe).lower() in lowered_focus for probe in candidates):
+        if any(str(probe).lower() in lowered_focus for probe in substring_candidates):
             return True
+        if pr_candidates:
+            focus_pr_numbers = {
+                match.group("num1") or match.group("num2")
+                for match in _PR_RE.finditer(focus)
+            }
+            if any(str(num) in focus_pr_numbers for num in pr_candidates):
+                return True
     return False
