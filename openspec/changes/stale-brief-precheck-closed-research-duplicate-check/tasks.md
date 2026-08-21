@@ -85,6 +85,6 @@
       for `_format_human()` / the CLI `--json` output including `research_notes`, and for
       `format_verified_absent_evidence()`/`format_verified_present_closure_note()` with a
       non-empty `research_notes` argument.
-- [ ] 4.4 [e2e] Run `PYTHONPATH=src pytest -q tests/router/test_check_brief_staleness.py`, then
+- [x] 4.4 [e2e] Run `PYTHONPATH=src pytest -q tests/router/test_check_brief_staleness.py`, then
       the full suite (`PYTHONPATH=src pytest -q`) and
       `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`.
