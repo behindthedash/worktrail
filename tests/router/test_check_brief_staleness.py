@@ -346,6 +346,79 @@ class TestCheckHistorySearch(unittest.TestCase):
         self.assertEqual(match["sha"], sha)
 
 
+class TestListRecentResearchNotes(unittest.TestCase):
+    def test_note_within_window_is_returned(self):
+        repo = _init_repo()
+        _write(repo, "docs/specs/research/route-i.md", "findings\n")
+        _commit(repo, "Add research note", "2026-06-01T00:00:00+00:00")
+
+        notes = cbs._list_recent_research_notes(
+            Path(repo), "HEAD",
+            "2026-05-01T00:00:00+00:00", "2026-07-01T00:00:00+00:00",
+            cbs.SUBPROCESS_TIMEOUT_SECONDS,
+        )
+
+        self.assertEqual(notes, ["docs/specs/research/route-i.md"])
+
+    def test_note_outside_window_is_excluded(self):
+        repo = _init_repo()
+        _write(repo, "docs/specs/research/route-i.md", "findings\n")
+        _commit(repo, "Add research note", "2026-01-01T00:00:00+00:00")
+
+        notes = cbs._list_recent_research_notes(
+            Path(repo), "HEAD",
+            "2026-05-01T00:00:00+00:00", "2026-07-01T00:00:00+00:00",
+            cbs.SUBPROCESS_TIMEOUT_SECONDS,
+        )
+
+        self.assertEqual(notes, [])
+
+    def test_non_matching_path_is_excluded(self):
+        repo = _init_repo()
+        _write(repo, "docs/specs/research/route-i.md", "findings\n")
+        _write(repo, "src/widget.py", "print('unrelated')\n")
+        _commit(repo, "Add note and unrelated file", "2026-06-01T00:00:00+00:00")
+
+        notes = cbs._list_recent_research_notes(
+            Path(repo), "HEAD",
+            "2026-05-01T00:00:00+00:00", "2026-07-01T00:00:00+00:00",
+            cbs.SUBPROCESS_TIMEOUT_SECONDS,
+        )
+
+        self.assertEqual(notes, ["docs/specs/research/route-i.md"])
+
+    def test_note_touched_twice_is_deduplicated_most_recent_first(self):
+        repo = _init_repo()
+        _write(repo, "docs/specs/research/route-i.md", "v1\n")
+        _commit(repo, "Add research note", "2026-06-01T00:00:00+00:00")
+        _write(repo, "docs/specs/research/route-j.md", "other note\n")
+        _commit(repo, "Add another research note", "2026-06-02T00:00:00+00:00")
+        _write(repo, "docs/specs/research/route-i.md", "v2\n")
+        _commit(repo, "Update research note", "2026-06-03T00:00:00+00:00")
+
+        notes = cbs._list_recent_research_notes(
+            Path(repo), "HEAD",
+            "2026-05-01T00:00:00+00:00", "2026-07-01T00:00:00+00:00",
+            cbs.SUBPROCESS_TIMEOUT_SECONDS,
+        )
+
+        self.assertEqual(
+            notes,
+            ["docs/specs/research/route-i.md", "docs/specs/research/route-j.md"],
+        )
+
+    def test_bad_ref_returns_none(self):
+        repo = _init_repo()
+
+        notes = cbs._list_recent_research_notes(
+            Path(repo), "not-a-real-ref",
+            "2026-05-01T00:00:00+00:00", "2026-07-01T00:00:00+00:00",
+            cbs.SUBPROCESS_TIMEOUT_SECONDS,
+        )
+
+        self.assertIsNone(notes)
+
+
 class TestLookupPullRequestsGraceWindow(unittest.TestCase):
     """`_lookup_pull_requests()`'s merged-before-search-window exclusion uses
     the same grace-widened boundary `check()` computes for the git history
