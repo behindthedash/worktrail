@@ -764,7 +764,10 @@ class TestResearchNoteIndependentDegradation(unittest.TestCase):
     def test_research_note_search_failure_leaves_matches_pull_requests_checked_untouched(self):
         # Only the research-note candidate-listing `git log` call (the one
         # naming `RESEARCH_NOTES_GLOB`) is made to fail/time out; the
-        # forward-looking history search's own `git log` calls run for real.
+        # forward-looking history search's own `git log` calls, and a faked
+        # `gh`, both run for real -- so `pull_requests` surviving untouched
+        # is actually exercised rather than trivially `[]` because `gh` was
+        # made to look absent (see 4.2-review.md major issue #1).
         repo = _init_repo()
         _write(repo, "src/widget.py", "print('v2')\n")
         sha = _commit(repo, "Add widget support", "2026-06-01T00:00:00")
@@ -772,22 +775,40 @@ class TestResearchNoteIndependentDegradation(unittest.TestCase):
         real_run = cbs.subprocess.run
         real_which = cbs.shutil.which
 
-        def _fail_notes_listing(*args, **kwargs):
-            if args and isinstance(args[0], list) and cbs.RESEARCH_NOTES_GLOB in args[0]:
-                raise cbs.subprocess.TimeoutExpired(cmd=args[0], timeout=1)
-            return real_run(*args, **kwargs)
+        def fake_which(name):
+            return "/usr/bin/gh" if name == "gh" else None
 
-        cbs.subprocess.run = _fail_notes_listing
-        cbs.shutil.which = lambda name: None
+        def fake_run(args, **kwargs):
+            if isinstance(args, list) and cbs.RESEARCH_NOTES_GLOB in args:
+                raise cbs.subprocess.TimeoutExpired(cmd=args, timeout=1)
+            if isinstance(args, list) and args[:1] == ["gh"]:
+                if "auth" in args:
+                    return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+                if "view" in args:
+                    num = args[args.index("view") + 1]
+                    if num == "42":
+                        return subprocess.CompletedProcess(
+                            args, 0, stdout=json.dumps({
+                                "number": 42, "title": "close race", "url": "https://example/42",
+                                "state": "MERGED", "mergedAt": "2026-01-01T00:00:00+00:00",
+                            }), stderr="",
+                        )
+                    return subprocess.CompletedProcess(args, 1, stdout="", stderr="not found")
+            return real_run(args, **kwargs)
+
+        cbs.subprocess.run = fake_run
+        cbs.shutil.which = fake_which
         try:
-            res = cbs.check(Path(repo), "Touches src/widget.py.", "2026-01-01T00:00:00")
+            res = cbs.check(
+                Path(repo), "Touches src/widget.py. Delivered by PR #42.", "2026-01-01T00:00:00",
+            )
         finally:
             cbs.subprocess.run = real_run
             cbs.shutil.which = real_which
 
         self.assertTrue(res["checked"])
         self.assertIn(sha, {m["sha"] for m in res["matches"]})
-        self.assertEqual(res["pull_requests"], [])
+        self.assertIn(42, {pr["number"] for pr in res["pull_requests"]})
         self.assertEqual(res["research_notes"], [])
         self.assertIn("research note", str(res["warning"]))
 
