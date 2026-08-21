@@ -1128,19 +1128,26 @@ def _format_human(res: Dict[str, object]) -> str:
 
     raw_matches = res["matches"]
     raw_prs = res["pull_requests"]
+    raw_notes = res.get("research_notes")
     matches: List[Dict[str, Any]] = list(raw_matches) if isinstance(raw_matches, list) else []
     prs: List[Dict[str, Any]] = list(raw_prs) if isinstance(raw_prs, list) else []
-    if not matches and not prs:
+    notes: List[Dict[str, Any]] = list(raw_notes) if isinstance(raw_notes, list) else []
+    if not matches and not prs and not notes:
         line = "no evidence: probes searched, nothing landed since the brief was captured"
         if res.get("warning"):
             line += f"\n  warning: {res['warning']}"
         return line
 
-    lines = [f"EVIDENCE: {len(matches)} commit(s), {len(prs)} merged pull request(s)"]
+    lines = [
+        f"EVIDENCE: {len(matches)} commit(s), {len(prs)} merged pull request(s), "
+        f"{len(notes)} research note(s)"
+    ]
     for m in matches:
         lines.append(f"  {m['sha']}  {m['date']}  {m['subject']}   [{m['kind']} probe: {m['probe']}]")
     for pr in prs:
         lines.append(f"  PR #{pr['number']}  {pr.get('merged_at') or '?'}  {pr.get('title') or ''}")
+    for n in notes:
+        lines.append(f"  {n['path']}  {n.get('date') or '?'}   [{n['kind']} probe: {n['probe']}]")
     lines.append("  -> surface these to the operator; never close the brief on this signal alone")
     if res.get("warning"):
         lines.append(f"  warning: {res['warning']}")
