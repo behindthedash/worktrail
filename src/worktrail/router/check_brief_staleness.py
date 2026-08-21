@@ -450,6 +450,19 @@ def _widen_since(since_str: str, grace_seconds: int) -> str:
     return (since_dt - datetime.timedelta(seconds=grace_seconds)).isoformat()
 
 
+def _offset_since(since_str: str, seconds: int) -> str:
+    """Return `since_str` shifted by `seconds` (positive = later, negative =
+    earlier), as an ISO string.
+
+    Falls back to `since_str` unchanged when it does not parse -- the same
+    fail-open posture as `_widen_since`.
+    """
+    since_dt = _to_utc_datetime(since_str)
+    if since_dt is None:
+        return since_str
+    return (since_dt + datetime.timedelta(seconds=seconds)).isoformat()
+
+
 def _parse_log(output: str, probe: str, kind: str) -> List[Dict[str, str]]:
     matches: List[Dict[str, str]] = []
     for line in output.splitlines():
