@@ -61,10 +61,11 @@ def load_deferred_work_entries(run_record_paths: Iterable[Union[str, Path]]) -> 
         path = Path(raw_path)
         try:
             record, _warning = _load_lenient(path)
-        except OSError:
-            # Missing/unreadable file -- `_load_lenient` only catches its own
-            # `RunRecordFormatError`, not an absent path or a permissions
-            # failure; both are just as fail-open here.
+        except (OSError, UnicodeDecodeError):
+            # Missing/unreadable file, or non-UTF-8 content -- `_load_lenient`
+            # only catches its own `RunRecordFormatError`, not an absent path,
+            # a permissions failure, or a decode error; all are just as
+            # fail-open here.
             continue
         if record is None:
             continue
