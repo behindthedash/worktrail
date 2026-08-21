@@ -37,7 +37,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 
 from . import work_queue as wq
-from ..shared.brief_frontmatter import serialize_frontmatter
+from ..shared.brief_frontmatter import serialize_frontmatter, validate_brief
 
 _FOCUS_KEY_PREFIX = "focus: "
 
@@ -161,3 +161,63 @@ def _splice_focus(content: str, m: Any, raw_yaml: str, start: int, end: int, val
     trailing_newlines = original_span[len(original_span.rstrip("\n")):]
     new_raw_yaml = raw_yaml[:start] + _canonical_focus_span(value) + trailing_newlines + raw_yaml[end:]
     return content[: m.start(1)] + new_raw_yaml + content[m.end(1) :]
+
+
+def execute_apply(preview: Dict[str, Any], queue_base: Path, confirm: bool) -> Dict[str, Any]:
+    """Mirror `backfill_created_quoting.execute_apply`'s contract: `confirm=False`
+    performs zero writes (every proposal reported skipped/"declined"); `confirm=True`
+    re-locates each proposal's `focus:` span in the file's *current* content, skips
+    (without writing) any file that's gone or whose span no longer matches what
+    preview observed, splices in the canonical rendering, then rolls the write back
+    to the pre-splice content if either `validate_brief` or an exact re-parsed-value
+    check fails."""
+    stamped: List[str] = []
+    skipped: List[Dict[str, Any]] = []
+
+    if not confirm:
+        return {
+            "stamped": stamped,
+            "skipped": [{"id": p["id"], "reason": "declined"} for p in preview["proposals"]],
+        }
+
+    for item in preview["proposals"]:
+        path = Path(item["path"])
+        if not path.is_file():
+            skipped.append({"id": item["id"], "reason": "file no longer present (claimed/moved/removed since preview)"})
+            continue
+
+        content = path.read_text(encoding="utf-8")
+        located = _locate_current_focus(content)
+        if located is None:
+            skipped.append({"id": item["id"], "reason": "frontmatter block or focus: key missing since preview"})
+            continue
+        m, value, raw_yaml, start, end = located
+        if raw_yaml[start:end] != item["focus_raw"]:
+            skipped.append({"id": item["id"], "reason": "focus: span changed since preview"})
+            continue
+
+        new_content = _splice_focus(content, m, raw_yaml, start, end, value)
+        path.write_text(new_content, encoding="utf-8")
+
+        ok, verr = validate_brief(path)
+        reparsed_matches = False
+        if ok:
+            new_m = wq._FM_RE.match(new_content)
+            try:
+                reparsed_matches = new_m is not None and yaml.safe_load(new_m.group(1))["focus"] == value
+            except yaml.YAMLError:
+                reparsed_matches = False
+
+        if not ok or not reparsed_matches:
+            path.write_text(content, encoding="utf-8")  # roll back
+            reason = (
+                f"post-write validation failed, rolled back: {verr}"
+                if not ok
+                else "post-write re-parsed focus: value mismatch, rolled back"
+            )
+            skipped.append({"id": item["id"], "reason": reason})
+            continue
+
+        stamped.append(item["id"])
+
+    return {"stamped": stamped, "skipped": skipped}
