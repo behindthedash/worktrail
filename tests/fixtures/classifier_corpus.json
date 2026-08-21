@@ -1,0 +1,950 @@
+{
+  "_meta": {
+    "description": "Bounded, redacted sample of the operator's personal work-queue corpus (~/work-queue), used by tests/router/test_classifier_coverage_ratchet.py as a CI-visible input to classify.py's route classifier. Each item is focus text (the same field the classifier reads live) plus the route expected for it -- the brief's actual selected_route when a run record consumed it, else its own recommended-route frontmatter. No repo paths, PR/issue links, commit shas, emails, or operator/product names -- see redaction step in the regeneration script referenced below.",
+    "sampling": "Stratified: up to 24 items per route (A-J), evenly spaced picks across each route's available pool from the live corpus at generation time, so every route is represented regardless of its natural frequency.",
+    "generated": "2026-08-21",
+    "item_count": 235
+  },
+  "items": [
+    {
+      "focus": "Create the-repo epic: the-repo Knowledge & Context Layer — authorization-aware knowledge/retrieval + live workspace context so the-repo can explain product concepts, current org/workspace/permission/spec/runtime state, UI navigation, and implementation decisions instead of only generic chat answers.",
+      "expected_route": "A"
+    },
+    {
+      "focus": "Extend stale-bookkeeping detection to OpenSpec-format changes (currently devkit-only)",
+      "expected_route": "A"
+    },
+    {
+      "focus": "Product-scope decision needed: is spec 004 (operator metadata enrichment — operator-authored free-text dataset description, doc links, domain context, reporting cadence, persisted as permanent AI grounding context for the Mapping/Explainability Agents) still in scope for the-repo, or deferred past the James MVP? Route A discovery (PR #N, docs/specs/research/004-operator-metadata-enrichment-discovery.md) found no implementation collision but zero references to spec 004 or its grounding-memory concept in MVP.md/STRATEGIC_BACKLOG.md/STRATEGIC_ALIGNMENT_AUDIT.md/JAMES_MVP_CURRENT_STATE.md. Closest backlog analog is P0 Epic 7 (Workbook Structure Detection and Verification), which is narrower — it covers AI-proposed structural corrections (already partly built in api/app/services/onboarding/adaptive_field_review.py) but not operator-authored description/doc-links/domain-context/cadence as...",
+      "expected_route": "A"
+    },
+    {
+      "focus": "Deferred (do NOT pick up until a second real trigger exists): add a model-level fallback_model/fallback_models field to the-repo's routing.tiers/routing.roles entries, so a tier can fall back to a different, configured model on the SAME agent_cli before escalating to a different agent_cli entirely -- preserves a cheap tier's cost intent, unlike the agent-level fallback in the companion handoff <sha>-144349-fix-the-repo-s-tier-role. This was the ORIGINAL literal ask of source brief <sha>-184427-build-quota-aware-model-fallback; deliberately scoped down to a smaller general fix instead (see docs/specs/research/quota-aware-model-fallback.md, PR #N, merged). Only pursue this if the agent-level fallback fix proves too costly in practice for cheap-tier work, or a second concrete trigger (beyond the single opencode Zen free-tier promo) appears.",
+      "expected_route": "A"
+    },
+    {
+      "focus": "Build an automated go-policy.yaml/CI-drift check (this failure mode has now recurred: the-repo PR #N, then 4 more instances found in this session's manual workspace-wide audit brief <sha>-080113). No repo currently has a script that verifies go-policy.yaml's pre_pr_cmd rationale comments match reality (test files exist, lint config exists, CI workflows exist) or that flags tests with zero CI/pre_pr_cmd enforcement. Candidate home: vendor alongside the existing rulesets_drift_guard.yml pattern (the-repo/the-repo/the-repo/the-repo already have that CI job) as a sibling 'policy drift guard' — could run as a scheduled workflow or as part of the-repo's own tooling (a the-repo-preflight-style structural check) rather than one-off manual audits.",
+      "expected_route": "A"
+    },
+    {
+      "focus": "Prep the Claude Design session for the logged-in app experience — capability-gated shell design brief (shell + slot primitives once; capabilities decide what renders), with the full input package so the design session starts warm",
+      "expected_route": "A"
+    },
+    {
+      "focus": "Turn the one-off auto-merge/required-status-checks audit into a recurring fleet-wide guard so a new repo (or an edited ruleset) can't silently reintroduce the gap",
+      "expected_route": "A"
+    },
+    {
+      "focus": "crontab's nightly kanban DB backup entry (0 2 * * * <path>) points at a script that does not exist anywhere on disk or in the-repo git history -- the kanban database has silently had zero nightly backups",
+      "expected_route": "A"
+    },
+    {
+      "focus": "Implement World ID sign-in to the-repo alongside existing Google OAuth",
+      "expected_route": "A"
+    },
+    {
+      "focus": "Design and build a cloud-hosted memory service shared by ChatGPT, Codex, Claude, Windows, and WSL clients through remote MCP, with PostgreSQL and pgvector built in",
+      "expected_route": "A"
+    },
+    {
+      "focus": "Automate sync of ci/config/github_actions_secrets.json and github_actions_variables.json against live GitHub repo secrets/vars (the-repo)",
+      "expected_route": "A"
+    },
+    {
+      "focus": "Sweep the-repo, the-repo, and the-repo for the same missing-test-coverage / shared-DB risk pattern found while setting up spec 001-content-api-integration-tests",
+      "expected_route": "A"
+    },
+    {
+      "focus": "Generalize the-repo's new render-health-monitor capability (spec 028) into a workspace-level, multi-repo Render fleet health check instead of a the-repo-only one-off",
+      "expected_route": "A"
+    },
+    {
+      "focus": "One shared recorded-state-vs-live-ground-truth reconciliation capability for the go/handoff tooling — pre-claim staleness checks in work_queue.py (PR-merge + spec-task-completion signals), a go_verify_run.py reconciliation script, and dashboard.py inflight-brief staleness detection",
+      "expected_route": "A"
+    },
+    {
+      "focus": "Add a live-activity view for /go that surfaces every currently-running orchestrator process and held RunLock across all repos, independent of dashboard.py's per-repo lock-glob heuristic",
+      "expected_route": "A"
+    },
+    {
+      "focus": "Add a pre-claim staleness check to work_queue.py so briefs referencing already-merged/closed PRs are flagged or auto-closed before an agent invests a session on them",
+      "expected_route": "A"
+    },
+    {
+      "focus": "Bake Test Impact Analysis into the-repo CI — run only impacted tests on PR→dev, keep the full suite authoritative at stg/UAT + prd",
+      "expected_route": "A"
+    },
+    {
+      "focus": "Add a maintainable way to show and update personal officer blurbs on the the-repo members page",
+      "expected_route": "A"
+    },
+    {
+      "focus": "the-repo market whitespace — absent revenue lines, unreached segments, and missing commercial motions, ranked by realistic money left on the table for a solo operator",
+      "expected_route": "A"
+    },
+    {
+      "focus": "Integrate James MVP execution behind one WorkflowOrchestrator backbone — link DataPipelineRun ↔ WorkflowGraphRun and run the James path through the durable graph engine",
+      "expected_route": "A"
+    },
+    {
+      "focus": "Add a 1353x598 Playwright viewport project covering both admin and public pages — the project's documented real-world laptop size has zero automated coverage today",
+      "expected_route": "A"
+    },
+    {
+      "focus": "Consolidate 3 most recent Dependabot PRs (#1462 #1458 #1454) into one worktree, fix the eslint-10/ts-eslint conflict, verify CI locally, open a single PR, close the 3",
+      "expected_route": "A"
+    },
+    {
+      "focus": "Implement admin dashboard redesign for the-repo following the design system handoff package (version 5)",
+      "expected_route": "A"
+    },
+    {
+      "focus": "Platform admin bootstrap grants capability but not workspace membership, causing personal-tenant/Snowflake auto-provisioning to fire on first admin login",
+      "expected_route": "B"
+    },
+    {
+      "focus": "Backlog seeder (docs/specs epic-decomposition seeding in the-repo's workqueue/) undercounts specs citing an epic: it appears to match only the literal epic id string, so a feature whose OpenSpec proposal references the epic by prose (e.g. 'Epic 002 Feature 2') instead of the full epic id is not counted as citing it -- even after that feature is fully specced, implemented, and merged. This produces misleading 'only N spec(s) cite it' seeded briefs (observed live: brief <sha>-021834-epic-002-safe-work-queue claimed 'only 1 spec cites it' when Feature 2 was already implemented and merged the day before). Fix the citation-matching logic to also count a spec/change whose proposal references 'Epic <NNN> Feature <M>' or the feature's own documented future-spec-id, not just the literal epic id string. Audit whether other queued epic-decomposition briefs (the-repo...",
+      "expected_route": "B"
+    },
+    {
+      "focus": "the-repo: spec 002 technique-based bootstrap still shows 0/13 tasks built; implementing it finalizes the provisional 'superseded-by-002' decision recorded in epic 001 Feature C / research 005 \\u2014 the last open reconciliation item.",
+      "expected_route": "B"
+    },
+    {
+      "focus": "Harden work_queue.py's blocked-by dependency resolution against malformed dep-id entries. _dep_is_done()'s 'not found anywhere -- lenient (stale ID) = satisfied' fallback silently treats ANY unresolvable blocked-by entry as done, including a genuinely malformed one -- observed live 2026-08-18 on brief <sha>-124526-reconcile-epic-004-s-single, whose blocked-by frontmatter was a single comma-joined string (3 ids joined with commas in one YAML list item) instead of 3 separate list items, almost certainly from create_handoff.py's --blocked-by being passed one comma-joined CLI value instead of three repeated flags. This silently defeated the entire dependency-blocking system: dashboard --auto computed blocked:false and would have auto-picked genuinely blocked work (its real first dependency was still actively claimed/in-progress elsewhere, not done) with zero warning anywhere. Fixed that one...",
+      "expected_route": "B"
+    },
+    {
+      "focus": "Reconcile Epic 004's single conversation-to-deliverable compiler/runtime boundary and action-boundary governance. The approved database-stored YAML workflow-spec version must be the sole executable authority: conversation and evidence produce a draft, review produces diff/risk/preview, explicit approval authorizes execution, and the exact approved version compiles into the deterministic run, dataset version, and deliverable with lineage. Resolve the seams among the onboarding compiler, workflow runtime, output-contract records, Spec 088 adapter, physical ingestion, and approval/run/publication gates without introducing a second chat state machine or allowing AI to execute approved production work.",
+      "expected_route": "B"
+    },
+    {
+      "focus": "Complete Epic 004's remaining AI-assisted authoring path behind Ask the-repo: target decomposition, source understanding, mapping-suggestion follow-through, gap analysis, focused ambiguity questions, and versioned workflow-spec drafting. The existing AI binding-suggestion slice is foundation only; this brief must make the full authoring sequence produce reviewable, traceable drafts while keeping AI out of approved production execution and preserving human approval at action boundaries.",
+      "expected_route": "B"
+    },
+    {
+      "focus": "Make Ask the-repo the real persistent workspace home for Epic 004, replacing decorative/static shell content with a capability-gated conversation connected to the live workspace context. The conversation must bind to actual sources, output contracts, source requirements, bindings, gaps, spec proposals, approvals, runs, issues, and deliverables; the right-side inspector must render live evidence and proposed changes; existing forms remain detailed editors and fallbacks but do not define the primary journey.",
+      "expected_route": "B"
+    },
+    {
+      "focus": "Reconcile the 2026-08-13 mis-consolidation that closed four Epic 004 feature-completion handoffs (governed tool plane, persistent Ask the-repo, remaining AI authoring, compiler/runtime reconciliation) as done without implementing them, folding their text into an unrelated, still-unclaimed brief about a different topic (root-organization/org_units reconciliation + spec checkbox-drift sweep).",
+      "expected_route": "B"
+    },
+    {
+      "focus": "Fix scripts/dependabot-the-repo-dispatch.py's classifier invocation to resolve gh explicitly via cron_path.resolve_cli_path('gh') (mirroring automerge-fleet-guard.py) and pass it through via --gh, instead of relying on subprocess PATH inheritance for 'gh'. Verified during dependabot-fleet-staleness-backstop propose work: dependabot-fleet-classifier.py isn't even deployed to <path> yet (separate fix landing in that change), but once deployed and Feature 1's the-repo-bridge.config.json rule is wired up, the dispatcher's classifier subprocess call could still fail intermittently under cron's minimal PATH -- and per dependabot-the-repo-dispatch's own spec, a classifier failure means the event is never acknowledged, so the-repo just retries indefinitely without ever completing triage. Silent, hard-to-notice reliability gap on the epic's primary event-driven trigger.",
+      "expected_route": "B"
+    },
+    {
+      "focus": "Epic 001-shared-agent-memory has no '### Feature N' decomposition headings, so the new backlog seeder (the-repo #361) reports it unparseable and can never seed feature-planning briefs from it. Restructure docs/specs/epics/001-shared-agent-memory.md into explicit '### Feature N — <name>' sections per Route B doctrine, or flip its **Status:** line to a terminal value if it is no longer pursued.",
+      "expected_route": "B"
+    },
+    {
+      "focus": "Epic 004-james-agentic-vertical-slice has no '### Feature N' decomposition headings, so the new backlog seeder (the-repo #361) reports it unparseable and can never seed feature-planning briefs from it. Restructure docs/specs/epics/004-james-agentic-vertical-slice.md into explicit '### Feature N — <name>' sections per Route B doctrine, or flip its **Status:** line to a terminal value if the epic is in fact delivered/superseded.",
+      "expected_route": "B"
+    },
+    {
+      "focus": "Machine-enforce the the-repo epic-004 freeze via go-policy release_gate instead of per-brief prose. Verified live 2026-08-12: /go auto's #1 ranked pick was brief <sha>-081449, which is owner-frozen by the epic-004 recovery directive (docs/specs/epics/004-james-agentic-vertical-slice.md + brief <sha>-193712) — only a prose 'FROZEN / Do not claim' section stopped the dispatch, and a headless drain one-shot relies on the model reading that prose. the-repo already ships the exact mechanism: a repo policy release_gate makes auto_pick_brief() skip every non-'triage: blocker' brief for that repo with reason release-gate:<name> (capture stays open; interactive selection unaffected). Fix: (1) add release_gate: epic-004-james-vertical-slice (or similar) to the-repo docs/specs/go-policy.yaml; (2) sweep queued the-repo briefs and 'the-repo-work-queue triage <id> blocker' ONLY those genuinely...",
+      "expected_route": "B"
+    },
+    {
+      "focus": "Close Epic 004 only after the two-cycle deployed-browser acceptance evidence is independently verified. Reconcile the roadmap and artifact state: update Epic 004 from Proposed to the evidenced terminal state, record which acceptance criteria passed with links to deployed evidence, lift the freeze only for the explicitly permitted follow-on work, update stale strategic-backlog/checkbox references, and archive or mark folded/superseded 053/088 material without erasing historical provenance. Preserve the product-level merge-gate distinction between merged implementation and demonstrated customer journey.",
+      "expected_route": "B"
+    },
+    {
+      "focus": "Prove Epic 004's complete James acceptance journey in a deployed browser, then repeat it with a second workbook containing a renamed sheet or column. The journey must run through persistent Ask the-repo: open workspace -> provide target output and workbook -> the-repo inspects both -> identifies requirements, bindings, and gaps -> user answers focused questions -> the-repo proposes versioned YAML -> user reviews diff, risks, and preview -> user approves -> deterministic run executes -> governed dataset and secure dashboard are produced. Record evidence that no SQL, raw YAML submission, developer tools, or manual database changes were used, and measure operator interventions/effort for both cycles so cycle two demonstrably requires less.",
+      "expected_route": "B"
+    },
+    {
+      "focus": "Complete Epic 004's remaining AI-assisted authoring path behind Ask the-repo: target decomposition, source understanding, mapping-suggestion follow-through, gap analysis, focused ambiguity questions, and versioned workflow-spec drafting. The existing AI binding-suggestion slice is foundation only; this brief must make the full authoring sequence produce reviewable, traceable drafts while keeping AI out of approved production execution and preserving human approval at action boundaries.",
+      "expected_route": "B"
+    },
+    {
+      "focus": "Make Ask the-repo the real persistent workspace home for Epic 004, replacing decorative/static shell content with a capability-gated conversation connected to the live workspace context. The conversation must bind to actual sources, output contracts, source requirements, bindings, gaps, spec proposals, approvals, runs, issues, and deliverables; the right-side inspector must render live evidence and proposed changes; existing forms remain detailed editors and fallbacks but do not define the primary journey.",
+      "expected_route": "B"
+    },
+    {
+      "focus": "Complete Epic 004's governed the-repo business-tool plane after the onboarding adapter contract is standardized: make the registered onboarding tools callable end to end from Ask the-repo, with capability propagation, authorization, idempotency, approval gates, deterministic error handling, and integration evidence. Reuse the existing profiling, mapping, workflow, merge, dashboard, embed, audit, and output-contract services; do not create a second chat-specific state-machine layer. The required tool surface is inspect_target_artifact, profile_source, identify_source_requirements, propose_source_binding, propose_workflow_spec, preview_spec_impact, request_spec_approval, start_approved_run, explain_run_issue, and publish_approved_deliverable.",
+      "expected_route": "B"
+    },
+    {
+      "focus": "the-repo RECOVERY EPIC: James Agentic Vertical Slice (authoritative roadmap directive, 2026-07-31).\n\nSTANDING FREEZE. All nonessential platform expansion is frozen. Specifically STOPPED: role-approval generalization (brief <sha>-172052, closed deferred), wider human-governance audit, 085 governance-console expansion, generic agent builder / control-plane work, further organization-model refinement. Continue ONLY security or operational work that blocks the vertical slice. Create NO new product specs until the slice passes.\n\nTHE TEN RECOVERY ACTIONS:\n\n1. Freeze nonessential platform expansion (above).\n\n2. ONE authoritative recovery epic under Spec 053. Fold the useful parts of Spec 088 and the pending 053 authoring changes into a single 'James Agentic Vertical Slice'. Treat Specs 062-073, 085, 097, 099 as EXISTING INFRASTRUCTURE or DEFERRED EXPANSION - not competing roadmap...",
+      "expected_route": "B"
+    },
+    {
+      "focus": "Audit and harden impersonation grant creation so an explicit assumed_root_unit_id is enforced even when tenant_unit_ids are also supplied",
+      "expected_route": "B"
+    },
+    {
+      "focus": "Audit the-repo inherited authorization resolvers for grants that remain effective after the granting organization, workspace, role, or principal scope is deactivated",
+      "expected_route": "B"
+    },
+    {
+      "focus": "Redirect non-platform-admin users away from the the-repo app to a coming-soon notice",
+      "expected_route": "B"
+    },
+    {
+      "focus": "Publish a static the-repo pricing page (services + platform tiers, no checkout/self-serve) / Eliminate the hand-maintained duplicate between static-site/index.html (the-repo.com) and app/src/components/landing/marketing-home.tsx (the Next.js app landing page) / No working sign-in entry point exists post-Auth0->Better Auth migration: static site login/signup links 404 in prod, and app.the-repo.com root shows marketing content instead of a login form",
+      "expected_route": "B"
+    },
+    {
+      "focus": "Extend /go Phase 8 to open a ralph-loop after PR creation — subscribes to GitHub CI events via the-repo long-poll, patches failures, commits+pushes, repeats until all checks pass",
+      "expected_route": "B"
+    },
+    {
+      "focus": "Redesign the the-repo admin/dashboard page using the new 4-panel design from the handoff package",
+      "expected_route": "B"
+    },
+    {
+      "focus": "Add corpus-wide enforcement that catches non-canonical work-queue frontmatter from writers this repo does not own (external Codex/OpenCode-side tools, or a future internal writer that skips shared/brief_frontmatter.py's serialize_frontmatter()). PR #N added is_canonical_style() as a post-write check for this repo's own two writers (create_handoff.py, consolidate_cluster.py) but nothing validates the live corpus on an ongoing basis. Options to evaluate: a scheduled/CI corpus scan that reports (not silently fixes) non-canonical files, or a normalize-on-write watcher for the queue/ directory.",
+      "expected_route": "C"
+    },
+    {
+      "focus": "Epic 002-safe-work-queue-dependency-references in the-repo decomposes into 3 feature(s) but only 1 spec(s) cite it. Spec the next unspecced feature from its decomposition (docs/specs/epics/002-safe-work-queue-dependency-references.md) via the feature-planning pipeline. If every feature is in fact already specced or delivered, update the epic's **Status:** line to a terminal value (e.g. Completed) instead, so it stops re-seeding.",
+      "expected_route": "C"
+    },
+    {
+      "focus": "Render the new drain summary key stuck_remediations (from the-repo's stuck-remediation-detector change, once implemented and merged) in the-repo repo's the-repo-drain-digest.py, alongside the existing 'Items run'/'Pending approvals' sections -- add a 'Stuck remediations' section listing key/repo_name/spec_id/streak for each flagged identity. Depends on the the-repo-side change (openspec/changes/stuck-remediation-detector in the-repo repo) landing first, since the summary key doesn't exist until then.",
+      "expected_route": "C"
+    },
+    {
+      "focus": "Epic 005-inherited-authorization-lifecycle-audit in the-repo decomposes into 2 feature(s) but only 0 spec(s) cite it. Spec the next unspecced feature from its decomposition (docs/specs/epics/005-inherited-authorization-lifecycle-audit.md) via the feature-planning pipeline. If every feature is in fact already specced or delivered, update the epic's **Status:** line to a terminal value (e.g. Completed) instead, so it stops re-seeding.",
+      "expected_route": "C"
+    },
+    {
+      "focus": "Backlog seeder follow-up: seed ready-to-implement specs into implementation runs. seed_backlog.py (openspec change backlog-seeding, PR #N) deliberately stops at planning stages — needs-tasks specs and under-specced epics become planning-only Route C briefs, but a spec whose task DAG is complete ('Ready to implement' dashboard stage) still sits invisible to the-repo-go auto until a human dispatches it. Design the gate carefully: unattended implementation crosses the no_implementation_without_approval doctrine, so this likely needs a per-repo policy opt-in (e.g. policy key allow_seeded_implementation: true) and/or seeding Route D briefs with implementation-intent: requested only for specs whose spec PR a human already merged.",
+      "expected_route": "C"
+    },
+    {
+      "focus": "Add a built-artifact packaging parity gate for the-repo that compares wheel/sdist metadata and console scripts against the source checkout and the editable-install freshness verifier introduced by PR #N.",
+      "expected_route": "C"
+    },
+    {
+      "focus": "Extend the acknowledged-template-sha drift-check pattern (added in the-repo PR #N) to upstream-issue-watcher.config.json — docs/ops/the-repo-bin-sync.md explicitly notes the same match/action-drift reasoning applies there, but that config currently has no drift check at all (not even the PR #N match-signature check). Add an analogous the-repo-bridge-config-drift-check.py-style script (or extend it to cover both configs) for upstream-issue-watcher.config.json.",
+      "expected_route": "C"
+    },
+    {
+      "focus": "No reject UI control or /reject HTTP route exists for ANY source-requirement binding in the-repo's output-contract authoring flow (human- or AI-proposed) -- discovered while building the 053 AI-binding-suggestion delta (2026-08-07--ai-binding-suggestions). OutputContractService.reject_binding() is a fully-implemented, tested service method from the prior 2026-07-21--bidirectional-output-contract-authoring delta, but it was never wired to a router endpoint, and the frontend (output-contract-authoring.tsx) only has an approve control. A reviewer currently has no way to explicitly discard an unwanted candidate binding (human or AI-proposed) short of leaving it un-approved forever. Add a POST .../bindings/{binding_id}/reject endpoint (mirroring the existing approve endpoint's auth/tenant-scoping pattern) plus a reject button in the authoring UI, matching the existing approve control's UX.",
+      "expected_route": "C"
+    },
+    {
+      "focus": "full-real's journal-resume path can silently mask stale state: relaunching the-repo-live full-real without --fresh replays a prior run's journal (quarantine verdicts, review commentary) verbatim when nothing new is dispatched, exiting 'PIPELINE RUN COMPLETE' in ~1s with the same blocked/quarantined outcome as before -- indistinguishable in the log from a genuine, exhaustive re-attempt. Hit this directly on the-repo spec-100 (run_id full-<sha>): resuming replayed 0 new agent spawns and re-quarantined base+feature-1 using cached commentary describing a Spec-099 FK blocker that had already landed on dev, requiring a human/agent to manually diff the journal's run_id against the current brief to notice nothing actually happened. Add a loud warning (or a --fresh recommendation) when resuming a journal whose quarantine reasons or blocker context predate a meaningful base-branch delta (e.g. N+...",
+      "expected_route": "C"
+    },
+    {
+      "focus": "Add a deterministic auto-repair fallback for runplan.unordered_file_collisions(): when apply_to_tasks()'s merged plan still leaves two same-file co-writers unordered after compile (i.e. the compile.py PROMPT's Final-pass deps-ordering instruction didn't take), automatically insert a deps edge between them (later task in authored order depends on the earlier one) instead of failing the run loud. This converts the current prompt-only prevention (added in the compile-prompt-dep-ordering fix) into a guaranteed one -- removing a recurring hard-failure mode where an LLM miss on this specific invariant blocks the whole compile/run and requires manual recompilation. Repo: <path> See runplan.py's unordered_file_collisions()/apply_to_tasks() and compile.py's PROMPT.",
+      "expected_route": "C"
+    },
+    {
+      "focus": "the-repo SSE producer/consumer payload shapes are untyped and unchecked. The AI marketing image generator's 'variation-partial' event just shipped a masked field-name bug (route.ts sends {partial: b64}, consumer read nonexistent data.imageDataUrl) because BOTH the unit test and e2e mocks matched the buggy consumer instead of the real producer payload, hiding it from every CI run (fixed via brief <sha>-204039). Add a shared discriminated-union type (or an automated contract check pulling real event names/shapes from the producer route and asserting the consumer hook matches) between SSE producers and their consuming hooks, so this exact failure mode — mocks silently drifting to match a bug instead of the real payload — can't recur the next time a streaming admin feature is built or touched.",
+      "expected_route": "C"
+    },
+    {
+      "focus": "Add per-check execution attestations to the-repo CI so a required check cannot report green while having executed zero of the coverage it is supposed to gate. Generalizes brief <sha>-202318 (which closed only the TEST_PG_URL skip case) to the whole 'green check that ran nothing' class.",
+      "expected_route": "C"
+    },
+    {
+      "focus": "Add a live PostgreSQL regression test for the org-scope post-lock authorization path, proving copy_session_tenant_context transfers app.user_id and active tenant RLS context and that missing actor_user_id cannot authorize on a fresh connection.",
+      "expected_route": "C"
+    },
+    {
+      "focus": "Author the app-shell implementation spec (Route C) from the completed Claude Design handoff — persistent capability-gated shell replacing the logged-in UI, Astryx full adoption pinned 0.1.8, five phased PR-sized ticket groups already drafted in the design TASKS.md",
+      "expected_route": "C"
+    },
+    {
+      "focus": "Close the detection gap exposed by the 2026-07-23 prd login outage — synthetic auth probe (JWKS + token-verified API call) on a schedule with Slack alerting, plus a JWKS check in the post-deploy smoke script",
+      "expected_route": "C"
+    },
+    {
+      "focus": "Add a \"looks safe\" SPF/DKIM + mailed-by/signed-by domain-match badge to the the-repo admin email portal",
+      "expected_route": "C"
+    },
+    {
+      "focus": "Spec out the redesign of the the-repo homepage and app experience from the provided design brief",
+      "expected_route": "C"
+    },
+    {
+      "focus": "Add a recurring cross-workspace sweep that catches stale GitHub-owner references before they cause CI breakage, not after",
+      "expected_route": "C"
+    },
+    {
+      "focus": "Run specs.spec-check on specs 085-agentic-experience-frontend and 086-persona-usability-review-loop (functional specs merged to dev via PR #N) to resolve the 4 [NEEDS CLARIFICATION] markers — 3 are owner product decisions (canonical RBAC layer + rename-vs-alias; org as tenancy tier vs intra-tenant unit; org-consumer surface depth) and 1 is the 086 findings-backlog delivery channel (CI runner cannot reach <path>). Then spec-to-tasks, 086 first (reuses shipped 081 harness — fastest path to an Opus-judged usability loop).",
+      "expected_route": "C"
+    },
+    {
+      "focus": "Implement epic 001's Feature 083 (Dependabot bump safety classifier) via Route C — the first, lowest-risk slice of the dependabot-consolidation-automation epic",
+      "expected_route": "C"
+    },
+    {
+      "focus": "Add a CI guard that diffs every secrets.X/vars.X token referenced in .github/workflows/*.yml against what actually exists in gh secret list/gh variable list",
+      "expected_route": "C"
+    },
+    {
+      "focus": "the-repo — generic reusable activity_log (domain/audit event) table; migrate email_alert_log into it; record admin logins",
+      "expected_route": "C"
+    },
+    {
+      "focus": "Backfill the ~1400 existing work-queue corpus files' focus: frontmatter to canonical |- literal-block style (PR #N only canonicalized forward, via the new serialize_frontmatter()/is_canonical_style() in shared/brief_frontmatter.py, and left existing files untouched since a corpus-wide free-text content rewrite deserves its own isolated review, unlike PR #N's narrower one-line created: requoting backfill). Write a preview/execute backfill script (mirroring backfill_created_quoting.py's shape) that re-parses each brief's focus: value and re-emits it via serialize_frontmatter(), verifying byte-for-byte equivalence everywhere else.",
+      "expected_route": "D"
+    },
+    {
+      "focus": "Normalize the-repo's pending-user-decision flow across providers: define a provider-neutral, resumable decision contract at the the-repo-go/orchestrator boundary for collision, staleness, and related-brief guards. Claude Code interactive sessions should use native AskUserQuestion when available; interactive Codex and OpenCode sessions should use an equivalent host-supported prompt/resume path; headless adapter and drain execution must fail closed with a structured pending_user_decision result rather than guessing. Preserve decision identity, options, audit/run-record state, and explicit resume semantics across native Skill, adapter, and subprocess dispatch.",
+      "expected_route": "D"
+    },
+    {
+      "focus": "Complete Epic 004's onboarding-tool-dispatch-wiring OpenSpec change (the-repo): implement remaining tasks 2.3, 2.4, 4.1, 4.2, 5.1 in that dependency order, then run go's sync-before-teardown against openspec/changes/onboarding-tool-dispatch-wiring/",
+      "expected_route": "D"
+    },
+    {
+      "focus": "the-repo-live clear-task refuses to reset a task whose 3-strikes review circuit breaker tripped naturally: dispatch.py's transition() computes status=escalated in-memory but live.py never stamps report.terminal_status=escalated onto the originating review/fix journal entries (only onto downstream dependency-gate entries it blocked), so clear_tasks()'s literal terminal_status match finds nothing and refuses with 'nothing to clear', forcing --fresh (full journal discard) as the only workaround even when just one task needs a reset. Fix: stamp terminal_status on the entry that trips the circuit breaker, not only on entries it blocks. Repo: the-repo. Observed live on the-repo change 077-adversarial-security-gate-mcp-agent-run-llm-probe-coverage, run go-<sha>-191450.",
+      "expected_route": "D"
+    },
+    {
+      "focus": "orchestrator/live.py still carries its own copy of the provider precedence chain — consolidate onto invocation_context.resolve() like go_seed (PR #N). src/the-repo/orchestrator/live.py:_detect_default_agent() (line ~81) independently reimplements GO_AGENT_CLI > ORCH_AGENT > OPENCODE_PARENT > CODEX_CI/CODEX_THREAD_ID > claude, the same drift class PR #N (invocation_context) and PR #N (go_seed) eliminated. It also skips SUPPORTED_AGENTS validation, so a garbage GO_AGENT_CLI value flows into DEFAULT_AGENT. Note DEFAULT_AGENT is resolved at module import time (live.py:144) — the consolidation must keep that timing or deliberately change it. Existing tests: tests/orchestrator/test_resilience_helpers.py:153-167. Repo: <path> base main.",
+      "expected_route": "D"
+    },
+    {
+      "focus": "Implement the-repo fleet-wide Dependabot triage initiator per epic docs/specs/epics/001-dependabot-fleet-consolidation.md (PR #N): the-repo-triggered classifier + consolidation orchestration running as local cron; per-repo apply/verify/consolidate stays repo-native in the-repo epic 001 Features 2-3. Merge both open PRs first (the-repo #163, the-repo #311).",
+      "expected_route": "D"
+    },
+    {
+      "focus": "drain.py's unattended queue-drainer resumes budget_exhausted QUARANTINED specs (PR just opened), but the same invisibility gap applies to a second, larger category: specs in the 'verify-pending' stage (dashboard._journal_verify_pending -- impl complete, group PRs still need verify->merge->cleanup, next_action='resume full-real'). the-repo-go auto only ever claims work-queue briefs, never specs shown in the dashboard's Active Work section, so verify-pending specs sit stalled until a human notices the dashboard line and re-runs full-real by hand -- confirmed live right now: the-repo 001-relay-auth-and-item-lifecycle and 003-rate-limiting-and-audit-log both show 'Needs verify / merge -> resume full-real' in the current /go dashboard. Extend drain.py's resumable-quarantine sweep pattern (resolve_spec_rel/build_full_real_resume_command/resume_quarantined_budget_exhausted in...",
+      "expected_route": "D"
+    },
+    {
+      "focus": "Continue spec 053 bidirectional-output-contract-authoring change: implement TASK-CHG-005 'Prove bidirectional James authoring through secure delivery' (E2E acceptance proof) and TASK-CHG-006 (cleanup + full verification) — the two tail tasks full-real deliberately holds out after TASK-CHG-004 merged (PR #N). TASK-CHG-005 is the literal acceptance-journey proof epic 004 (James Agentic Vertical Slice) requires before its freeze can lift for this fold-in item.",
+      "expected_route": "D"
+    },
+    {
+      "focus": "Resume spec 100 (Object Storage Service) implementation — the blocker that quarantined both orchestrator groups (base, feature-1) in run full-<sha> has been resolved",
+      "expected_route": "D"
+    },
+    {
+      "focus": "the-repo: implement OpenSpec change 102-resource-scoped-approval-authorization (merged to dev via PR #N, openspec/changes/102-resource-scoped-approval-authorization/). 15 tasks: approval-visibility helper in api/app/security (approval_visibility.py), row-filtered read paths for approval-only principals (merge runs, structure versions, source analyses, parent sources), open-approval membership checks on approve endpoints, WORKSPACE_APPROVER role-grant narrowing (org_catalog.py + SQL seed together — ordering matters, see design.md risk 1), and tightened SoD invariants in api/tests/test_org_catalog_sod.py. Design decisions are settled in design.md (open-to-any-approver; no new capability codes; no new tables). Planning stopped here by explicit user choice at the C→D transition; spec review was the reason, so confirm design.md Decision 1 still stands before starting. Risk: high (authz).",
+      "expected_route": "D"
+    },
+    {
+      "focus": "Audit and remove the privileged WORKSPACE_ADMIN default from grant_workspace_membership so omitted role arguments fail closed",
+      "expected_route": "D"
+    },
+    {
+      "focus": "Define and enforce the security semantics for active workspaces beneath a suspended organization",
+      "expected_route": "D"
+    },
+    {
+      "focus": "Verify the-repo PR #N's PostgreSQL integration coverage and adversarial security review after CI completes; if any additional finding appears, fix it on fix/session-context-postgresql-bind, update the existing PR, and report the final merge-gate state.",
+      "expected_route": "D"
+    },
+    {
+      "focus": "Audit and systematically eliminate remaining Postgres uuid = character varying query bindings across the-repo's SQLModel/SQLAlchemy query helpers, using canonical Python 3.11/Postgres QA to prioritize runtime paths and add focused regression coverage.",
+      "expected_route": "D"
+    },
+    {
+      "focus": "Fix the pre-existing Postgres API-suite failure in tests/test_agent_execution_runtime_pg_e2e.py where org_scope capability lookup binds a user UUID as VARCHAR, causing uuid = character varying during _authorize_after_slug_lock; restore a fully green canonical QA gate and add regression coverage for the typed query path.",
+      "expected_route": "D"
+    },
+    {
+      "focus": "Phase and task out spec 100-object-storage-service (the-repo) -- resolve open clarification markers, decide implementation phasing against the full architecture directive, then run spec-check -> spec-to-tasks -> orchestrator to replace the dead BunnyStorageService dependency",
+      "expected_route": "D"
+    },
+    {
+      "focus": "Production Google OAuth redirect loop at app.the-repo.com — login never establishes a session, bounces dashboard ↔ Google account chooser forever",
+      "expected_route": "D"
+    },
+    {
+      "focus": "Replace manual Google OAuth storage-state capture with a security-scoped, deterministic E2E session bootstrap for the-repo Playwright personas",
+      "expected_route": "D"
+    },
+    {
+      "focus": "Implement the capacity-cache operator status and explicit clear command defined by merged PR #N",
+      "expected_route": "D"
+    },
+    {
+      "focus": "Surface emergent brief clusters (same repo + overlapping target-spec/related/focus terms) on the /go dashboard so queue consolidation happens continuously instead of as a manual 86-brief crisis pass",
+      "expected_route": "D"
+    },
+    {
+      "focus": "Apply customer-requested public navigation and copy clarity updates on the the-repo site",
+      "expected_route": "D"
+    },
+    {
+      "focus": "Execute the ranked top-10 the-repo repo improvements for agentic velocity — test-command truth, generated FE/BE contract, CI parallelization, models.py split, AGENTS.md rewrite, spec governance",
+      "expected_route": "D"
+    },
+    {
+      "focus": "Add vitest coverage CI gate to the-repo matching the the-repo pattern (PR #N)",
+      "expected_route": "D"
+    },
+    {
+      "focus": "Raise vitest coverage thresholds in the-repo (and initialize baseline in the-repo) after first CI run",
+      "expected_route": "D"
+    },
+    {
+      "focus": "the-repo/the-repo: refined finding on the dast-baseline.yml container->host networking gap (follow-up to the-repo PR #N and handoff <sha>-054837). the-repo PR #N's investigation found the resolved-IPv4-literal path (192.168.65.254, from getent ahostsv4 host.docker.internal) SUCCEEDS in a live repro from an interactive WSL2 session, and recommended re-running the-repo's dast-baseline.yml workflow_dispatch as the next validation step before scoping infra work -- leading hypothesis was H1 (transient Docker Desktop/WSL2 state). I ran that exact validation step (workflow_dispatch run <sha> on the-repo branch fix/dast-baseline-zap-network): it still failed with the identical 'Connection refused' signature. Cross-checking runner identity across all 5 real workflow_dispatch attempts made during this whole investigation (12:24-14:05 on 2026-08-21) shows 4 DIFFERENT runner instances all failed...",
+      "expected_route": "E"
+    },
+    {
+      "focus": "Systematically audit the-repo-go's skill bundle (routes.md, ci-watch-loop.md, subagent-prompts.md) for the 'unreachable mandatory gate' defect class: a required check (review-thread resolution, merge-state validation, etc.) that some early-exit finish()/stop branch can skip past silently. This exact class has caused at least 3 confirmed production incidents (the-repo PR #N stale mergeStateStatus, the-repo PR #N's 9 unresolved review threads, the-repo PR #N which produced the-repo PR #N's ci-watch-loop.md fix), plus a 4th distinct instance already queued separately (brief <sha>-072846-harden-the-repo-s-route-f, Route F's cross-PR disprove-resolve gap). Walk every finish(...)/stop call site across the three docs and verify each upstream mandatory gate is actually reachable from it, closing the pattern systemically rather than one incident at a time.",
+      "expected_route": "E"
+    },
+    {
+      "focus": "classify.py's ROUTE_SIGNALS table has several other bare/loose-context keyword signals with the same false-positive shape just fixed for B's epic-word signal (<sha>-215848, PR #N, the-repo): H's \\brefactor(ing)?\\b, C's bare \\bfeature\\b, and G's \\bchange\\b.*\\bfrom\\b.*\\bto\\b all fire on incidental mentions rather than requiring genuine intent, unlike most other ROUTE_SIGNALS entries which already use multi-word intent phrases (e.g. B's own 'multi-feature' signal, or 'approved (spec|feature|epic|plan)'). Under unattended /go auto/drain dispatch there is no human to catch a misroute from one of these signals winning purely from keyword collision, the same failure mode PR #N fixed for B. Audit ROUTE_SIGNALS systematically for bare single-word/short-phrase signals lacking intent context, and apply the same fix pattern (require a planning/action verb or phrase co-occurring with the keyword)...",
+      "expected_route": "E"
+    },
+    {
+      "focus": "Work-queue briefs' `blocked-by` (and similar list-shaped) frontmatter fields can be malformed as a single YAML list item containing comma-joined IDs instead of separate list entries, which the queue's `_is_blocked()` check (the-repo/src/the-repo/workqueue/work_queue.py) silently fails to match against any real brief ID -- resolving as satisfied/unblocked instead of erroring or flagging. Live instance found and hand-patched 2026-08-18 in work-queue brief <sha>-124507-complete-epic-004-s-remaining (auto-picked by a drain one-shot despite having an unfinished prerequisite, <sha>-124427-complete-epic-004-s-governed, still status:picked). Add validation -- at brief-creation time (whatever seeds these, e.g. the epic-decomposition seeder) and/or as a queue-wide lint/check the-repo-go or drain can run -- that catches a blocked-by/related list item containing an unexpected comma or an ID that...",
+      "expected_route": "E"
+    },
+    {
+      "focus": "the-repo: run the pre-PR gate against real Postgres, not SQLite -- the same blind spot has now shipped two sqlite-unsafe seed defects to CI. go-policy.yaml's pre_pr_cmd and integrate_smoke_cmd both pin DATABASE_URL=sqlite://, so (a) every Postgres-gated test file silently skips (they guard on TEST_PG_URL/DATABASE_URL and no-op, e.g. test_feedback_request_migration, test_migration_schema_parity, test_org_units_relation_absence) and (b) api/migrations/schema/*.sql never executes at all, because the baseline's org/workspace SQL is Postgres-only. Evidence this is recurring, not a one-off: go-policy.yaml:11-13 already documents PR #N (2026-07-24) where a 097-run 'api-side migration defect (sqlite-unsafe seed) sailed through smoke and cost a full CI round-trip plus a repair cycle'; the remediation then was to add the api suite to the gate, but BOTH legs still run on SQLite so the underlying...",
+      "expected_route": "E"
+    },
+    {
+      "focus": "Extend the-repo/scripts/check-cron-path-safety.py's transitive child-script detection beyond one static hop to cover config-driven dispatch: the-repo-bridge.py (self-identifying cron script, PR #N's one-hop fix already covers it) dispatches dependabot-the-repo-dispatch.py via a JSON rules file (rule_action['argv'], scripts/the-repo-bridge.config.json), not a literal Python source reference -- so the current one-hop static-AST scan cannot reach it, and dependabot-the-repo-dispatch.py's own subprocess.run([python, str(classifier), ...]) call (where classifier resolves to dependabot-fleet-classifier.py via a module-level Path(__file__).with_name(...) constant, not a literal string in the call's own argv list) means even a second hop of pure literal-argv scanning wouldn't reach dependabot-fleet-classifier.py either -- true coverage needs either config-file-aware scanning (parse...",
+      "expected_route": "E"
+    },
+    {
+      "focus": "Fix live.py's _dispatch_pending_tail (src/the-repo/orchestrator/live.py, invoked from _pipeline_scheduler at the '=== TAIL: dispatching e2e/cleanup task(s) ===' print) to accept and thread through a --only restriction. Verified by reading its full parameter list: repo, spec_rel, journal_path, run_id, tasks, max_workers, agent, model, timeout, role_models, role_agents, fallback_agent, tier_map, purpose_tier_map, fallback_chain, effort, run_budget, bootstrap_cmd, spawn, remote, base -- no 'only' parameter exists. When full-real's own --only restriction has forced non-included tasks to status='completed' (the live.py ~L2618-2627 pre-mark block, comment 'FR-1'), that restriction is lost the moment the pipeline reaches its tail phase: _dispatch_pending_tail's internal call to live_run_real() reloads every task fresh from the TaskSource (tasks.md checkboxes, all unticked mid-run since sync...",
+      "expected_route": "E"
+    },
+    {
+      "focus": "plan_groups()'s same-file-fork case (two+ dependents of one base predecessor, each individually qualifying as a pure same-file continuation but with no dependency between them) is deliberately left unabsorbed by PR #N's fix (src/the-repo/orchestrator/coordinator.py, test_plan_groups_serial_chain_absorption.py::test_same_file_fork_absorbs_neither_sibling) since there's no safe ordering to prefer between the siblings. But that means a fork shape is still exposed to the identical base-vs-dependent-group quarantine-orphan race PR #N just closed for the pure-chain case: if any sibling ends up as its own dependent group stacked on base, it can still be blocked idle while base's PR fights a conflict. Investigate whether forks are common enough in real specs to matter, and if so what the safe resolution is (e.g. force both siblings AND base into one group with an internal serialization order,...",
+      "expected_route": "E"
+    },
+    {
+      "focus": "Verify bridge-health-guard's queue_growth trend reverses under the MAX_ITEMS=4/BUDGET_MINUTES=200 ramp (PR #N, the-repo). The crontab bump was not yet in effect for the 2026-08-12 02:17 local drain run (that run's log still shows stopped=max_items:2), so zero nights of new-cap data exist as of this brief. Starting ~2026-08-13, watch <path> for ~5 recorded days: if depth growth reverses/flattens, the cap was the whole story (close this brief); if it keeps growing 3+ consecutive days even under the new cap, the companion cause signal added in the-repo PR (fix/bridge-health-guard-queue-growth-cap-signal, this session) should report 'genuine intake spike' -- investigate the new intake source instead of ramping again.",
+      "expected_route": "E"
+    },
+    {
+      "focus": "Investigate CI failure on the-repo/the-repo main: workflow 'CI: Lint, Test & Build' concluded failure on head sha <sha>. Run: <github-url> Delivered event-driven via the-repo-bridge. Diagnose the failing job from its logs; push a fix if actionable, otherwise record the verified blocker. Note per repo standards: main-branch CI failures are post-merge, so bisect against the merged PR first.",
+      "expected_route": "E"
+    },
+    {
+      "focus": "Extend the-repo-go's Phase 5.5 spec-collision check (currently gated to Route C/D only) to also run on Route F/G dispatches. Verified gap hit directly in session go-<sha>-102015 (the-repo repo): a queued brief recommended Route F to build a new cron-liveness-guard.py, but openspec/specs/cron-environment-audit/spec.md (merged the day before, PR #N/#143) already owned the same problem space -- caught only by manually reading existing specs before dispatch, not by any automated check, since check_spec_collision.py's Phase 5.5 branch is explicitly gated 'Route C/D only' per the-repo-go/SKILL.md. Without the manual catch, the orchestrator would have built a second, overlapping cron-health tool with duplicate findings/handoff-filing logic. Risk of recurrence is elevated right now: the work queue holds 3 more cron/guard-drift briefs from the same auto-brief-generation cluster...",
+      "expected_route": "E"
+    },
+    {
+      "focus": "Build an automated stale-bookkeeping detector for the-repo's orchestrator specs: at least 6 instances of the identical pattern (task's status: frontmatter left 'pending' despite all declared files being merged to dev — TASK-CHG-*.md across specs 046, 075, 080, 092, and twice on 053) have needed manual git-log forensics + a one-off 'chore: close stale bookkeeping' PR to fix in the last few days alone. A cron/CI sweep (per repo, on a schedule) that diffs each task's declared files: against git ls-tree on the base branch, flags/auto-PRs status: pending tasks whose files all exist upstream, would eliminate this recurring manual-investigation tax and stop dashboards from mis-reporting fully-shipped specs as 'ready to implement'.",
+      "expected_route": "E"
+    },
+    {
+      "focus": "Add production-side detection to the-repo-dashboard for stranded resume-state runs: flag any run journal where integrate_complete=true but pending_tail_tasks stays non-empty across a resume (the production symptom of the PR #N/#238 bug class), surfaced alongside the dashboard's existing Stalled-in-flight section so an operator sees a stranded spec automatically instead of discovering it manually. Motivated by PR #N (systematic resume-state eval matrix + sequential tail-dispatch tests) landing test-time coverage for this bug class, but production-time detection for the same failure mode still doesn't exist.",
+      "expected_route": "E"
+    },
+    {
+      "focus": "drain.py's unattended queue-drainer should auto-resume a run whose only QUARANTINED groups have quarantine_reason=budget_exhausted (PR #N, merged 2026-08-08) -- these are safely re-runnable with a plain full-real re-run, no human judgment needed, so leaving them for a human to notice via the dashboard's new 'Resumable quarantines' line wastes the automation opportunity the new field was built for. Detect via quarantine_selfcheck.check_repo()['resumable'] before/after a drain pass; if a run journal's QUARANTINED groups are all budget_exhausted, re-invoke full-real (resume=True) instead of treating the spec as blocked/needing a fresh /go dispatch.",
+      "expected_route": "E"
+    },
+    {
+      "focus": "the-repo's check_compile_markers.py (src/the-repo/router/check_compile_markers.py) crashes with FileNotFoundError when the diff between origin/main and a PR branch includes a change directory under openspec/changes/archive/<date>-<name>/ (the standard OpenSpec archive-a-completed-change operation). Verified 2026-08-07: PR #N (the-repo/the-repo) hit this exactly -- the tool derived a malformed path 'openspec/openspec/changes/2026-08-07-quarantined-group-visibility/tasks.md' (doubled 'openspec/' segment, missing the 'archive/' prefix) and crashed instead of skipping the archived dir or resolving it correctly. The 'Scope check' CI job that runs this tool is a REQUIRED status check on main's branch ruleset (added via PR #N/#156, merged 2026-08-06), so this blocks merging ANY future change-archival PR in this repo -- confirmed no prior archive PR (#98, #106) ever exercised this code path...",
+      "expected_route": "E"
+    },
+    {
+      "focus": "Recover quarantined orchestrator group feature-1 for the-repo 053's bidirectional-output-contract-authoring change: split out TASK-CHG-002 (implemented, review-PASSED, ready to PR on its own) and re-fork a fresh TASK-CHG-003 worktree (its existing one is corrupted -- WorktreeMissingTaskFileError, the pre-PR-#248 stale-worktree defect class).",
+      "expected_route": "E"
+    },
+    {
+      "focus": "Route C's new-pipeline (pipeline-details.md) pushes the docs-only spec PR immediately after spec-to-tasks, with no the-repo-compile validation gate first. OpenSpecTaskSource always emits files:[] per task, so any change whose tasks.md includes investigation/verification-only steps (common) merges with under-scoped tasks -- discovered only when compile runs post-merge for the orchestrator launch. Fixing tasks.md then requires a second PR against a branch whose predecessor already squash-merged, which conflicts immediately and forces a full worktree/branch teardown-and-rebuild before the real fix can land (reproduced directly in the-repo PR #N -> #2129 conflict -> #2130 recovery, 2026-08-05/06). Fix: add a the-repo-compile (or equivalent scope-check) gate in the new-pipeline between spec-to-tasks and the docs-only PR push, surfacing unscoped tasks for a fix-in-place before the PR opens,...",
+      "expected_route": "E"
+    },
+    {
+      "focus": "Configure docs_only_paths in the-repo's own docs/specs/go-policy.yaml (e.g. openspec/changes/**, docs/specs/research/**) so the docs-only risk cap added in PR fix/risk-docs-only-cap (the-repo/the-repo, PR #N follow-up) actually engages for this repo's own spec-only PRs, not just consuming repos. Verify first which doc paths are safe to bypass pre_pr_cmd for (nothing in pytest reads openspec/changes/** content; SKILL.md/docs/specs/[0-9]+-*/ dirs must stay excluded since tests read them). This is a policy-config change, deliberately kept out of the risk-derivation-only fix.",
+      "expected_route": "E"
+    },
+    {
+      "focus": "the-repo-go's dashboard 'needs tasking' heuristic misclassifies docs-only stub specs as ready-to-task work. Confirmed live: the-repo's docs/specs/038-authentication/ has no spec.md/tasks.md, only a user-request.md stub explicitly stating 'Status: Built... do not re-spec the existing system from scratch' plus 5 unrelated colocated research-reference docs (World ID/Worldcoin investigation, PR #N) whose own prior run (go-<sha>-192239) already concluded investigation_complete with the build decision explicitly deferred. Yet the-repo-dashboard's category_items for 'needs-tasks' surfaced this spec with action:implement, next_action:spec-to-tasks -- indistinguishable from a genuine untasked spec. This wasted a full /go session (this run, go-<sha>-144005) rerouting E->C, re-investigating, and re-confirming the same deferred decision before landing a docs-only PR (#2103) that just restates the...",
+      "expected_route": "E"
+    },
+    {
+      "focus": "Add CI build-check workflow to the-repo: repo has zero CI, and the unattended daily content-generation pipeline (scripts/content-agent-runner.mjs) auto-PRs directly writable content into main with no build gate — a schema-breaking frontmatter commit (PR #N, 2026-07-31) reached main undetected and broke Render builds for all 9 live domains (including accountabilityledger.com) until manually diagnosed via deploy logs (fixed in PR #N). Add a lightweight PR-check workflow that runs 'npm run build' (astro build) before merge, per the repo-standards CI doctrine (Lint/Test/Build job), so future content-schema regressions are caught pre-merge instead of in production.",
+      "expected_route": "E"
+    },
+    {
+      "focus": "the-repo PR #N (merged) created THIRD-PARTY-NOTICES.md at repo root with a the-repo(general-code-reviewer) entry. The still-in-flight narrow-destructive-guard worktree (<path> branch narrow-destructive-guard, uncommitted as of 2026-07-29, likely owned by machine intelnuc:<sha> per brief <sha>-200954) also creates THIRD-PARTY-NOTICES.md fresh with its own prevent-destructive-commands.py entry. Since both branched off the same pre-#51 main, that PR will hit an add/add conflict on THIRD-PARTY-NOTICES.md rather than a clean merge. Whoever lands that PR needs to rebase onto current main and manually combine both entries into one file (both use the same section format, so it's a straightforward merge, not a rewrite) rather than let git's default add/add resolution clobber one entry.",
+      "expected_route": "E"
+    },
+    {
+      "focus": "Wire scripts/audit_completed_task_checkboxes.py into a recurring check (CI job or cron) so future TASK-*.md status:completed/unticked-checkbox drift is caught automatically instead of only via one-shot manual audits",
+      "expected_route": "E"
+    },
+    {
+      "focus": "Four the-repo CI-infrastructure briefs consolidated: auto-merge label guard (never checks go:no-automerge), e2e ephemeral credentials (replace stored secrets), scheduled-workflow failure watchdog (spec 084 delta), and GitHub Actions secret/variable snapshot drift",
+      "expected_route": "E"
+    },
+    {
+      "focus": "Complete spec 077 phase 2 — ship the deferred headless LLM /security-review overlay (TASK-010/011) and promote the shipped phase-1 attack-pack gate into the required rulesets",
+      "expected_route": "E"
+    },
+    {
+      "focus": "the-repo's release_notes_consolidate.yml has self-hosted job(s) triggered on pull_request/push with no docs-only skip gate (paths-ignore or a changes-job gate) — docs-only changes burn self-hosted runner time.",
+      "expected_route": "F"
+    },
+    {
+      "focus": "check_review_threads.py's commit-correlated reply (DEFAULT_REPLY_BODY) says a later commit touched the file but never cites which commit -- unlike the decisions-log-correlated reply this session just made specific (PR #N, DECISION_REPLY_TEMPLATE quotes the actual decision text). _commit_touched_path_since already runs 'git log --format=%H' and discards the SHA; capturing and citing the actual commit SHA/link in the reply would give the same traceability win to the more common commit-based correlation path, not just the decision-log path.",
+      "expected_route": "F"
+    },
+    {
+      "focus": "bridge-health-guard: 1 invariant(s) failing — queue depth grew for 3 consecutive recorded days: 58 -> 81 -> 82 (degraded drain capacity -- an operator-alerting stop occurred on 2026-08-17; queue growth cannot be attributed to intake alone) [fingerprints: <sha>] [checks: queue_growth]",
+      "expected_route": "F"
+    },
+    {
+      "focus": "the-repo's release_notes_append.yml has self-hosted job(s) triggered on pull_request/push with no docs-only skip gate (paths-ignore or a changes-job gate) — docs-only changes burn self-hosted runner time.",
+      "expected_route": "F"
+    },
+    {
+      "focus": "the-repo's healthcheck.yml uses actions/checkout on a self-hosted job without with.clean: false — self-hosted runners reuse their workspace across jobs, so an unclean checkout can leave stale build artifacts behind.",
+      "expected_route": "F"
+    },
+    {
+      "focus": "Add a post_task_cmd hook to the-repo so a command's file-writing output gets committed before push (needed to adopt the-repo skill-sync safely in a worktree-based workflow)",
+      "expected_route": "F"
+    },
+    {
+      "focus": "bridge-health-guard: 2 invariant(s) failing — latest drain run (2026-08-13T09-17-01Z.json) stopped on the circuit breaker: circuit_breaker: 2 consecutive failed iterations (cause=fast-fail); queue depth grew for 3 consecutive recorded days: 62 -> 71 -> 74 (likely genuine intake spike -- drain was not cap-bound on 2026-08-11, 2026-08-13 yet the queue still grew) [fingerprints: <sha>,<sha>]",
+      "expected_route": "F"
+    },
+    {
+      "focus": "Formalize the shared nightly drain summary contract between the-repo and the-repo: publish a small versioned fixture/schema or contract test that defines capacity_gated versus circuit_breaker stop semantics, so future producer/consumer drift is caught without duplicating hand-built JSON fixtures.",
+      "expected_route": "F"
+    },
+    {
+      "focus": "bridge-health-guard: 1 invariant(s) failing — 25 dead-lettered item(s) on channel 'github' [fingerprints: <sha>]",
+      "expected_route": "F"
+    },
+    {
+      "focus": "canonical checkout drift: the-repo",
+      "expected_route": "F"
+    },
+    {
+      "focus": "the-repo has no rulesets_drift_guard.yml — .github/rulesets/protect-main.json can drift from GitHub's live ruleset state undetected (repo standard per <path> §2)",
+      "expected_route": "F"
+    },
+    {
+      "focus": "prevent-destructive-commands.py's docker block (line ~546, `rest = tokens[i + 2:]`) has the same unbounded-rest pattern just fixed for the git block in PR from brief <sha>-141852: it does not stop at SHELL_OPERATORS, so a chained command's tokens (e.g. `docker compose down; some-other-cmd -v`) could bleed into the 'docker compose down -v' / '-v' volume-removal detection. Not reproduced/verified as a live false-positive or false-negative yet -- found by inspection while fixing the git block's identical pattern via _tokens_until_operator. Different surface (docker vs git), so left out of that PR; apply the same _tokens_until_operator bound to the docker rest slice if/when this repo touches that block again.",
+      "expected_route": "F"
+    },
+    {
+      "focus": "Extend the Postgres-gated-skip assertion to the local scripts/qa_all.sh gate so a developer sees a silent Postgres skip before CI does. scripts/ci/check_postgres_gated_skips.py already exists and is CI-wired (api-integration, PR for brief <sha>-202318); qa_all.sh currently runs api/tests with real Postgres but writes no JUnit XML, so the guard cannot run there.",
+      "expected_route": "F"
+    },
+    {
+      "focus": "Remove the broken the-repo-verify console-script entry from pyproject.toml",
+      "expected_route": "F"
+    },
+    {
+      "focus": "precheck.py false-positives \"already implemented\" on any new-pipeline task that only modifies pre-existing files",
+      "expected_route": "F"
+    },
+    {
+      "focus": "Correct NEXT_PUBLIC_API_URL at the Infisical source of truth and audit all the-repo envs for remaining limatonexus values; then drop the prd service-level override",
+      "expected_route": "F"
+    },
+    {
+      "focus": "Floating Feedback widget overlaps the primary \"Next\" CTA in the assign-photos slot editor at mobile widths",
+      "expected_route": "F"
+    },
+    {
+      "focus": "the-repo's release-notes workflows reference secret RELEASE_NOTES_OPENROUTER_API_KEY, which doesn't exist — only RELEASE_NOTES_API_KEY and OPENROUTER_API_KEY are configured",
+      "expected_route": "F"
+    },
+    {
+      "focus": "Manually apply rulesets_sync.py --apply to close the real drift it discovered — both protect-dev and protect-main are missing the \"Spec sync guard\" required status check live",
+      "expected_route": "F"
+    },
+    {
+      "focus": "Parallel-orchestrator fan-out worktrees can branch before task files are committed, leaving IMPLEMENT workers with no brief",
+      "expected_route": "F"
+    },
+    {
+      "focus": "Move event recap AI prompt into platform settings and support event image context",
+      "expected_route": "F"
+    },
+    {
+      "focus": "[SECURITY HIGH] CI workflow exports plaintext Infisical secrets for dev/stg/prd and uploads them as a downloadable artifact",
+      "expected_route": "F"
+    },
+    {
+      "focus": "Release notes generator always falls back to heuristic — env var name mismatch between workflow and script",
+      "expected_route": "F"
+    },
+    {
+      "focus": "the-repo deployed /admin/mail page does not match the intended design (current vs target screenshots provided by user)",
+      "expected_route": "F"
+    },
+    {
+      "focus": "agent_security.py's grant revoke, permission-request approve/reject/withdraw, and policy-retire endpoints have NO ownership check at all (not just no audit) -- discovered during <sha>-201920-wire-record-tenant-scope-denial recon. Any caller holding agent.security.manage/agent.permission.approve in their own tenant can currently act on another tenant's grant/request/policy by guessing the id, since has_workspace_capability only checks the capability code, not resource ownership (api/app/deps/auth.py). Needs a real ownership comparison added before revoke_grant/approve_permission_request/reject_permission_request/withdraw_permission_request/retire_policy act on the looked-up row.",
+      "expected_route": "G"
+    },
+    {
+      "focus": "Staleness guard: auto-resolve the prompt when the brief's requested change is verifiably absent from current file state, instead of asking the operator anyway",
+      "expected_route": "G"
+    },
+    {
+      "focus": "the-repo's release-notes-append.yml has self-hosted job(s) but no top-level concurrency group with cancel-in-progress: true — overlapping runs can pile up on the runner instead of cancelling stale ones.",
+      "expected_route": "G"
+    },
+    {
+      "focus": "Retire the last KNOWN_VIOLATION_ALLOWLIST entry: give POST /assistant/embed/query a persisted origin allowlist check instead of syntax-only validate_allowed_domain",
+      "expected_route": "G"
+    },
+    {
+      "focus": "Route G: cluster_detect.py's 2-brief near-duplicate detection has two intentional-but-limiting design choices confirmed by investigation PR #N (docs/specs/research/cluster-detect-2brief-near-duplicate-miss.md): (1) repo:null vs repo:null brief pairs are excluded from focus-overlap/same-target-spec/related-link entirely (only duplicate-slug can match them) -- tested by test_one_null_repo_blocks_repo_scoped_signals; (2) a 2-member component additionally needs NEAR_IDENTICAL_THRESHOLD=0.75 overlap to surface at all (vs the general OVERLAP_THRESHOLD=0.45 for larger clusters) -- REQ-013/014. This is why the <sha>-161140/142723 contract-sentinel pair (real overlap 0.44, both repo:null) was missed despite the same session correctly clustering a 14-brief and 5-brief group. Requires a spec-first product decision on the precision/recall tradeoff before touching either threshold or the same-repo...",
+      "expected_route": "G"
+    },
+    {
+      "focus": "Split spec 098 in two — extract the recursive organization model (plus the typed session contract) into its own feature spec, leaving 098 as the 097 shell-correction spec",
+      "expected_route": "G"
+    },
+    {
+      "focus": "Make ROLE_REVIEW verify checkbox correctness (spec 006 Route G delta) instead of relying on cleanup's blind auto-tick",
+      "expected_route": "G"
+    },
+    {
+      "focus": "Apply the spec 087 homepage visual recovery change package — corrective spec change + integrated re-implementation of the the-repo.com homepage",
+      "expected_route": "G"
+    },
+    {
+      "focus": "Implement the-repo's first LLM-in-the-loop suggestion step (P3 on the CLAUDE.md priority ladder) — greenlit by the 2026-07-19 decision record, gated behind P1 (065 runtime wiring) and P2 (066 James dogfood).",
+      "expected_route": "G"
+    },
+    {
+      "focus": "Wire the 065 agent execution runtime end-to-end: worker.execute_run() -> PythonAdapter -> Agent.run -> ToolGuard -> agent_authz gates -> typed artifacts. Today worker.py marks runs SUCCEEDED without executing anything; PythonAdapter/ToolGuard have zero prod callers and 6/8 enforce_* gates are unexercised, so the entire 062-073 control plane (registries, workflow graph, builder/eval/deploy, security) is inert data.",
+      "expected_route": "G"
+    },
+    {
+      "focus": "Add a content-preservation safeguard to the release-notes LLM merge step so a long-but-lossy merge can't slip past the degenerate-output fallback",
+      "expected_route": "G"
+    },
+    {
+      "focus": "Add a deterministic rules-fact drift check to the-repo CI so .claude/rules facts can't rot silently like AGENTS.md did",
+      "expected_route": "G"
+    },
+    {
+      "focus": "Commit Phase 1 of the the-repo agent enablement pack — 5 rules + preflight skill + AGENTS.md staleness fixes",
+      "expected_route": "G"
+    },
+    {
+      "focus": "Add lightweight telemetry for dashboard cluster-detection precision (shown/consolidated/declined per cluster) so future sessions can judge signal quality from real usage data instead of a one-time manual spot-check",
+      "expected_route": "G"
+    },
+    {
+      "focus": "Turn spec 018's passive dashboard cluster-detection warning into a one-click \"consolidate this cluster\" action in the /go picker, once spec 018 (PR #N, implementation in flight) ships",
+      "expected_route": "G"
+    },
+    {
+      "focus": "Re-scope or sunset spec 078's interim LLM schema-diff sentinel now that spec 079 adds compile-time FE/BE contract enforcement for part of the same surface",
+      "expected_route": "G"
+    },
+    {
+      "focus": "Extend the PR-scoped `autoMergeRequest` check (just added to ci-watch-loop.md's tail-end merge classification) to run right after PR creation too, so the PR body's own \"Auto-Merge Eligibility\" section reports ground truth from the start instead of only being corrected retroactively when the CI watch loop finishes",
+      "expected_route": "G"
+    },
+    {
+      "focus": "Make go-policy.py detect a repo's own external auto-merge CI workflow automatically instead of relying on a manually-set automerge.enabled/reason flag",
+      "expected_route": "G"
+    },
+    {
+      "focus": "work_queue.py has no backoff for briefs blocked on an external release — a brief can resurface every single /go pass and get manually rechecked with zero new information each time",
+      "expected_route": "G"
+    },
+    {
+      "focus": "Adopt pre_pr_gate.py's docs_only_paths policy key in the-repo and the-repo's go-policy.yaml, mirroring their existing CI docs-only-bypass filters, now that the-repo has proven the pattern",
+      "expected_route": "G"
+    },
+    {
+      "focus": "Add a reusable require_tenant_owned(Model, id_param) FastAPI dependency so tenant-ownership checks are structural, not something each endpoint author must remember",
+      "expected_route": "G"
+    },
+    {
+      "focus": "Tenant-scope the global CapabilityDefinition agent-capability catalog (add organization_id, two-tier platform/tenant resolution + write-gating) — closes a cross-tenant write hole AND unlocks reseller/org-owned agent capabilities",
+      "expected_route": "G"
+    },
+    {
+      "focus": "Change public gallery activity filters from accumulating AND pills to an obvious single-category selection model",
+      "expected_route": "G"
+    },
+    {
+      "focus": "Implement research-once/fork-per-task in orchestrator — add session_id to SpawnResult, --resume+--fork-session path in build_cmd, and a research phase in live.py that pre-loads common source files once before task fan-out",
+      "expected_route": "G"
+    },
+    {
+      "focus": "Code-enforce the fork/subprocess no-op check that PR #N just added as prose only (the-repo-go/references/subagent-prompts.md#post-delegation-verification). That doc mandates a git status/diff check before trusting any implementation delegation's self-reported completion, but nothing forces an agent to actually run it -- Route J's own the-repo-skill-prose-scan advisory exists precisely because a mandate cue with no code backing it is unreliable (docs/specs/research/skill-prose-enforcement-coverage-design.md). Add a code-level guard in the-repo's own orchestrator (src/the-repo/orchestrator/verify.py or integrate.py) that rejects a task/group for PR/merge eligibility when its branch has an empty diff vs base -- independent of any agent reading or following the doc. Also consider whether run_record.py's finish()/scope_review_failures() check (src/the-repo/router/run_record.py,...",
+      "expected_route": "H"
+    },
+    {
+      "focus": "Harden the-repo's OpenCode backend: fix the --dry-run silent-write bug, no non-interactive bypass for write confirms, missing tag-following fallback (Claude/Codex both have mitigations, OpenCode has neither), and default 300s timeout being too short for OpenCode's agentic tool-loop overhead on large repos.",
+      "expected_route": "H"
+    },
+    {
+      "focus": "the-repo has 3 orphaned test files under ci/scripts/release_notes/ (test_generate_release_notes.py, test_sync_release_notes.py, test_sync_release_notes_e2e.py) that neither pre_pr_cmd nor any CI workflow runs",
+      "expected_route": "H"
+    },
+    {
+      "focus": "the-repo's compile.py PROMPT can under-report shared file overlap between independent sibling tasks -- the root cause left unaddressed by PR #N (the-repo/the-repo). Verified in the go-<sha>-133115 incident: runnable_frontier()/disjoint_batches() and plan_groups() (PR #N) already correctly serialize/group tasks whose 'files' lists overlap, but tasks 1.2/1.3 both actually touched approval_visibility.py while the LLM compile pass only recorded it on one of them, so the file-collision check had nothing to catch. Concrete angles worth exploring: (a) strengthen compile.py's PROMPT to explicitly ask the model to re-scan for cross-task file overlap as a final pass before emitting the plan, not just per-task in isolation; (b) add a deterministic post-hoc verification step that diffs each task's actual delivered commit against its declared 'files' and flags/logs a mismatch for future...",
+      "expected_route": "H"
+    },
+    {
+      "focus": "packages/server's own node --test suite is never run by any automated gate or CI in the-repo",
+      "expected_route": "H"
+    },
+    {
+      "focus": "Remove the remaining Auth0 residue surfaced by the round-1 cleanup's repo sweep — dead @auth0/nextjs-auth0 npm dependency (zero imports), user-facing LoginCard copy naming Auth0, stale frontend comments, stale .agents auth skill docs, and the lib/infisical_manager.py auth0-management path mapping",
+      "expected_route": "H"
+    },
+    {
+      "focus": "Consolidate duplicated auth, deploy, and environment facts in the-repo docs so each fact cluster has one canonical home and the rest link out",
+      "expected_route": "H"
+    },
+    {
+      "focus": "Surface actor-level evidence in verifier logs/results when a mid-turn merge is classified as external auto-merge versus true worker self-merge",
+      "expected_route": "H"
+    },
+    {
+      "focus": "Harden the-repo's contract_sentinel schema_export entrypoint so the workflow can stop depending on contract-sentinel-specific PYTHONPATH wiring",
+      "expected_route": "H"
+    },
+    {
+      "focus": "Extend the unit test suite from PR #N to the remaining zero-coverage the-repo-typescript hooks — ts-dev-server-guard.py, ts-prettier-format.py, ts-session-context.py",
+      "expected_route": "H"
+    },
+    {
+      "focus": "De-dupe the-repo's check_spec_sync.py call now that the-repo's pre_pr_gate.py runs it structurally",
+      "expected_route": "H"
+    },
+    {
+      "focus": "One docs/spec-corpus hygiene sweep — fix the .gitignore nested-reviews pattern, backfill spec-063 delta task files (or fix the orchestrator path template), normalize spec status frontmatter + corpus index roll-up, and consolidate duplicated auth/deploy/env doc facts",
+      "expected_route": "H"
+    },
+    {
+      "focus": "Fix pre-existing Pyright protocol/invariance errors in ci/scripts/e2e_qa/test_spec_generator.py (ManifestEntryLike vs _Entry/list invariance)",
+      "expected_route": "H"
+    },
+    {
+      "focus": "Deduplicate CHANGE_KINDS and SCREENSHOT_MAX_BYTES between FeedbackCapture.tsx and the /api/admin/feedback route",
+      "expected_route": "H"
+    },
+    {
+      "focus": "Rename the-repo's ci/scripts/ to scripts/ci/ for directory-ownership consistency",
+      "expected_route": "H"
+    },
+    {
+      "focus": "Split api/app/models.py (9,275 lines, 142 tables) into a domain-oriented package and convert main.py's 56 manual include_router calls to auto-discovery",
+      "expected_route": "H"
+    },
+    {
+      "focus": "go-policy.yaml's automerge.enabled=false is conflated with \"requires human review\" in policy.py/PR-template wording, but for repos with their own external CI auto-merge (e.g. the-repo) it actually means \"the agent shouldn't merge because CI already will\" — and the CI-watch-loop never re-checks post-CI merge state, so completed_pr_open gets reported for PRs that already merged",
+      "expected_route": "H"
+    },
+    {
+      "focus": "9 of 15 project repos have no docs/specs/go-policy.yaml at all, so pre_pr_gate.py exits 2 (unconfigured/default-deny) instead of skip — every future /go PR route against them is silently blocked, not skipped",
+      "expected_route": "H"
+    },
+    {
+      "focus": "Close the race between a last-minute fixup push and GitHub native auto-merge firing on a stale PR head, in the GO CI watch loop",
+      "expected_route": "H"
+    },
+    {
+      "focus": "Improve public gallery card image delivery so the grid uses lightweight variants with an explicit crop/focal contract",
+      "expected_route": "H"
+    },
+    {
+      "focus": "Consolidate the 23 the-repo api/tests/ _make_engine()-shaped shared-metadata fixture duplicates (6 eager-import-time) into api/tests/conftest.py, mirroring PR #N",
+      "expected_route": "H"
+    },
+    {
+      "focus": "Audit the ~90 other the-repo api/tests files using the same SQLModel.metadata-mutating \"_patch_metadata_for_sqlite\"-style autouse fixture idiom for the same unrestored cross-module-pollution risk fixed in PR #N",
+      "expected_route": "H"
+    },
+    {
+      "focus": "the-repo CI never runs `alembic upgrade head` against a realistic already-populated/versioned DB — the only path prd actually uses. Two prd-down incidents from this single hole; the durable gate is to replay incremental migrations against a realistic existing DB (and/or a stg deploy-smoke before prd).",
+      "expected_route": "H"
+    },
+    {
+      "focus": "Investigate and fix the the-repo run-record lifecycle gap where run_record.py finish is not reliably called: 84 of 600 the-repo run records (14%) and 2 of ~20 the-repo run records sit with final_status: null, most stuck at status: route_selected (never progressed past the very first phase update). Not evidence of lost work in the sample checked -- likely fix is closing the reliability gap itself, not recovering data.",
+      "expected_route": "I"
+    },
+    {
+      "focus": "the-repo: self-hosted CI runner fleet (Docker Desktop/WSL2 backend) cannot reach a runner-host-bound port from inside ANY docker container, under any networking mode tried — --network=host, --add-host=host.docker.internal:host-gateway (both by hostname and resolved literal IPv4), the default bridge gateway (172.17.0.1), and even the runner's own real interface IP via hostname -I all return connection-refused/network-unreachable. Confirmed live via a real workflow_dispatch run on PR branch fix/dast-baseline-zap-network (multiple runs, diagnostic sweep landed then removed in commit <sha>) — not a guess. This blocks dast-baseline.yml's ZAP scan (task 1.2 of openspec/changes/oss-security-gate-stack) from ever reaching the app it boots, and would block ANY future workflow needing a container to call back to a service on the runner host. Root cause is infra-level (Docker Desktop/WSL2...",
+      "expected_route": "I"
+    },
+    {
+      "focus": "fleet-workflow-hygiene-guard.py's detector functions (has_label_triggered_concurrency_cancellation and its siblings for the other gap types) are only tested against small synthetic YAML fixtures in test_fleet_workflow_hygiene_guard.py. The no-concurrency-block false positive (fixed in PRs #224/#225) went undetected by the existing unit tests because they never exercised a real-world workflow shape -- it took 3 consecutive days of manual investigation against the-repo's actual auto-merge.yml before the root cause was found. Add a regression test that runs every hygiene-guard detector against every actual .github/workflows/*.yml file under <path> (a real-world corpus, not just synthetic snippets) and asserts findings match an explicit expected/allowed set, so a future heuristic gap surfaces in the-repo's own CI before it fires false positives against the fleet.",
+      "expected_route": "I"
+    },
+    {
+      "focus": "Add end-to-end regression coverage for the openspec-propose kill-and-resume path (PR #N). The current tests/router/test_check_openspec_propose_resume.py only unit-tests the filesystem pre-check function in isolation. Write an integration-level test that actually spawns a headless openspec-propose child (or a realistic stand-in), kills it mid-authoring so partial openspec/changes/<id>/ artifacts are left on disk, then confirms the next dispatch through subagent-prompts.md's #openspec-propose procedure correctly routes to /opsx:update instead of re-invoking /opsx:propose (which would hit OpenSpec's change-name-collision guardrail, verified empirically in PR #N's own investigation).",
+      "expected_route": "I"
+    },
+    {
+      "focus": "Confirm the-repo prd's current Alembic revision and advance it to head (via the existing incremental chain) before further schema changes land. Investigation docs/specs/research/2026-08-14--alembic-baseline-squash-feasibility.md independently confirmed, via migration-replay's own CI comment, that prd still depends on walking the incremental migration chain forward on its next deploy -- this exact gap already caused two real prd-down incidents (IdentifierError, DuplicateColumn). Recommended route: F (or an ops/deploy task) to verify prd's live alembic_version and, if behind, run the existing predeploy path against it.",
+      "expected_route": "I"
+    },
+    {
+      "focus": "bridge-health-guard's queue_growth check flags raw 3-day depth growth without distinguishing cap-bound throughput (fixed by drain ramp, PR #N) from a genuine new intake spike -- add a companion signal (e.g. compare depth growth against drain's actual max_items/night) so a future alert points at the right cause instead of re-diagnosing from scratch. Also verify over the next ~5 nights that health-history.jsonl's growth trend reverses now that MAX_ITEMS=4/BUDGET_MINUTES=200 is live; if it doesn't, the cap wasn't the whole story.",
+      "expected_route": "I"
+    },
+    {
+      "focus": "The /go orientation dashboard (dashboard.py) does not surface in-flight orchestrator run health at all: an active run's quarantined groups, self-merge violations, or (new, PR #N) post_merge_regressed groups are invisible on the dashboard -- only visible via console output at run time or by hand-reading the run journal / run record files under <path> A stuck or partially-failed run currently looks identical to a healthy in-progress one from the dashboard's perspective. Motivated by shipping the cumulative post-merge gate (the-repo PR #N, docs/design/history/go-v2-design.md §2.16): a run that blocks every remaining group after a post_merge_regressed detection is exactly the kind of 'needs a human now' state the dashboard doctrine (architect/30-interface-doctrine.md, 'PROACTIVELY monitor for blocked work') says should be surfaced without the operator having to go looking. Route I...",
+      "expected_route": "I"
+    },
+    {
+      "focus": "Investigate orphaned staged deletions in the canonical <path> checkout: api/app/models/embed.py, api/app/models/__init__.py, api/app/routers/embed_secure.py, api/app/services/embed.py, app/src/lib/generated/api-types.ts are staged for deletion/modification on dev with no active orchestrator lock or run record owning them (discovered 2026-08-07 during an unrelated /go auto session). Determine whether this is intentional WIP that needs a proper worktree+PR, or accidental state that should be reset -- do not commit or discard without understanding the origin first.",
+      "expected_route": "I"
+    },
+    {
+      "focus": "Dashboard cluster-detection missed a 2-brief near-duplicate pair (<sha>-161140 vs <sha>-142723, both describing 'finish flipping contract-sentinel's route-existence-gate to required') even though its focus-overlap signal correctly caught larger clusters (14-brief, 5-brief) the same session. Investigate why: possibly a minimum-cluster-size threshold, a similarity-score cutoff that penalizes very short vs. very long focus text pairs, or the detector only running within a size band. If confirmed, tune the threshold/scoring so 2-brief near-duplicates surface in Phase 2's consolidate-cluster action instead of requiring manual discovery during dispatch (as happened here, caught only by noticing an already-ready-to-implement openspec change matched the brief's description).",
+      "expected_route": "I"
+    },
+    {
+      "focus": "Extend preflight.py's duplicate_work_warning() (PR #N, the-repo/the-repo) from branch-name word-overlap to also compare touched-file overlap against open PRs/sibling worktrees. Current implementation only catches near-identical branch NAMES (e.g. wire-plan-audit-into-verify vs investigate/wire-plan-audit-into-verify); it will not catch two differently-named branches that independently touch the same files, which is the deeper form of the duplicate-work problem investigation PR #N identified. Suggested approach: for each candidate branch from _sibling_worktree_branches()/_open_pr_branches(), diff its touched files (git diff main...<branch> --name-only for worktrees; gh pr diff <branch> --name-only or gh api for PRs) against the current branch's own touched files (git diff main...HEAD --name-only); a nonzero file-set intersection triggers the same non-blocking warning, independent of (or...",
+      "expected_route": "I"
+    },
+    {
+      "focus": "Wire record_tenant_scope_denial into the ~25 legacy routers still grandfathered in _DENY_AUDIT_NOT_YET_WIRED (api/tests/security/attack_pack/test_cross_tenant_idor.py) so cross-tenant deny attempts stop being invisible to security ops. PR #N (2026-07-29) closed this gap for the spec-099 routers and established the canonical pattern: record_tenant_scope_denial + session.commit before the concealing 404/403 (see retry_policies.py and the organizations.py/templates.py/workspaces_admin.py/invitations.py/assistant_context.py wiring in that PR), then move each router to _ROUTERS_WITH_AUDITED_DENY so the attack-pack probe asserts the audit row. Some listed routers lack resource factories (see <sha>-092956-idor-probe-missing-resource-factories brief) — wiring the audit does not require a factory, but adding factories where feasible upgrades the proof from code-review to asserted.",
+      "expected_route": "I"
+    },
+    {
+      "focus": "Decouple the-repo's go skill from the-repo-specs' sdd-workflow — a live bidirectional contract that blocks uninstalling that plugin",
+      "expected_route": "I"
+    },
+    {
+      "focus": "Audit every <path> repo for the same silent-merge gap just found and fixed in the-repo — auto-merge armed with no required status check",
+      "expected_route": "I"
+    },
+    {
+      "focus": "Re-point Codex CLI's the-repo marketplace source from the-repo to the-repo",
+      "expected_route": "I"
+    },
+    {
+      "focus": "TASK-CHG-*.md tasks generated by specs.change-spec never carry a provides: frontmatter field, forcing every change-spec's sync-before-teardown to hand-reconstruct knowledge-graph.json provides[] from files: with no symbol data",
+      "expected_route": "I"
+    },
+    {
+      "focus": "devkit-pm-go SKILL.md Phase 5's claimed-brief recommended-route hint references \"$HANDOFF/scripts/handoff_seed.py\", but that script actually lives at \"$GO/scripts/handoff_seed.py\" — every claim/auto dispatch that reaches this step fails and must be manually routed around",
+      "expected_route": "I"
+    },
+    {
+      "focus": "test_resilience_helpers.py and test_spawnlib.py's OpenCode default-model tests don't isolate ORCH_OPENCODE_MODEL, so a machine with it set locally gets false failures asserting the hardcoded default",
+      "expected_route": "I"
+    },
+    {
+      "focus": "Sweep all existing files in <path> and picked/ with the new brief_frontmatter.validate_brief to find pre-existing corruption that predates PR #N's write-path hardening",
+      "expected_route": "I"
+    },
+    {
+      "focus": "Audit all Hermes no_agent cron scripts that push directly to a repo's default branch, for the same silent-push-failure pattern just fixed in the-repo/kanban-snapshot.py",
+      "expected_route": "I"
+    },
+    {
+      "focus": "Audit the-repo for other draft/publish-gated fields that leak to the client the same way the event recap did — queried unconditionally server-side, then passed as a prop into a \"use client\" component whose display gate doesn't stop the data from shipping in the RSC payload",
+      "expected_route": "I"
+    },
+    {
+      "focus": "Audit every documented go-policy.yaml key against every code path that's supposed to enforce it -- one silent gap (automerge.enabled unread by parallel-orchestrator verify.py) was just found by accident, there may be others",
+      "expected_route": "I"
+    },
+    {
+      "focus": "Inventory all build-time helpers that touch the DB in the-repo and decide whether they should degrade quietly in DB-less production builds",
+      "expected_route": "I"
+    },
+    {
+      "focus": "[SECURITY MEDIUM] the-repo has no DB-level RLS backstop for tenant isolation -- decide and implement the real fix, not a stopgap",
+      "expected_route": "I"
+    },
+    {
+      "focus": "\"Save draft\" button on the mail composer isn't visible/reachable on the Playwright `mobile` viewport project",
+      "expected_route": "I"
+    },
+    {
+      "focus": "Reassess whether handoff briefs should pre-set recommended-route frontmatter at all. Observed on brief <sha>-114628: the brief's recommended-route: B (epic planning) was badly mismatched to the actual described work (a scoped one-function defect fix), yet classify.py's route_source: handoff-recommended-override deferred to it purely because its own organic confidence was medium -- even though its organic scores (J=4, F=2, G=2) didn't even rank B as a candidate. The current design forces a human-in-the-loop route confirmation whenever the brief's stated route looks wrong, which breaks the-repo-go's autonomous dispatch goal. Consider: (a) dropping recommended-route capture entirely and always classifying fresh at pickup time, (b) treating recommended-route as a low-weight signal rather than an override that beats the classifier's own top-scored organic route, or (c) requiring the override...",
+      "expected_route": "J"
+    },
+    {
+      "focus": "Backlog seeder's epic-citation scan (seed_backlog.py:_citing_spec_ids, called with specs_root hardcoded to repo_path/docs/specs at seed_backlog.py:215) only checks docs/specs/ for a spec citing its owning epic id -- it never scans openspec/specs/ or openspec/changes/. Any epic whose features ship as OpenSpec changes (the now-default /go new format per the-repo-go SKILL.md) is permanently undercounted as having fewer specced features than it actually does, so the seeder repeatedly re-seeds work-queue briefs for already-shipped features. Verified live 2026-08-15: the-repo epic 001-dependabot-fleet-consolidation's seeded brief (<sha>-021832) claimed only 1 of 4 features was specced, but 2 were actually already shipped (Feature 1 as openspec/specs/dependabot-the-repo-dispatch, archived change 2026-08-12; Feature 2 as docs/specs/102-fleet-dependabot-classifier) -- the seeder only found the...",
+      "expected_route": "J"
+    },
+    {
+      "focus": "Continuously validate the-repo's own canonical GitNexus MCP capability after intentional index registration, with a bounded CI or operator-facing check that distinguishes not-indexed, stale, MCP-timeout, and readable states without ever indexing task worktrees",
+      "expected_route": "J"
+    },
+    {
+      "focus": "Add a packaging metadata freshness gate so documented the-repo console scripts cannot drift from the editable install or plugin cache.",
+      "expected_route": "J"
+    },
+    {
+      "focus": "Extend the-repo-go's Phase 5.5 brief-staleness check (the-repo-check-brief-staleness / check_brief_staleness.py) to fire for brief-sourced dispatches on ALL routes (A-J), not just E/F. Currently the staleness guard documented in the the-repo-go skill's references/brief-staleness-check.md is gated to only run when Phase 5 resolves the route to E or F. A brief-sourced dispatch on any other route (A, B, C, D, G, H, I, J) gets no automated staleness check -- only the narrower related-brief collision branch applies, which checks a brief's own related: frontmatter against other briefs' claim status, not whether the requested work already landed via unrelated merged PRs.",
+      "expected_route": "J"
+    },
+    {
+      "focus": "Design a cumulative post-merge integration gate in the-repo's orchestrator (integrate.py/verify.py): after each independent FEATURE group merges into base, re-run integrate_smoke_cmd (or a cheaper subset) against the ACTUAL updated base HEAD before the next independent group is allowed to merge -- not just each group's own isolated base+group worktree as today. This is the structural fix for the root-cause class documented in PR #N (docs/specs/research/post-integration-scope-consistency-check.md): two independent real incidents (the-repo embed-widget-auth-hardening PRs #2138/#2139/#2144, and the-repo's own duplicate-brief-detection PR #N) were both caused by a missing dependency edge between two correctly-scoped, independently-validated groups -- a class of bug that is structurally invisible to per-group isolated validation and to any file-scope diff (plan_audit.py / verify.py's...",
+      "expected_route": "J"
+    },
+    {
+      "focus": "Build the the-repo→work-queue event bridge: a small local consumer daemon that long-polls the-repo's cursor-based delivery API and converts inbound webhook events into the-repo handoff briefs, making the work queue the harness-agnostic event inbox for Claude Code, Codex, and OpenCode. Scope: (1) consumer daemon (~200-400 lines Python, systemd user unit, logging, single-flight lock, HMAC verification) living in the the-repo repo per local-env-scripts convention; (2) declarative event→brief mapping config, v1 events: github pr-merged on the-repo main → run <path> directly (no brief needed), github ci-failure on main branches → investigation brief, github review-comment on own PRs → address-feedback brief; (3) GitHub webhook creation via gh api (admin:repo_hook PAT) pointed at the-repo endpoint with HMAC secret — secret goes in systemd credential/env, NEVER under <path> (auto-commits,...",
+      "expected_route": "J"
+    },
+    {
+      "focus": "no_implementation_without_approval (Route A) has zero code enforcement anywhere, unlike pause_before_merge/require_human_approval/never_automerge (now fixed via the-repo-preflight's label-marker mechanism, PR pending in the-repo/the-repo). classify.py emits the gate string for Route A ('no implementation without an explicit decision'), but the only other appearances are a cassette test asserting the classifier emits the string and prose in routes.md $36 -- no script, run_record.py field, dispatch check, or CI step reads it. Nothing stops an agent from classifying a request as Route A and proceeding straight to implementation anyway. Root-caused in docs/specs/research/classify-gate-enforcement-audit.md (the-repo/the-repo, landed PR #N), which recommends the fix: a run_record.py check that blocks a completion/finish state when the originating route was A and no recorded decision exists in...",
+      "expected_route": "J"
+    },
+    {
+      "focus": "Add a policy-selfcheck rule (the-repo-policy-selfcheck or similar) that scans every repo's auto-merge workflow (auto-merge.yml or equivalent) for whether it actually gates on the go:no-automerge PR label before running gh pr merge --auto. Verified live 2026-07-30: the-repo's auto-merge.yml merges every green non-draft PR unconditionally, ignoring go:no-automerge entirely (PR the-repo/the-repo#N carried that exact label and still auto-merged within seconds) -- despite routes.md documenting the label as what makes risk-gated eligibility binding. A one-repo fix (handoff <sha>-181639) closes the-repo's instance, but the real risk is systemic: any other repo whose auto-merge.yml was copy-pasted without checking the label has the same silent gap, meaning medium/high-risk PRs across the fleet could be auto-merging without the gate anyone believes exists. This should become an automated check...",
+      "expected_route": "J"
+    },
+    {
+      "focus": "Build a the-repo classifier coverage audit over historical handoff briefs, comparing classifier routes with recorded recommended or actual routes and reporting actionable disagreement clusters without changing routing behavior.",
+      "expected_route": "J"
+    },
+    {
+      "focus": "Build a classify.py coverage-audit script that runs the classifier against a corpus of real historical work-queue brief texts and flags disagreements with the brief's own recommended-route/actual-route-taken, to surface signal gaps proactively instead of after a live misroute",
+      "expected_route": "J"
+    },
+    {
+      "focus": "dashboard.py's _HAVE_LOADER guard resolves False from the plugin cache path, silently disabling stale-bookkeeping detection",
+      "expected_route": "J"
+    },
+    {
+      "focus": "verify.py's required-checks-preflight fallback arms `gh pr merge --auto` without consulting automerge eligibility (go:no-automerge / policy risk tier), letting a high-risk group PR auto-merge past the declared human gate",
+      "expected_route": "J"
+    },
+    {
+      "focus": "Ship a queue-drain driver as a first-class artifact in the-repo-project-management — a skill/command + script that repeatedly launches fresh-context headless one-shots of `/go auto` until the queue is empty, instead of leaving the drain loop as ad-hoc operator advice",
+      "expected_route": "J"
+    },
+    {
+      "focus": "Task worktrees spawned by the parallel-orchestrator's fan-out are not bootstrapped with local dependencies (node_modules), unlike the spec worktree, forcing every implement worker to discover and fix this itself mid-task",
+      "expected_route": "J"
+    },
+    {
+      "focus": "Roll out the temporary go:no-automerge ramp bypass and restoration reconcile across every repository that currently enforces the label",
+      "expected_route": "J"
+    },
+    {
+      "focus": "Apply go risk and no-automerge labels to orchestrator-created group PRs",
+      "expected_route": "J"
+    },
+    {
+      "focus": "Prevent Claude Stop hooks from blocking or corrupting headless -p worker output",
+      "expected_route": "J"
+    },
+    {
+      "focus": "Configure Continuum branch protection and required CI checks so GO auto-merge waits for validation",
+      "expected_route": "J"
+    },
+    {
+      "focus": "parallel-orchestrator's dependency-file surfacing is currently prompt-only (PR #N) — add a deterministic post-merge guard that verifies a dependency's declared files actually exist in the stacked worktree before spawning the IMPLEMENT worker, converting a soft LLM-instruction fix into a hard structural guarantee",
+      "expected_route": "J"
+    },
+    {
+      "focus": "Add explicit the-repo repo guidance to stop expanding SQLite adaptation for Postgres-shaped tests and default those tests to real Postgres execution",
+      "expected_route": "J"
+    },
+    {
+      "focus": "Narrow rename-guard hook to skip YAML frontmatter status changes in TASK-*.md files",
+      "expected_route": "J"
+    },
+    {
+      "focus": "`dashboard.py`'s orientation output (Phase 1 of `/go`) shows active specs, in-flight\nbriefs, and the handoff queue — but nothing about past `/go` run outcomes. Every\ndispatched run writes a durable YAML record to `<path>`\n(`run_record.py`) with route, risk, decisions, scope-review, PR link, and final\ncompletion state — but the only way to see it today is manually finding and `cat`ing\nthe file. There is no \"what happened in recent runs against this repo\" view.",
+      "expected_route": "J"
+    }
+  ]
+}
