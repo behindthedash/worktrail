@@ -683,6 +683,78 @@ class TestCli(unittest.TestCase):
         self.assertIn("no evidence", out)
 
 
+class TestSearchResearchNotesWindow(unittest.TestCase):
+    """Task 4.1 -- `_search_research_notes()`'s window boundary: the search
+    window is `[since_str - RESEARCH_LOOKBACK_DAYS days, since_str +
+    RACE_GRACE_SECONDS]` (see `_offset_since`), anchored to the brief's own
+    `since_str`, not wall-clock "now"."""
+
+    NOTE_PATH = "docs/specs/research/investigation.md"
+
+    def _write_note(self, repo: str, content: str, date_iso: str) -> str:
+        _write(repo, self.NOTE_PATH, content)
+        return _commit(repo, "Add research note", date_iso)
+
+    def test_note_touched_inside_lookback_window_is_a_match(self):
+        # 17 days before since_str -- inside the 30-day RESEARCH_LOOKBACK_DAYS
+        # window, which opens 2026-05-02.
+        repo = _init_repo()
+        sha = self._write_note(repo, "This investigation covers widget.py in depth.\n", "2026-05-15T00:00:00+00:00")
+
+        probes = {"paths": ["widget.py"], "symbols": []}
+        matches, warning = cbs._search_research_notes(
+            Path(repo), "main", probes, "2026-06-01T00:00:00+00:00", cbs.SUBPROCESS_TIMEOUT_SECONDS,
+        )
+
+        found = [m for m in matches if m["path"] == self.NOTE_PATH and m["probe"] == "widget.py"]
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]["sha"], sha)
+        self.assertEqual(found[0]["kind"], "path")
+
+    def test_note_touched_before_window_start_is_not_a_match(self):
+        # 61 days before since_str -- before the 30-day lookback window opens
+        # (2026-05-02), so this note falls outside `git log --since`.
+        repo = _init_repo()
+        self._write_note(repo, "This investigation covers widget.py in depth.\n", "2026-04-01T00:00:00+00:00")
+
+        probes = {"paths": ["widget.py"], "symbols": []}
+        matches, warning = cbs._search_research_notes(
+            Path(repo), "main", probes, "2026-06-01T00:00:00+00:00", cbs.SUBPROCESS_TIMEOUT_SECONDS,
+        )
+
+        self.assertEqual(matches, [])
+
+    def test_note_touched_moments_after_capture_within_grace_is_a_match(self):
+        # 3 minutes after since_str -- within RACE_GRACE_SECONDS (300s), the
+        # same same-session-race grace window the forward-looking history
+        # search applies via `_widen_since`.
+        repo = _init_repo()
+        sha = self._write_note(repo, "This investigation covers widget.py in depth.\n", "2026-06-01T00:03:00+00:00")
+
+        probes = {"paths": ["widget.py"], "symbols": []}
+        matches, warning = cbs._search_research_notes(
+            Path(repo), "main", probes, "2026-06-01T00:00:00+00:00", cbs.SUBPROCESS_TIMEOUT_SECONDS,
+        )
+
+        found = [m for m in matches if m["path"] == self.NOTE_PATH and m["probe"] == "widget.py"]
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]["sha"], sha)
+
+    def test_pull_request_only_probe_set_yields_no_research_note_matches(self):
+        # A note touched squarely inside the window still yields nothing when
+        # `probes["paths"]`/`probes["symbols"]` are both empty -- only a
+        # pull-request probe was extracted from the brief.
+        repo = _init_repo()
+        self._write_note(repo, "This investigation covers widget.py in depth.\n", "2026-05-15T00:00:00+00:00")
+
+        probes = {"paths": [], "symbols": [], "pull_requests": ["89"]}
+        matches, warning = cbs._search_research_notes(
+            Path(repo), "main", probes, "2026-06-01T00:00:00+00:00", cbs.SUBPROCESS_TIMEOUT_SECONDS,
+        )
+
+        self.assertEqual(matches, [])
+
+
 class TestFormatVerifiedAbsentEvidence(unittest.TestCase):
     """Task 1.3 -- coverage for `format_verified_absent_evidence`, mirroring
     `test_check_brief_predicate.py`'s style of asserting on the exact
