@@ -523,6 +523,90 @@ def _read_note_content(repo: Path, base_ref: str, path: str, timeout: int) -> Op
     return out.stdout
 
 
+def _search_research_notes(
+    repo: Path, base_ref: str, probes: Dict[str, Any], since_str: str, timeout: int,
+) -> Tuple[List[Dict[str, str]], Optional[str]]:
+    """Backward-looking complement to the forward-looking git-history search
+    in `check()`: does an existing research note under `RESEARCH_NOTES_GLOB`
+    already document one of `probes["paths"]`/`probes["symbols"]`? Catches
+    the failure mode a delivering-commit search cannot: an investigation
+    note that already answered the brief's question, with no code change to
+    find.
+
+    Searches notes touched on `base_ref` within `[since_str -
+    RESEARCH_LOOKBACK_DAYS days, since_str + RACE_GRACE_SECONDS]` (see
+    `_offset_since`) -- anchored to `since_str`, not wall-clock "now", for
+    the reproducibility reason `RESEARCH_LOOKBACK_DAYS` documents; the upper
+    bound admits the same same-session-race grace window the forward search
+    applies via `RACE_GRACE_SECONDS`. Candidates are capped at
+    `RESEARCH_NOTE_CAP` (`_list_recent_research_notes` already orders them
+    most-recently-touched-first, so a plain slice keeps the most relevant),
+    and the whole phase is bounded by `RESEARCH_PHASE_BUDGET_SECONDS`; a
+    candidate not reached before the deadline is skipped and counted, never
+    silently dropped -- mirrors `_resolve_pr_number_probes`'s deadline
+    pattern. Each reached candidate's content is checked for each probe as a
+    literal substring -- no regex, no word-boundary logic, matching the
+    "was this string ever written down" bar `check()`'s own commit search
+    applies. Results are capped at `RESEARCH_MATCH_CAP`, mirroring
+    `PR_RESULT_CAP`.
+
+    Never raises. Returns `([], warning)` when the note-listing `git log`
+    itself fails; a per-candidate content/last-touch fetch failure instead
+    drops just that candidate (its content may simply not exist at
+    `base_ref` in this edge of the window) and is folded into the combined
+    warning string alongside the cap/deadline warnings above.
+    """
+    warnings: List[str] = []
+    window_since = _offset_since(since_str, -RESEARCH_LOOKBACK_DAYS * 86400)
+    window_until = _offset_since(since_str, RACE_GRACE_SECONDS)
+
+    candidates = _list_recent_research_notes(repo, base_ref, window_since, window_until, timeout)
+    if candidates is None:
+        return [], "git log failed or timed out while listing research notes"
+
+    if len(candidates) > RESEARCH_NOTE_CAP:
+        dropped_candidates = len(candidates) - RESEARCH_NOTE_CAP
+        candidates = candidates[:RESEARCH_NOTE_CAP]
+        warnings.append(
+            f"{dropped_candidates} additional research note(s) exceeded RESEARCH_NOTE_CAP="
+            f"{RESEARCH_NOTE_CAP} and were not searched"
+        )
+
+    paths = probes.get("paths") or []
+    symbols = probes.get("symbols") or []
+
+    matches: List[Dict[str, str]] = []
+    deadline = time.monotonic() + RESEARCH_PHASE_BUDGET_SECONDS
+    for i, path in enumerate(candidates):
+        if time.monotonic() >= deadline:
+            warnings.append(
+                f"research-note phase budget exceeded; skipped {len(candidates) - i} candidate(s)"
+            )
+            break
+        content = _read_note_content(repo, base_ref, path, timeout)
+        last_touch = _note_last_touch(repo, base_ref, path, timeout)
+        if content is None or last_touch is None:
+            warnings.append(f"could not read research note {path!r}")
+            continue
+        sha, date = last_touch
+        for probe in paths:
+            if probe in content:
+                matches.append({"sha": sha, "date": date, "path": path, "probe": probe, "kind": "path"})
+        for probe in symbols:
+            if probe in content:
+                matches.append({"sha": sha, "date": date, "path": path, "probe": probe, "kind": "symbol"})
+
+    if len(matches) > RESEARCH_MATCH_CAP:
+        dropped_matches = len(matches) - RESEARCH_MATCH_CAP
+        matches = matches[:RESEARCH_MATCH_CAP]
+        warnings.append(
+            f"{dropped_matches} additional research-note match(es) exceeded RESEARCH_MATCH_CAP="
+            f"{RESEARCH_MATCH_CAP} and were dropped"
+        )
+
+    return matches, ("; ".join(warnings) if warnings else None)
+
+
 def _parse_log(output: str, probe: str, kind: str) -> List[Dict[str, str]]:
     matches: List[Dict[str, str]] = []
     for line in output.splitlines():
