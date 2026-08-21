@@ -51,37 +51,37 @@
       mirroring the existing `matches`/`pull_requests` rendering) and to treat a non-empty
       `research_notes` the same as non-empty `matches`/`pull_requests` for the "no evidence"
       vs. "EVIDENCE" branch.
-- [ ] 2.3 [e2e] Confirm `main()`'s CLI JSON output (`--json`) and its non-JSON fallback both reflect
+- [x] 2.3 [e2e] Confirm `main()`'s CLI JSON output (`--json`) and its non-JSON fallback both reflect
       the new `research_notes` field with no CLI flag changes required (the field flows through
       `check()`'s existing return dict, read by the already-generic `json.dumps(res)` /
       `_format_human(res)` calls).
 
 ## 3. Skill doc
 
-- [ ] 3.1 In `skills/worktrail-go/references/brief-staleness-check.md`, update the JSON example
+- [x] 3.1 In `skills/worktrail-go/references/brief-staleness-check.md`, update the JSON example
       under "Reading the result" to include a `research_notes` entry, and update that section's
       table so the non-empty-evidence row reads "`matches`, `pull_requests`, or `research_notes`
       non-empty" triggering File-state verification — the same step and the same operator
       prompt, not a second ask site. Update the operator-prompt evidence-display wording to
       mention research-note citations alongside commit/PR ones.
       (Requirement: Research-Note Evidence Reaches The Same Operator Prompt)
-- [ ] 3.2 Update the "Cost and bounds" section to document `RESEARCH_LOOKBACK_DAYS`,
+- [x] 3.2 Update the "Cost and bounds" section to document `RESEARCH_LOOKBACK_DAYS`,
       `RESEARCH_NOTE_CAP`, `RESEARCH_MATCH_CAP`, and `RESEARCH_PHASE_BUDGET_SECONDS` alongside
       the existing bounds it already documents, in the same "module-level constants,
       deliberately not policy knobs" framing.
 
 ## 4. Tests
 
-- [ ] 4.1 In `tests/router/test_check_brief_staleness.py`, add coverage for
+- [x] 4.1 In `tests/router/test_check_brief_staleness.py`, add coverage for
       `_search_research_notes()`/the window boundary: a note touched inside the lookback window
       before capture is a match; a note touched before the window start is not; a note touched
       moments after capture (within `RACE_GRACE_SECONDS`) is still a match; a pull-request-only
       probe set yields no research-note matches.
       (Requirement: Backward-Looking Research-Note Search Complements The History Search)
-- [ ] 4.2 Add coverage for independent degradation: research-note search failure (simulate a
+- [x] 4.2 Add coverage for independent degradation: research-note search failure (simulate a
       failing/timeout `git` call) leaves `matches`/`pull_requests`/`checked` untouched and adds a
       warning; a forward-looking history-search failure does not suppress `research_notes`.
-- [ ] 4.3 Add coverage for `RESEARCH_NOTE_CAP`/`RESEARCH_MATCH_CAP` drop-and-count behavior, and
+- [x] 4.3 Add coverage for `RESEARCH_NOTE_CAP`/`RESEARCH_MATCH_CAP` drop-and-count behavior, and
       for `_format_human()` / the CLI `--json` output including `research_notes`, and for
       `format_verified_absent_evidence()`/`format_verified_present_closure_note()` with a
       non-empty `research_notes` argument.
