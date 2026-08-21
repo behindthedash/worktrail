@@ -495,6 +495,34 @@ def _list_recent_research_notes(
     return seen
 
 
+def _note_last_touch(repo: Path, base_ref: str, path: str, timeout: int) -> Optional[Tuple[str, str]]:
+    """Return `(sha, date)` for `path`'s most recent commit on `base_ref`, or
+    `None` if the lookup fails or `path` has no history there."""
+    out = _run_git(
+        repo,
+        ["log", "-1", "--format=%h\x1f%ad", "--date=short", base_ref, "--", path],
+        timeout,
+    )
+    if out is None or out.returncode != 0:
+        return None
+    line = out.stdout.strip()
+    if not line:
+        return None
+    parts = line.split("\x1f", 1)
+    if len(parts) != 2:
+        return None
+    return parts[0], parts[1]
+
+
+def _read_note_content(repo: Path, base_ref: str, path: str, timeout: int) -> Optional[str]:
+    """Return the content of `path` as of `base_ref`, or `None` if the
+    lookup fails (e.g. the path doesn't exist at that ref)."""
+    out = _run_git(repo, ["show", f"{base_ref}:{path}"], timeout)
+    if out is None or out.returncode != 0:
+        return None
+    return out.stdout
+
+
 def _parse_log(output: str, probe: str, kind: str) -> List[Dict[str, str]]:
     matches: List[Dict[str, str]] = []
     for line in output.splitlines():
