@@ -514,6 +514,59 @@ def cmd_scope_review(args: argparse.Namespace) -> int:
     return 0
 
 
+def _scope_review_worktree_empty_diff(record: Dict[str, Any]) -> Optional[str]:
+    """Best-effort cross-check: a `scope-review ... --status complete` entry is a
+    self-reported string (`--evidence`), never verified against the tree it claims
+    to describe -- the same self-report-without-verification gap
+    `#post-delegation-verification` closes for a delegate's own completion report,
+    now at the run level. When the run record's `worktree` still exists on disk and
+    `base_commit` is known, confirm the worktree actually differs from base before
+    trusting a "complete" entry.
+
+    Fail-open (returns `None`) whenever the check can't run cleanly: no "complete"
+    entry to verify, no `worktree`/`base_commit` recorded, the worktree already
+    torn down (the common case by the time `finish` runs), or a git call errors.
+    This is a defense-in-depth backstop, not the primary gate -- `git status
+    --porcelain` (not `git diff --quiet HEAD`) covers a brand-new untracked file
+    the same way `#post-delegation-verification` requires.
+    """
+    review = record.get("scope_review") or []
+    if not any(isinstance(e, str) and e.startswith("complete | ") for e in review):
+        return None
+    worktree = record.get("worktree")
+    base_commit = record.get("base_commit")
+    if not worktree or not base_commit:
+        return None
+    wt_path = Path(worktree)
+    if not wt_path.is_dir():
+        return None
+    try:
+        status = subprocess.run(
+            ["git", "-C", str(wt_path), "status", "--porcelain"],
+            capture_output=True, text=True,
+        )
+        diff = subprocess.run(
+            ["git", "-C", str(wt_path), "diff", "--quiet", base_commit],
+            capture_output=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    # `git diff <base_commit>` (no --cached) already reflects uncommitted edits to
+    # tracked files; the one thing it never shows is a brand-new untracked file
+    # (the same gap `#post-delegation-verification` names), which `status
+    # --porcelain` catches via its `??` prefix.
+    has_untracked = any(
+        line.startswith("??") for line in (status.stdout or "").splitlines()
+    )
+    if diff.returncode == 0 and not has_untracked:
+        return (
+            f"scope review records completed work but worktree {wt_path} has an "
+            f"empty diff vs base commit {base_commit} -- self-reported evidence "
+            "unverified"
+        )
+    return None
+
+
 def _enforce_scope_completeness_gate(record: Dict[str, Any], path: Path, status: str) -> None:
     """Code-enforced backstop closing the orchestrator group-PR gate-parity gap
     (docs/specs/research/go-orchestrator-gate-parity-audit.md): `pre_pr_gate.py`'s
@@ -532,6 +585,9 @@ def _enforce_scope_completeness_gate(record: Dict[str, Any], path: Path, status:
     from .pre_pr_gate import scope_review_failures
 
     failures = scope_review_failures(path)
+    diff_mismatch = _scope_review_worktree_empty_diff(record)
+    if diff_mismatch:
+        failures = [*failures, diff_mismatch]
     if failures:
         detail = "; ".join(failures)
         raise SystemExit(
