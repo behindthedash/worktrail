@@ -69,6 +69,16 @@ ROUTE_SIGNALS: Dict[str, List[Tuple[re.Pattern, int, str]]] = {
         _sig(r"\brouting (logic|rules?)\b|\bclassifier\b", 4, "routing-logic"),
         _sig(r"\bclassify\.py\b", 5, "classify-py"),
         _sig(r"\bworkflow itself\b|\bthe (autonomous )?workflow\b", 3, "workflow-self"),
+        # Path-shaped mentions of a skill/reference-doc file (e.g.
+        # "worktrail-go/references/subagent-prompts.md") don't contain the
+        # literal words "skill.md" or "subagent prompt" the two signals above
+        # look for, so a brief describing a change to one silently scored
+        # zero J signals (20260821-053248, live on brief 20260820-214356:
+        # scored F=4/J=0 despite targeting subagent-prompts.md's dispatch
+        # guidance -- textbook Route J per this route's own definition).
+        _sig(r"\b[\w.-]*(?:references|skills)/[\w./-]*\.md\b", 4, "reference-doc-path"),
+        _sig(r"\b[\w-]*(?:skill|prompt)[\w-]*\.md\b", 4, "reference-doc-filename"),
+        _sig(r"\bdispatch guidance\b", 3, "dispatch-guidance"),
     ],
     "E": [
         _sig(r"\bcontinue\b|\bresume\b|\bpick (it |this )?up\b|\bcarry on\b", 3, "resume-verb"),

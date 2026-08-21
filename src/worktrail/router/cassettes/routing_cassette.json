@@ -213,6 +213,11 @@
       "id": "missing-safeguard-is-defect-repair",
       "request": "auto-merge.yml has no docs-only skip gate, so docs-only changes burn CI minutes on every self-hosted job",
       "expect": {"route": "F", "confidence": "medium"}
+    },
+    {
+      "id": "reference-doc-path-mention-is-workflow-evolution",
+      "request": "add a mandatory post-fork verification step to worktrail-go/references/subagent-prompts.md's dispatch guidance, wherever it documents delegating implementation work to a fork or subagent",
+      "expect": {"route": "J", "confidence": "high", "gates_include": ["routing_cassette_required"]}
     }
   ]
 }
