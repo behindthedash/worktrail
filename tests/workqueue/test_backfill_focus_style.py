@@ -20,6 +20,8 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any, Dict
+from unittest import mock
 
 from worktrail.workqueue import work_queue as q
 from worktrail.workqueue import backfill_focus_style as bf
@@ -322,6 +324,116 @@ class SpanSpliceExecuteTestCase(unittest.TestCase):
             "## Discovery context\n\nsome notes that must survive untouched\n",
             new_content,
         )
+
+
+class ExecuteApplyTestCase(unittest.TestCase):
+    """Exercises `execute_apply`'s safety contract: `decline` never writes,
+    a stale/re-run preview never re-clobbers or double-splices, a file
+    that's gone or changed since preview is skipped rather than
+    overwritten, and a forced post-write validation failure rolls the
+    write back to the original content -- per task 2.3."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self._tmp.name)
+        self.queue_dir = self.tmp_path / "queue"
+        self.queue_dir.mkdir(parents=True)
+        os.environ["WORK_QUEUE_DIR"] = str(self.tmp_path)
+        importlib.reload(q)
+        importlib.reload(bf)
+
+    def tearDown(self):
+        os.environ.pop("WORK_QUEUE_DIR", None)
+        self._tmp.cleanup()
+
+    def _preview_for(self, path: Path) -> Dict[str, Any]:
+        result = bf.build_preview(self.tmp_path)
+        proposal = next(p for p in result["proposals"] if p["path"] == str(path))
+        return {"proposals": [proposal], "skipped": []}
+
+    def test_decline_writes_nothing(self):
+        brief_id = "20260301-000001-a"
+        content = _make_brief(brief_id, PLAIN_SCALAR_FOCUS_LINES)
+        path = self.queue_dir / f"{brief_id}.md"
+        path.write_text(content, encoding="utf-8")
+        preview = self._preview_for(path)
+
+        result = bf.execute_apply(preview, self.tmp_path, confirm=False)
+
+        self.assertEqual(result["stamped"], [])
+        self.assertEqual(len(result["skipped"]), 1)
+        self.assertEqual(result["skipped"][0]["reason"], "declined")
+        self.assertEqual(path.read_text(encoding="utf-8"), content)
+
+    def test_confirm_is_idempotent_does_not_reclobber(self):
+        brief_id = "20260301-000002-b"
+        content = _make_brief(brief_id, PLAIN_SCALAR_FOCUS_LINES)
+        path = self.queue_dir / f"{brief_id}.md"
+        path.write_text(content, encoding="utf-8")
+        preview = self._preview_for(path)
+
+        first = bf.execute_apply(preview, self.tmp_path, confirm=True)
+        self.assertEqual(first["stamped"], [brief_id])
+        self.assertEqual(first["skipped"], [])
+        rewritten = path.read_text(encoding="utf-8")
+
+        # Re-run the SAME (now-stale) preview against the already-fixed
+        # file -- must be a no-op, not a double-splice.
+        second = bf.execute_apply(preview, self.tmp_path, confirm=True)
+
+        self.assertEqual(second["stamped"], [])
+        self.assertEqual(len(second["skipped"]), 1)
+        self.assertIn("focus: span changed since preview", second["skipped"][0]["reason"])
+        self.assertEqual(path.read_text(encoding="utf-8"), rewritten)
+
+    def test_confirm_skips_focus_changed_since_preview(self):
+        brief_id = "20260301-000003-c"
+        content = _make_brief(brief_id, PLAIN_SCALAR_FOCUS_LINES)
+        path = self.queue_dir / f"{brief_id}.md"
+        path.write_text(content, encoding="utf-8")
+        preview = self._preview_for(path)
+
+        # Someone else rewrites the focus: value after preview was taken,
+        # before execute --confirm runs.
+        mutated = content.replace("focus: fix the bug", "focus: something else entirely")
+        path.write_text(mutated, encoding="utf-8")
+
+        result = bf.execute_apply(preview, self.tmp_path, confirm=True)
+
+        self.assertEqual(result["stamped"], [])
+        self.assertEqual(len(result["skipped"]), 1)
+        self.assertIn("focus: span changed since preview", result["skipped"][0]["reason"])
+        self.assertEqual(path.read_text(encoding="utf-8"), mutated)
+
+    def test_confirm_skips_file_removed_since_preview(self):
+        brief_id = "20260301-000004-d"
+        content = _make_brief(brief_id, PLAIN_SCALAR_FOCUS_LINES)
+        path = self.queue_dir / f"{brief_id}.md"
+        path.write_text(content, encoding="utf-8")
+        preview = self._preview_for(path)
+        path.unlink()
+
+        result = bf.execute_apply(preview, self.tmp_path, confirm=True)
+
+        self.assertEqual(result["stamped"], [])
+        self.assertEqual(len(result["skipped"]), 1)
+        self.assertIn("no longer present", result["skipped"][0]["reason"])
+
+    def test_confirm_rolls_back_on_forced_validation_failure(self):
+        brief_id = "20260301-000005-e"
+        content = _make_brief(brief_id, PLAIN_SCALAR_FOCUS_LINES)
+        path = self.queue_dir / f"{brief_id}.md"
+        path.write_text(content, encoding="utf-8")
+        preview = self._preview_for(path)
+
+        with mock.patch.object(bf, "validate_brief", return_value=(False, "forced failure")):
+            result = bf.execute_apply(preview, self.tmp_path, confirm=True)
+
+        self.assertEqual(result["stamped"], [])
+        self.assertEqual(len(result["skipped"]), 1)
+        self.assertIn("rolled back", result["skipped"][0]["reason"])
+        # Content restored exactly to its pre-write state.
+        self.assertEqual(path.read_text(encoding="utf-8"), content)
 
 
 if __name__ == "__main__":
