@@ -463,6 +463,38 @@ def _offset_since(since_str: str, seconds: int) -> str:
     return (since_dt + datetime.timedelta(seconds=seconds)).isoformat()
 
 
+def _list_recent_research_notes(
+    repo: Path, base_ref: str, window_since: str, window_until: str, timeout: int,
+) -> Optional[List[str]]:
+    """List research-note paths (matching `RESEARCH_NOTES_GLOB`) touched on
+    `base_ref` within `[window_since, window_until]`, deduplicated in
+    first-seen order -- `git log` visits commits newest-first, so first-seen
+    is most-recently-touched-first. Returns `None` on failure, mirroring
+    `_search_probe()`.
+    """
+    out = _run_git(
+        repo,
+        [
+            "log", base_ref,
+            f"--since={window_since}", f"--until={window_until}",
+            "--name-only", "--format=",
+            "--", RESEARCH_NOTES_GLOB,
+        ],
+        timeout,
+    )
+    if out is None or out.returncode != 0:
+        return None
+    seen: List[str] = []
+    seen_set = set()
+    for line in out.stdout.splitlines():
+        path = line.strip()
+        if not path or path in seen_set:
+            continue
+        seen_set.add(path)
+        seen.append(path)
+    return seen
+
+
 def _parse_log(output: str, probe: str, kind: str) -> List[Dict[str, str]]:
     matches: List[Dict[str, str]] = []
     for line in output.splitlines():
