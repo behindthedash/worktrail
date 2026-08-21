@@ -78,6 +78,19 @@ NO_FOCUS_KEY_BRIEF = (
     "## Focus\n\nno frontmatter focus, only a body section\n"
 )
 
+# Real defect shape: a plain (unquoted) scalar containing a bare ` #NNN`
+# reference (e.g. a PR number) is silently truncated by PyYAML's own
+# scanner, which treats ` #` as a comment start.
+PLAIN_UNQUOTED_WITH_HASH_BRIEF = (
+    "---\n"
+    "id: 20260101-000005-e\n"
+    "created: 2026-01-01T00:00:05-07:00\n"
+    "focus: fix the thing (PR #171) and clean up\n"
+    "status: queued\n"
+    "---\n\n"
+)
+PLAIN_UNQUOTED_WITH_HASH_VALUE = "fix the thing (PR #171) and clean up"
+
 
 class BuildPreviewTestCase(unittest.TestCase):
     def setUp(self):
@@ -124,6 +137,22 @@ class BuildPreviewTestCase(unittest.TestCase):
         self.assertEqual(result["proposals"], [])
         self.assertEqual(result["skipped"], [])
 
+    def test_proposes_plain_unquoted_focus_with_bare_hash(self):
+        # A bare ` #NNN` inside a plain scalar is a PyYAML comment-start
+        # trap, not an intentional comment -- the full line must be
+        # recovered, not silently truncated before the `#`.
+        _write_raw(
+            self.queue_dir,
+            "20260101-000005-e.md",
+            PLAIN_UNQUOTED_WITH_HASH_BRIEF,
+        )
+        result = bf.build_preview(self.tmp_path)
+        self.assertEqual(len(result["proposals"]), 1)
+        proposal = result["proposals"][0]
+        self.assertEqual(proposal["id"], "20260101-000005-e")
+        self.assertEqual(proposal["focus_value"], PLAIN_UNQUOTED_WITH_HASH_VALUE)
+        self.assertEqual(result["skipped"], [])
+
     def test_skips_brief_with_no_focus_frontmatter_key(self):
         _write_raw(self.queue_dir, "20260101-000004-d.md", NO_FOCUS_KEY_BRIEF)
         result = bf.build_preview(self.tmp_path)
@@ -164,6 +193,8 @@ def _splice_in_place(path: Path):
 FOCUS_VALUE = "fix the bug"
 
 PLAIN_SCALAR_FOCUS_LINES = "focus: fix the bug\n"
+PLAIN_SCALAR_WITH_HASH_FOCUS_LINES = "focus: fix the thing (PR #171) and clean up\n"
+PLAIN_SCALAR_WITH_HASH_FOCUS_VALUE = "fix the thing (PR #171) and clean up"
 SINGLE_QUOTED_FOCUS_LINES = "focus: 'fix the bug'\n"
 FOLDED_FOCUS_LINES = "focus: >-\n  Fix the bug\n\n  Add a regression test\n"
 FOLDED_FOCUS_VALUE = "Fix the bug\nAdd a regression test"
@@ -278,6 +309,14 @@ class SpanSpliceExecuteTestCase(unittest.TestCase):
     def test_splices_plain_scalar_focus(self):
         content = _make_brief("20260201-000001-a", PLAIN_SCALAR_FOCUS_LINES)
         self._assert_spliced_correctly("20260201-000001-a", content, FOCUS_VALUE)
+
+    def test_splices_plain_scalar_focus_with_bare_hash(self):
+        content = _make_brief(
+            "20260201-000007-g", PLAIN_SCALAR_WITH_HASH_FOCUS_LINES
+        )
+        self._assert_spliced_correctly(
+            "20260201-000007-g", content, PLAIN_SCALAR_WITH_HASH_FOCUS_VALUE
+        )
 
     def test_splices_single_quoted_focus(self):
         content = _make_brief("20260201-000002-b", SINGLE_QUOTED_FOCUS_LINES)

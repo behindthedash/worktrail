@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -43,6 +44,14 @@ from . import work_queue as wq
 from ..shared.brief_frontmatter import serialize_frontmatter, validate_brief
 
 _FOCUS_KEY_PREFIX = "focus: "
+
+# A plain (unquoted) scalar sharing a physical line with a bare `#` preceded
+# by whitespace is truncated by PyYAML's own scanner, which treats that as a
+# comment start -- e.g. `focus: ... (PR #171) ...` parses as just `... (PR`.
+# These corpus files were never hand-authored YAML with an intentional
+# trailing comment; the `#` is unquoted free text. `_find_focus_span` uses
+# this to detect the truncation and recover the full line as the true value.
+_TRAILING_COMMENT_RE = re.compile(r"^\s+#")
 
 
 def _find_focus_span(raw_yaml: str) -> Optional[Tuple[Any, int, int]]:
@@ -64,7 +73,23 @@ def _find_focus_span(raw_yaml: str) -> Optional[Tuple[Any, int, int]]:
     for key_node, value_node in node.value:
         if isinstance(key_node, yaml.ScalarNode) and key_node.value == "focus":
             parsed = yaml.safe_load(raw_yaml)
-            return parsed["focus"], value_node.start_mark.index, value_node.end_mark.index
+            value = parsed["focus"]
+            start, end = value_node.start_mark.index, value_node.end_mark.index
+
+            # Only a plain scalar confined to one physical line is eligible --
+            # a quoted/block scalar has no comment-truncation risk, and a
+            # multi-line plain (folded) scalar has no single "rest of the
+            # line" to recover from, so it is left to the existing behavior.
+            if value_node.style is None and value_node.start_mark.line == value_node.end_mark.line:
+                line_end = raw_yaml.find("\n", end)
+                if line_end == -1:
+                    line_end = len(raw_yaml)
+                if _TRAILING_COMMENT_RE.match(raw_yaml[end:line_end]):
+                    recovered = raw_yaml[start:line_end].rstrip()
+                    if recovered != value:
+                        value, end = recovered, start + len(recovered)
+
+            return value, start, end
     return None
 
 
