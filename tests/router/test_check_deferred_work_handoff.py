@@ -17,6 +17,7 @@ from worktrail.router import run_record
 from worktrail.router.check_deferred_work_handoff import (
     find_flagged,
     load_deferred_work_entries,
+    matches_deferral_phrase,
 )
 
 
@@ -98,6 +99,87 @@ class FindFlaggedIgnoresScopeReviewTests(unittest.TestCase):
             flagged_texts = [f["text"] for f in flagged]
             self.assertNotIn(
                 "different purpose: deferred until calibration is done", flagged_texts,
+            )
+
+
+class MatchesDeferralPhraseTests(unittest.TestCase):
+    def test_matches_known_phrase_case_insensitively(self):
+        self.assertTrue(matches_deferral_phrase("Clean this up as a FOLLOW-UP later"))
+        self.assertTrue(matches_deferral_phrase("wire the retry backoff in a LATER PR"))
+
+    def test_does_not_match_text_without_any_deferral_phrase(self):
+        self.assertFalse(matches_deferral_phrase("rename the helper function for clarity"))
+
+
+class PhraseMatchingCandidacyTests(unittest.TestCase):
+    """Requirement: Deferral-Phrase Matching -- phrase-matching entries become
+    candidates; non-matching entries are never flagged regardless of handoff
+    coverage."""
+
+    def test_phrase_matching_entry_without_coverage_becomes_candidate(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                tempfile.TemporaryDirectory() as queue_home:
+            path = _start_record(tmp)
+            _append(path, "deferred_work", "clean up the retry helper in a later pr")
+
+            with patch.dict(
+                "os.environ", {"WORK_QUEUE_DIR": str(Path(queue_home) / "work-queue")},
+            ):
+                flagged = find_flagged([path])
+
+            self.assertEqual(len(flagged), 1)
+            self.assertEqual(flagged[0]["text"], "clean up the retry helper in a later pr")
+            self.assertEqual(flagged[0]["run_record"], path)
+
+    def test_non_matching_entry_never_flagged_even_without_handoff_coverage(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                tempfile.TemporaryDirectory() as queue_home:
+            path = _start_record(tmp)
+            _append(path, "deferred_work", "rename the helper function for clarity")
+
+            with patch.dict(
+                "os.environ", {"WORK_QUEUE_DIR": str(Path(queue_home) / "work-queue")},
+            ), patch(
+                "worktrail.router.check_deferred_work_handoff.has_handoff_coverage",
+                return_value=False,
+            ):
+                flagged = find_flagged([path])
+
+            self.assertEqual(flagged, [])
+
+    def test_non_matching_entry_never_flagged_even_when_coverage_would_have_matched(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                tempfile.TemporaryDirectory() as queue_home:
+            path = _start_record(tmp)
+            _append(path, "deferred_work", "rename the helper function for clarity")
+
+            # If handoff coverage were somehow the only gate, this would force
+            # a flag; phrase matching must still exclude this entry first.
+            with patch.dict(
+                "os.environ", {"WORK_QUEUE_DIR": str(Path(queue_home) / "work-queue")},
+            ), patch(
+                "worktrail.router.check_deferred_work_handoff.has_handoff_coverage",
+                return_value=True,
+            ):
+                flagged = find_flagged([path])
+
+            self.assertEqual(flagged, [])
+
+    def test_mixed_entries_only_phrase_matching_one_becomes_candidate(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                tempfile.TemporaryDirectory() as queue_home:
+            path = _start_record(tmp)
+            _append(path, "deferred_work", "rename the helper function for clarity")
+            _append(path, "deferred_work", "revisit this once calibrated against prod data")
+
+            with patch.dict(
+                "os.environ", {"WORK_QUEUE_DIR": str(Path(queue_home) / "work-queue")},
+            ):
+                flagged = find_flagged([path])
+
+            flagged_texts = [f["text"] for f in flagged]
+            self.assertEqual(
+                flagged_texts, ["revisit this once calibrated against prod data"],
             )
 
 
