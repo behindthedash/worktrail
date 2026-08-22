@@ -149,6 +149,26 @@ def check_deferred_work(run_record_paths: list[str]) -> list[dict]:
     return flagged if isinstance(flagged, list) else []
 
 
+def build_deferred_work_block(flagged: list[dict]) -> str:
+    """A second, separate instruction block flagging deferred-work entries that
+    don't appear covered by an existing handoff brief.
+
+    Appended to `INSTRUCTION`'s text in `reason`, never merged into it, so the
+    EXCEPTIONAL-VALUE gate's own trigger conditions stay untouched.
+    """
+    lines = "\n".join(
+        f"- {item.get('text')} (run record: {item.get('run_record')})" for item in flagged
+    )
+    return (
+        "\n\n---\n\n"
+        "DEFERRED WORK FLAGGED — this session's run record noted deferred-work item(s) that "
+        "don't appear covered by an existing Worktrail handoff brief:\n\n"
+        f"{lines}\n\n"
+        "Before finishing, decide whether each needs its own `worktrail-handoff --focus \"<focus>\" "
+        "--json` capture, or is already tracked elsewhere."
+    )
+
+
 def main() -> int:
     if os.environ.get("CC_HEADLESS") == "1":
         return 0
@@ -169,7 +189,10 @@ def main() -> int:
 
         sentinel.write_text("1", encoding="utf-8")
         flagged = check_deferred_work(run_record_paths)
-        print(json.dumps({"decision": "block", "reason": INSTRUCTION}))
+        reason = INSTRUCTION
+        if flagged:
+            reason += build_deferred_work_block(flagged)
+        print(json.dumps({"decision": "block", "reason": reason}))
     except Exception:
         # Hooks must never break a session.
         return 0
