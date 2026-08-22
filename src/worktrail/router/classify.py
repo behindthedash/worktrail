@@ -46,7 +46,11 @@ ROUTE_NAMES = {
 # Spec-id citation (e.g. `003-payments`) — named because the D-demotion
 # precondition keys on it; a positional ROUTE_SIGNALS["D"][1][0] lookup silently
 # broke whenever the D signal list was reordered.
-_SPEC_ID_RE = re.compile(r"\b\d{3}-[a-z0-9][a-z0-9-]*\b")
+# Same (?<!#) guard as F's crash signal (PR #617): a bare 3-digit-hyphen-word
+# shape immediately preceded by `#` is always a PR/issue-number citation with
+# a hyphenated suffix (e.g. "PR #617-style", "issue #310-related"), never a
+# real spec-id -- spec-ids are never written with a `#` prefix.
+_SPEC_ID_RE = re.compile(r"(?<!#)\b\d{3}-[a-z0-9][a-z0-9-]*\b")
 
 # Cited PR numbers (e.g. `PR #68`), used to look up live PR state so the
 # pr-repair signal below doesn't fire for delivery that's already settled.

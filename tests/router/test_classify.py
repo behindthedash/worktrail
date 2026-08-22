@@ -431,6 +431,32 @@ class TestChangeFromToIntent(unittest.TestCase):
         self.assertIn("from-to", hits["G"])
 
 
+class TestSpecIdCitationGuard(unittest.TestCase):
+    """The D ('implementation') scoring's 'spec-id' signal (_SPEC_ID_RE)
+    previously matched any bare `\\d{3}-word` shape, so a PR/issue-number
+    citation with a hyphenated suffix (e.g. "PR #617-style", "issue
+    #310-related") was misread as a spec-id reference -- same false-positive
+    shape as F's crash signal (PR #617), fixed here with the identical
+    (?<!#) guard (20260821-225442)."""
+
+    def test_hyphenated_pr_citation_does_not_score_spec_id(self):
+        hits = _score_routes(
+            "This mirrors the guard from PR #617-style fixes")[1]
+        self.assertNotIn("spec-id", hits["D"])
+
+    def test_hyphenated_issue_citation_does_not_score_spec_id(self):
+        hits = _score_routes("closes issue #310-related work")[1]
+        self.assertNotIn("spec-id", hits["D"])
+
+    def test_genuine_multi_word_spec_id_still_scores_d(self):
+        hits = _score_routes("see 092-controlled-launch for details")[1]
+        self.assertIn("spec-id", hits["D"])
+
+    def test_genuine_single_word_spec_id_still_scores_d(self):
+        hits = _score_routes("024-mfa rollout is done")[1]
+        self.assertIn("spec-id", hits["D"])
+
+
 class TestCitedPrStates(unittest.TestCase):
     """cited_pr_states/_pr_state — the only live-I/O boundary in this module,
     exercised here with an injected fake runner (no real `gh`/network calls)."""
