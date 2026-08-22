@@ -61,10 +61,11 @@ def load_deferred_work_entries(run_record_paths: Iterable[Union[str, Path]]) -> 
         path = Path(raw_path)
         try:
             record, _warning = _load_lenient(path)
-        except OSError:
-            # Missing/unreadable file -- `_load_lenient` only catches its own
-            # `RunRecordFormatError`, not an absent path or a permissions
-            # failure; both are just as fail-open here.
+        except (OSError, UnicodeDecodeError):
+            # Missing/unreadable file, or non-UTF-8 content -- `_load_lenient`
+            # only catches its own `RunRecordFormatError`, not an absent path,
+            # a permissions failure, or a decode error; all are just as
+            # fail-open here.
             continue
         if record is None:
             continue
@@ -128,3 +129,56 @@ def has_handoff_coverage(text: str) -> bool:
         if any(str(probe).lower() in lowered_focus for probe in candidates):
             return True
     return False
+
+
+def find_flagged(run_record_paths: Iterable[Union[str, Path]]) -> List[Dict[str, str]]:
+    """Deferred-work entries that match a deferral phrase and lack handoff coverage.
+
+    Runs `load_deferred_work_entries` (fail-open per-path already), keeps only
+    phrase-matching entries, and drops any already covered by an existing
+    `queue/`/`picked/` brief per `has_handoff_coverage`.
+    """
+    flagged: List[Dict[str, str]] = []
+    for entry in load_deferred_work_entries(run_record_paths):
+        text = entry["text"]
+        if not matches_deferral_phrase(text):
+            continue
+        if has_handoff_coverage(text):
+            continue
+        flagged.append(entry)
+    return flagged
+
+
+def main(argv: List[str] | None = None) -> int:
+    import argparse
+    import json
+
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument(
+        "--run-record", dest="run_record", action="append", default=[],
+        metavar="PATH", help="run-record YAML path; may be repeated",
+    )
+    p.add_argument("--json", action="store_true")
+    args = p.parse_args(argv)
+
+    flagged = find_flagged(args.run_record)
+    result = {"flagged": flagged}
+
+    if args.json:
+        print(json.dumps(result))
+    else:
+        if not flagged:
+            print("No deferred-work handoff gaps found.")
+        else:
+            for item in flagged:
+                print(f"{item['run_record']}: {item['text']}")
+
+    # Always 0: fail-open signal source, never a dispatch gate -- see
+    # Requirement: Fail-Open And Headless-Excluded.
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+
+    sys.exit(main())
