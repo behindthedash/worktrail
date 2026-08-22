@@ -27,6 +27,13 @@ HOOKS_JSON = REPO_ROOT / "hooks" / "hooks.json"
 
 COMMAND_RE = re.compile(r"\bworktrail-[a-z0-9-]+")
 
+# Non-command `worktrail-*` tokens that legitimately appear in skill docs.
+# COMMAND_RE stops at the first char outside [a-z0-9-], so a backtick-quoted
+# `docs/specs/worktrail-go-policy.yaml` mention matches "worktrail-go-policy"
+# (everything up to the literal '.') -- that's the per-repo policy filename,
+# not a console script.
+_NON_COMMAND_TOKENS = frozenset({"worktrail-go-policy"})
+
 # The shell form that actually resolves a plugin path. Prose may legitimately
 # name the variable to state that it is no longer used, so match the expansion,
 # not the bare word.
@@ -53,7 +60,11 @@ def test_every_referenced_command_is_a_real_console_script():
     """A SKILL.md naming a command that no longer exists sends the agent down a
     dead path at runtime; nothing else in the suite would catch it."""
     # Skill names share the worktrail- prefix but are not console scripts.
-    known = _console_scripts() | {d.name for d in SKILLS_DIR.iterdir() if d.is_dir()}
+    known = (
+        _console_scripts()
+        | {d.name for d in SKILLS_DIR.iterdir() if d.is_dir()}
+        | _NON_COMMAND_TOKENS
+    )
     unresolved: dict[str, list[str]] = {}
     for doc in _skill_docs():
         for name in COMMAND_RE.findall(doc.read_text()):
