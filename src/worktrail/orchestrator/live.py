@@ -1974,7 +1974,7 @@ def bootstrap_worktree(
     the per-task fan-out.
 
     `bootstrap_cmd` is the repo's documented install command (e.g. "npm ci" or
-    "cd app && npm ci"), sourced from go-policy.yaml's `worktree_bootstrap_cmd`.
+    "cd app && npm ci"), sourced from worktrail-go-policy.yaml's `worktree_bootstrap_cmd`.
     None/empty -> skip entirely, so repos without a wired command are unaffected.
     For Node repos, `worktrail-bootstrap-node-modules` (bootstrap_node_modules.py)
     is a drop-in `bootstrap_cmd` that hardlink-clones this fan-out's spec worktree
@@ -4898,7 +4898,7 @@ def _full_real_inner(
     purpose_tier_map — optional {purpose: tier} table (routing.purpose_tiers),
                   threaded to every LiveSpawn this run constructs alongside
                   tier_map (task-purpose-classification 5.1).
-    migration_patterns — optional fnmatch glob list (go-policy.yaml's
+    migration_patterns — optional fnmatch glob list (worktrail-go-policy.yaml's
                   migration_path_patterns) identifying schema-migration file paths;
                   any task touching one is folded into coordinator.plan_groups()'s
                   BASE group so it can't be quarantined independently of code that
@@ -4908,7 +4908,7 @@ def _full_real_inner(
                   merged, before the next independent group in this run is
                   allowed to merge (verify.py's cumulative post-merge gate).
                   None = gate disabled, no behavior change. See
-                  policy.resolve_post_merge_smoke_cmd() for the go-policy.yaml
+                  policy.resolve_post_merge_smoke_cmd() for the worktrail-go-policy.yaml
                   fallback to integrate_smoke_cmd.
 
     Run this DETACHED (background), never as a blocking foreground call: it fans
@@ -5378,7 +5378,7 @@ def main(argv=None) -> int:
         type=int,
         default=3,
         help="Fan-out width: concurrent task worktrees with live agent workers. "
-        "Sourced from go-policy.yaml's max_workers by the sdd-workflow conductor "
+        "Sourced from worktrail-go-policy.yaml's max_workers by the sdd-workflow conductor "
         "when that key is set; an explicit invocation value wins.",
     )
     fr.add_argument(
@@ -5431,7 +5431,7 @@ def main(argv=None) -> int:
         "'complexity:domain=agent[:model]'; matched tasks route implement/fix/cleanup "
         "spawns to that agent (its own default model unless one is given here). "
         "Never consulted for review/resolve/ci-fix/assembly-resolve (DEC-003). "
-        "Sourced from go-policy.yaml's routing.tiers by the sdd-workflow conductor "
+        "Sourced from worktrail-go-policy.yaml's routing.tiers by the sdd-workflow conductor "
         "(policy.py's resolve_tier_map()); a domain-less tier (resolve_tier_map()'s "
         "(complexity, None) key) has no CLI-string representation -- _parse_tier_map() "
         "always yields an empty-string domain, never None -- so domain-less tiers only "
@@ -5447,7 +5447,7 @@ def main(argv=None) -> int:
         "the mapped tier instead of its complexity, for implement/fix/cleanup spawns only "
         "(task.get('purpose') wins over task.get('complexity') when it resolves here). "
         "Never consulted for review/resolve/ci-fix/assembly-resolve (DEC-003). Sourced from "
-        "go-policy.yaml's routing.purpose_tiers via policy.py's resolve_routing() "
+        "worktrail-go-policy.yaml's routing.purpose_tiers via policy.py's resolve_routing() "
         "(task-purpose-classification 3.2/5.1). Omit for pre-spec behavior (REQ-016).",
     )
     fr.add_argument(
@@ -5498,7 +5498,7 @@ def main(argv=None) -> int:
         dest="smoke_cmd",
         help="Shell command run on each group's integration branch before its PR opens "
         "(e.g. 'pytest -q' or 'cd app && npm ci && npm test'); a non-zero exit quarantines "
-        "the group. Omit to auto-resolve from go-policy.yaml (pre_pr_cmd, falling back to "
+        "the group. Omit to auto-resolve from worktrail-go-policy.yaml (pre_pr_cmd, falling back to "
         "integrate_smoke_cmd -- same precedence as pre_pr_gate.py); explicit --smoke-cmd "
         "always wins over policy. Repos with neither key configured are unaffected "
         "(never blocked) -- this only closes the gap of forgetting to pass the flag on "
@@ -5512,7 +5512,7 @@ def main(argv=None) -> int:
         "after each group's PR CONFIRMS merged, before the next independent group in "
         "this run is allowed to merge; a non-zero exit blocks every remaining group "
         "from merging (the merge that triggered it already landed and is not reverted "
-        "automatically). Omit to auto-resolve from go-policy.yaml (post_merge_smoke_cmd, "
+        "automatically). Omit to auto-resolve from worktrail-go-policy.yaml (post_merge_smoke_cmd, "
         "falling back to integrate_smoke_cmd); explicit --post-merge-smoke-cmd always "
         "wins over policy. Repos with neither key configured are unaffected (gate "
         "skipped entirely, identical to pre-existing behavior).",
@@ -5524,7 +5524,7 @@ def main(argv=None) -> int:
         help="Shell command run in each freshly-created task worktree right after it is "
         "created, before a worker is spawned into it, to install local dependencies "
         "(e.g. 'npm ci' or 'cd app && npm ci'). Task worktrees branch off the base commit "
-        "and start without the base checkout's node_modules. Sourced from go-policy.yaml's "
+        "and start without the base checkout's node_modules. Sourced from worktrail-go-policy.yaml's "
         "worktree_bootstrap_cmd by the sdd-workflow conductor; omit to skip. Non-fatal: a "
         "failed install is logged and the worker still self-installs.",
     )
@@ -5540,7 +5540,7 @@ def main(argv=None) -> int:
         "group -- a migration and the code that depends on the tables it creates rarely "
         "share a files entry, so a migration quarantined on its own can silently leave "
         "consumer code merged against tables that don't exist. Sourced from "
-        "go-policy.yaml's migration_path_patterns by the sdd-workflow conductor; omit to "
+        "worktrail-go-policy.yaml's migration_path_patterns by the sdd-workflow conductor; omit to "
         "skip (no behavior change).",
     )
     fr.add_argument(
@@ -5554,7 +5554,7 @@ def main(argv=None) -> int:
         "stuck, or check-less PR never blocks integration beyond this bound. "
         "Serializes only the integrate+PR-open step across the concurrent "
         "per-group IV threads; verify still overlaps. Sourced from "
-        "go-policy.yaml's pr_pacing_wait_s by the sdd-workflow conductor.",
+        "worktrail-go-policy.yaml's pr_pacing_wait_s by the sdd-workflow conductor.",
     )
     fr.add_argument(
         "--merge-method",
@@ -5562,7 +5562,7 @@ def main(argv=None) -> int:
         dest="merge_method",
         choices=("merge", "squash", "rebase"),
         help="Merge method for auto_merge() to use for THIS base branch, overriding "
-        "verify.py's repo-wide GitHub-settings detection. Sourced from go-policy.yaml's "
+        "verify.py's repo-wide GitHub-settings detection. Sourced from worktrail-go-policy.yaml's "
         "merge_method_by_base by the sdd-workflow conductor (policy.py "
         "--merge-method-for-branch); omit to keep repo-wide auto-detection.",
     )

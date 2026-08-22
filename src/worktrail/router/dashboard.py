@@ -1977,7 +1977,7 @@ def scan_repos(parent: Path, run_record_dir: Optional[Path] = None) -> List[Dict
     git repos.
 
     `policy_findings` is `policy_selfcheck.check_repo()`'s cross-repo
-    copy-paste signals for this repo's `go-policy.yaml` (empty = clean, or
+    copy-paste signals for this repo's `worktrail-go-policy.yaml` (empty = clean, or
     the sibling module is unavailable — degrades silently, matching every
     other optional import in this file).
 
@@ -1987,7 +1987,7 @@ def scan_repos(parent: Path, run_record_dir: Optional[Path] = None) -> List[Dict
     clean or no automerge workflow present).
 
     `drift_findings` is `policy_drift_selfcheck.check_repo()`'s signals for
-    this repo's `go-policy.yaml` no longer describing repo reality — test files
+    this repo's `worktrail-go-policy.yaml` no longer describing repo reality — test files
     no runner reaches, or absence-claims contradicted by the filesystem (empty
     = clean or no policy file present).
 
@@ -2459,9 +2459,9 @@ def render_dashboard(
     verbatim (no LLM rendering). Active specs are grouped by work-category in
     _CATEGORY_ORDER; the unspec'd backlog collapses to a count + the first two; in-
     flight and queued handoffs show the top three; worktrees get a one-line cleanup
-    nudge; cross-repo go-policy.yaml contamination signals (policy_selfcheck.py) get
+    nudge; cross-repo worktrail-go-policy.yaml contamination signals (policy_selfcheck.py) get
     a one-line review nudge; unguarded auto-merge workflow signals
-    (automerge_selfcheck.py) get their own one-line review nudge; go-policy.yaml
+    (automerge_selfcheck.py) get their own one-line review nudge; worktrail-go-policy.yaml
     rationale-vs-reality drift signals (policy_drift_selfcheck.py) get theirs;
     QUARANTINED-group signals (quarantine_selfcheck.py) get their own one-line
     review nudge; post-merge check-failure signals (audit_postmerge.py's
@@ -2652,7 +2652,7 @@ def render_dashboard(
     if policy_flags:
         head = ", ".join(policy_flags[:4])
         more = f" … +{len(policy_flags) - 4}" if len(policy_flags) > 4 else ""
-        lines.append(f"🚩 Policy contamination ({len(policy_flags)}): {head}{more} → review go-policy.yaml")
+        lines.append(f"🚩 Policy contamination ({len(policy_flags)}): {head}{more} → review worktrail-go-policy.yaml")
 
     if automerge_flags:
         head = ", ".join(automerge_flags[:4])
@@ -2667,7 +2667,7 @@ def render_dashboard(
         more = f" … +{len(drift_flags) - 4}" if len(drift_flags) > 4 else ""
         lines.append(
             f"🚩 Policy drift ({len(drift_flags)}): {head}{more} "
-            "→ go-policy.yaml no longer matches repo reality"
+            "→ worktrail-go-policy.yaml no longer matches repo reality"
         )
 
     if stranded_flags:

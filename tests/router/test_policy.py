@@ -19,7 +19,7 @@ def _repo_with(policy_text):
     tmp = tempfile.mkdtemp()
     d = Path(tmp) / "docs" / "specs"
     d.mkdir(parents=True)
-    (d / "go-policy.yaml").write_text(policy_text)
+    (d / "worktrail-go-policy.yaml").write_text(policy_text)
     return Path(tmp)
 
 
@@ -33,7 +33,7 @@ def _repo_with_workflow(files, policy_text=None):
     if policy_text is not None:
         specs = Path(tmp) / "docs" / "specs"
         specs.mkdir(parents=True)
-        (specs / "go-policy.yaml").write_text(policy_text)
+        (specs / "worktrail-go-policy.yaml").write_text(policy_text)
     return Path(tmp)
 
 
@@ -77,6 +77,34 @@ class TestDefaults(unittest.TestCase):
     def test_allow_seeded_implementation_true_when_set(self):
         pol = load_policy(_repo_with("allow_seeded_implementation: true\n"))
         self.assertTrue(pol["allow_seeded_implementation"])
+
+
+class TestLegacyPolicyFilename(unittest.TestCase):
+    """docs/specs/go-policy.yaml (pre-rename) must still load, with a
+    deprecation warning, until each repo migrates to worktrail-go-policy.yaml."""
+
+    def test_legacy_filename_loads_with_deprecation_warning(self):
+        tmp = tempfile.mkdtemp()
+        specs = Path(tmp) / "docs" / "specs"
+        specs.mkdir(parents=True)
+        (specs / "go-policy.yaml").write_text("agent_cli: codex\n")
+        pol = load_policy(Path(tmp))
+        self.assertEqual(pol["agent_cli"], "codex")
+        self.assertEqual(pol["_meta"]["source"], str(specs / "go-policy.yaml"))
+        self.assertEqual(len(pol["_meta"]["warnings"]), 1)
+        self.assertIn("go-policy.yaml is deprecated", pol["_meta"]["warnings"][0])
+        self.assertIn("worktrail-go-policy.yaml", pol["_meta"]["warnings"][0])
+
+    def test_new_filename_takes_precedence_over_legacy(self):
+        tmp = tempfile.mkdtemp()
+        specs = Path(tmp) / "docs" / "specs"
+        specs.mkdir(parents=True)
+        (specs / "go-policy.yaml").write_text("agent_cli: opencode\n")
+        (specs / "worktrail-go-policy.yaml").write_text("agent_cli: codex\n")
+        pol = load_policy(Path(tmp))
+        self.assertEqual(pol["agent_cli"], "codex")
+        self.assertEqual(pol["_meta"]["source"], str(specs / "worktrail-go-policy.yaml"))
+        self.assertEqual(pol["_meta"]["warnings"], [])
 
 
 class TestAddOns(unittest.TestCase):

@@ -1,24 +1,24 @@
 # post-task-addon-framework Specification
 
 ## Purpose
-Lets a repo opt in, per its own `go-policy.yaml`, to running named worktrail
+Lets a repo opt in, per its own `worktrail-go-policy.yaml`, to running named worktrail
 add-ons after a task's own commit, staging and committing any file output
 those add-ons produce into the same PR the task produced — without any
 behavior change for repos that configure nothing.
 ## Requirements
 ### Requirement: Add-ons are opt-in per repo
 The system SHALL run no add-on step, empty or otherwise, for a task unless
-the repo's `docs/specs/go-policy.yaml` explicitly configures an `add_ons:`
+the repo's `docs/specs/worktrail-go-policy.yaml` explicitly configures an `add_ons:`
 block naming at least one enabled add-on.
 
 #### Scenario: Repo with no add_ons config
-- **WHEN** a task completes in a repo whose `go-policy.yaml` has no
+- **WHEN** a task completes in a repo whose `worktrail-go-policy.yaml` has no
   `add_ons:` key (the default for every repo unless configured)
 - **THEN** no add-on install, configure, or run step executes, and no
   additional commit is created beyond the task's own work
 
 #### Scenario: Repo with add_ons config
-- **WHEN** a task completes in a repo whose `go-policy.yaml` declares
+- **WHEN** a task completes in a repo whose `worktrail-go-policy.yaml` declares
   `add_ons: { <name>: { enabled: true, ... } }`
 - **THEN** the named add-on's run step executes as part of that task's
   pre-PR flow
@@ -36,11 +36,11 @@ orchestrator's group-PR path or the router's one-off preflight path.
 
 ### Requirement: Unknown add-on names fail closed
 The system SHALL raise a clear, actionable error at policy-load or preflight
-time if `go-policy.yaml` names an add-on that does not resolve to a known
+time if `worktrail-go-policy.yaml` names an add-on that does not resolve to a known
 implementation, rather than silently skipping it.
 
 #### Scenario: Misconfigured add-on name
-- **WHEN** `go-policy.yaml` declares `add_ons: { typo-name: {enabled: true} }`
+- **WHEN** `worktrail-go-policy.yaml` declares `add_ons: { typo-name: {enabled: true} }`
   and no add-on named `typo-name` is registered
 - **THEN** policy loading or the preflight run reports the unresolved
   add-on name and does not silently proceed as if nothing were configured

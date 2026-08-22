@@ -51,7 +51,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..shared.homedir import worktrail_home
-from .policy import POLICY_RELPATH, automerge_eligible, load_policy
+from .policy import automerge_eligible, has_policy_file, load_policy
 from .policy_selfcheck import discover_repo_names
 from .pr_labels import ensure_pr_no_automerge_label, ensure_pr_risk_label
 from .run_record import _load as load_run_record
@@ -59,10 +59,11 @@ from .run_record import _load as load_run_record
 
 def discover_managed_repos(repos_root: Path) -> List[str]:
     """Every immediate subdirectory of `repos_root` that has a
-    `docs/specs/go-policy.yaml` — i.e. has opted into GO/worktrail."""
+    `docs/specs/worktrail-go-policy.yaml` (or the pre-rename `go-policy.yaml`)
+    — i.e. has opted into GO/worktrail."""
     return [
         name for name in discover_repo_names(repos_root)
-        if (repos_root / name / POLICY_RELPATH).is_file()
+        if has_policy_file(repos_root / name)
     ]
 
 

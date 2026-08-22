@@ -2,7 +2,7 @@
 """automerge_preflight.py — live required-checks gate for GO's auto-merge label.
 
 `policy.automerge_eligible()` is deliberately deterministic and offline: it
-answers "does this repo's *policy* allow automerge" from `go-policy.yaml`
+answers "does this repo's *policy* allow automerge" from `worktrail-go-policy.yaml`
 alone. It cannot see whether the base branch's GitHub-side protection
 actually enforces anything. That gap let GO mark a PR automerge-eligible on
 a repo whose base branch had zero required status checks (continuum PR #4:

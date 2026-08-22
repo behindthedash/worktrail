@@ -5,7 +5,7 @@ Every /go route that opens a PR (orchestrator delivery groups AND one-off
 claude/codex subprocess workers) must pass this gate before `gh pr create`.
 When `--run` is supplied, the gate also requires a scope review in the shared
 run record and rejects unresolved or blocked scope items.
-It resolves the target repo's gate command from `docs/specs/go-policy.yaml`
+It resolves the target repo's gate command from `docs/specs/worktrail-go-policy.yaml`
 (`pre_pr_cmd`, falling back to `integrate_smoke_cmd`) and runs it in the
 worktree root, streaming output.
 

@@ -274,7 +274,7 @@ def plan_groups(
     the whole run rather than silently letting an independent, non-stacking
     sibling group merge around it. `migration_patterns` is empty by default (no
     behavior change for callers that don't pass it) -- each repo declares its own
-    patterns via `docs/specs/go-policy.yaml`'s `migration_path_patterns`, since
+    patterns via `docs/specs/worktrail-go-policy.yaml`'s `migration_path_patterns`, since
     migration tooling/paths are repo-specific (Alembic, Drizzle, Rails, etc.), not
     a worktrail convention.
 

@@ -15,7 +15,7 @@ a docs-only diff (docs_only_paths), or an existing pass marker recorded
 against the exact current (clean) tree state all resolve to "allow"; anything
 else is "deny" with instructions to run `worktrail-preflight run`. It reuses
 pre_pr_gate.py's own resolve_cmd/is_docs_only so the hook stops maintaining a
-second, line-based go-policy.yaml reader that can drift from the real one.
+second, line-based worktrail-go-policy.yaml reader that can drift from the real one.
 
 `worktrail-preflight run` executes the full pre_pr_gate.py gate in-process
 (spec-sync drift, clarification-integrity, DoD-verification, the

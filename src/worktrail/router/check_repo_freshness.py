@@ -6,7 +6,7 @@
 and by pure file inspection only (see its own docstring). It has no way to
 know whether that checkout is missing commits that already landed on the
 remote. A stale local checkout is not just "behind" in the abstract: it can
-be missing files entirely -- `policy.py` reads `docs/specs/go-policy.yaml`
+be missing files entirely -- `policy.py` reads `docs/specs/worktrail-go-policy.yaml`
 off disk and reports "no policy configured" when the file doesn't exist
 locally, with no way to distinguish "this repo has never had a policy file"
 from "the policy file was added upstream and this checkout hasn't pulled it

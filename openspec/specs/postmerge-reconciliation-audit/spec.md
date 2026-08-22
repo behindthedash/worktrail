@@ -10,7 +10,7 @@ actual GitHub API behavior that only a human noticed after the fact.
 
 ### Requirement: Fleet-wide merged-PR check reconciliation
 The system SHALL provide a sweep that, for every repo discovered via the
-same `docs/specs/go-policy.yaml` opt-in mechanism `reconcile_pr_labels.py`
+same `docs/specs/worktrail-go-policy.yaml` opt-in mechanism `reconcile_pr_labels.py`
 uses, lists PRs merged since that repo's last successful sweep and
 re-classifies each PR's live `statusCheckRollup` using `verify.py`'s existing
 `classify_checks()` function, unmodified.

@@ -203,7 +203,7 @@ checks but never records the marker, so the label enforcement below silently
 never engages.
 
 The gate resolves `pre_pr_cmd` (fallback: `integrate_smoke_cmd`) from the
-target repo's `docs/specs/go-policy.yaml` and runs it, streaming output. Rules:
+target repo's `docs/specs/worktrail-go-policy.yaml` and runs it, streaming output. Rules:
 
 - Non-zero exit → do **NOT** open the PR. Fix the failures and re-run, or
   finish with a failure state quoting the gate output. Never bypass silently.

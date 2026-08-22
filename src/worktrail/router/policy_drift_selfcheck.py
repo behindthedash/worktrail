@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""policy_drift_selfcheck.py — go-policy.yaml rationale-vs-reality drift detector.
+"""policy_drift_selfcheck.py — worktrail-go-policy.yaml rationale-vs-reality drift detector.
 
-`docs/specs/go-policy.yaml` justifies each repo's pre-PR gate in freeform
+`docs/specs/worktrail-go-policy.yaml` justifies each repo's pre-PR gate in freeform
 rationale comments, and those comments encode claims about repository reality
 ("This repo has NO CI workflows", "No test suite in this repo"). Reality moves
 — tests get added, CI gets added — and the comments do not. `policy.py` parses
@@ -47,7 +47,7 @@ cries wolf gets ignored, and then it may as well not exist):
     toward assuming CI does run tests.
   - A workflow that runs tests only through a composite/marketplace action with
     no shell command is not seen.
-  - Only repos that have a `go-policy.yaml` are considered; a repo with tests
+  - Only repos that have a `worktrail-go-policy.yaml` are considered; a repo with tests
     and no policy at all is a different (and larger) question.
 
 Usage:
@@ -64,7 +64,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .policy import POLICY_RELPATH
+from .policy import policy_file_path
 from .policy_selfcheck import discover_repo_names
 
 # Only these two keys can run a test suite; `worktree_bootstrap_cmd` installs
@@ -173,7 +173,7 @@ def tracked_test_files(repo: Path) -> List[str]:
 
 
 def _policy_text(repo: Path) -> Optional[str]:
-    src = repo / POLICY_RELPATH
+    src = policy_file_path(repo)
     if not src.is_file():
         return None
     return src.read_text(encoding="utf-8", errors="replace")
@@ -270,14 +270,14 @@ def orphaned_test_paths(repo: Path) -> List[str]:
 
 
 def check_repo(repo: Path) -> Dict[str, Any]:
-    """Findings for one repo's go-policy.yaml. Empty `findings` = clean."""
+    """Findings for one repo's worktrail-go-policy.yaml. Empty `findings` = clean."""
     repo = Path(repo)
     result: Dict[str, Any] = {"repo": repo.name, "path": str(repo),
                               "source": None, "findings": []}
     text = _policy_text(repo)
     if text is None:
         return result
-    result["source"] = str(repo / POLICY_RELPATH)
+    result["source"] = str(policy_file_path(repo))
     findings = result["findings"]
 
     tests = tracked_test_files(repo)

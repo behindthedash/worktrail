@@ -927,7 +927,7 @@ def integrate_one(
     state_lock and merged with the in-memory entries list (AC-015). When None, falls
     back to _write_group_journal (sequential/non-pipeline path).
 
-    smoke_cmd: optional shell command (from go-policy.yaml's integrate_smoke_cmd) run
+    smoke_cmd: optional shell command (from worktrail-go-policy.yaml's integrate_smoke_cmd) run
     in the freshly-merged integration worktree -- where the group's task branches first
     coexist -- BEFORE pushing/opening the PR. A non-zero exit quarantines the group
     instead of opening a red-CI PR, catching cross-task drift a CI round-trip earlier.
@@ -941,7 +941,7 @@ def integrate_one(
     this run, forwarded to the label refresh so require_human_routes (and
     any gate-driven eligibility check) reaches orchestrator-created group
     PRs the same way it reaches one-off PRs. Omit when unknown.
-    policy: go-policy.yaml's parsed dict, forwarded to
+    policy: worktrail-go-policy.yaml's parsed dict, forwarded to
     `addons.runner.run_addons` so a freshly-built group branch gets its
     configured add-ons' output staged and committed before the drift/smoke
     gates and the push. None (or a policy with no `add_ons` key) runs zero
