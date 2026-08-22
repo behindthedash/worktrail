@@ -16,6 +16,7 @@ from worktrail.drain.summary_contract import (
 )
 
 from worktrail.drain import drain
+from worktrail.orchestrator import agent_capacity
 from worktrail.drain.drain import (
     MAX_TRANSCRIPT_FILES,
     PROMPT,
@@ -493,6 +494,69 @@ def test_capacity_gated_no_entries_or_bad_cache():
     assert capacity_gated({"providers": "garbage"}, "claude") is False
     # flat layout (no "providers" wrapper)
     assert capacity_gated({"claude": {"status": "gated"}}, "claude") is True
+
+
+def test_capacity_gated_expired_retry_after_is_not_gated():
+    # Regression: a bare-agent gate whose retry_after has already passed must
+    # not gate forever -- record_capacity_gate()'s whole point is that the
+    # drain picks the agent back up once its cooldown expires (see
+    # select_available_agent's docstring), which requires comparing
+    # retry_after to "now" instead of only reading the stale "status" field.
+    now = datetime(2026, 8, 22, tzinfo=timezone.utc)
+    cache = {"providers": {
+        "claude": {"status": "unavailable",
+                   "retry_after": (now - timedelta(days=3)).isoformat()},
+    }}
+    assert capacity_gated(cache, "claude", now=now) is False
+
+
+def test_capacity_gated_unexpired_retry_after_still_gated():
+    now = datetime(2026, 8, 22, tzinfo=timezone.utc)
+    cache = {"providers": {
+        "claude": {"status": "unavailable",
+                   "retry_after": (now + timedelta(minutes=30)).isoformat()},
+    }}
+    assert capacity_gated(cache, "claude", now=now) is True
+
+
+def test_capacity_gated_expired_reset_at_falls_back_and_is_not_gated():
+    now = datetime(2026, 8, 22, tzinfo=timezone.utc)
+    cache = {"providers": {
+        "codex": {"status": "unavailable",
+                  "reset_at": (now - timedelta(hours=1)).isoformat()},
+    }}
+    assert capacity_gated(cache, "codex", now=now) is False
+
+
+def test_capacity_gated_gated_status_without_timestamp_stays_gated():
+    # No retry_after/reset_at at all -- unchanged prior behavior: gated
+    # indefinitely until explicitly cleared.
+    now = datetime(2026, 8, 22, tzinfo=timezone.utc)
+    assert capacity_gated({"claude": {"status": "gated"}}, "claude", now=now) is True
+
+
+def test_capacity_gated_expired_gate_all_models_matched_ungates_agent():
+    now = datetime(2026, 8, 22, tzinfo=timezone.utc)
+    cache = {"providers": {
+        "claude:opus": {"status": "unavailable",
+                        "retry_after": (now - timedelta(hours=2)).isoformat()},
+        "claude:sonnet": {"status": "unavailable",
+                          "retry_after": (now - timedelta(hours=1)).isoformat()},
+    }}
+    assert capacity_gated(cache, "claude", now=now) is False
+
+
+def test_select_available_agent_picks_agent_back_up_after_retry_after_expires():
+    now = datetime(2026, 8, 22, tzinfo=timezone.utc)
+    cache = {"providers": {
+        "claude": {"status": "unavailable",
+                   "retry_after": (now - timedelta(days=1)).isoformat()},
+        "codex": {"status": "unavailable",
+                  "retry_after": (now - timedelta(hours=12)).isoformat()},
+        "opencode": {"status": "unavailable",
+                     "retry_after": (now - timedelta(hours=1)).isoformat()},
+    }}
+    assert select_available_agent(cache, ["claude", "codex", "opencode"], now=now) == "claude"
 
 
 # ---------------------------------------------------------------------------
@@ -1084,6 +1148,15 @@ def test_drain_usage_limit_output_becomes_blocked_and_persists_gate(tmp_path, mo
     # DEVNULL discipline meant it was indistinguishable from any other bare
     # "failed exit=1" -- no cache entry, no real retry_after, and it counted
     # toward the circuit breaker exactly like a code bug would.
+    #
+    # The explicit reset time embedded below ("Aug 8th, 2026") must stay
+    # earlier than the frozen `_now` patched in below it: capacity_gated()
+    # correctly un-gates once retry_after passes (see
+    # test_capacity_gated_expired_retry_after_is_not_gated), so this test's
+    # own "still gated for iteration 2" premise requires a fixed clock rather
+    # than depending on wall-clock date never reaching Aug 8, 2026.
+    monkeypatch.setattr(agent_capacity, "_now",
+                         lambda: datetime(2026, 8, 8, 0, 0, tzinfo=timezone.utc))
     fake = FakeQueue([3, 3])
     install_fake_queue(monkeypatch, fake)
     config = make_config(tmp_path, agent="codex")
