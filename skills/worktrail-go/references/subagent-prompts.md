@@ -559,6 +559,20 @@ only needed when specs must land before the change is finished. **Claude Code
 hosts:** same enter-run-exit discipline as `#openspec-propose` above — this is also a
 slash command, not a `-C`-scoped call.
 
+### Archiving a change {#openspec-archive}
+
+```
+/opsx:archive <change-id>
+```
+
+The orchestrator hands back to this at the end of a change's run (see
+`#openspec-authoring` above). Merges the change's delta specs into `openspec/specs/`
+(same merge `/opsx:sync` performs alone) and moves `openspec/changes/<change-id>/`
+into `openspec/changes/archive/`, prompting to confirm when artifacts or tasks are
+incomplete rather than blocking outright. **Claude Code hosts:** same enter-run-exit
+discipline as `#openspec-propose` above — this is also a slash command, not a
+`-C`-scoped call.
+
 ## Stage result handling {#stage-result-handling}
 
 After each delegated stage (brainstorm, spec-check, spec-to-tasks), parse the Stage
@@ -801,12 +815,30 @@ SYNC_WT="$REPO-worktrees/$SPEC_ID-sync"
 git -C "$REPO" worktree add "$SYNC_WT" -b "sync/$SPEC_ID" "$BASE"
 ```
 
-**Step 3 — update knowledge graph inside the sync worktree (inline):**
+**Step 3 — sync artifacts inside the sync worktree (inline):**
 
-`/opsx:sync` merges the change's delta specs into `openspec/specs/` (see
-`#openspec-sync`); `/opsx:archive` does the same merge as part of archiving, so an
-explicit sync is only needed when specs must land before the change is finished.
-Perform the post-orchestrator knowledge-graph update inline:
+Branch on the spec's on-disk format — `$SYNC_WT/openspec/changes/$SPEC_ID` (OpenSpec;
+the `new` pipeline's own default, and always true for `modify`) vs
+`$SYNC_WT/docs/specs/$SPEC_ID` (devkit) — same detection idiom as `#stale-spec-check`.
+Each branch sets `SYNC_PATH`, which Step 4 below uses in place of a hardcoded
+`docs/specs/`.
+
+**OpenSpec format** — `SYNC_PATH="openspec/"`. Read
+`$SYNC_WT/openspec/changes/$SPEC_ID/tasks.md`: no remaining `- [ ]` lines means every
+task is checked off.
+
+- **All tasks checked and the run is closing out** → run `/opsx:archive <change-id>`
+  (`#openspec-archive`; same enter-run-exit discipline as `#openspec-propose` — a
+  slash command, not a `-C`-scoped call). It merges delta specs into `openspec/specs/`
+  and moves the change directory into `openspec/changes/archive/` in one step.
+- **Tasks remain pending but delta specs must land before the run finishes** (e.g. a
+  Route-C planning-only stop) → run `/opsx:sync <change-id>` (`#openspec-sync`)
+  instead, leaving the change directory in place for a later run to archive.
+
+Both commands edit files under `$SYNC_WT/openspec/` in place; neither commits — Step 4
+below picks up the resulting diff the same way as the devkit path.
+
+**devkit format** — `SYNC_PATH="docs/specs/"`.
 
 1. Glob both `$SYNC_WT/docs/specs/$SPEC_ID/tasks/TASK-*.md` and
    `$SYNC_WT/docs/specs/$SPEC_ID/changes/*/tasks/TASK-CHG-*.md` — read each file;
@@ -820,19 +852,20 @@ Perform the post-orchestrator knowledge-graph update inline:
 **Step 4 — commit + PR if sync produced changes, with CI-wait gate:**
 
 `git diff --quiet HEAD` only sees tracked-file changes — it misses a brand-new
-`knowledge-graph.json` written for a spec that had none yet, since an untracked file
-never appears in a diff against `HEAD`. Use `git status --porcelain`, which reports
-untracked files too:
+`knowledge-graph.json` written for a spec that had none yet (devkit path) or a
+freshly created `openspec/specs/<capability>/spec.md` (OpenSpec path), since an
+untracked file never appears in a diff against `HEAD`. Use `git status --porcelain`,
+which reports untracked files too:
 
 ```bash
-[ -z "$(git -C "$SYNC_WT" status --porcelain -- docs/specs/)" ] || {
-  git -C "$SYNC_WT" add docs/specs/
-  git -C "$SYNC_WT" commit -m "sync($SPEC_ID): update KG and task statuses post-orchestrator"
+[ -z "$(git -C "$SYNC_WT" status --porcelain -- "$SYNC_PATH")" ] || {
+  git -C "$SYNC_WT" add "$SYNC_PATH"
+  git -C "$SYNC_WT" commit -m "sync($SPEC_ID): update spec artifacts and task statuses post-orchestrator"
   git -C "$SYNC_WT" push -u origin "sync/$SPEC_ID"
   # gh derives owner/repo from the remote; no --repo flag needed for the consuming project
   PR_URL=$(gh pr create --base "$BASE" --head "sync/$SPEC_ID" \
     --title "sync($SPEC_ID): post-orchestrator docs update" \
-    --body "Updates knowledge-graph.json and task statuses after orchestrator run. Auto-generated." \
+    --body "Updates spec artifacts and task statuses after orchestrator run. Auto-generated." \
     | tail -1)
   
   echo "$PR_URL"
@@ -1500,46 +1533,70 @@ keeps `status: picked`; `release` it only if you want another session to retry i
 
 ## Orchestrator pre-launch gates {#orchestrator-gates}
 
-Run in order before launching the orchestrator. `$SPEC_ROOT` = `$WT` for the `new` pipeline; `$REPO` for `implement`.
+Run in order before launching the orchestrator. `$SPEC_ROOT` = `$WT` for the `new` and
+`modify` pipelines; `$REPO` for `implement`.
 
 ### Stale-spec check {#stale-spec-check}
 
-Branches by which task-source format `$SPEC_ID` actually is: `$SPEC_ROOT/docs/specs/$SPEC_ID`
-(devkit) or `$SPEC_ROOT/openspec/changes/$SPEC_ID` (OpenSpec, `modify` pipeline's `$CHANGE_ID`
-passed as `$SPEC_ID`). Run whichever branch matches; skip the other.
-
-**devkit format** — checkbox-ratio heuristic (no tasks completed + old spec age):
+Two independent signals, run in sequence. Signal 1 (below) branches on the spec's on-disk
+format — `$SPEC_ROOT/openspec/changes/$SPEC_ID` (OpenSpec; the `new` pipeline's own default,
+and always true for `modify`, `#modify-pipeline` step 5) vs `$SPEC_ROOT/docs/specs/$SPEC_ID`
+(devkit) — same detection idiom as `#orchestrator`'s `SPEC_REF` branch above, and is a
+checkbox-ratio/age heuristic for both formats. Signal 2 (further below) adds a second,
+independent check for the OpenSpec case only: a git-history probe that catches a failure
+shape signal 1's checkbox ratio structurally cannot (see that section for why). Run both;
+either can surface a warning.
 
 ```bash
 if [ -d "$SPEC_ROOT/docs/specs/$SPEC_ID" ]; then
 python3 -c "
-import datetime
+import datetime, subprocess
 from pathlib import Path
-from worktrail.router.dashboard import is_stale_spec, spec_creation_date, _count_tasks
+from worktrail.router.dashboard import is_stale_spec, spec_creation_date, _count_tasks, _STALE_THRESHOLD_DAYS
 
-spec_dir = Path('$SPEC_ROOT/docs/specs/$SPEC_ID')
 repo = Path('$SPEC_ROOT')
+openspec_dir = repo / 'openspec' / 'changes' / '$SPEC_ID'
 
-if is_stale_spec(spec_dir, repo):
-    counts = _count_tasks(spec_dir)
-    created = spec_creation_date(spec_dir, repo)
-    age_days = (datetime.date.today() - created).days if created else '?'
-    total = counts.get('total', 0) if counts else 0
-    completed = counts.get('completed', 0) if counts else 0
-    print(f'Spec \$SPEC_ID shows {completed}/{total} tasks done but was created {age_days} days ago. This may indicate tasks were implemented outside the orchestrator (missing sync) or the spec was abandoned.')
+if openspec_dir.is_dir():
+    from worktrail.taskformats.openspec.source import OpenSpecTaskSource
+    try:
+        _, tasks = OpenSpecTaskSource(repo).load('$SPEC_ID')
+    except FileNotFoundError:
+        tasks = []
+    total = len(tasks)
+    completed = sum(1 for t in tasks if t.get('status') == 'completed')
+    if completed == 0 and total > 0:
+        result = subprocess.run(
+            ['git', '-C', str(repo), 'log', '--follow', '--format=%ai', '-1', '--', str(openspec_dir / 'tasks.md')],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+        )
+        created = datetime.datetime.strptime(result.stdout.strip()[:10], '%Y-%m-%d').date() if result.returncode == 0 and result.stdout.strip() else None
+        age_days = (datetime.date.today() - created).days if created else None
+        if age_days is not None and age_days > _STALE_THRESHOLD_DAYS:
+            print(f'Change \$SPEC_ID shows {completed}/{total} tasks done but tasks.md was last committed {age_days} days ago. This may indicate tasks were implemented outside the orchestrator (missing sync) or the change was abandoned.')
+else:
+    spec_dir = repo / 'docs' / 'specs' / '$SPEC_ID'
+    if is_stale_spec(spec_dir, repo):
+        counts = _count_tasks(spec_dir)
+        created = spec_creation_date(spec_dir, repo)
+        age_days = (datetime.date.today() - created).days if created else '?'
+        total = counts.get('total', 0) if counts else 0
+        completed = counts.get('completed', 0) if counts else 0
+        print(f'Spec \$SPEC_ID shows {completed}/{total} tasks done but was created {age_days} days ago. This may indicate tasks were implemented outside the orchestrator (missing sync) or the spec was abandoned.')
 " 2>&1
 fi
 ```
 
-If stale, surface the warning; then proceed to precheck.
+If either branch prints, surface the warning; then proceed to signal 2 (OpenSpec case) or
+precheck (devkit case, which has no signal 2).
 
-**OpenSpec format** — a cheap git-history probe (`worktrail-check-change-staleness`,
+**Signal 2, OpenSpec only** — a cheap git-history probe (`worktrail-check-change-staleness`,
 `router/check_change_staleness.py`), mirroring `brief-staleness-check.md`'s approach instead of
-the devkit branch's checkbox-ratio heuristic above. The devkit heuristic cannot catch this
-format's failure shape: it only flags a spec stale when *zero* tasks are checked, so a change
-with even one flipped checkbox already — or whose checkboxes are simply behind reality — reads
-as "in progress" no matter how long its real implementation has actually sat on base
-unreflected. Confirmed recurring shape (PR #547 2026-08-19, PR #548 2026-08-20,
+signal 1's checkbox-ratio heuristic above. Signal 1 cannot catch this format's failure shape on
+its own: it only flags a change stale when *zero* tasks are checked, so a change with even one
+flipped checkbox already — or whose checkboxes are simply behind reality — reads as "in
+progress" no matter how long its real implementation has actually sat on base unreflected.
+Confirmed recurring shape (PR #547 2026-08-19, PR #548 2026-08-20,
 `stale-brief-precheck-recheck-search-boundary` PR #610 2026-08-21): every one was discovered
 only after a live orchestrator dispatch burned a full run and found zero-diff on the flagged
 tasks.

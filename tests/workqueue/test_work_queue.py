@@ -48,6 +48,16 @@ def _picked_brief(focus: str, status: str = "picked") -> str:
     return "---\n" + "\n".join(fm) + "\n---\n\n## Focus\n\n" + focus + "\n"
 
 
+def _consolidated_brief(focus: str, member_ids: list, status: str = "picked") -> str:
+    """A picked brief carrying a `## Consolidated from` section, mirroring
+    `_build_consolidated_brief_content` in `consolidate_cluster.py`."""
+    fm = [f"focus: {focus}", f"status: {status}"]
+    lines = ["---", *fm, "---", "", "## Consolidated from", ""]
+    lines.extend(f"- {m}" for m in member_ids)
+    lines.append("")
+    return "\n".join(lines)
+
+
 class QueueTestBase(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -720,6 +730,100 @@ class TestDoneClosureEvidenceGate(QueueTestBase):
                 "--json",
             ]
         )
+
+        self.assertEqual(code, 1)
+
+
+class TestConsolidationClosureEvidenceGate(QueueTestBase):
+    """`done()` rejects closing a consolidation-batch brief (one carrying a
+    `## Consolidated from` section) unless the closure note names and
+    evidences every listed sub-item."""
+
+    def test_done_rejects_consolidation_brief_with_no_note(self):
+        self.picked.mkdir(parents=True, exist_ok=True)
+        path = self.picked / "20260714-120001-batch.md"
+        path.write_text(
+            _consolidated_brief("batch", ["20260710-000000-a", "20260711-000000-b"]),
+            encoding="utf-8",
+        )
+
+        res = q.done("20260714-120001-batch")
+
+        self.assertEqual(res["status"], "unverified_consolidation_closure")
+        self.assertIn("20260710-000000-a", res["error"])
+        self.assertIn("20260711-000000-b", res["error"])
+        fm = q._read_frontmatter(path)
+        self.assertEqual(fm["status"], "picked", "must not stamp done on a rejected closure")
+
+    def test_done_rejects_consolidation_brief_with_prose_only_note(self):
+        self.picked.mkdir(parents=True, exist_ok=True)
+        path = self.picked / "20260714-120001-batch.md"
+        path.write_text(
+            _consolidated_brief("batch", ["20260710-000000-a"]),
+            encoding="utf-8",
+        )
+
+        res = q.done("20260714-120001-batch", note="Everything in this batch shipped.")
+
+        self.assertEqual(res["status"], "unverified_consolidation_closure")
+
+    def test_done_rejects_consolidation_brief_missing_one_of_two_members(self):
+        self.picked.mkdir(parents=True, exist_ok=True)
+        path = self.picked / "20260714-120001-batch.md"
+        path.write_text(
+            _consolidated_brief("batch", ["20260710-000000-a", "20260711-000000-b"]),
+            encoding="utf-8",
+        )
+
+        res = q.done(
+            "20260714-120001-batch",
+            note=(
+                "20260710-000000-a shipped:\n```\n$ grep -rn foo src/\nsrc/foo.py:1:foo\n```"
+            ),
+        )
+
+        self.assertEqual(res["status"], "unverified_consolidation_closure")
+        self.assertIn("20260711-000000-b", res["error"])
+
+    def test_done_accepts_consolidation_brief_with_per_member_evidence(self):
+        self.picked.mkdir(parents=True, exist_ok=True)
+        path = self.picked / "20260714-120001-batch.md"
+        path.write_text(
+            _consolidated_brief("batch", ["20260710-000000-a", "20260711-000000-b"]),
+            encoding="utf-8",
+        )
+
+        res = q.done(
+            "20260714-120001-batch",
+            note=(
+                "20260710-000000-a shipped in PR #100:\n"
+                "```\n$ git log --oneline -1\nabc123 fix\n```\n"
+                "20260711-000000-b shipped in PR #101:\n"
+                "```\n$ git log --oneline -1\ndef456 fix\n```"
+            ),
+        )
+
+        self.assertEqual(res["status"], "done")
+        fm = q._read_frontmatter(path)
+        self.assertEqual(fm["status"], "done")
+
+    def test_done_ordinary_brief_without_consolidated_from_unaffected(self):
+        self.write("20260531-141200-auth.md", focus="auth")
+        q.claim("20260531-141200-auth")
+
+        res = q.done("20260531-141200-auth")
+
+        self.assertEqual(res["status"], "done")
+
+    def test_done_cli_exit_code_is_one_on_rejected_consolidation_closure(self):
+        self.picked.mkdir(parents=True, exist_ok=True)
+        path = self.picked / "20260714-120001-batch.md"
+        path.write_text(
+            _consolidated_brief("batch", ["20260710-000000-a"]),
+            encoding="utf-8",
+        )
+
+        code = q.main(["done", "20260714-120001-batch", "--json"])
 
         self.assertEqual(code, 1)
 

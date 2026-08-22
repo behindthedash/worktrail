@@ -103,3 +103,69 @@ docs per worker.
   (test reruns, repo exploration, report-back retries).
 - Compare `ctx/turn` and `turns` columns before/after any prompt change on the same
   spec; the per-role table now makes the two terms separable.
+
+## Follow-up — turn-count audit, first real capture (2026-08-21)
+
+Source brief: `20260821-184330-turn-count-audit-orchestrator-workers` (run
+`go-20260821-184736`), Route J, `implementation-intent: planning-only` — this section
+answers the brief's Focus (find the dominant driver behind median 16-20 turns) with one
+real capture; it does **not** propose a turn-budget or prompt change (Route J rule 5 —
+that needs its own proposal with a routing cassette scenario).
+
+**Instrumentation.** `$WORKTRAIL_KEEP_TRANSCRIPTS=<dir>` (spawnlib.py's `spawn_agent`)
+persists each spawn's raw stream-json JSONL, off by default. `scripts/bucket_transcript_turns.py`
+matches captured transcripts to a run journal by finish timestamp and buckets each spawn's
+assistant turns by activity (`test_execution`, `git_history_exploration`, `repo_exploration`,
+`edit`, `other_bash`, `final_report`).
+
+**Capture run.** `worktrail-live full-real` against `openspec/changes/stale-brief-precheck-recheck-search-boundary`
+(4 tasks, real spawns, `--role-agent-map review=claude --model-map review=opus` per this
+repo's own policy) — 8 spawns (4 implement + 4 review), 94 turns, $3.14 total. **Finding
+about the target itself, unrelated to turn-count:** every one of the 4 tasks' workers
+independently discovered the change's AC was already satisfied on `main` (implement 1.1:
+"already landed via PR #493 (commit 8c188ad); no code change needed"; same for 2.1/2.2/2.3)
+— a stale-bookkeeping OpenSpec change (`tasks.md` still shows 4/4 unticked) rather than
+genuinely pending work; captured separately as handoff `20260821-193051-close-stale-openspec-change-stale`
+(different purpose, different PR/brief — not actioned here).
+
+**Bucket results** (`scripts/bucket_transcript_turns.py`, 8/8 spawns, `context_quality:
+sufficient`):
+
+| role | spawns | turns | dominant bucket | breakdown |
+|---|---|---|---|---|
+| implement | 4 | 30 | `other_bash` 37% | other_bash 37%, repo_exploration 20%, git_history_exploration 20%, final_report 13%, test_execution 10% |
+| review | 4 | 44 | `git_history_exploration` 43% | git_history_exploration 43%, other_bash 25%, test_execution 23%, final_report 9% |
+
+**Reading this against the brief's question.** Because every task turned out to already be
+shipped, this run's dominant activity in both roles is **investigation proving "nothing to
+do here"**, not implementation: `git_history_exploration` + `repo_exploration` +
+`other_bash` (mostly `git status`/`ls`/`cat` orientation, not literal history digging)
+together are 77% of implement turns and 68% of review turns; `test_execution` is a
+secondary confirmation step (10%/23%); `final_report` is a fixed ~1 turn/spawn floor
+regardless of role. Review runs longer than implement here (11 turns/spawn vs 7.5) because
+its instructed skepticism ("do not rubber-stamp... a plausible-sounding rationale in its
+place is not acceptable") makes it re-derive the same "already shipped" conclusion
+independently rather than trust the implement report.
+
+**Caveats — do not over-generalize from this run:**
+- **N=8 spawns vs the reference run's N=41** — this run's per-role turn medians (implement
+  7.5, review 11) are themselves far below the reference run's (implement 16.5, review 18);
+  a small, already-shipped 4-task change is not the reference run's shape. The bucket
+  *proportions* are the useful output here, not these specific turn counts.
+- **The dominant driver in a genuinely-pending task is unmeasured by this run** — every task
+  here was a no-op, so "investigation to confirm nothing needs to change" mechanically
+  dominates. The reference run's actual `fix 3.4` 49-turn outlier (still not re-captured
+  with transcripts) remains the more representative next target once a genuinely pending
+  multi-file task is available to run this same capture against.
+- **`observed_turns` (unique assistant message IDs in the transcript) undercounts the API's
+  own `num_turns`** on `review` spawns specifically (e.g. 11 observed vs 16 reported, 10 vs
+  17, 13 vs 14, 10 vs 16) but matches exactly on 3 of 4 `implement` spawns. Root cause not
+  investigated further here — plausibly server-side turns with no corresponding
+  JSONL `assistant` event (e.g. an empty continuation) — flagged as a known gap in the
+  script's own per-spawn output (`num_turns_reported` alongside `observed_turns`) rather than
+  silently treating the two as equivalent.
+
+**Not done here (Route J rule 5 / planning-only):** no prompt, turn-budget, or review-role
+change is proposed from this one run. The next useful capture is the same instrumentation
+against a genuinely multi-file pending task, ideally one that already ran without it so the
+`turns`/`ctx/turn` usage-report columns give a before/after comparison point.

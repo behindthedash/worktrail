@@ -40,6 +40,11 @@ Callers that only need the text can still do `result.text`. The orchestrator log
 all four fields to the run journal under each task entry; `progress.render_tools_used`
 aggregates them into a per-run footprint report.
 
+Setting `$WORKTRAIL_KEEP_TRANSCRIPTS` to a directory path persists each spawn's raw
+stream-json JSONL there (diagnostic-only, off by default) -- the per-turn capture the
+turn-count audit (docs/specs/research/worker-spawn-cache-read-amplification.md) needs to
+bucket turns by activity instead of only seeing the aggregate `num_turns` count.
+
 Switching from `--output-format json` to `--output-format stream-json` is
 token-neutral: the flag only changes how the worker serialises its result to stdout
 (JSONL instead of a single JSON envelope). The model's `usage` is identical; the
@@ -830,11 +835,27 @@ def spawn_agent(
 
     child_env, opencode_dir = build_child_env(agent)
 
+    def _persist_transcript(raw: str) -> None:
+        """Best-effort raw stream-json JSONL dump, gated by $WORKTRAIL_KEEP_TRANSCRIPTS
+        (a directory path). Diagnostic-only: never lets a write failure break a real
+        spawn. Written outside `cwd` since that is the task's own git worktree."""
+        transcript_dir = env_setting("WORKTRAIL_KEEP_TRANSCRIPTS")
+        if not transcript_dir or not raw:
+            return
+        try:
+            out_dir = Path(transcript_dir).expanduser()
+            out_dir.mkdir(parents=True, exist_ok=True)
+            name = f"{Path(cwd).name}-{agent}-{int(time.time())}-{os.getpid()}.jsonl"
+            (out_dir / name).write_text(raw)
+        except OSError as exc:
+            log(f"    WORKTRAIL_KEEP_TRANSCRIPTS write failed (non-fatal): {exc}")
+
     def finish(raw: str) -> SpawnResult:
         """Parse the final raw output and return the SpawnResult, attaching the
         opencode diagnostics the report-back contract needs when the worker
         produced nothing parseable: the session id, whether headless permission
         auto-rejections occurred, and where the isolated state/logs live."""
+        _persist_transcript(raw)
         text, usage, tools_used, skills_used, sid = _parse_stream_json(raw)
         if agent == "opencode":
             usage = dict(usage) if usage else {}
