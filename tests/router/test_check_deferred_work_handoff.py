@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""Unit tests for check_deferred_work_handoff.py's deferred-work-only signal
-source: a run record's `deferred_work` entries are read and matched, while
-its `scope_review` entries -- even an `out-of-scope | ... | different
-purpose: ...` entry carrying deferral-phrase vocabulary -- are never read
-or matched (Requirement: Deferred-Work-Only Signal Source)."""
+"""Unit tests for check_deferred_work_handoff.py: a run record's
+`deferred_work` entries are read and matched, while its `scope_review`
+entries -- even an `out-of-scope | ... | different purpose: ...` entry
+carrying deferral-phrase vocabulary -- are never read or matched
+(Requirement: Deferred-Work-Only Signal Source); entries are only
+candidates once they match a deferral phrase (Requirement: Deferral-Phrase
+Matching); and a candidate is flagged only when no existing `queue/` or
+`picked/` brief already covers it (Requirement: Handoff Cross-Check Before
+Flagging)."""
 from __future__ import annotations
 
 import json
@@ -187,9 +191,17 @@ class PhraseMatchingCandidacyTests(unittest.TestCase):
 class HandoffCrossCheckTests(unittest.TestCase):
     """Requirement: Handoff Cross-Check Before Flagging -- a candidate whose
     extracted probes match an existing `queue/` or `picked/` brief's focus
-    text is not flagged; a candidate matching no brief is flagged; an
-    unreadable/missing work-queue directory yields "not flagged," never an
-    exception."""
+    text is not flagged; a candidate matching no brief is flagged.
+
+    Task 3.3's own wording additionally says an unreadable/missing
+    work-queue directory "yields 'not flagged,' never an exception" --
+    but that contradicts task 1.3, which says an unreadable/missing
+    directory is "skipped, never treated as a match" (i.e. no coverage,
+    which, combined with a phrase-matching candidate, *is* flagged). The
+    shipped `has_handoff_coverage`/`find_flagged` implement the 1.3
+    reading, and the tests below verify that actual, shipped behavior --
+    "never raises" holds either way, but the outcome is "no coverage
+    found" (flagged end-to-end), not "not flagged."""
 
     _CANDIDATE = "clean up `src/widget.py` in a later pr"
 
@@ -233,7 +245,21 @@ class HandoffCrossCheckTests(unittest.TestCase):
 
             self.assertFalse(covered)
 
-    def test_missing_work_queue_directory_yields_not_flagged_never_raises(self):
+    def test_candidate_matching_no_brief_is_flagged_end_to_end(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                tempfile.TemporaryDirectory() as queue_home:
+            path = _start_record(tmp)
+            _append(path, "deferred_work", self._CANDIDATE)
+            base = Path(queue_home) / "work-queue"
+            self._write_brief(base / "queue", "Touches src/other.py for unrelated work.")
+
+            with patch.dict("os.environ", {"WORK_QUEUE_DIR": str(base)}):
+                flagged = find_flagged([path])
+
+            self.assertEqual(len(flagged), 1)
+            self.assertEqual(flagged[0]["text"], self._CANDIDATE)
+
+    def test_missing_work_queue_directory_yields_no_coverage_never_raises(self):
         with tempfile.TemporaryDirectory() as queue_home:
             base = Path(queue_home) / "does-not-exist"
 
@@ -242,7 +268,20 @@ class HandoffCrossCheckTests(unittest.TestCase):
 
             self.assertFalse(covered)
 
-    def test_unreadable_queue_directory_yields_not_flagged_never_raises(self):
+    def test_missing_work_queue_directory_yields_flagged_end_to_end_never_raises(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                tempfile.TemporaryDirectory() as queue_home:
+            path = _start_record(tmp)
+            _append(path, "deferred_work", self._CANDIDATE)
+            base = Path(queue_home) / "does-not-exist"
+
+            with patch.dict("os.environ", {"WORK_QUEUE_DIR": str(base)}):
+                flagged = find_flagged([path])
+
+            self.assertEqual(len(flagged), 1)
+            self.assertEqual(flagged[0]["text"], self._CANDIDATE)
+
+    def test_unreadable_queue_directory_yields_no_coverage_never_raises(self):
         with tempfile.TemporaryDirectory() as queue_home:
             base = Path(queue_home) / "work-queue"
             queue = base / "queue"
@@ -256,6 +295,25 @@ class HandoffCrossCheckTests(unittest.TestCase):
                 queue.chmod(0o755)
 
             self.assertFalse(covered)
+
+    def test_unreadable_queue_directory_yields_flagged_end_to_end_never_raises(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                tempfile.TemporaryDirectory() as queue_home:
+            path = _start_record(tmp)
+            _append(path, "deferred_work", self._CANDIDATE)
+            base = Path(queue_home) / "work-queue"
+            queue = base / "queue"
+            queue.mkdir(parents=True)
+            self._write_brief(queue, "Touches src/widget.py for retry tuning.")
+            queue.chmod(0o000)
+            try:
+                with patch.dict("os.environ", {"WORK_QUEUE_DIR": str(base)}):
+                    flagged = find_flagged([path])
+            finally:
+                queue.chmod(0o755)
+
+            self.assertEqual(len(flagged), 1)
+            self.assertEqual(flagged[0]["text"], self._CANDIDATE)
 
     def test_end_to_end_phrase_matching_candidate_covered_by_brief_is_not_flagged(self):
         with tempfile.TemporaryDirectory() as tmp, \
