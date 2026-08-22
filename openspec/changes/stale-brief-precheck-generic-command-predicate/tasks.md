@@ -62,11 +62,17 @@
 
 ## 4. Release and verification
 
-- [ ] 4.1 Bump `version` in `pyproject.toml` (`src/worktrail/**` changed; `CI: Version Bump Check`
-      requires it absent a `go:no-version-bump` label).
-- [ ] 4.2 [e2e] Run `PYTHONPATH=src pytest -q` and `PYTHONPATH=src python3 -m
+- [x] 4.1 Bump `version` in `pyproject.toml` (`src/worktrail/**` changed; `CI: Version Bump Check`
+      requires it absent a `go:no-version-bump` label). Already satisfied: PR #605's own
+      `Version Bump Check` ci-fix bumped `pyproject.toml`/`.codex-plugin/plugin.json` to 1.1.26
+      (parity confirmed) while landing this change's `src/worktrail/**` edits, so no further bump
+      was needed once this task ran in isolation against its own already-merged diff.
+- [x] 4.2 [e2e] Run `PYTHONPATH=src pytest -q` and `PYTHONPATH=src python3 -m
       worktrail.orchestrator.orchestrate check` and confirm both are green, then run
       `worktrail-recheck-brief-predicate --repo <repo> --brief <fixture> --json` against a
       throwaway `predicate-kind: command` brief in a scratch `$WORK_QUEUE_DIR` and confirm the
       reported `outcome`, `still_true`/`resolved`, and `evidence` match the executed commands'
-      actual exit statuses.
+      actual exit statuses. Verified against `main`@`3b8bd9a`: pytest 4142 passed/2 skipped;
+      golden orchestrator check passed; throwaway two-finding fixture (exit 0 / exit 1) returned
+      `outcome: still-true`, `still_true: [pyproject.toml]`, `resolved: [README.md]`, matching the
+      executed commands' exit statuses exactly.
