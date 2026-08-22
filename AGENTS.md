@@ -36,7 +36,7 @@ Five subsystems under `src/worktrail/`:
 ## Claude Code plugin surface
 
 This repo is also a Claude Code plugin marketplace (`.claude-plugin/marketplace.json` +
-`.claude-plugin/plugin.json`), shipping four user-facing skills under `skills/`:
+`.claude-plugin/plugin.json`), shipping five user-facing skills under `skills/`:
 
 | Skill | Surface over |
 |---|---|
@@ -44,6 +44,7 @@ This repo is also a Claude Code plugin marketplace (`.claude-plugin/marketplace.
 | `worktrail-handoff` | `workqueue/` — capture/claim/complete briefs in `$WORK_QUEUE_DIR` |
 | `worktrail-go` | `router/` — the route classifier, orientation dashboard, run records, policy, and queue draining |
 | `worktrail-sdd-workflow` | the route executor `worktrail-go` dispatches to (routes A–J) — internal, never called directly |
+| `worktrail-repo-init` | `onboarding/repo_init.py` — bootstrap/migrate a repo onto the repo-standards doctrine (AGENTS.md split, branch model, rulesets, OpenSpec scaffold, `worktrail-go-policy.yaml`) |
 
 It also bundles OpenSpec's own Claude Code integration (`commands/opsx/*.md` +
 `skills/openspec-{propose,explore,update-change,sync-specs,archive-change}/`,

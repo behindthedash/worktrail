@@ -19,6 +19,7 @@
     "./skills/worktrail-help",
     "./skills/worktrail-handoff",
     "./skills/worktrail-sdd-workflow",
+    "./skills/worktrail-repo-init",
     "./skills/openspec-propose",
     "./skills/openspec-explore",
     "./skills/openspec-update-change",
