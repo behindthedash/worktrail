@@ -122,6 +122,44 @@ def test_create_handoff_leaves_unresolvable_repo_value_unchanged(tmp_path: Path,
     assert read_frontmatter(Path(result["path"]))["repo"] == "nonexistent-repo"
 
 
+def test_create_handoff_infers_repo_from_focus_project_prefix(tmp_path: Path, monkeypatch):
+    """`repo: null` hides a brief from same-repo batch detection; a focus that
+    opens with `<project>: ` names the checkout, so resolve it at capture."""
+    projects = tmp_path / "home" / "projects"
+    (projects / "datalena").mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+
+    result = create_handoff("datalena: add a CI guard for X", queue_base=tmp_path / "queue")
+
+    assert read_frontmatter(Path(result["path"]))["repo"] == str((projects / "datalena").resolve())
+
+
+def test_create_handoff_explicit_repo_wins_over_focus_prefix(tmp_path: Path, monkeypatch):
+    projects = tmp_path / "home" / "projects"
+    (projects / "datalena").mkdir(parents=True)
+    (projects / "devops").mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+
+    result = create_handoff(
+        "datalena: add a CI guard for X", queue_base=tmp_path / "queue", repo="devops"
+    )
+
+    assert read_frontmatter(Path(result["path"]))["repo"] == str((projects / "devops").resolve())
+
+
+def test_create_handoff_focus_prefix_without_matching_checkout_stays_null(
+    tmp_path: Path, monkeypatch
+):
+    """A prefix that is not a project under ~/projects (e.g. "Note: ...") must
+    not be guessed into a repo."""
+    (tmp_path / "home" / "projects").mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+
+    result = create_handoff("Note: fix the thing", queue_base=tmp_path / "queue")
+
+    assert read_frontmatter(Path(result["path"]))["repo"] is None
+
+
 def test_cli_emits_json_and_accepts_structured_fields(tmp_path: Path, capsys):
     assert main([
         "--focus", "Create a new OpenSpec handoff",
