@@ -482,6 +482,50 @@ primitive: `invocation_context.resolve()` now generates a `dispatch_id`
 None of these fixes touch `classify.py`'s routing/scoring logic, so the
 routing cassette is unaffected.
 
+### 2.18 OpenSpec pre-orchestrator-dispatch stale-bookkeeping check
+
+`#stale-spec-check` (`subagent-prompts.md`) runs immediately before
+`#precheck-gate` launches the orchestrator, but its only check
+(`dashboard.is_stale_spec()`) is a checkbox-ratio heuristic scoped to the
+devkit format's `docs/specs/$SPEC_ID/` — it flags a spec stale only when
+*zero* tasks are checked, and it was never reachable for an OpenSpec change
+in the first place: the `modify` pipeline's own call site
+(`pipeline-details.md#modify-pipeline` step 5) passes it a `$CHANGE_DIR`
+under `openspec/changes/$CHANGE_ID/`, a path `is_stale_spec()`'s
+`find_spec_file()` never finds, so it silently returned `False` on every
+real OpenSpec dispatch. Confirmed recurring failure shape (PR #547
+2026-08-19, PR #548 2026-08-20, `stale-brief-precheck-recheck-search-boundary`
+PR #610 2026-08-21): a change's pending tasks had already shipped on base
+under a different commit, with checkboxes never flipped to reflect it, and
+every occurrence was discovered only after a live orchestrator dispatch
+burned a full run and found zero-diff on the flagged tasks.
+
+`check_change_staleness.py` (`worktrail-check-change-staleness`) adds a
+second, independent signal for the OpenSpec branch of `#stale-spec-check`:
+not "does the checkbox ratio look abandoned" but "did this change's own
+still-pending tasks already land on base, going by git history" — the same
+question `check_brief_staleness.py` asks of a queued brief, reusing that
+module's `check()` unchanged for the actual probe extraction and history
+search. The one OpenSpec-specific wrinkle `check_brief_staleness.py` has no
+analog for: a pending task's own title is, by construction, text already
+written into `tasks.md`, so the commit that authored that task line always
+matches its own probe once the search window reaches back that far.
+`_change_own_commit_shas()` excludes every commit that ever touched the
+change's own `openspec/changes/<id>/` directory from the reported matches,
+so only genuinely external delivering commits surface as evidence.
+
+Wired as an `AskUserQuestion` confirmation gate (never an auto-close) ahead
+of `#precheck-gate`, mirroring `#brief-staleness-check`'s own "evidence
+surfaced here is for a human to judge, never auto-applied" posture rather
+than the devkit branch's plain warning-and-proceed: git-history evidence
+(matched commits/PRs) is strong enough to be actionable, where a checkbox
+ratio alone is not. `$AUTO_MODE=true` never picks proceed/close silently —
+finishes `blocked_product_decision` quoting the evidence instead, same as
+every other unattended judgment call in this family.
+
+Does not touch `classify.py`'s routing/scoring logic, so the routing
+cassette is unaffected.
+
 ---
 
 ## 3. Migration plan (v1 → v2)

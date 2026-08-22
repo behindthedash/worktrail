@@ -1504,7 +1504,14 @@ Run in order before launching the orchestrator. `$SPEC_ROOT` = `$WT` for the `ne
 
 ### Stale-spec check {#stale-spec-check}
 
+Branches by which task-source format `$SPEC_ID` actually is: `$SPEC_ROOT/docs/specs/$SPEC_ID`
+(devkit) or `$SPEC_ROOT/openspec/changes/$SPEC_ID` (OpenSpec, `modify` pipeline's `$CHANGE_ID`
+passed as `$SPEC_ID`). Run whichever branch matches; skip the other.
+
+**devkit format** — checkbox-ratio heuristic (no tasks completed + old spec age):
+
 ```bash
+if [ -d "$SPEC_ROOT/docs/specs/$SPEC_ID" ]; then
 python3 -c "
 import datetime
 from pathlib import Path
@@ -1521,9 +1528,60 @@ if is_stale_spec(spec_dir, repo):
     completed = counts.get('completed', 0) if counts else 0
     print(f'Spec \$SPEC_ID shows {completed}/{total} tasks done but was created {age_days} days ago. This may indicate tasks were implemented outside the orchestrator (missing sync) or the spec was abandoned.')
 " 2>&1
+fi
 ```
 
 If stale, surface the warning; then proceed to precheck.
+
+**OpenSpec format** — a cheap git-history probe (`worktrail-check-change-staleness`,
+`router/check_change_staleness.py`), mirroring `brief-staleness-check.md`'s approach instead of
+the devkit branch's checkbox-ratio heuristic above. The devkit heuristic cannot catch this
+format's failure shape: it only flags a spec stale when *zero* tasks are checked, so a change
+with even one flipped checkbox already — or whose checkboxes are simply behind reality — reads
+as "in progress" no matter how long its real implementation has actually sat on base
+unreflected. Confirmed recurring shape (PR #547 2026-08-19, PR #548 2026-08-20,
+`stale-brief-precheck-recheck-search-boundary` PR #610 2026-08-21): every one was discovered
+only after a live orchestrator dispatch burned a full run and found zero-diff on the flagged
+tasks.
+
+```bash
+if [ -d "$SPEC_ROOT/openspec/changes/$SPEC_ID" ]; then
+  STALE_CHANGE_JSON=$(worktrail-check-change-staleness --repo "$SPEC_ROOT" --change-id "$SPEC_ID" --json)
+  echo "$STALE_CHANGE_JSON" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+if d['checked'] and (d['matches'] or d['pull_requests']):
+    print('FLAGGED')
+    for m in d['matches']:
+        print(f\"  {m['sha']}  {m['date']}  {m['subject']}   [{m['kind']} probe: {m['probe']}]\")
+    for pr in d['pull_requests']:
+        print(f\"  PR #{pr['number']}  {pr.get('merged_at') or '?'}  {pr.get('title') or ''}\")
+"
+fi
+```
+
+`checked: false` (no `tasks.md`, no pending tasks, or the change has no history on base yet) is
+"no signal", never "clean" — proceed silently to precheck, same fail-open contract
+`check_brief_staleness.py`'s own siblings document. `checked: true` with no `FLAGGED` line is a
+definite searched-and-clean negative — proceed to precheck without asking.
+
+On a `FLAGGED` line, ask with the **`AskUserQuestion` tool**: "Stale-bookkeeping check found
+git-history evidence this change's still-pending tasks may already be implemented on base (see
+matches above). How would you like to proceed?", options:
+
+1. **Proceed anyway** — the evidence doesn't actually cover this change's scope; launch the
+   orchestrator.
+2. **Confirm shipped and close** — the evidence confirms it; stop here and run the dashboard's
+   `close-stale` action (`worktrail-go/SKILL.md`'s Phase 2 action table — `worktrail-close-stale-openspec`
+   flips the confirmed-shipped checkboxes and archives) instead of launching the orchestrator.
+3. **Abort** — stop for manual investigation.
+
+`$AUTO_MODE=true`: no ask — same reasoning as `#precheck-gate`'s own `$AUTO_MODE` branch below:
+judging whether matched commits/PRs actually confirm this change's scope is a call about prior
+work no unattended run may make — never pick option 1 or 2 silently. Finish
+`blocked_product_decision` quoting the evidence, per `#auto-mode-ask-fallbacks`. Evidence
+surfaced here is never auto-applied — mirrors `check_brief_staleness.py`'s own module docstring
+("evidence surfaced here is for a human to judge, never auto-applied").
 
 ### Precheck DAG validation {#precheck-gate}
 
