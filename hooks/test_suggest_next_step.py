@@ -163,6 +163,64 @@ def test_main_output_unchanged_when_run_record_flags_nothing(tmp_path, monkeypat
     assert with_path_output == baseline_output
 
 
+def test_main_appends_deferred_work_block_for_unmatched_flagged_entry(tmp_path, monkeypatch, capsys):
+    """A run-record path literal whose `deferred_work` has an unmatched,
+    phrase-matching entry must produce output containing both the unmodified
+    EXCEPTIONAL-VALUE instruction and the new deferral-flag block
+    (Requirement: Additive And Non-Interfering). `check_deferred_work` runs
+    for real against the shim installed by
+    `_install_check_deferred_work_handoff_shim`, not a stub; deferral-phrase
+    matching and handoff-coverage lookup themselves are covered by
+    test_check_deferred_work_handoff.py (tasks 3.1-3.3, sibling branch).
+    """
+    monkeypatch.delenv("CC_HEADLESS", raising=False)
+    monkeypatch.setattr(hook, "STATE_DIR", tmp_path / "state")
+    _install_check_deferred_work_handoff_shim(tmp_path, monkeypatch)
+    assert hook.shutil.which(hook.DEFERRED_WORK_HANDOFF_BINARY) is not None
+
+    flagged_record = tmp_path / ".worktrail" / "runs" / "some-repo" / "run-flagged.yaml"
+    _write_run_record(
+        flagged_record,
+        deferred_work=["revisit the retry backoff as a follow-up once calibrated"],
+    )
+    assert hook.check_deferred_work([str(flagged_record)]) == [
+        {
+            "text": "revisit the retry backoff as a follow-up once calibrated",
+            "run_record": str(flagged_record),
+        }
+    ]
+
+    with_path_transcript = tmp_path / "with_flagged_path.jsonl"
+    entry = {
+        "message": {
+            "content": [
+                {"type": "tool_use", "name": "Write", "input": {}},
+                {
+                    "type": "text",
+                    "text": f"See run record {flagged_record} for details.",
+                },
+            ]
+        }
+    }
+    with_path_transcript.write_text(json.dumps(entry) + "\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        hook.sys,
+        "stdin",
+        io.StringIO(
+            json.dumps({"session_id": "with-flagged-path", "transcript_path": str(with_path_transcript)})
+        ),
+    )
+    assert hook.main() == 0
+    reason = json.loads(capsys.readouterr().out)["reason"]
+
+    assert hook.INSTRUCTION in reason
+    assert reason.startswith(hook.INSTRUCTION)
+    assert "DEFERRED WORK FLAGGED" in reason
+    assert "revisit the retry backoff as a follow-up once calibrated" in reason
+    assert str(flagged_record) in reason
+
+
 def test_main_skips_continuation_and_headless_worker(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(hook, "STATE_DIR", tmp_path / "state")
     monkeypatch.setattr(hook.sys, "stdin", io.StringIO(json.dumps({"stop_hook_active": True})))
