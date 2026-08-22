@@ -2893,14 +2893,24 @@ def _require_dependency_files_with_repair(
     remote: str | None,
     base: str | None,
 ) -> "list[dict]":
-    """`_require_dependency_files`, but for a RETAINED (already-existing) task
-    worktree on resume: on `WorktreeMissingDependencyFileError`, retries the
-    squash-merge carry once before re-raising.
+    """`_require_dependency_files`, but retries the squash-merge carry once
+    before re-raising on `WorktreeMissingDependencyFileError`.
 
-    A dependency may have squash-merged (and had its branch deleted) after this
-    worktree was created, so it never got carried at creation time -- every
-    subsequent resume would otherwise re-hit the identical error forever, since
-    the retained-worktree path previously only re-validated, never repaired.
+    Used by both `ensure_wt`/`_ensure_wt` branches -- fresh creation and
+    RETAINED (already-existing) worktree on resume:
+
+    - Retained: a dependency may have squash-merged (and had its branch
+      deleted) after this worktree was created, so it never got carried at
+      creation time -- every subsequent resume would otherwise re-hit the
+      identical error forever, since the retained-worktree path previously
+      only re-validated, never repaired.
+    - Fresh creation: `add_stacked_worktree` already attempts the carry once
+      at creation time; if that single attempt fails for any transient
+      reason (e.g. a git fetch/lock error), the worktree is stuck missing the
+      dependency's content with no second chance, crashing the whole run
+      (brief 20260822-115008 -- gap 2 of the same defect class fixed for the
+      retained-worktree branch by brief 20260817-223443's gap 1, below).
+
     `_carry_squash_merged_dependencies` is idempotent (no-ops via its own
     `merge-base --is-ancestor` check when nothing changed) and repairs the
     worktree in place via `git merge` -- no worktree recreation, so any
@@ -3292,7 +3302,9 @@ def live_run_real(
                                 },
                             ),
                         )
-                    drift_events = _require_dependency_files(wt, task, by_id)
+                    drift_events = _require_dependency_files_with_repair(
+                        wt, task, by_id, repo, spec_id, remote, base
+                    )
                     if drift_events:
                         with state_lock:
                             entries.extend(drift_events)
@@ -4426,7 +4438,9 @@ def _pipeline_scheduler(
                             remote=remote,
                             base=base,
                         )
-                    drift_events = _require_dependency_files(wt, task, by_id)
+                    drift_events = _require_dependency_files_with_repair(
+                        wt, task, by_id, repo, spec_id, remote, base
+                    )
                     if drift_events:
                         with state_lock:
                             entries.extend(drift_events)
