@@ -54,10 +54,44 @@ the probe-based "close as already-delivered" branch's note is:
 As with the still-true evidence line, the predicate re-check itself -- not a
 commit SHA or PR number -- is the cited evidence, since the probe search
 never runs on this path.
+
+## Command predicates (`predicate-kind: command`)
+
+A brief whose `drift-source` has no named predicate registered in
+`PREDICATE_RECHECKS` may instead declare `predicate-kind: command` in its
+frontmatter. This is a generic capture contract for a sweep whose detector
+this codebase cannot import (a separate repo, a separate language): each of
+the brief's `drift-findings` entries carries, in addition to the `path`
+every finding already requires, a `predicate-cmd` field -- an argument
+vector (a non-empty `list[str]`, never a shell string) that re-derives
+whether that finding's condition still holds.
+
+Polarity is fixed and encoded in the field name, mirroring `grep -q` and
+`test`: `predicate-cmd` exits `0` when the predicate *still holds*
+("still-true") and `1` when it has been resolved. Any other exit status, a
+timeout, or a missing executable is an error for the whole brief's
+re-check -- output text is never consulted, only the exit status.
+
+Execution is bounded: `shell=False` always (arguments are never
+shell-split or shell-interpreted, even if they contain shell
+metacharacters), the working directory is pinned to the brief's `--repo`,
+each command gets a 30s wall-clock timeout, and at most 20 commands are
+executed per brief -- checked before the first command runs, so an
+oversized brief costs zero executions. Captured stdout and stderr are
+merged and truncated per finding, with truncation marked so a reader never
+mistakes a clipped excerpt for the whole output.
+
+`recheck()`'s dispatch order for a brief that carries a `drift-source` is:
+1. a named predicate registered in `PREDICATE_RECHECKS` for that
+   `drift-source`, if any;
+2. else, `_recheck_command_predicate` if `predicate-kind == "command"`;
+3. else, `outcome="unrecognized"`.
 """
 from __future__ import annotations
 
 import json
+import shlex
+import subprocess
 from pathlib import Path
 from typing import Any, Callable, Dict, List
 
@@ -66,6 +100,12 @@ from ..taskformats.devkit.checkbox_audit import (
     _all_checkboxes_checked,
     read_task_file,
 )
+
+# Decision 5 (design.md): bounds on command-predicate execution.
+_MAX_COMMANDS_PER_BRIEF = 20
+_COMMAND_TIMEOUT_SECONDS = 30
+_MAX_EVIDENCE_OUTPUT_CHARS = 4000
+_TRUNCATION_MARKER = " ...[truncated]"
 
 
 def _recheck_checkbox_drift(
@@ -101,9 +141,94 @@ def _recheck_checkbox_drift(
     return {"still_true": still_true, "resolved": resolved}
 
 
+def _truncate_output(output: str) -> str:
+    if len(output) <= _MAX_EVIDENCE_OUTPUT_CHARS:
+        return output
+    return output[:_MAX_EVIDENCE_OUTPUT_CHARS] + _TRUNCATION_MARKER
+
+
+def _recheck_command_predicate(
+    repo: Path, findings: List[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """Re-derive each finding by executing its captured `predicate-cmd`.
+
+    Every finding is validated (a `path`, and a `predicate-cmd` that is a
+    non-empty list of strings) and the per-brief command cap is enforced
+    before any command runs, so a malformed or oversized brief costs zero
+    executions. Each validated command is then run with `shell=False`,
+    `cwd=repo`, and a 30s timeout; exit `0` classifies the finding as
+    still-true, exit `1` as resolved, and anything else -- an unexpected
+    exit status, a timeout, or a missing executable -- raises so the
+    caller (`recheck()`) degrades the whole brief to `outcome="error"`.
+    """
+    validated: List[tuple] = []
+    for finding in findings:
+        path = finding.get("path")
+        if path is None:
+            raise ValueError(f"finding missing 'path': {finding!r}")
+        predicate_cmd = finding.get("predicate-cmd")
+        if (
+            not isinstance(predicate_cmd, list)
+            or not predicate_cmd
+            or not all(isinstance(arg, str) for arg in predicate_cmd)
+        ):
+            raise ValueError(
+                f"predicate-cmd for {path!r} must be a non-empty list of "
+                f"strings, got {predicate_cmd!r}"
+            )
+        validated.append((path, predicate_cmd))
+
+    if len(validated) > _MAX_COMMANDS_PER_BRIEF:
+        raise ValueError(
+            f"{len(validated)} predicate-cmd findings exceed the per-brief "
+            f"cap of {_MAX_COMMANDS_PER_BRIEF}"
+        )
+
+    still_true: List[str] = []
+    resolved: List[str] = []
+    evidence: List[Dict[str, Any]] = []
+    for path, argv in validated:
+        command = shlex.join(argv)
+        try:
+            proc = subprocess.run(
+                argv,
+                shell=False,
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                timeout=_COMMAND_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise ValueError(
+                f"predicate-cmd for {path!r} timed out after "
+                f"{_COMMAND_TIMEOUT_SECONDS}s: {command}"
+            ) from exc
+        except OSError as exc:
+            raise ValueError(
+                f"predicate-cmd for {path!r} failed to execute: {command}: {exc}"
+            ) from exc
+
+        output = _truncate_output(proc.stdout + proc.stderr)
+        evidence.append(
+            {"path": path, "command": command, "exit": proc.returncode, "output": output}
+        )
+        if proc.returncode == 0:
+            still_true.append(path)
+        elif proc.returncode == 1:
+            resolved.append(path)
+        else:
+            raise ValueError(
+                f"predicate-cmd for {path!r} exited {proc.returncode} "
+                f"(expected 0 or 1): {command}"
+            )
+
+    return {"still_true": still_true, "resolved": resolved, "evidence": evidence}
+
+
 # drift-source -> recheck function. Populated as individual sweep predicates
-# are implemented; an unpopulated (or unmatched) drift-source degrades to
-# outcome="unrecognized" in `recheck()` below.
+# are implemented; an unpopulated (or unmatched) drift-source falls through
+# to `predicate-kind == "command"` and then to outcome="unrecognized" in
+# `recheck()` below (design.md - Decision 1).
 PREDICATE_RECHECKS: Dict[str, Callable[[Path, List[Dict[str, Any]]], Dict[str, List[str]]]] = {
     "checkbox-drift-sweep": _recheck_checkbox_drift,
 }
@@ -113,7 +238,7 @@ def recheck(repo: Path, frontmatter: Dict[str, Any]) -> Dict[str, object]:
     """Never raises. Returns:
     {"attempted": bool, "drift_source": str|None, "outcome": "no-predicate"|
      "unrecognized"|"error"|"still-true"|"resolved", "still_true": [...],
-     "resolved": [...], "error": str|None}
+     "resolved": [...], "evidence": [...], "error": str|None}
     """
     drift_source = frontmatter.get("drift-source")
     if drift_source is None:
@@ -123,19 +248,27 @@ def recheck(repo: Path, frontmatter: Dict[str, Any]) -> Dict[str, object]:
             "outcome": "no-predicate",
             "still_true": [],
             "resolved": [],
+            "evidence": [],
             "error": None,
         }
 
+    # Dispatch order (design.md - Decision 1): a named predicate registered
+    # for this drift-source wins; else fall back to the generic command
+    # predicate if declared; else the drift-source is unrecognized.
     recheck_fn = PREDICATE_RECHECKS.get(drift_source)
     if recheck_fn is None:
-        return {
-            "attempted": False,
-            "drift_source": drift_source,
-            "outcome": "unrecognized",
-            "still_true": [],
-            "resolved": [],
-            "error": None,
-        }
+        if frontmatter.get("predicate-kind") == "command":
+            recheck_fn = _recheck_command_predicate
+        else:
+            return {
+                "attempted": False,
+                "drift_source": drift_source,
+                "outcome": "unrecognized",
+                "still_true": [],
+                "resolved": [],
+                "evidence": [],
+                "error": None,
+            }
 
     findings = frontmatter.get("drift-findings")
     if not findings:
@@ -145,6 +278,7 @@ def recheck(repo: Path, frontmatter: Dict[str, Any]) -> Dict[str, object]:
             "outcome": "error",
             "still_true": [],
             "resolved": [],
+            "evidence": [],
             "error": "drift-findings is missing or empty",
         }
 
@@ -157,11 +291,13 @@ def recheck(repo: Path, frontmatter: Dict[str, Any]) -> Dict[str, object]:
             "outcome": "error",
             "still_true": [],
             "resolved": [],
+            "evidence": [],
             "error": str(exc),
         }
 
     still_true = result.get("still_true", [])
     resolved = result.get("resolved", [])
+    evidence = result.get("evidence", [])
     outcome = "still-true" if still_true else "resolved"
     return {
         "attempted": True,
@@ -169,8 +305,28 @@ def recheck(repo: Path, frontmatter: Dict[str, Any]) -> Dict[str, object]:
         "outcome": outcome,
         "still_true": still_true,
         "resolved": resolved,
+        "evidence": evidence,
         "error": None,
     }
+
+
+def _collapse_output_newlines(output: str) -> str:
+    return " ".join(output.splitlines())
+
+
+def _render_evidence_transcript(evidence: List[Dict[str, Any]], paths: List[str]) -> str:
+    """Render the `command: ... / exit: ... / output: ...` transcript block
+    (design.md Decision 4) for the evidence entries whose `path` is in
+    `paths`, one finding per line-triplet, newlines in captured output
+    collapsed to spaces.
+    """
+    relevant = [entry for entry in evidence if entry["path"] in paths]
+    lines: List[str] = []
+    for entry in relevant:
+        lines.append(f"command: {entry['command']}")
+        lines.append(f"exit: {entry['exit']}")
+        lines.append(f"output: {_collapse_output_newlines(entry['output'])}")
+    return "\n".join(lines)
 
 
 def format_still_true_evidence(result: Dict[str, object]) -> str:
@@ -186,11 +342,17 @@ def format_still_true_evidence(result: Dict[str, object]) -> str:
     """
     still_true = result["still_true"]
     paths = ", ".join(still_true)
-    return (
+    message = (
         f"Predicate re-check ({result['drift_source']}) found the staleness "
         f"predicate still true for {len(still_true)} finding(s): {paths}. "
         "Proceeded automatically without an operator prompt."
     )
+    evidence = result.get("evidence") or []
+    if evidence:
+        transcript = _render_evidence_transcript(evidence, still_true)
+        if transcript:
+            message = f"{message}\n\n{transcript}"
+    return message
 
 
 def format_resolved_closure_note(result: Dict[str, object]) -> str:
@@ -208,13 +370,19 @@ def format_resolved_closure_note(result: Dict[str, object]) -> str:
     """
     resolved = result["resolved"]
     paths = ", ".join(resolved)
-    return (
+    message = (
         "Closed as already-delivered: predicate re-check "
         f"({result['drift_source']}) found the staleness predicate resolved "
         f"for {len(resolved)} finding(s): {paths}. Surfaced by the Phase 5.5 "
         "predicate re-check; closed automatically without an operator "
         "prompt."
     )
+    evidence = result.get("evidence") or []
+    if evidence:
+        transcript = _render_evidence_transcript(evidence, resolved)
+        if transcript:
+            message = f"{message}\n\n{transcript}"
+    return message
 
 
 # --- CLI --------------------------------------------------------------------
