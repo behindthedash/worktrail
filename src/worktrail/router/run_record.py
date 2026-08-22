@@ -87,6 +87,24 @@ finish PATH --status completed_pr_open [--pr URL] [--merge-result ...]
             recent for its repo, OR started within --keep-days, OR is still
             non-terminal (no final_status yet) -- whichever keeps more.
             Omit --repo to prune every repo directory under --dir.
+  sweep-orphans --status STATUS [--dir DIR] [--repo REPO]
+                [--ttl-seconds N] [--note "..."] [--dry-run]
+         -> bulk-close non-terminal run records abandoned mid-dispatch: a
+            record with no `final_status` whose `liveness` (same check as the
+            `liveness` subcommand below) comes back stale is closed via the
+            same path `finish` uses, with the given --status and --merge-result
+            (defaults to an auto-reconciled note naming the liveness reason).
+            A record still `fresh` per liveness is left untouched -- it may be
+            legitimate in-progress work on another machine/session. Unlike
+            `reconcile` (which re-checks one record's worktree/base_branch
+            staleness), this is heartbeat-based and scoped to zero or more
+            entire repo directories, matching `prune`'s --dir/--repo
+            semantics. Prints one summary object per repo dir:
+            {"repo", "closed": [paths], "skipped_live": [paths], "warnings"}.
+            No existing tool covered this before (`reconcile`'s `_is_stale()`
+            treats a record with no `base_branch` as live, not stale, which is
+            true for most long-orphaned records -- see
+            docs/specs/research/dead-dispatch-backlog-investigation.md).
   liveness RUN_PATH [--ttl-seconds N] [--dispatch-id ID]
          -> read-only: is this non-terminal run still actively being worked?
             `updated_at` (stamped by every `_save()`, i.e. every mutating
@@ -129,6 +147,8 @@ finish PATH --status completed_pr_open [--pr URL] [--merge-result ...]
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import logging
 import os
@@ -717,6 +737,20 @@ def cmd_finish(args: argparse.Namespace) -> int:
             + ", ".join(COMPLETION_STATES))
     path = Path(args.path)
     record = _load(path)
+    stored_pr = record.get("pull_request")
+    if stored_pr is not None and not isinstance(stored_pr, str):
+        # A handful of pre-existing records (written by an older tool/writer,
+        # or hand-edited) hold a list here instead of a single string --
+        # every downstream consumer (the merge-state gate, the review-thread
+        # gate, and the PR risk-label correction below) treats this field as
+        # a single URL and crashes with a raw TypeError deep in subprocess
+        # argv handling on a list, not the graceful `except (OSError,
+        # subprocess.SubprocessError)` this function already documents for a
+        # gh/network failure. Sanitize once here instead of guarding each
+        # consumer separately.
+        print(f"warning: run_record: ignoring malformed non-string "
+              f"pull_request on {path}: {stored_pr!r}", file=sys.stderr)
+        record["pull_request"] = None
     if (record.get("selected_route") == "A"
             and args.status in IMPLEMENTATION_COMPLETION_STATES
             and not record.get("decisions")):
@@ -1410,6 +1444,69 @@ def cmd_prune(args: argparse.Namespace) -> int:
     return 0
 
 
+def _sweep_orphans_repo_dir(
+    repo_dir: Path, status: str, ttl_seconds: int, note: Optional[str], dry_run: bool
+) -> Dict[str, Any]:
+    closed: List[str] = []
+    skipped_live: List[str] = []
+    warnings: List[str] = []
+    for path in sorted(repo_dir.glob("*.yaml")):
+        record, warning = _load_lenient(path)
+        if warning is not None:
+            warnings.append(warning)
+            continue
+        if record.get("final_status") is not None:
+            continue  # already terminal -- nothing for this sweep to do
+        liveness = _run_liveness(record, ttl_seconds, caller_dispatch_id=None)
+        if liveness["fresh"]:
+            skipped_live.append(str(path))
+            continue
+        closed.append(str(path))
+        if dry_run:
+            continue
+        liveness_reason = liveness["reason"] or "stale_heartbeat"
+        merge_result = note or (
+            f"auto-reconciled: orphan sweep closed run {record.get('run_id')} "
+            f"(liveness reason={liveness_reason}, age_seconds={liveness['age_seconds']})"
+        )
+        finish_args = argparse.Namespace(
+            path=str(path), status=status, pr=None, merge_result=merge_result,
+        )
+        # cmd_finish() prints its own confirmation line; this sweep reports
+        # one summary object per repo dir instead, so that print is captured
+        # and discarded rather than interleaved with it.
+        with contextlib.redirect_stdout(io.StringIO()):
+            cmd_finish(finish_args)
+    return {
+        "repo": repo_dir.name,
+        "closed": closed,
+        "skipped_live": skipped_live,
+        "warnings": warnings,
+    }
+
+
+def cmd_sweep_orphans(args: argparse.Namespace) -> int:
+    if args.status not in COMPLETION_STATES:
+        raise SystemExit(
+            f"'{args.status}' is not an allowed completion state.\nAllowed: "
+            + ", ".join(COMPLETION_STATES))
+    base = Path(args.dir).expanduser() if args.dir else worktrail_home() / "runs"
+    if not base.is_dir():
+        print(json.dumps({"repos": []}))
+        return 0
+    if args.repo:
+        repo_dirs = [base / Path(args.repo).name]
+    else:
+        repo_dirs = [d for d in sorted(base.iterdir()) if d.is_dir()]
+    results = [
+        _sweep_orphans_repo_dir(repo_dir, args.status, args.ttl_seconds, args.note, args.dry_run)
+        for repo_dir in repo_dirs
+        if repo_dir.is_dir()
+    ]
+    print(json.dumps({"repos": results}, sort_keys=True))
+    return 0
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -1537,6 +1634,21 @@ def main(argv=None) -> int:
     s.add_argument("--dry-run", action="store_true",
                     help="report what would be pruned without deleting")
     s.set_defaults(func=cmd_prune)
+
+    s = sub.add_parser("sweep-orphans")
+    s.add_argument("--dir", default=None,
+                    help="run records directory (default worktrail_home()/runs)")
+    s.add_argument("--repo", default=None,
+                    help="only sweep this repo's run records (matched by repo directory name); omit to sweep every repo")
+    s.add_argument("--status", required=True,
+                    help="completion state to close each stale record with (one of the ten COMPLETION_STATES)")
+    s.add_argument("--ttl-seconds", type=int, default=_DEFAULT_LIVENESS_TTL_SECONDS,
+                    help="liveness heartbeat freshness window in seconds (default 1200)")
+    s.add_argument("--note", default=None,
+                    help="--merge-result text for each closed record (default: an auto-reconciled note naming the liveness reason)")
+    s.add_argument("--dry-run", action="store_true",
+                    help="report what would be closed without writing")
+    s.set_defaults(func=cmd_sweep_orphans)
 
     s = sub.add_parser("liveness")
     s.add_argument("run")

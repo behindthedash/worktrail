@@ -347,6 +347,31 @@ class TestLifecycle(unittest.TestCase):
         self.assertEqual(rec["final_status"], "completed_pr_open")
         self.assertIn("pull/5", rec["pull_request"])
 
+    def test_finish_sanitizes_malformed_list_pull_request_instead_of_crashing(self):
+        """A handful of pre-existing run records (older writer / hand-edited)
+        hold `pull_request` as a list instead of a string. Confirmed live:
+        `sweep-orphans` crashed with a raw `TypeError` deep in
+        `subprocess.Popen` argv handling (not the graceful `OSError`/
+        `SubprocessError` this module already documents) the first time
+        anything called `finish` on such a record. `finish` must sanitize the
+        field and complete instead of propagating that crash."""
+        res = _start(self.tmp, request="legacy malformed pull_request")
+        main(["append", res["path"], "pull_request", "https://github.com/x/y/pull/9"])
+        rec = _load(Path(res["path"]))
+        self.assertEqual(rec["pull_request"], ["https://github.com/x/y/pull/9"])
+
+        def unexpected(*_a, **_k):
+            raise AssertionError("must not attempt a PR-label correction for malformed data")
+
+        with patch("worktrail.router.pr_labels.ensure_pr_risk_label", unexpected):
+            out = StringIO()
+            with patch("sys.stdout", out):
+                rc = main(["finish", res["path"], "--status", "failed_terminal"])
+        self.assertEqual(rc, 0)
+        rec = _load(Path(res["path"]))
+        self.assertEqual(rec["final_status"], "failed_terminal")
+        self.assertIsNone(rec["pull_request"])
+
     def test_finish_blocks_on_blocked_merge_state(self):
         """`ci-watch-loop.md`'s merge-state guard documents `mergeStateStatus:
         BLOCKED` as a hard stop (worktrail PR #393: a stray CANCELLED run
@@ -1749,6 +1774,181 @@ class TestPrune(unittest.TestCase):
         self.assertTrue(corrupted.exists())
         self.assertEqual(len(repo["warnings"]), 1)
         self.assertIn(str(corrupted), repo["warnings"][0])
+
+
+def _sweep_orphans(tmp, **over):
+    argv = ["sweep-orphans", "--dir", tmp, "--status", over.get("status", "failed_terminal")]
+    if "repo" in over:
+        argv += ["--repo", over["repo"]]
+    if "ttl_seconds" in over:
+        argv += ["--ttl-seconds", str(over["ttl_seconds"])]
+    if "note" in over and over["note"] is not None:
+        argv += ["--note", over["note"]]
+    if over.get("dry_run"):
+        argv.append("--dry-run")
+    out = StringIO()
+    with patch("sys.stdout", out):
+        rc = main(argv)
+    return rc, json.loads(out.getvalue())
+
+
+class TestSweepOrphans(unittest.TestCase):
+    """Bulk-close non-terminal, heartbeat-stale run records -- the gap named in
+    docs/specs/research/dead-dispatch-backlog-investigation.md: no existing
+    tool bulk-closes a generic abandoned run record, since `reconcile`'s
+    `_is_stale()` treats a record with no `base_branch` as live."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def _backdate_updated_at(self, path, seconds_ago):
+        record = _load(Path(path))
+        then = datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)
+        record["updated_at"] = then.strftime("%Y-%m-%dT%H:%M:%S%z")
+        Path(path).write_text(run_record._render(record), encoding="utf-8")
+
+    def test_closes_stale_non_terminal_record_with_default_note(self):
+        res = _start(self.tmp, request="orphaned dispatch")
+        self._backdate_updated_at(res["path"], seconds_ago=99999)
+
+        rc, out = _sweep_orphans(self.tmp)
+
+        self.assertEqual(rc, 0)
+        repo = out["repos"][0]
+        self.assertEqual(repo["closed"], [res["path"]])
+        self.assertEqual(repo["skipped_live"], [])
+        rec = _load(Path(res["path"]))
+        self.assertEqual(rec["final_status"], "failed_terminal")
+        self.assertEqual(rec["status"], "done")
+        self.assertIn(res["run_id"], rec["merge_result"])
+        self.assertIn("auto-reconciled", rec["merge_result"])
+
+    def test_leaves_fresh_record_untouched(self):
+        res = _start(self.tmp, request="still actively worked")
+        self._backdate_updated_at(res["path"], seconds_ago=60)
+
+        rc, out = _sweep_orphans(self.tmp, ttl_seconds=1200)
+
+        self.assertEqual(rc, 0)
+        repo = out["repos"][0]
+        self.assertEqual(repo["closed"], [])
+        self.assertEqual(repo["skipped_live"], [res["path"]])
+        rec = _load(Path(res["path"]))
+        self.assertIsNone(rec["final_status"])
+
+    def test_no_heartbeat_ever_recorded_closes_as_stale(self):
+        legacy_path = Path(self.tmp) / "legacy-repo" / "go-legacy.yaml"
+        legacy_path.parent.mkdir(parents=True)
+        legacy_path.write_text(_legacy_record_text(), encoding="utf-8")
+
+        rc, out = _sweep_orphans(self.tmp)
+
+        self.assertEqual(rc, 0)
+        repo = out["repos"][0]
+        self.assertEqual(repo["closed"], [str(legacy_path)])
+        rec = _load(legacy_path)
+        self.assertEqual(rec["final_status"], "failed_terminal")
+
+    def test_already_terminal_record_is_left_alone(self):
+        res = _start(self.tmp, request="already done")
+        _complete_scope_review(res["path"])
+        main(["finish", res["path"], "--status", "completed_and_merged"])
+        self._backdate_updated_at(res["path"], seconds_ago=99999)
+
+        rc, out = _sweep_orphans(self.tmp)
+
+        self.assertEqual(rc, 0)
+        repo = out["repos"][0]
+        self.assertEqual(repo["closed"], [])
+        self.assertEqual(repo["skipped_live"], [])
+        rec = _load(Path(res["path"]))
+        self.assertEqual(rec["final_status"], "completed_and_merged")
+
+    def test_dry_run_reports_without_writing(self):
+        res = _start(self.tmp, request="orphaned dispatch")
+        self._backdate_updated_at(res["path"], seconds_ago=99999)
+
+        rc, out = _sweep_orphans(self.tmp, dry_run=True)
+
+        self.assertEqual(rc, 0)
+        repo = out["repos"][0]
+        self.assertEqual(repo["closed"], [res["path"]])
+        rec = _load(Path(res["path"]))
+        self.assertIsNone(rec["final_status"])
+
+    def test_explicit_note_used_as_merge_result(self):
+        res = _start(self.tmp, request="orphaned dispatch")
+        self._backdate_updated_at(res["path"], seconds_ago=99999)
+
+        rc, out = _sweep_orphans(self.tmp, note="auto-reconciled: backlog cleanup 2026-08-21")
+
+        self.assertEqual(rc, 0)
+        rec = _load(Path(res["path"]))
+        self.assertEqual(rec["merge_result"], "auto-reconciled: backlog cleanup 2026-08-21")
+
+    def test_repo_filter_only_sweeps_matching_repo_dir(self):
+        mine = _start(self.tmp, repo="/tmp/repo-a", request="mine")
+        other = _start(self.tmp, repo="/tmp/repo-b", request="other")
+        for res in (mine, other):
+            self._backdate_updated_at(res["path"], seconds_ago=99999)
+
+        rc, out = _sweep_orphans(self.tmp, repo="/tmp/repo-a")
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(out["repos"]), 1)
+        self.assertEqual(out["repos"][0]["repo"], "repo-a")
+        self.assertEqual(_load(Path(mine["path"]))["final_status"], "failed_terminal")
+        self.assertIsNone(_load(Path(other["path"]))["final_status"])
+
+    def test_malformed_record_is_skipped_and_never_closed(self):
+        res = _start(self.tmp, request="orphaned dispatch")
+        self._backdate_updated_at(res["path"], seconds_ago=99999)
+        corrupted = Path(self.tmp) / "fake-repo" / "go-corrupted.yaml"
+        corrupted.write_text(
+            "run_id: go-corrupted\n"
+            "request_summary: fix the thing across a line that\n"
+            "  wraps unexpectedly without quoting\n"
+        )
+
+        rc, out = _sweep_orphans(self.tmp)
+
+        self.assertEqual(rc, 0)
+        repo = out["repos"][0]
+        self.assertEqual(repo["closed"], [res["path"]])
+        self.assertNotIn(str(corrupted), repo["closed"])
+        self.assertTrue(corrupted.exists())
+        self.assertEqual(len(repo["warnings"]), 1)
+        self.assertIn(str(corrupted), repo["warnings"][0])
+
+    def test_missing_dir_returns_empty_repos_list(self):
+        empty = tempfile.mkdtemp()
+        rc, out = _sweep_orphans(str(Path(empty, "does-not-exist")))
+        self.assertEqual(rc, 0)
+        self.assertEqual(out, {"repos": []})
+
+    def test_rejects_unknown_status(self):
+        with self.assertRaises(SystemExit):
+            main(["sweep-orphans", "--dir", self.tmp, "--status", "not_a_real_status"])
+
+    def test_only_confirmation_line_reaches_stdout(self):
+        """`cmd_finish`'s own per-record print must be captured, not leaked --
+        otherwise a sweep closing more than one record would print multiple
+        top-level JSON objects instead of one summary."""
+        a = _start(self.tmp, request="orphan a")
+        b = _start(self.tmp, request="orphan b")
+        for res in (a, b):
+            self._backdate_updated_at(res["path"], seconds_ago=99999)
+
+        argv = ["sweep-orphans", "--dir", self.tmp, "--status", "failed_terminal"]
+        out = StringIO()
+        with patch("sys.stdout", out):
+            rc = main(argv)
+
+        self.assertEqual(rc, 0)
+        lines = [line for line in out.getvalue().splitlines() if line.strip()]
+        self.assertEqual(len(lines), 1)
+        payload = json.loads(lines[0])
+        self.assertEqual(sorted(payload["repos"][0]["closed"]), sorted([a["path"], b["path"]]))
 
 
 class TestLiveness(unittest.TestCase):
