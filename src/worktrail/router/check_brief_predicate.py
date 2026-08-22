@@ -310,6 +310,25 @@ def recheck(repo: Path, frontmatter: Dict[str, Any]) -> Dict[str, object]:
     }
 
 
+def _collapse_output_newlines(output: str) -> str:
+    return " ".join(output.splitlines())
+
+
+def _render_evidence_transcript(evidence: List[Dict[str, Any]], paths: List[str]) -> str:
+    """Render the `command: ... / exit: ... / output: ...` transcript block
+    (design.md Decision 4) for the evidence entries whose `path` is in
+    `paths`, one finding per line-triplet, newlines in captured output
+    collapsed to spaces.
+    """
+    relevant = [entry for entry in evidence if entry["path"] in paths]
+    lines: List[str] = []
+    for entry in relevant:
+        lines.append(f"command: {entry['command']}")
+        lines.append(f"exit: {entry['exit']}")
+        lines.append(f"output: {_collapse_output_newlines(entry['output'])}")
+    return "\n".join(lines)
+
+
 def format_still_true_evidence(result: Dict[str, object]) -> str:
     """Build the exact evidence line for `recheck()`'s `"still-true"` outcome.
 
@@ -323,11 +342,17 @@ def format_still_true_evidence(result: Dict[str, object]) -> str:
     """
     still_true = result["still_true"]
     paths = ", ".join(still_true)
-    return (
+    message = (
         f"Predicate re-check ({result['drift_source']}) found the staleness "
         f"predicate still true for {len(still_true)} finding(s): {paths}. "
         "Proceeded automatically without an operator prompt."
     )
+    evidence = result.get("evidence") or []
+    if evidence:
+        transcript = _render_evidence_transcript(evidence, still_true)
+        if transcript:
+            message = f"{message}\n\n{transcript}"
+    return message
 
 
 def format_resolved_closure_note(result: Dict[str, object]) -> str:
@@ -345,13 +370,19 @@ def format_resolved_closure_note(result: Dict[str, object]) -> str:
     """
     resolved = result["resolved"]
     paths = ", ".join(resolved)
-    return (
+    message = (
         "Closed as already-delivered: predicate re-check "
         f"({result['drift_source']}) found the staleness predicate resolved "
         f"for {len(resolved)} finding(s): {paths}. Surfaced by the Phase 5.5 "
         "predicate re-check; closed automatically without an operator "
         "prompt."
     )
+    evidence = result.get("evidence") or []
+    if evidence:
+        transcript = _render_evidence_transcript(evidence, resolved)
+        if transcript:
+            message = f"{message}\n\n{transcript}"
+    return message
 
 
 # --- CLI --------------------------------------------------------------------
