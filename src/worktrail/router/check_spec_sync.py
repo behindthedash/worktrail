@@ -204,10 +204,20 @@ def find_parent_spec(spec_dir: Path) -> Path | None:
     ]
     if not candidates:
         return None
+    # Prefer candidates that actually carry a Status header: any sibling
+    # auxiliary document without one (an inventory, a notes file, ...) cannot
+    # be the parent spec, whatever its filename sorts as. AUX_FILENAMES only
+    # covers the known names; datalena spec 099-recursive-organization-model
+    # (2026-08-22) was shadowed by `org-units-dependency-inventory.md`, a
+    # fourth instance of the same hazard. Fall back to every candidate only
+    # when none has a header, so a genuinely missing Status header is still
+    # flagged by Check B.
+    with_status = [p for p in candidates if parent_spec_status(p) is not None]
+    pool = with_status or candidates
     # Multiple dated revisions of the same spec (e.g. a later rewrite) ->
     # the lexicographically latest filename is the current one (date-prefixed
     # naming sorts chronologically).
-    return sorted(candidates)[-1]
+    return sorted(pool)[-1]
 
 
 def parent_spec_status(parent_spec: Path) -> str | None:

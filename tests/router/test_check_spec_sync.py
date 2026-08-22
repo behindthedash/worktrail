@@ -277,6 +277,31 @@ class CheckSpecSyncTests(unittest.TestCase):
         write(self.spec_dir / "e2e-verification-notes.md", "Verified 2026-07-18.\n")
         self.assertEqual(check_spec(self.spec_dir), [])
 
+    def test_unlisted_aux_doc_without_status_never_shadows_parent_spec(self):
+        # Regression fixture for datalena spec 099-recursive-organization-model
+        # (2026-08-22): `org-units-dependency-inventory.md` -- not in
+        # AUX_FILENAMES, no Status header, sorts after the dated spec file --
+        # shadowed the real parent spec and failed every datalena PR gate after
+        # PR #2477 merged. find_parent_spec() now prefers candidates that carry
+        # a Status header, so no allow-list entry is needed per new filename.
+        make_task(self.spec_dir, "TASK-001", "completed")
+        self.task_summary({"TASK-001": "completed"})
+        self.parent_spec("Complete")
+        write(self.spec_dir / "org-units-dependency-inventory.md", "# Inventory\n")
+        self.assertEqual(check_spec(self.spec_dir), [])
+
+    def test_missing_status_header_still_flagged_when_no_candidate_has_one(self):
+        # The Status-header preference must not hide a genuinely missing header:
+        # with no candidate carrying one, Check B still fires on the
+        # lexicographically last candidate as before.
+        make_task(self.spec_dir, "TASK-001", "completed")
+        self.task_summary({"TASK-001": "completed"})
+        write(self.spec_dir / "2026-01-01--fixture.md", "# Spec without status\n")
+        write(self.spec_dir / "zz-notes.md", "# Notes\n")
+        failures = check_spec(self.spec_dir)
+        self.assertEqual(len(failures), 1)
+        self.assertIn("no Status header", failures[0])
+
     def test_ready_to_implement_near_miss_is_flagged(self):
         # Regression fixture for devops PR #184 / spec
         # 102-fleet-dependabot-classifier: "Ready to implement" is a
