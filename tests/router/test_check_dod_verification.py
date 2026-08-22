@@ -9,7 +9,9 @@ import unittest
 from pathlib import Path
 
 from worktrail.router.check_dod_verification import (
-    check_changed_specs, check_task_file, derive_dod_checks, run_check,
+    audit_all_specs_with_hints, check_changed_specs, check_changed_specs_with_hints,
+    check_task_file, check_task_file_with_hints, classify_failure, derive_dod_checks,
+    format_remediation_hint, run_check,
 )
 
 
@@ -366,6 +368,217 @@ class CheckChangedSpecsTests(unittest.TestCase):
             ),
             [],
         )
+
+
+class ClassifyFailureTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.repo = Path(self.tmp.name)
+        subprocess.run(["git", "init", "-q"], cwd=self.repo, check=True)
+
+    def _write(self, relpath: str, content: str = "x\n") -> None:
+        path = self.repo / relpath
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    def _track(self, relpath: str) -> None:
+        subprocess.run(["git", "add", relpath], cwd=self.repo, check=True)
+
+    def test_file_tracked_missing_with_no_candidate_is_stale_metadata(self) -> None:
+        check = {"type": "file_tracked", "path": "docs/missing.md"}
+        failure = run_check(self.repo, check)
+        hint = classify_failure(self.repo, check, failure)
+        self.assertEqual(hint["classification"], "stale-files-metadata")
+        self.assertIn("verify by hand", hint["suggestion"])
+
+    def test_file_tracked_missing_with_one_candidate_suggests_it(self) -> None:
+        self._write("scripts/ci/lint.sh")
+        self._track("scripts/ci/lint.sh")
+        check = {"type": "file_tracked", "path": "ci/scripts/lint.sh"}
+        failure = run_check(self.repo, check)
+        hint = classify_failure(self.repo, check, failure)
+        self.assertEqual(hint["classification"], "stale-files-metadata")
+        self.assertIn("scripts/ci/lint.sh", hint["suggestion"])
+
+    def test_file_tracked_missing_with_multiple_candidates_lists_them(self) -> None:
+        self._write("a/lint.sh")
+        self._track("a/lint.sh")
+        self._write("b/lint.sh")
+        self._track("b/lint.sh")
+        check = {"type": "file_tracked", "path": "ci/lint.sh"}
+        failure = run_check(self.repo, check)
+        hint = classify_failure(self.repo, check, failure)
+        self.assertEqual(hint["classification"], "stale-files-metadata")
+        self.assertIn("a/lint.sh", hint["suggestion"])
+        self.assertIn("b/lint.sh", hint["suggestion"])
+
+    def test_file_tracked_exists_but_untracked_suggests_git_add(self) -> None:
+        self._write("untracked.txt")
+        check = {"type": "file_tracked", "path": "untracked.txt"}
+        failure = run_check(self.repo, check)
+        hint = classify_failure(self.repo, check, failure)
+        self.assertEqual(hint["classification"], "stale-files-metadata")
+        self.assertIn("git add untracked.txt", hint["suggestion"])
+
+    def test_file_exists_missing_is_stale_metadata(self) -> None:
+        check = {"type": "file_exists", "path": "missing.txt"}
+        failure = run_check(self.repo, check)
+        hint = classify_failure(self.repo, check, failure)
+        self.assertEqual(hint["classification"], "stale-files-metadata")
+
+    def test_no_stub_markers_missing_path_is_stale_metadata(self) -> None:
+        check = {"type": "no_stub_markers", "path": "missing.txt"}
+        failure = run_check(self.repo, check)
+        hint = classify_failure(self.repo, check, failure)
+        self.assertEqual(hint["classification"], "stale-files-metadata")
+
+    def test_no_stub_markers_stub_marker_present_is_unclassified(self) -> None:
+        self._write("stub.txt", "TODO: fix this\n")
+        check = {"type": "no_stub_markers", "path": "stub.txt"}
+        failure = run_check(self.repo, check)
+        hint = classify_failure(self.repo, check, failure)
+        self.assertEqual(hint["classification"], "unclassified")
+        self.assertIsNone(hint["suggestion"])
+
+    def test_ac_checkboxes_complete_is_genuine_unmet_ac(self) -> None:
+        check = {"type": "ac_checkboxes_complete", "task_path": "TASK-001.md"}
+        failure = "ac_checkboxes_complete check failed: TASK-001.md has unchecked boxes"
+        hint = classify_failure(self.repo, check, failure)
+        self.assertEqual(hint["classification"], "genuine-unmet-ac")
+        self.assertIn("status: completed -> implemented", hint["suggestion"])
+        self.assertIn("TASK-001.md", hint["suggestion"])
+
+    def test_grep_failure_is_unclassified(self) -> None:
+        self._write("foo.txt", "hello\n")
+        check = {"type": "grep", "path": "foo.txt", "pattern": "goodbye"}
+        failure = run_check(self.repo, check)
+        hint = classify_failure(self.repo, check, failure)
+        self.assertEqual(hint["classification"], "unclassified")
+        self.assertIsNone(hint["suggestion"])
+
+    def test_command_failure_is_unclassified(self) -> None:
+        check = {"type": "command", "cmd": "exit 1"}
+        failure = run_check(self.repo, check)
+        hint = classify_failure(self.repo, check, failure)
+        self.assertEqual(hint["classification"], "unclassified")
+
+    def test_unknown_type_is_unclassified(self) -> None:
+        check = {"type": "bogus"}
+        failure = run_check(self.repo, check)
+        hint = classify_failure(self.repo, check, failure)
+        self.assertEqual(hint["classification"], "unclassified")
+
+
+class FormatRemediationHintTests(unittest.TestCase):
+    def test_includes_label_and_suggestion(self) -> None:
+        line = format_remediation_hint(
+            {"classification": "stale-files-metadata", "suggestion": "do X"}
+        )
+        self.assertIn("stale files: metadata", line)
+        self.assertIn("do X", line)
+
+    def test_no_suggestion_is_label_only(self) -> None:
+        line = format_remediation_hint({"classification": "unclassified", "suggestion": None})
+        self.assertEqual(line, "unclassified")
+
+
+class CheckTaskFileWithHintsTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.repo = Path(self.tmp.name)
+        subprocess.run(["git", "init", "-q"], cwd=self.repo, check=True)
+
+    def _write_task(self, relpath: str, frontmatter_extra: str, body: str = "body\n") -> Path:
+        path = self.repo / relpath
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "---\nid: TASK-001\ntitle: Fixture\nspec: 000-fixture\n"
+            f"{frontmatter_extra}"
+            f"---\n\n{body}",
+            encoding="utf-8",
+        )
+        return path
+
+    def test_hints_mirror_check_task_file_failure_count(self) -> None:
+        task = self._write_task(
+            "docs/specs/000-fixture/tasks/TASK-001.md",
+            "status: completed\n"
+            "dod-checks:\n"
+            "  - type: file_exists\n    path: missing.txt\n"
+            "  - type: ac_checkboxes_complete\n    task_path: docs/specs/000-fixture/tasks/TASK-001.md\n",
+            body="## Acceptance Criteria\n\n- [ ] not done\n",
+        )
+        plain = check_task_file(self.repo, task)
+        hints = check_task_file_with_hints(self.repo, task)
+        self.assertEqual(len(plain), len(hints))
+        self.assertEqual({h["classification"] for h in hints},
+                          {"stale-files-metadata", "genuine-unmet-ac"})
+
+    def test_no_failures_yields_empty_hints(self) -> None:
+        task = self._write_task(
+            "docs/specs/000-fixture/tasks/TASK-001.md", "status: pending\n"
+        )
+        self.assertEqual(check_task_file_with_hints(self.repo, task), [])
+
+
+class CheckChangedSpecsWithHintsTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.repo = Path(self.tmp.name)
+
+    def _write(self, relpath: str, content: str) -> None:
+        path = self.repo / relpath
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    def test_scopes_to_devkit_task_files_and_tags_task_path(self) -> None:
+        self._write(
+            "docs/specs/000-fixture/tasks/TASK-001.md",
+            "---\nid: TASK-001\ntitle: Fixture\nspec: 000-fixture\n"
+            "status: completed\n"
+            "dod-checks:\n  - type: file_exists\n    path: missing.txt\n"
+            "---\n\nbody\n",
+        )
+        hints = check_changed_specs_with_hints(
+            self.repo, ["docs/specs/000-fixture/tasks/TASK-001.md"]
+        )
+        self.assertEqual(len(hints), 1)
+        self.assertEqual(hints[0]["task"], "docs/specs/000-fixture/tasks/TASK-001.md")
+        self.assertEqual(hints[0]["classification"], "stale-files-metadata")
+
+    def test_skips_paths_outside_docs_specs(self) -> None:
+        self._write(
+            "src/TASK-001.md",
+            "---\nid: TASK-001\ntitle: Fixture\nspec: 000-fixture\n"
+            "status: completed\n"
+            "dod-checks:\n  - type: file_exists\n    path: missing.txt\n"
+            "---\n\nbody\n",
+        )
+        self.assertEqual(check_changed_specs_with_hints(self.repo, ["src/TASK-001.md"]), [])
+
+
+class AuditAllSpecsWithHintsTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.repo = Path(self.tmp.name)
+
+    def test_audits_every_task_file_with_hints(self) -> None:
+        path = self.repo / "docs" / "specs" / "000-fixture" / "tasks" / "TASK-001.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "---\nid: TASK-001\ntitle: Fixture\nspec: 000-fixture\n"
+            "status: completed\n"
+            "dod-checks:\n  - type: ac_checkboxes_complete\n    task_path: docs/specs/000-fixture/tasks/TASK-001.md\n"
+            "---\n\n## Acceptance Criteria\n\n- [ ] not done\n",
+            encoding="utf-8",
+        )
+        hints = audit_all_specs_with_hints(self.repo)
+        self.assertEqual(len(hints), 1)
+        self.assertEqual(hints[0]["classification"], "genuine-unmet-ac")
 
 
 if __name__ == "__main__":

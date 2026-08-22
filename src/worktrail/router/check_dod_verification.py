@@ -32,6 +32,14 @@ affect `pre_pr_gate.py`'s exit code.
 Exit code: 0 if no changed, completed task file (explicit or derived
 `dod-checks`) fails any check, 1 otherwise. Under `--all`, exit code reflects
 the full audit instead of the diff-scoped check.
+
+Pass `--suggest-remediation` (with either mode) to classify each failure as a
+remediation hint instead of a bare failure string: `stale files: metadata`
+(the declared path itself moved or was never tracked — a metadata problem,
+not a content problem) vs `genuine unmet AC` (the `ac_checkboxes_complete`
+check found real unchecked boxes — status should revert from `completed` to
+`implemented`). This never changes default-mode output or exit codes; it only
+adds a suggestion line per failure.
 """
 
 from __future__ import annotations
@@ -149,8 +157,9 @@ def derive_dod_checks(frontmatter: dict, body: str, task_relpath: str) -> list[d
     return checks
 
 
-def check_task_file(repo: Path, task_path: Path) -> list[str]:
-    """Run every `dod-checks` entry for one task file. Empty list means pass,
+def _check_task_file_pairs(repo: Path, task_path: Path) -> list[tuple[dict, str]]:
+    """Run every `dod-checks` entry for one task file, returning `(check,
+    failure)` pairs for entries that failed. Empty list means pass,
     not-completed, no `dod-checks` declared and derivation yields nothing, or
     an explicit `dod-checks` that all pass."""
     frontmatter, error, body = read_task_file(task_path)
@@ -165,12 +174,100 @@ def check_task_file(repo: Path, task_path: Path) -> list[str]:
         if not checks:
             return []
 
-    failures: list[str] = []
+    pairs: list[tuple[dict, str]] = []
     for check in checks:
         failure = run_check(repo, check)
         if failure:
-            failures.append(failure)
-    return failures
+            pairs.append((check, failure))
+    return pairs
+
+
+def check_task_file(repo: Path, task_path: Path) -> list[str]:
+    """Run every `dod-checks` entry for one task file. Empty list means pass,
+    not-completed, no `dod-checks` declared and derivation yields nothing, or
+    an explicit `dod-checks` that all pass."""
+    return [failure for _check, failure in _check_task_file_pairs(repo, task_path)]
+
+
+STALE_PATH_CHECK_TYPES = frozenset({"file_exists", "file_tracked"})
+
+
+def _find_candidate_paths(repo: Path, basename: str, *, limit: int = 5) -> list[str]:
+    """Search git-tracked files in `repo` for other paths with the given
+    basename — a candidate corrected path for a 'stale files: metadata'
+    classification. Returns [] if `repo` is not a git checkout or nothing
+    matches."""
+    result = subprocess.run(
+        ["git", "ls-files", f"*/{basename}", basename],
+        cwd=str(repo), capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return []
+    return sorted({line for line in result.stdout.splitlines() if line.strip()})[:limit]
+
+
+def classify_failure(repo: Path, check: dict, failure: str) -> dict:
+    """Classify one `dod-checks` failure as a remediation hint.
+
+    `stale-files-metadata`: the declared `path` doesn't exist/isn't tracked
+    at its declared location — a metadata problem, not a content problem.
+    Suggests the verified-correct path when exactly one git-tracked file
+    elsewhere in the repo shares its basename.
+
+    `genuine-unmet-ac`: an `ac_checkboxes_complete` check failed — the task's
+    Acceptance Criteria / DoD boxes are actually unchecked. Suggests
+    reverting `status: completed` to `status: implemented`.
+
+    `unclassified`: no confident remediation signal (a `grep`/`command`
+    check, an unrecognized/malformed check, or a `no_stub_markers` failure
+    caused by an actual stub marker rather than a missing path).
+    """
+    check_type = check.get("type")
+    is_stale_path_check = check_type in STALE_PATH_CHECK_TYPES or (
+        check_type == "no_stub_markers" and "does not exist" in failure
+    )
+
+    if is_stale_path_check:
+        path = check.get("path")
+        if path and (repo / path).exists():
+            suggestion = (
+                f"'{path}' exists on disk but is not tracked by git — "
+                f"run `git add {path}`"
+            )
+        else:
+            candidates = _find_candidate_paths(repo, Path(path).name) if path else []
+            if len(candidates) == 1:
+                suggestion = f"path moved — update the declared path to '{candidates[0]}'"
+            elif candidates:
+                suggestion = (
+                    "path moved — ambiguous candidates found: "
+                    + ", ".join(candidates)
+                )
+            else:
+                suggestion = "no candidate found elsewhere in the repo — verify by hand"
+        return {"classification": "stale-files-metadata", "suggestion": suggestion,
+                "check": check, "failure": failure}
+
+    if check_type == "ac_checkboxes_complete":
+        task_path = check.get("task_path")
+        return {
+            "classification": "genuine-unmet-ac",
+            "suggestion": f"flip status: completed -> implemented in {task_path}",
+            "check": check,
+            "failure": failure,
+        }
+
+    return {"classification": "unclassified", "suggestion": None,
+            "check": check, "failure": failure}
+
+
+def check_task_file_with_hints(repo: Path, task_path: Path) -> list[dict]:
+    """Like `check_task_file`, but returns a remediation hint per failure
+    instead of a bare string."""
+    return [
+        classify_failure(repo, check, failure)
+        for check, failure in _check_task_file_pairs(repo, task_path)
+    ]
 
 
 def check_changed_specs(repo: Path, changed_paths: list[str]) -> list[str]:
@@ -199,6 +296,49 @@ def audit_all_specs(repo: Path) -> list[str]:
         for failure in check_task_file(repo, full_path):
             failures.append(f"{relpath}: {failure}")
     return failures
+
+
+def check_changed_specs_with_hints(repo: Path, changed_paths: list[str]) -> list[dict]:
+    """Like `check_changed_specs`, but each entry is a remediation hint dict
+    (with a `task` key added) instead of a bare failure string."""
+    hints: list[dict] = []
+    for relpath in changed_paths:
+        if not relpath.startswith("docs/specs/") or not is_task_file(relpath):
+            continue
+        full_path = repo / relpath
+        if not full_path.is_file():
+            continue
+        for hint in check_task_file_with_hints(repo, full_path):
+            hints.append({**hint, "task": relpath})
+    return hints
+
+
+def audit_all_specs_with_hints(repo: Path) -> list[dict]:
+    """Like `audit_all_specs`, but each entry is a remediation hint dict
+    (with a `task` key added) instead of a bare failure string."""
+    hints: list[dict] = []
+    for full_path in sorted((repo / "docs" / "specs").rglob("TASK-*.md")):
+        relpath = str(full_path.relative_to(repo))
+        if not is_task_file(relpath):
+            continue
+        for hint in check_task_file_with_hints(repo, full_path):
+            hints.append({**hint, "task": relpath})
+    return hints
+
+
+_CLASSIFICATION_LABELS = {
+    "stale-files-metadata": "stale files: metadata",
+    "genuine-unmet-ac": "genuine unmet AC",
+    "unclassified": "unclassified",
+}
+
+
+def format_remediation_hint(hint: dict) -> str:
+    """Render one remediation-hint dict as a display line."""
+    label = _CLASSIFICATION_LABELS[hint["classification"]]
+    if hint["suggestion"]:
+        return f"{label} — {hint['suggestion']}"
+    return label
 
 
 def _resolve_base_ref(repo: Path, configured: str | None) -> str | None:
@@ -243,11 +383,31 @@ def main() -> int:
         "--all", action="store_true",
         help="audit every task file under docs/specs/, not just those changed in the current diff",
     )
+    parser.add_argument(
+        "--suggest-remediation", action="store_true",
+        help=(
+            "classify each failure as 'stale files: metadata' (a declared path is "
+            "missing/untracked — suggests the verified-correct path when found "
+            "elsewhere in the repo) or 'genuine unmet AC' (checkboxes are actually "
+            "unchecked — suggests reverting status: completed -> implemented), "
+            "instead of a bare failure string"
+        ),
+    )
     args = parser.parse_args()
 
     repo = Path(args.repo).resolve()
 
     if args.all:
+        if args.suggest_remediation:
+            hints = audit_all_specs_with_hints(repo)
+            if hints:
+                print(f"FAIL: {len(hints)} DoD-verification issue(s) in audit report")
+                for hint in hints:
+                    print(f"  - {hint['task']}: {hint['failure']}")
+                    print(f"      remediation: {format_remediation_hint(hint)}")
+                return 1
+            print("DoD verification audit: no drift detected across docs/specs/.")
+            return 0
         failures = audit_all_specs(repo)
         if failures:
             print(f"FAIL: {len(failures)} DoD-verification issue(s) in audit report")
@@ -258,6 +418,18 @@ def main() -> int:
         return 0
 
     changed = _changed_paths_via_git(repo, args.base_branch)
+
+    if args.suggest_remediation:
+        hints = check_changed_specs_with_hints(repo, changed)
+        if hints:
+            print(f"FAIL: {len(hints)} DoD-verification issue(s) in changed task files")
+            for hint in hints:
+                print(f"  - {hint['task']}: {hint['failure']}")
+                print(f"      remediation: {format_remediation_hint(hint)}")
+            return 1
+        print("DoD verification guard: no drift detected in changed task files.")
+        return 0
+
     failures = check_changed_specs(repo, changed)
 
     if failures:
