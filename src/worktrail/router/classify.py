@@ -237,7 +237,20 @@ RISK_SIGNALS = [
     ("high", _sig(r"\bmigrations?\b|\bschema change\b|\balter table\b", 0, "migration")),
     ("high", _sig(r"\bpii\b|\bpersonal data\b|\bpasswords?\b|\bencryption\b", 0, "sensitive-data")),
     ("medium", _sig(r"\bapi\b|\bendpoints?\b|\bcontracts?\b|\bpublic interface\b|\bdatabase\b|\bschema\b", 0, "interface")),
-    ("low", _sig(r"\bdocs?\b|\bdocumentation\b|\breadme\b|\bcomments?\b|\btypo\b", 0, "docs-only")),
+    # Requires an actual doc/comment-change INTENT (an update/edit/write/add/
+    # revise/correct/fix verb applied to docs/readme/comments/typo within a
+    # short window), not a bare mention of the noun -- the unscoped
+    # `\bcomments?\b` fired on any incidental mention of the word (e.g.
+    # "classify.py's own comments document the risk tiers"), misclassifying a
+    # real code-change request as docs-only risk. Same false-positive shape as
+    # ROUTE_SIGNALS' bare-word bugs (20260819-215848/PR #552, 20260821-225442/
+    # PR #620), but in this table, left out of that pass because it scoped
+    # only the 10 ROUTE_SIGNALS tables, not RISK_SIGNALS (20260822-005150).
+    ("low", _sig(
+        r"\b(?:update|updat(?:e|ing)|edit(?:ing)?|writ(?:e|ing)|add(?:ing)?|"
+        r"revis(?:e|ing)|correct(?:ing)?|fix(?:ing)?)\b(?:\s+\S+){0,4}\s+"
+        r"(?:docs?|documentation|readme|comments?|typos?)\b",
+        0, "docs-only")),
 ]
 
 # Protected operations: never auto-merge regardless of policy (v2-design §2.14).
