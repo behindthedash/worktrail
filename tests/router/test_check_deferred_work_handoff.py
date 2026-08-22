@@ -201,7 +201,7 @@ class HandoffCrossCheckTests(unittest.TestCase):
     shipped `has_handoff_coverage`/`find_flagged` implement the 1.3
     reading, and the tests below verify that actual, shipped behavior --
     "never raises" holds either way, but the outcome is "no coverage
-    found" (flagged end-to-end), not "not flagged."""
+    found" (flagged end-to-end), not the AC's "not flagged" outcome."""
 
     _CANDIDATE = "clean up `src/widget.py` in a later pr"
 
@@ -322,6 +322,19 @@ class HandoffCrossCheckTests(unittest.TestCase):
             _append(path, "deferred_work", self._CANDIDATE)
             base = Path(queue_home) / "work-queue"
             self._write_brief(base / "queue", "Touches src/widget.py for retry tuning.")
+
+            with patch.dict("os.environ", {"WORK_QUEUE_DIR": str(base)}):
+                flagged = find_flagged([path])
+
+            self.assertEqual(flagged, [])
+
+    def test_probe_matching_picked_brief_is_not_flagged_end_to_end(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                tempfile.TemporaryDirectory() as queue_home:
+            path = _start_record(tmp)
+            _append(path, "deferred_work", self._CANDIDATE)
+            base = Path(queue_home) / "work-queue"
+            self._write_brief(base / "picked", "Touches src/widget.py for retry tuning.")
 
             with patch.dict("os.environ", {"WORK_QUEUE_DIR": str(base)}):
                 flagged = find_flagged([path])
