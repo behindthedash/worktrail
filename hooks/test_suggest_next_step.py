@@ -221,6 +221,78 @@ def test_main_appends_deferred_work_block_for_unmatched_flagged_entry(tmp_path, 
     assert str(flagged_record) in reason
 
 
+def test_main_fail_open_no_path_missing_binary_and_headless(tmp_path, monkeypatch, capsys):
+    """Three independent fail-open paths (Requirement: Run-Record Discovery Via
+    Transcript Grep / Requirement: Fail-Open And Headless-Excluded), each
+    compared against the same baseline reason: a transcript with no
+    run-record path literal at all; a run-record path literal that would
+    otherwise flag but with `worktrail-check-deferred-work-handoff` missing
+    from `PATH`; and `CC_HEADLESS=1`, which must skip the hook entirely, same
+    as before this feature existed. Distinct `session_id`s per case so the
+    once-per-session sentinel never masks the comparison.
+    """
+    monkeypatch.delenv("CC_HEADLESS", raising=False)
+    monkeypatch.setattr(hook, "STATE_DIR", tmp_path / "state")
+
+    baseline_transcript = tmp_path / "baseline.jsonl"
+    _write_transcript(baseline_transcript, "Write")
+    monkeypatch.setattr(
+        hook.sys,
+        "stdin",
+        io.StringIO(json.dumps({"session_id": "baseline", "transcript_path": str(baseline_transcript)})),
+    )
+    assert hook.main() == 0
+    baseline_output = capsys.readouterr().out
+    assert baseline_output == json.dumps({"decision": "block", "reason": hook.INSTRUCTION}) + "\n"
+
+    # Case 1: no run-record path literal anywhere in the transcript.
+    monkeypatch.setattr(
+        hook.sys,
+        "stdin",
+        io.StringIO(json.dumps({"session_id": "no-path", "transcript_path": str(baseline_transcript)})),
+    )
+    assert hook.main() == 0
+    assert capsys.readouterr().out == baseline_output
+
+    # Case 2: a phrase-matching run-record path literal is present, but the
+    # handoff-check binary is missing from PATH -- check_deferred_work must
+    # fail open to [] rather than raise or block on a lookup failure.
+    monkeypatch.setenv("PATH", "")
+    assert hook.shutil.which(hook.DEFERRED_WORK_HANDOFF_BINARY) is None
+    flagged_record = tmp_path / ".worktrail" / "runs" / "some-repo" / "run-flagged.yaml"
+    _write_run_record(
+        flagged_record,
+        deferred_work=["revisit the retry backoff as a follow-up once calibrated"],
+    )
+    with_path_transcript = tmp_path / "with_path.jsonl"
+    entry = {
+        "message": {
+            "content": [
+                {"type": "tool_use", "name": "Write", "input": {}},
+                {"type": "text", "text": f"See run record {flagged_record} for details."},
+            ]
+        }
+    }
+    with_path_transcript.write_text(json.dumps(entry) + "\n", encoding="utf-8")
+    monkeypatch.setattr(
+        hook.sys,
+        "stdin",
+        io.StringIO(json.dumps({"session_id": "missing-binary", "transcript_path": str(with_path_transcript)})),
+    )
+    assert hook.main() == 0
+    assert capsys.readouterr().out == baseline_output
+
+    # Case 3: CC_HEADLESS=1 skips the hook before it even reads stdin.
+    monkeypatch.setenv("CC_HEADLESS", "1")
+    monkeypatch.setattr(
+        hook.sys,
+        "stdin",
+        io.StringIO(json.dumps({"session_id": "headless", "transcript_path": str(with_path_transcript)})),
+    )
+    assert hook.main() == 0
+    assert capsys.readouterr().out == ""
+
+
 def test_main_skips_continuation_and_headless_worker(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(hook, "STATE_DIR", tmp_path / "state")
     monkeypatch.setattr(hook.sys, "stdin", io.StringIO(json.dumps({"stop_hook_active": True})))
