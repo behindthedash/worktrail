@@ -21,7 +21,7 @@
       (Requirement: Command Predicate Execution Is Bounded And Shell-Free)
       (Requirement: Deterministic Predicate Re-Check Precedes Evidence Surfacing)
       (Requirement: Deterministic Staleness Predicate Is Captured On Sweep-Generated Briefs)
-- [ ] 1.2 In `tests/router/test_check_brief_predicate.py`, cover the core: exit `0` -> still-true,
+- [x] 1.2 In `tests/router/test_check_brief_predicate.py`, cover the core: exit `0` -> still-true,
       exit `1` -> resolved, mixed findings -> still-true, exit `2`/`127`/timeout -> `error`, a
       shell-metacharacter argument passed through literally (assert no shell interpretation), a
       string `predicate-cmd` rejected without being shell-split, a finding missing `predicate-cmd`
@@ -42,7 +42,7 @@
       unchanged when `evidence` is empty, so the checkbox-drift path is untouched.
       (Requirement: Predicate Still True Proceeds Automatically With Recorded Evidence)
       (Requirement: Predicate Resolved Closes The Brief Automatically Citing The Re-Check)
-- [ ] 2.2 In `tests/router/test_check_brief_predicate.py`, assert the transcript output: both
+- [x] 2.2 In `tests/router/test_check_brief_predicate.py`, assert the transcript output: both
       formatters unchanged for an evidence-less (checkbox-drift) result; both include the executed
       command, exit status, and truncated output for a command-predicate result; and — the
       cross-module contract from design.md Decision 4 —
