@@ -716,7 +716,7 @@ a role pinned to a different agent falls back to that agent's own default model.
 - It is **resumable**: a killed run is recovered by re-issuing the same command; the
   orchestrator reads its run journal and continues from where it left off.
 - **Integrated smoke test (opt-in, from policy):** when `integrate_smoke_cmd` is set in
-  `docs/specs/go-policy.yaml` (loaded in Phase 4), pass it through as
+  `docs/specs/worktrail-go-policy.yaml` (loaded in Phase 4), pass it through as
   `--smoke-cmd "<command>"`. The orchestrator runs it on each group's integration branch
   before opening that group's PR and quarantines the group on a non-zero exit — catching
   cross-task API drift a CI round-trip earlier. Omit the flag when the policy key is unset
@@ -727,7 +727,7 @@ a role pinned to a different agent falls back to that agent's own default model.
   calling agent's memory — but an explicit flag is still clearer and always wins over the
   auto-resolved value.
 - **Task-worktree dependency bootstrap (opt-in, from policy):** when
-  `worktree_bootstrap_cmd` is set in `docs/specs/go-policy.yaml` (loaded in Phase 4), pass
+  `worktree_bootstrap_cmd` is set in `docs/specs/worktrail-go-policy.yaml` (loaded in Phase 4), pass
   it through as `--bootstrap-cmd "<command>"`. The orchestrator runs it in each fanned-out
   task worktree right after `git worktree add`, before spawning the worker — so
   implement/fix/review workers don't each rediscover and reinstall the base checkout's
@@ -742,7 +742,7 @@ a role pinned to a different agent falls back to that agent's own default model.
   byte-for-byte, falling back to a real install otherwise, instead of paying the full install
   cost once per task worktree (`orchestrator/bootstrap_node_modules.py`).
 - **Migration-group isolation (opt-in, from policy):** when `migration_path_patterns`
-  is set in `docs/specs/go-policy.yaml` (loaded in Phase 4), pass each pattern through
+  is set in `docs/specs/worktrail-go-policy.yaml` (loaded in Phase 4), pass each pattern through
   as a repeated `--migration-pattern "<glob>"`. Any task whose declared files match one
   is always folded into `coordinator.plan_groups()`'s BASE integration group, even if
   its dependency graph would otherwise place it in an independent feature group — a
@@ -753,12 +753,12 @@ a role pinned to a different agent falls back to that agent's own default model.
   that don't exist on any already-migrated database. Omit the flag when the policy key
   is unset (repos with no configured patterns are unaffected).
 - **Fan-out width (opt-in, from policy):** when `max_workers` is set in
-  `docs/specs/go-policy.yaml` (loaded in Phase 4), pass it through as
+  `docs/specs/worktrail-go-policy.yaml` (loaded in Phase 4), pass it through as
   `--max-workers <n>` — it bounds how many task worktrees with live agent workers run
   concurrently. An explicit width in the user's invocation wins over the policy value.
   Omit the flag when the policy key is unset (the orchestrator's own default, 3, applies).
 - **PR pacing (opt-in, from policy):** when `pr_pacing_wait_s` is set (> 0) in
-  `docs/specs/go-policy.yaml` (loaded in Phase 4), pass it through as
+  `docs/specs/worktrail-go-policy.yaml` (loaded in Phase 4), pass it through as
   `--pr-pacing-wait <seconds>`. Before opening each subsequent group PR, the orchestrator
   waits (bounded by this value) for the previous group PR's checks to resolve — or the PR
   to merge — so sibling group PRs don't hit a shared CI runner pool simultaneously; on
@@ -768,7 +768,7 @@ a role pinned to a different agent falls back to that agent's own default model.
   the integrate+PR-open step across the concurrent per-group IV threads; verify still
   overlaps. Omit the flag when the policy key is unset or 0 (PRs open back-to-back,
   today's behavior).
-- **Branch-aware merge method (opt-in, from policy):** when `docs/specs/go-policy.yaml`
+- **Branch-aware merge method (opt-in, from policy):** when `docs/specs/worktrail-go-policy.yaml`
   sets `merge_method_by_base` for `$BASE`, resolve it (`policy.py --merge-method-for-branch
   "$BASE"`, loaded in Phase 4) and pass it through as `--merge-method <method>`. This
   overrides `verify.py`'s own repo-wide GitHub-settings query, which cannot tell "this repo

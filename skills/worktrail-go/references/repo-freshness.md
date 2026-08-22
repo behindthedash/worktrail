@@ -3,11 +3,11 @@
 `resolve_repo.py` decides *which* checkout on disk `$REPO` is, by pure file inspection —
 it has no way to know that checkout is missing commits already on the remote. A stale
 local checkout doesn't just look "old"; it can be missing files entirely.
-`policy.py` reads `docs/specs/go-policy.yaml` off disk and reports "no policy configured"
+`policy.py` reads `docs/specs/worktrail-go-policy.yaml` off disk and reports "no policy configured"
 when the file doesn't exist locally — indistinguishable from "this repo genuinely has no
 policy file" versus "the policy file was added upstream and this checkout hasn't pulled it
 yet." Incident: `kudera-consulting`'s local checkout was one commit behind `origin/main`,
-that commit added `go-policy.yaml`, and `policy.py` silently fell back to defaults instead
+that commit added `worktrail-go-policy.yaml`, and `policy.py` silently fell back to defaults instead
 of surfacing "a policy exists upstream, pull first." Across a 16+ repo workspace, a stale
 checkout is a systemic way for `/go` to file briefs against phantom gaps.
 

@@ -343,7 +343,7 @@ class Verifier:
         # verify both serialize on the same object (AC-012 / TASK-005).
         self._git_lock = git_lock if git_lock is not None else threading.Lock()
         # Cached merge method detection (lazy init on first auto_merge call).
-        # Pre-seeded from `merge_method` (go-policy.yaml's `merge_method_by_base`,
+        # Pre-seeded from `merge_method` (worktrail-go-policy.yaml's `merge_method_by_base`,
         # resolved by the caller for `self.base` -- see policy.py) when the repo
         # needs a branch-aware method _detect_merge_method()'s repo-wide query
         # cannot express (e.g. squash for dev-target PRs, merge for stg/prd
@@ -365,7 +365,7 @@ class Verifier:
         # group written from independent verify-wave threads, same safety as
         # `_automerge_evidence` above.
         self._preflight_fallbacks: Dict[str, Dict[str, Any]] = {}
-        # Cumulative post-merge gate (go-policy.yaml's post_merge_smoke_cmd, falling
+        # Cumulative post-merge gate (worktrail-go-policy.yaml's post_merge_smoke_cmd, falling
         # back to integrate_smoke_cmd -- see policy.resolve_post_merge_smoke_cmd()).
         # None = gate disabled, identical to pre-existing behavior. See auto_merge's
         # caller (verify_one) and _merge_with_cumulative_gate below for the mechanism:
@@ -1011,7 +1011,7 @@ class Verifier:
         `ensure_mergeable`/`wait_and_fix_ci`/`resolve_review_threads` can report
         `ok=False` purely because THIS run's own bounded poll/strike budget ran
         out -- not because the PR is actually unrecoverable. A repo's own
-        external auto-merge automation (`go-policy.yaml`'s `external_automerge`)
+        external auto-merge automation (`worktrail-go-policy.yaml`'s `external_automerge`)
         keeps acting on the PR independently of this run's poll loop and can
         land the merge moments after this run's budget already gave up
         (observed live on worktrail PR #339, run go-20260812-161537).

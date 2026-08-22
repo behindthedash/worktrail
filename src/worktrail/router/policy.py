@@ -31,7 +31,12 @@ import yaml
 
 from ..shared.homedir import env_setting, worktrail_home
 
-POLICY_RELPATH = "docs/specs/go-policy.yaml"
+POLICY_RELPATH = "docs/specs/worktrail-go-policy.yaml"
+# Pre-rename filename (2026-08 and earlier). load_policy() still reads this when
+# POLICY_RELPATH isn't present, so the ~15 already-onboarded repos aren't forced
+# through a flag-day rename -- each migrates on its own schedule via a plain
+# `git mv docs/specs/go-policy.yaml docs/specs/worktrail-go-policy.yaml` PR.
+LEGACY_POLICY_RELPATH = "docs/specs/go-policy.yaml"
 ROUTING_FILE_ENV = "WORKTRAIL_ROUTING_FILE"
 
 
@@ -665,13 +670,43 @@ def detect_external_automerge(repo: Path) -> Dict[str, Any]:
     return result
 
 
+def policy_file_path(repo: Path) -> Path:
+    """POLICY_RELPATH if present, else LEGACY_POLICY_RELPATH, else POLICY_RELPATH
+    (possibly nonexistent) -- the single source of truth for "where is this
+    repo's policy file", used by every repo-detection gate (policy_selfcheck,
+    policy_drift_selfcheck, reconcile_pr_labels) so they don't go blind to the
+    ~15 repos still on the pre-rename filename."""
+    current = repo / POLICY_RELPATH
+    if current.is_file():
+        return current
+    legacy = repo / LEGACY_POLICY_RELPATH
+    if legacy.is_file():
+        return legacy
+    return current
+
+
+def has_policy_file(repo: Path) -> bool:
+    return policy_file_path(repo).is_file()
+
+
+def _resolve_policy_src(repo: Path, meta: Dict[str, Any]) -> Path:
+    """policy_file_path(), plus a one-time deprecation warning when it
+    resolved to the legacy filename."""
+    src = policy_file_path(repo)
+    if src.is_file() and src.name == Path(LEGACY_POLICY_RELPATH).name:
+        meta["warnings"].append(
+            f"{LEGACY_POLICY_RELPATH} is deprecated -- rename to {POLICY_RELPATH} "
+            "(git mv, no content changes needed)")
+    return src
+
+
 def load_policy(repo: Path) -> Dict[str, Any]:
     policy = copy.deepcopy(DEFAULTS)
     # Resolved here (not in DEFAULTS) so the worktrail-home lookup stays lazy;
     # a repo-declared `run_record_dir` below still overrides it.
     policy["run_record_dir"] = default_run_record_dir()
-    src = repo / POLICY_RELPATH
     meta: Dict[str, Any] = {"source": None, "unknown_keys": [], "warnings": []}
+    src = _resolve_policy_src(repo, meta)
     parsed: Dict[str, Any] = {}
     if src.is_file():
         meta["source"] = str(src)

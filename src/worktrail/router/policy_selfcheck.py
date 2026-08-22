@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""policy_selfcheck.py — cross-repo copy-paste detector for go-policy.yaml.
+"""policy_selfcheck.py — cross-repo copy-paste detector for worktrail-go-policy.yaml.
 
-`docs/specs/go-policy.yaml` is a per-repo trust boundary (automerge, pre-PR
+`docs/specs/worktrail-go-policy.yaml` is a per-repo trust boundary (automerge, pre-PR
 gate command, base branch). The documented way to write one is "copy a
 sibling repo's file as a template" (see PR #246), which risks a
 half-customized file surviving review: a repo's own policy embedding another
@@ -34,7 +34,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .policy import POLICY_RELPATH
+from .policy import policy_file_path
 
 # Commands are read from these two keys only — the only free-text policy
 # values that plausibly embed another repo's paths/env vars.
@@ -87,9 +87,9 @@ def _header_block(text: str) -> str:
 
 
 def check_repo(repo: Path, sibling_names: List[str]) -> Dict[str, Any]:
-    """Findings for one repo's go-policy.yaml. Empty `findings` = clean."""
+    """Findings for one repo's worktrail-go-policy.yaml. Empty `findings` = clean."""
     repo = Path(repo)
-    src = repo / POLICY_RELPATH
+    src = policy_file_path(repo)
     result: Dict[str, Any] = {"repo": repo.name, "path": str(repo),
                               "source": None, "findings": []}
     if not src.is_file():

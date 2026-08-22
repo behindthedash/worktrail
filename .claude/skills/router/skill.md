@@ -7,6 +7,7 @@ triggers:
   keywords:
     - policy.py
     - go-policy.yaml
+    - worktrail-go-policy.yaml
     - run_record
     - dashboard
     - automerge_eligible

@@ -289,7 +289,7 @@ def dashboard_snapshot(state_dir: Path) -> Dict[str, Any]:
 def main(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--repo", help="single repo to sweep")
-    p.add_argument("--repos-root", help="sweep every go-policy.yaml repo under this directory")
+    p.add_argument("--repos-root", help="sweep every worktrail-go-policy.yaml repo under this directory")
     p.add_argument("--state-dir", help="persisted per-repo marker/flag state directory "
                     "(default: $WORKTRAIL_POSTMERGE_AUDIT_STATE or ~/.worktrail/postmerge-audit-state)")
     p.add_argument("--lookback-days", type=int, default=DEFAULT_LOOKBACK_DAYS,
