@@ -432,7 +432,8 @@ def run_drift_checks(repo: Path, policy: Dict[str, Any]) -> int:
               "completed task(s):", file=sys.stderr)
         for failure in dod_failures:
             print(f"  - {failure}", file=sys.stderr)
-        print("  Run worktrail-check-dod-verification on the affected task(s) to fix.",
+        print("  Run worktrail-check-dod-verification --suggest-remediation on the "
+              "affected task(s) for a stale-path vs unmet-AC hint.",
               file=sys.stderr)
         return DOD_VERIFICATION_DRIFT_EXIT
 
