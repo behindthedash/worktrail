@@ -457,6 +457,43 @@ class TestSpecIdCitationGuard(unittest.TestCase):
         self.assertIn("spec-id", hits["D"])
 
 
+class TestDocsOnlyRiskSignalGuard(unittest.TestCase):
+    """RISK_SIGNALS' 'docs-only' tier previously matched any bare mention of
+    docs/documentation/readme/comments/typo, so a real code-change request
+    that merely mentioned one of those nouns in passing was misclassified as
+    docs-only risk. Same false-positive shape as ROUTE_SIGNALS' bare-word bugs
+    (20260819-215848/PR #552, 20260821-225442/PR #620), but in this table
+    (20260822-005150)."""
+
+    def test_incidental_comments_mention_does_not_score_docs_only(self):
+        risk, labels = classify_risk(
+            "classify.py's own comments document the RISK_SIGNALS table, but "
+            "the regex still has a bare-word collision bug"
+        )
+        self.assertFalse(any(l.endswith(":docs-only") for l in labels))
+
+    def test_incidental_docs_only_category_mention_does_not_score_docs_only(self):
+        risk, labels = classify_risk(
+            "auto-merge.yml has no docs-only skip gate, so docs-only changes "
+            "burn CI minutes on every self-hosted job"
+        )
+        self.assertFalse(any(l.endswith(":docs-only") for l in labels))
+
+    def test_update_readme_docs_phrasing_still_scores_docs_only(self):
+        risk, labels = classify_risk("update the readme docs")
+        self.assertIn("low:docs-only", labels)
+
+    def test_fix_a_typo_phrasing_still_scores_docs_only(self):
+        risk, labels = classify_risk("fix a typo in the README")
+        self.assertIn("low:docs-only", labels)
+
+    def test_add_comments_phrasing_still_scores_docs_only(self):
+        risk, labels = classify_risk(
+            "add some clarifying comments to explain this function"
+        )
+        self.assertIn("low:docs-only", labels)
+
+
 class TestCitedPrStates(unittest.TestCase):
     """cited_pr_states/_pr_state — the only live-I/O boundary in this module,
     exercised here with an injected fake runner (no real `gh`/network calls)."""
