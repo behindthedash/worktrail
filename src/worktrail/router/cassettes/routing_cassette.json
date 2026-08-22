@@ -218,6 +218,11 @@
       "id": "reference-doc-path-mention-is-workflow-evolution",
       "request": "add a mandatory post-fork verification step to worktrail-go/references/subagent-prompts.md's dispatch guidance, wherever it documents delegating implementation work to a fork or subagent",
       "expect": {"route": "J", "confidence": "high", "gates_include": ["routing_cassette_required"]}
+    },
+    {
+      "id": "cited-pr-number-in-5xx-range-is-not-a-crash-signal",
+      "request": "Update the changelog to mention PR #547 and PR #582 as motivating examples; no code changes needed.",
+      "expect": {"route": "E", "confidence": "low", "route_source": "no-signal-default"}
     }
   ]
 }
