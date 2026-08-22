@@ -52,7 +52,7 @@
 
 ## 3. Phase 5.5 skill doc
 
-- [ ] 3.1 Update `skills/worktrail-go/references/brief-staleness-check.md`'s "Predicate re-check"
+- [x] 3.1 Update `skills/worktrail-go/references/brief-staleness-check.md`'s "Predicate re-check"
       section: state the dispatch order (registered `drift-source`, then `predicate-kind:
       command`, then unrecognized), add the capture-side contract an external sweep must satisfy
       (`predicate-kind: command`, per-finding `path` + `predicate-cmd` argv list, `0 = the
