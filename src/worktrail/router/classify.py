@@ -92,7 +92,11 @@ ROUTE_SIGNALS: Dict[str, List[Tuple[re.Pattern, int, str]]] = {
     "F": [
         _sig(r"\bbug\b|\bdefect\b|\bregression\b", 3, "bug-word"),
         _sig(r"\bbroken\b|\bstopped working\b|\bdoesn'?t work\b|\bnot working\b", 3, "broken"),
-        _sig(r"\bcrash(es|ed|ing)?\b|\b5\d\d\b|\bexception\b|\bstack trace\b", 3, "crash"),
+        # `\b5\d\d\b` alone matched any bare PR/issue-number citation in the
+        # 500s (e.g. "PR #547") -- the `(?<!#)` guard excludes a bare 3-digit
+        # number immediately preceded by a `#` marker, which is never an
+        # HTTP-status mention (20260821-211818).
+        _sig(r"\bcrash(es|ed|ing)?\b|(?<!#)\b5\d\d\b|\bexception\b|\bstack trace\b", 3, "crash"),
         _sig(r"\bfix\b", 2, "fix-verb"),
         _sig(r"\bfails?\b|\bfailing\b|\berrors?\b", 2, "fails"),
         _sig(r"\bwrong(ly)?\b|\bincorrect(ly)?\b|\bshould (be|return|show)\b.*\bbut\b", 3, "violates-expectation"),
