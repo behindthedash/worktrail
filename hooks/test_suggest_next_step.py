@@ -1,6 +1,7 @@
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 
 
@@ -64,15 +65,60 @@ def test_main_blocks_once_per_session(tmp_path, monkeypatch, capsys):
     assert capsys.readouterr().out == ""
 
 
+def _write_run_record(path: Path, deferred_work: list[str] | None = None) -> None:
+    """A minimal, real run-record YAML in run_record.py's own on-disk format
+    (`_load` in run_record.py: `key: value` lines plus `  - "item"` list
+    entries) -- just the one field `check_deferred_work_handoff.py` reads.
+    Written directly rather than via `worktrail-run-record start` since no
+    other field is read anywhere on this path.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = ["deferred_work:\n"]
+    for text in deferred_work or []:
+        lines.append(f"  - {json.dumps(text)}\n")
+    path.write_text("".join(lines), encoding="utf-8")
+
+
+def _install_check_deferred_work_handoff_shim(tmp_path: Path, monkeypatch) -> None:
+    """A real `worktrail-check-deferred-work-handoff` on `PATH`, backed by
+    this worktree's own `src/` (never the machine's separately
+    `pip install -e`'d `worktrail`), so `check_deferred_work` exercises the
+    actual subprocess boundary -- `shutil.which`, argv construction, the
+    JSON round-trip, `flagged` extraction -- instead of a stub of the hook's
+    own function. Also isolates `WORK_QUEUE_DIR` so the shim's
+    `has_handoff_coverage` lookup never touches the operator's real queue.
+    """
+    repo_src = HOOK_PATH.parent.parent / "src"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    shim = bin_dir / "worktrail-check-deferred-work-handoff"
+    shim.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        f"sys.path.insert(0, {str(repo_src)!r})\n"
+        "from worktrail.router.check_deferred_work_handoff import main\n"
+        "sys.exit(main())\n",
+        encoding="utf-8",
+    )
+    shim.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    monkeypatch.setenv("WORK_QUEUE_DIR", str(tmp_path / "work-queue"))
+
+
 def test_main_output_unchanged_when_run_record_flags_nothing(tmp_path, monkeypatch, capsys):
-    """A run-record path in the transcript whose `deferred_work` is empty or fully
-    phrase-non-matching (simulated here by `check_deferred_work` returning `[]`, per
-    Requirement: Deferred-Work-Only Signal Source / Deferral-Phrase Matching, which
-    `check_deferred_work` delegates to and which are covered separately by
-    test_check_deferred_work_handoff.py) must not change the emitted `reason` at all.
+    """Run-record path literals in the transcript, one with an empty
+    `deferred_work` and one with a fully phrase-non-matching `deferred_work`,
+    must not change the emitted `reason` at all (Requirement: Additive And
+    Non-Interfering / Silent When Nothing Unmatched). `check_deferred_work`
+    runs for real against the shim installed by
+    `_install_check_deferred_work_handoff_shim`, not a stub; deferral-phrase
+    matching and handoff-coverage lookup themselves are covered by
+    test_check_deferred_work_handoff.py (tasks 3.1-3.3, sibling branch).
     """
     monkeypatch.delenv("CC_HEADLESS", raising=False)
     monkeypatch.setattr(hook, "STATE_DIR", tmp_path / "state")
+    _install_check_deferred_work_handoff_shim(tmp_path, monkeypatch)
+    assert hook.shutil.which(hook.DEFERRED_WORK_HANDOFF_BINARY) is not None
 
     baseline_transcript = tmp_path / "baseline.jsonl"
     _write_transcript(baseline_transcript, "Write")
@@ -85,25 +131,27 @@ def test_main_output_unchanged_when_run_record_flags_nothing(tmp_path, monkeypat
     baseline_output = capsys.readouterr().out
     assert baseline_output == json.dumps({"decision": "block", "reason": hook.INSTRUCTION}) + "\n"
 
-    run_record_path = "~/.worktrail/runs/some-repo/run-1.yaml"
+    empty_record = tmp_path / ".worktrail" / "runs" / "some-repo" / "run-empty.yaml"
+    _write_run_record(empty_record, deferred_work=[])
+    nonmatching_record = tmp_path / ".worktrail" / "runs" / "some-repo" / "run-nonmatching.yaml"
+    _write_run_record(nonmatching_record, deferred_work=["ship the new onboarding flow next quarter"])
+
+    assert hook.check_deferred_work([str(empty_record), str(nonmatching_record)]) == []
+
     with_path_transcript = tmp_path / "with_path.jsonl"
     entry = {
         "message": {
             "content": [
                 {"type": "tool_use", "name": "Write", "input": {}},
-                {"type": "text", "text": f"See run record {run_record_path} for details."},
+                {
+                    "type": "text",
+                    "text": f"See run records {empty_record} and {nonmatching_record} for details.",
+                },
             ]
         }
     }
     with_path_transcript.write_text(json.dumps(entry) + "\n", encoding="utf-8")
 
-    calls: list[list[str]] = []
-
-    def fake_check_deferred_work(paths):
-        calls.append(paths)
-        return []
-
-    monkeypatch.setattr(hook, "check_deferred_work", fake_check_deferred_work)
     monkeypatch.setattr(
         hook.sys,
         "stdin",
@@ -113,7 +161,6 @@ def test_main_output_unchanged_when_run_record_flags_nothing(tmp_path, monkeypat
     with_path_output = capsys.readouterr().out
 
     assert with_path_output == baseline_output
-    assert calls == [[run_record_path]]
 
 
 def test_main_skips_continuation_and_headless_worker(tmp_path, monkeypatch, capsys):
