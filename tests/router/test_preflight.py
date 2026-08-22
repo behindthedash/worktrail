@@ -15,10 +15,10 @@ from worktrail.addons.base import AddOnResult
 from worktrail.router.policy import load_policy
 from worktrail.router.preflight import (
     ADDON_REQUIRED_FAILURE_EXIT,
-    check, duplicate_work_warning, is_running, is_unparseable_command,
-    labels_in_command, main, marker_path, read_marker, read_running_lock,
-    remove_running_lock, running_lock_path, tree_state, write_marker,
-    write_running_lock,
+    check, dirty_tree_reason, duplicate_work_warning, is_running,
+    is_unparseable_command, labels_in_command, main, marker_path, read_marker,
+    read_running_lock, remove_running_lock, running_lock_path, tree_state,
+    write_marker, write_running_lock,
 )
 from worktrail.router.preflight import _pr_touched_files, _resolve_base_ref, _touched_files
 
@@ -78,6 +78,124 @@ class TestTreeState(_GitRepoCase):
     def test_non_git_dir_returns_none(self) -> None:
         d = tempfile.mkdtemp(prefix="notgit-")
         self.assertIsNone(tree_state(Path(d)))
+
+
+class TestDirtyTreeReason(_GitRepoCase):
+    def test_clean_tree_returns_none(self) -> None:
+        repo = self._init_repo()
+        self.assertIsNone(dirty_tree_reason(Path(repo)))
+
+    def test_unstaged_change_to_tracked_file_returns_reason(self) -> None:
+        repo = self._init_repo()
+        self._write(repo, "docs/specs/go-policy.yaml", 'pre_pr_cmd: "false"\n')
+        reason = dirty_tree_reason(Path(repo))
+        self.assertIsNotNone(reason)
+        self.assertIn("go-policy.yaml", reason)
+        self.assertIn("git commit", reason)
+
+    def test_staged_change_to_tracked_file_returns_reason(self) -> None:
+        repo = self._init_repo()
+        self._write(repo, "docs/specs/go-policy.yaml", 'pre_pr_cmd: "false"\n')
+        self._git(repo, "add", ".")
+        self.assertIsNotNone(dirty_tree_reason(Path(repo)))
+
+    def test_untracked_file_is_ignored(self) -> None:
+        """A brand-new file with no history yet -- e.g. a scratch note -- was
+        never going to be part of a `git push` regardless, so it carries none
+        of the risk this check exists to catch."""
+        repo = self._init_repo()
+        self._write(repo, "scratch-notes.txt")
+        self.assertIsNone(dirty_tree_reason(Path(repo)))
+
+    def test_committing_the_change_clears_it(self) -> None:
+        repo = self._init_repo()
+        self._write(repo, "docs/specs/go-policy.yaml", 'pre_pr_cmd: "false"\n')
+        self.assertIsNotNone(dirty_tree_reason(Path(repo)))
+        self._git(repo, "add", ".")
+        self._git(repo, "commit", "-q", "-m", "update policy")
+        self.assertIsNone(dirty_tree_reason(Path(repo)))
+
+    def test_non_git_dir_returns_none(self) -> None:
+        d = tempfile.mkdtemp(prefix="notgit-")
+        self.assertIsNone(dirty_tree_reason(Path(d)))
+
+    def test_many_files_truncates_sample_with_a_count(self) -> None:
+        repo = self._init_repo()
+        for i in range(7):
+            self._write(repo, f"docs/specs/note-{i}.md")
+        self._git(repo, "add", ".")
+        reason = dirty_tree_reason(Path(repo))
+        self.assertIsNotNone(reason)
+        self.assertIn("+2 more", reason)
+
+
+class TestCheckDirtyTree(_GitRepoCase):
+    """`check()`'s dirty-tree guard takes priority over every other verdict
+    path -- unconfigured repo, explicit skip, docs-only diff, and an
+    otherwise-matching pass marker all still deny while the tree is dirty."""
+
+    def test_dirty_tree_denies_even_with_no_pre_pr_cmd(self) -> None:
+        repo = self._init_repo("base_branch: main\n")
+        self._write(repo, "scratch.md")
+        self._git(repo, "add", ".")
+        verdict = check(Path(repo))
+        self.assertEqual(verdict["decision"], "deny")
+        self.assertIn("uncommitted changes", verdict["reason"])
+
+    def test_dirty_tree_denies_even_with_explicit_skip(self) -> None:
+        repo = self._init_repo("pre_pr_cmd: skip\n")
+        self._write(repo, "scratch.md")
+        self._git(repo, "add", ".")
+        verdict = check(Path(repo))
+        self.assertEqual(verdict["decision"], "deny")
+
+    def test_dirty_tree_denies_even_on_docs_only_diff(self) -> None:
+        repo = self._init_repo(
+            'pre_pr_cmd: "exit 9"\ndocs_only_paths:\n  - docs/**\n'
+        )
+        self._git(repo, "checkout", "-q", "-b", "feature")
+        self._write(repo, "docs/new-note.md")
+        self._git(repo, "add", ".")
+        self._git(repo, "commit", "-q", "-m", "docs change")
+        # A further, uncommitted docs edit on top of the committed one.
+        self._write(repo, "docs/new-note.md", "more\n")
+        verdict = check(Path(repo))
+        self.assertEqual(verdict["decision"], "deny")
+
+    def test_dirty_tree_denies_even_with_matching_marker(self) -> None:
+        """This is the exact incident shape: `run` recorded a pass marker
+        against a tree that already included the uncommitted edit (tree_state
+        folds working-tree status into its own key), so the marker matches --
+        but `git push` would still silently drop the edit. The dirty-tree
+        guard must catch this regardless of marker freshness."""
+        repo = self._init_repo('pre_pr_cmd: "true"\n')
+        self._write(repo, "docs/notes.md")
+        self._git(repo, "add", ".")
+        state = tree_state(Path(repo))
+        write_marker(Path(repo), state, "true")
+        verdict = check(Path(repo))
+        self.assertEqual(verdict["decision"], "deny")
+        self.assertIn("uncommitted changes", verdict["reason"])
+
+    def test_clean_tree_with_matching_marker_still_allows(self) -> None:
+        repo = self._init_repo('pre_pr_cmd: "true"\n')
+        state = tree_state(Path(repo))
+        write_marker(Path(repo), state, "true")
+        verdict = check(Path(repo))
+        self.assertEqual(verdict["decision"], "allow")
+
+    def test_dirty_tree_deny_still_carries_warning_key(self) -> None:
+        repo = self._init_repo('pre_pr_cmd: "true"\n')
+        self._git(repo, "checkout", "-q", "-b", "wire-plan-audit-into-verify")
+        self._write(repo, "docs/notes.md")
+        self._git(repo, "add", ".")
+        with mock.patch(
+            "worktrail.router.preflight._open_pr_branches",
+            return_value=["investigate/wire-plan-audit-into-verify"],
+        ):
+            verdict = check(Path(repo))
+        self.assertEqual(verdict["decision"], "deny")
+        self.assertIn("warning", verdict)
 
 
 class TestMarkerRoundtrip(_GitRepoCase):
