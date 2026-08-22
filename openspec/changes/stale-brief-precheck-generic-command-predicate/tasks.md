@@ -1,6 +1,6 @@
 ## 1. Command predicate core
 
-- [ ] 1.1 In `src/worktrail/router/check_brief_predicate.py`, add `_recheck_command_predicate(repo,
+- [x] 1.1 In `src/worktrail/router/check_brief_predicate.py`, add `_recheck_command_predicate(repo,
       findings)` and wire it in: validate each finding carries a `path` and a `predicate-cmd` that
       is a non-empty list of strings (a string, empty list, or non-string element raises), enforce
       the per-brief command cap (20) *before* executing anything, then run each `predicate-cmd`
@@ -34,7 +34,7 @@
 
 ## 2. Evidence transcript
 
-- [ ] 2.1 In `src/worktrail/router/check_brief_predicate.py`, extend
+- [x] 2.1 In `src/worktrail/router/check_brief_predicate.py`, extend
       `format_still_true_evidence` and `format_resolved_closure_note` to append a re-run
       transcript section when the result's `evidence` list is non-empty, rendering per finding the
       `command: ...` / `exit: ...` / `output: ...` line shape from design.md Decision 4 (each on
