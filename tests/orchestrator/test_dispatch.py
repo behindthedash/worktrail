@@ -570,6 +570,41 @@ class TestWorkerBriefForbidsWaitLoop(unittest.TestCase):
             )
 
 
+class TestWorkerBriefForbidsHarnessBackgrounding(unittest.TestCase):
+    """Regression guard for brief 20260821-182348.
+
+    The wait-loop rule above names only the SHELL form (`while true` / `until` /
+    `sleep`), so run go-20260821-141546 lost three spawns to a worker that used
+    its harness's own backgrounding affordance instead and ended its turn with
+    "Test suite running in background; I will wait for its completion
+    notification before continuing." A headless spawn is torn down at the end of
+    that turn, so parse_report_back found no JSON block and salvage_report
+    recovered nothing (the worker never committed). Every brief must name the
+    affordance itself, not just the shell idiom.
+    """
+
+    def test_every_worker_brief_forbids_harness_backgrounding(self):
+        ctx = _make_ctx()
+        task = _make_task()
+        for role in (ROLE_IMPLEMENT, ROLE_REVIEW, ROLE_FIX, ROLE_CLEANUP):
+            prompt = build_worker_prompt(role, task, ctx)
+            self.assertIn(
+                "run_in_background",
+                prompt,
+                f"role={role} brief must name the harness backgrounding affordance",
+            )
+            self.assertIn(
+                "single headless turn",
+                prompt,
+                f"role={role} brief must say no notification will arrive",
+            )
+            self.assertIn(
+                "FOREGROUND",
+                prompt,
+                f"role={role} brief must require foreground execution to completion",
+            )
+
+
 class TestExtraReadsContextWidening(unittest.TestCase):
     """AC: extra_reads parameter threads missing context into the 'Read first' block."""
 

@@ -103,6 +103,21 @@ class BuildGroupPromptTests(unittest.TestCase):
             self.assertIn("hand-roll a background-wait loop", prompt)
             self.assertIn("report back", prompt)
 
+    def test_group_prompt_forbids_harness_backgrounding(self):
+        """Every group-level brief must forbid harness-native backgrounding too.
+
+        Brief 20260821-182348: a resolve worker hit "no report-back JSON block
+        found" during integrate (skipping the merge-conflict resolution for
+        stop-hook-deferred-work-flag/1.1) after backgrounding work the same way
+        the 1.4/implement worker did. The shell-idiom rule above does not name
+        that affordance, so all three group roles must carry the explicit one.
+        """
+        for role in (dispatch.ROLE_RESOLVE, dispatch.ROLE_ASSEMBLY_RESOLVE, dispatch.ROLE_CI_FIX):
+            prompt = dispatch.build_group_prompt(role, _group(), _ctx())
+            self.assertIn("run_in_background", prompt, f"role={role}")
+            self.assertIn("single headless turn", prompt, f"role={role}")
+            self.assertIn("FOREGROUND", prompt, f"role={role}")
+
     def test_group_prompt_forbids_self_merge_and_workflow_edits(self):
         """Every group-level brief must forbid enabling merge and editing CI workflows.
 
@@ -160,6 +175,12 @@ class BuildStackConflictPromptTests(unittest.TestCase):
     def test_forbids_hand_rolled_wait_loop(self):
         prompt = self._prompt()
         self.assertIn("hand-roll a background-wait loop", prompt)
+
+    def test_forbids_harness_backgrounding(self):
+        prompt = self._prompt()
+        self.assertIn("run_in_background", prompt)
+        self.assertIn("single headless turn", prompt)
+        self.assertIn("FOREGROUND", prompt)
 
     def test_ends_with_json_contract(self):
         prompt = self._prompt(task={"id": "TASK-003", "files": []})
