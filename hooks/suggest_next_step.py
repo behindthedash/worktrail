@@ -129,7 +129,7 @@ def check_deferred_work(run_record_paths: list[str]) -> list[dict]:
         return []
     args = [binary, "--json"]
     for path in run_record_paths:
-        args.extend(["--run-record", path])
+        args.extend(["--run-record", os.path.expanduser(path)])
     try:
         result = subprocess.run(
             args,
