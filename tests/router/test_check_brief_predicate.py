@@ -19,6 +19,7 @@ from unittest import mock
 
 from worktrail.router import check_brief_predicate as cbp
 from worktrail.router.check_brief_predicate import main, recheck
+from worktrail.workqueue import work_queue
 
 
 STILL_DRIFTED_TASK = """---
@@ -491,6 +492,107 @@ class PredicateDispatchOrderTest(unittest.TestCase):
         self.assertFalse(result["attempted"])
         self.assertEqual(result["outcome"], "unrecognized")
         self.assertEqual(result["evidence"], [])
+
+
+class EvidenceTranscriptTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.repo = Path(self._tmp.name)
+
+    def test_still_true_formatter_unchanged_when_evidence_empty(self) -> None:
+        _write(self.repo, "docs/specs/010-alpha/tasks/TASK-001.md", STILL_DRIFTED_TASK)
+        frontmatter = {
+            "drift-source": "checkbox-drift-sweep",
+            "drift-findings": [{"path": "docs/specs/010-alpha/tasks/TASK-001.md"}],
+        }
+        result = recheck(self.repo, frontmatter)
+        self.assertEqual(result["evidence"], [])
+        message = cbp.format_still_true_evidence(result)
+        self.assertEqual(
+            message,
+            "Predicate re-check (checkbox-drift-sweep) found the staleness "
+            "predicate still true for 1 finding(s): "
+            "docs/specs/010-alpha/tasks/TASK-001.md. Proceeded automatically "
+            "without an operator prompt.",
+        )
+        self.assertNotIn("command:", message)
+        self.assertNotIn("output:", message)
+
+    def test_resolved_formatter_unchanged_when_evidence_empty(self) -> None:
+        _write(
+            self.repo,
+            "docs/specs/010-alpha/tasks/TASK-001.md",
+            RESOLVED_TASK_ALL_CHECKED,
+        )
+        frontmatter = {
+            "drift-source": "checkbox-drift-sweep",
+            "drift-findings": [{"path": "docs/specs/010-alpha/tasks/TASK-001.md"}],
+        }
+        result = recheck(self.repo, frontmatter)
+        self.assertEqual(result["evidence"], [])
+        message = cbp.format_resolved_closure_note(result)
+        self.assertEqual(
+            message,
+            "Closed as already-delivered: predicate re-check "
+            "(checkbox-drift-sweep) found the staleness predicate resolved "
+            "for 1 finding(s): docs/specs/010-alpha/tasks/TASK-001.md. "
+            "Surfaced by the Phase 5.5 predicate re-check; closed "
+            "automatically without an operator prompt.",
+        )
+        self.assertNotIn("command:", message)
+        self.assertNotIn("output:", message)
+
+    def test_still_true_formatter_includes_transcript_for_command_predicate(self) -> None:
+        argv = _python_cmd(0)
+        frontmatter = {
+            "drift-source": "unregistered-sweep",
+            "predicate-kind": "command",
+            "drift-findings": [{"path": "a.txt", "predicate-cmd": argv}],
+        }
+        result = recheck(self.repo, frontmatter)
+        message = cbp.format_still_true_evidence(result)
+        self.assertIn(f"command: {shlex.join(argv)}", message)
+        self.assertIn("exit: 0", message)
+        self.assertIn("output:", message)
+
+    def test_resolved_formatter_includes_transcript_for_command_predicate(self) -> None:
+        argv = _python_cmd(1)
+        frontmatter = {
+            "drift-source": "unregistered-sweep",
+            "predicate-kind": "command",
+            "drift-findings": [{"path": "a.txt", "predicate-cmd": argv}],
+        }
+        result = recheck(self.repo, frontmatter)
+        message = cbp.format_resolved_closure_note(result)
+        self.assertIn(f"command: {shlex.join(argv)}", message)
+        self.assertIn("exit: 1", message)
+        self.assertIn("output:", message)
+
+    def test_transcript_output_truncated_and_marked(self) -> None:
+        script = "import sys; sys.stdout.write('x' * 5000); sys.exit(0)"
+        argv = [sys.executable, "-c", script]
+        frontmatter = {
+            "drift-source": "unregistered-sweep",
+            "predicate-kind": "command",
+            "drift-findings": [{"path": "a.txt", "predicate-cmd": argv}],
+        }
+        result = recheck(self.repo, frontmatter)
+        message = cbp.format_still_true_evidence(result)
+        self.assertIn(cbp._TRUNCATION_MARKER.strip(), message)
+        self.assertNotIn("x" * 5000, message)
+
+    def test_command_predicate_closure_note_satisfies_reverification_evidence_gate(
+        self,
+    ) -> None:
+        frontmatter = {
+            "drift-source": "unregistered-sweep",
+            "predicate-kind": "command",
+            "drift-findings": [{"path": "a.txt", "predicate-cmd": _python_cmd(1)}],
+        }
+        result = recheck(self.repo, frontmatter)
+        note = cbp.format_resolved_closure_note(result)
+        self.assertFalse(work_queue._reverification_claim_missing_evidence(note))
 
 
 if __name__ == "__main__":
