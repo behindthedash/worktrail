@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 """Unified pre-PR preflight gate CLI — the single implementation behind both
 the /go orchestrator's mandatory gate (pre_pr_gate.py) and the machine-level
-PreToolUse hook that blocks `gh pr create` / `gh pr ready` outside of /go
-(devops scripts/claude-hooks/preflight-gate.py, symlinked at
+PreToolUse hook that blocks `git push` / `gh pr create` / `gh pr ready`
+outside of /go (devops scripts/claude-hooks/preflight-gate.py, symlinked at
 ~/.claude/hooks/preflight-gate.py).
 
 `worktrail-preflight check` is the marker-aware, JSON-verdict entry point the
-hook shells out to: no pre_pr_cmd configured, an explicit `pre_pr_cmd: skip`,
+hook shells out to. It denies unconditionally when tracked files carry
+uncommitted changes (`dirty_tree_reason()`) -- `git push` only ever sends
+committed history, so a pass marker matching a dirty tree (working-tree
+status is part of its own key) provides no assurance about what actually
+ships. Past that: no pre_pr_cmd configured, an explicit `pre_pr_cmd: skip`,
 a docs-only diff (docs_only_paths), or an existing pass marker recorded
-against the exact current tree state all resolve to "allow"; anything else is
-"deny" with instructions to run `worktrail-preflight run`. It reuses
+against the exact current (clean) tree state all resolve to "allow"; anything
+else is "deny" with instructions to run `worktrail-preflight run`. It reuses
 pre_pr_gate.py's own resolve_cmd/is_docs_only so the hook stops maintaining a
 second, line-based go-policy.yaml reader that can drift from the real one.
 
@@ -344,6 +348,42 @@ def duplicate_work_warning(repo: Path) -> Optional[str]:
     return None
 
 
+def dirty_tree_reason(repo: Path) -> Optional[str]:
+    """Deny reason when tracked files carry uncommitted changes (staged or
+    unstaged) relative to HEAD, or None when the tree is clean.
+
+    Untracked files are deliberately excluded: they were never going to be
+    part of any commit regardless, so they carry none of the risk this
+    guards against. Staged/unstaged changes to *tracked* files are that
+    risk -- `tree_state()` folds working-tree status into its own marker
+    key, so `worktrail-preflight run` happily records a pass against a
+    dirty tree. But `git push` only ever sends committed history, so a pass
+    marker matching a dirty tree provides no assurance about what actually
+    reaches the remote branch and the PR opened from it. Incident: datalena
+    PR #2478 (2026-08-22) merged missing 112 files of gate-verified fixes
+    because they were made after the gate's last passing run but never
+    committed before `git push` + `gh pr create` -- the marker matched the
+    (dirty) tree at push time, so nothing caught the gap until a manual
+    `git worktree remove` refused over leftover uncommitted changes. This
+    check closes that gap at the same choke point `check()` already guards.
+    """
+    diff = _git(repo, "diff", "HEAD", "--name-only")
+    if diff is None:
+        return None  # unresolvable (e.g. no commits yet) -- no signal, never a false deny
+    changed = [line for line in diff.splitlines() if line.strip()]
+    if not changed:
+        return None
+    sample = ", ".join(changed[:5])
+    more = f" (+{len(changed) - 5} more)" if len(changed) > 5 else ""
+    return (
+        f"{len(changed)} tracked file(s) have uncommitted changes not captured by any "
+        f"commit: {sample}{more}. `git push`/`gh pr create`/`gh pr ready` only ever act on "
+        "committed history -- these edits would be silently dropped from what actually "
+        "ships, even though a preflight gate run just validated a tree state that included "
+        "them. Commit them (`git add` + `git commit`) or stash them, then retry."
+    )
+
+
 def tree_state(repo: Path) -> Optional[str]:
     """HEAD sha + working-tree status + diff digest.
 
@@ -490,6 +530,12 @@ def check(repo: Path, command: Optional[str] = None) -> Dict[str, Any]:
     instead of an agent-narrated AUTOMERGE LABELS line the calling agent must
     remember to copy. `gh pr ready` and any other command pass through
     unaffected; so does an empty `required_labels` (no --risk was recorded).
+
+    Before any of that, `dirty_tree_reason()` gets the first say: uncommitted
+    changes to tracked files deny unconditionally, regardless of policy,
+    docs-only status, or an otherwise-matching pass marker. This applies to
+    `git push` too (the hook now gates it the same as `gh pr create`/`ready`)
+    -- see `dirty_tree_reason()`'s own docstring for the incident this closes.
     """
     if not repo.is_dir():
         return {"decision": "deny", "reason": f"repo path does not exist: {repo}"}
@@ -501,6 +547,10 @@ def check(repo: Path, command: Optional[str] = None) -> Dict[str, Any]:
         if warning:
             verdict["warning"] = warning
         return verdict
+
+    dirty_reason = dirty_tree_reason(repo)
+    if dirty_reason is not None:
+        return _verdict("deny", dirty_reason)
 
     policy = load_policy(repo)
     cmd = pre_pr_gate.resolve_cmd(policy)
