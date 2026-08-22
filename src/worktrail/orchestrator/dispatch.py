@@ -251,6 +251,30 @@ _WORKTREE_GITNEXUS_RULES = (
     "base-branch context; if it disagrees with this worktree, the worktree wins.",
 )
 
+# Companion to the per-role "no hand-rolled background-wait loop" rule below.
+# That rule names only the SHELL form (`while true` / `until` / `sleep`), so a
+# worker that reached for its harness's own backgrounding affordance instead
+# complied with the letter of it and still stranded the spawn: run
+# go-20260821-141546 lost three spawns (task 1.4/implement twice, ~312s each,
+# plus one resolve worker during integrate) whose final turn read "Test suite
+# running in background; I will wait for its completion notification before
+# continuing." A headless one-shot spawn is torn down at the end of that turn,
+# so the notification never arrives, parse_report_back finds no JSON block, and
+# salvage_report recovers nothing because the worker never committed. Naming the
+# affordance explicitly is the fix; same failure class as the user-level Stop
+# hook that forced a continuation turn (live.py `_LEAN_WORKER_FLAGS`).
+_NO_BACKGROUND_TASK_RULES = (
+    "  - Do NOT start any command as a background or async task and then wait for it "
+    "to notify you — no `run_in_background`, no trailing `&`, no `nohup`, no "
+    '"I will wait for the completion notification". You are a single headless '
+    "turn: nothing will notify you, and the spawn is torn down the moment your "
+    "reply ends.",
+    "  - Run every command — test suites included — in the FOREGROUND to completion, "
+    "then emit your report-back JSON in that same reply. A reply that ends while "
+    "work is still running is a lost spawn: it is scored as a failure and retried "
+    "from scratch.",
+)
+
 
 def _spec_prefix(ctx: Dict[str, Any]) -> str:
     """Spec-root prefix for this run's task format (see build_worker_prompt)."""
@@ -496,6 +520,7 @@ def build_worker_prompt(
             "  - Do NOT hand-roll a background-wait loop (while true / until / sleep) "
             "or poll for a build/test/CI to finish: run commands to completion, then "
             "report back. The orchestrator does the waiting, not you.",
+            *_NO_BACKGROUND_TASK_RULES,
             "  - If `tsconfig.json` exists in the repo root, run "
             "`tsc -p tsconfig.json --noEmit` before committing. Fix ALL type errors "
             "it reports before pushing — CI will surface the same errors one at a time.",
@@ -570,6 +595,7 @@ def build_group_prompt(role: str, group: Dict[str, Any], ctx: Dict[str, Any]) ->
             "  - Do NOT wait for CI or hand-roll a background-wait loop (while true / "
             "until / sleep) after pushing: push, then report back. The orchestrator "
             "re-polls CI on the 3-strikes budget; it does the waiting, not you.",
+            *_NO_BACKGROUND_TASK_RULES,
         ]
     elif role == ROLE_ASSEMBLY_RESOLVE:
         conflicting = ctx.get("conflicting_branch", "(unknown task branch)")
@@ -587,6 +613,7 @@ def build_group_prompt(role: str, group: Dict[str, Any], ctx: Dict[str, Any]) ->
             "  - Do NOT push or open a PR — the branch is build-only at this stage; "
             "the orchestrator will push and open the PR after all tasks are merged.",
             "  - Do NOT wait for CI or hand-roll a background-wait loop.",
+            *_NO_BACKGROUND_TASK_RULES,
         ]
     else:  # ROLE_CI_FIX
         action = [
@@ -617,6 +644,7 @@ def build_group_prompt(role: str, group: Dict[str, Any], ctx: Dict[str, Any]) ->
             "  - Do NOT wait for CI or hand-roll a background-wait loop (while true / "
             "until / sleep) after pushing: push, then report back. The orchestrator "
             "re-polls CI on the 3-strikes budget; it does the waiting, not you.",
+            *_NO_BACKGROUND_TASK_RULES,
         ]
 
     branch_line = (
@@ -702,6 +730,7 @@ def build_stack_conflict_prompt(
             "the orchestrator pushes and opens the PR after all tasks are merged.",
             "  - Do NOT wait for CI or hand-roll a background-wait loop (while true / "
             "until / sleep). Resolve, then report back.",
+            *_NO_BACKGROUND_TASK_RULES,
             "",
             "End your reply with EXACTLY one fenced ```json block (the report-back):",
             '  {"task": "%s", "step": "%s", "status": "success|failed",'

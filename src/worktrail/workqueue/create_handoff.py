@@ -78,6 +78,29 @@ def _normalize_repo(repo: Optional[str]) -> Optional[str]:
     return repo
 
 
+_FOCUS_REPO_PREFIX = re.compile(r"^([A-Za-z0-9][A-Za-z0-9_.-]*):\s")
+
+
+def _infer_repo_from_focus(focus: str) -> Optional[str]:
+    """Infer the repo from a leading `<project>: ` focus prefix.
+
+    Briefs captured outside a checkout (a workspace-rooted /go session) carry
+    `repo: null` even when the focus itself names the project ("datalena: add
+    a CI guard ..."). A null repo makes the brief invisible to same-repo batch
+    detection, so a whole cluster of near-identical briefs gets worked one PR
+    and one CI run at a time. Only a token that resolves to an existing
+    `~/projects/<name>` directory is accepted -- anything else stays null
+    rather than guessing.
+    """
+    match = _FOCUS_REPO_PREFIX.match(focus)
+    if not match:
+        return None
+    candidate = Path.home() / "projects" / match.group(1)
+    if candidate.is_dir():
+        return str(candidate.resolve())
+    return None
+
+
 def _section(title: str, value: Optional[str]) -> str:
     value = (value or "").strip()
     return f"\n## {title}\n\n{value}\n" if value else ""
@@ -168,7 +191,7 @@ def create_handoff(
         "id": path.stem,
         "created": now.isoformat(timespec="seconds"),
         "focus": focus,
-        "repo": _normalize_repo(repo) or None,
+        "repo": _normalize_repo(repo) or _infer_repo_from_focus(focus) or None,
         "remote": remote or None,
         "base-branch": base_branch or None,
         "status": "queued",

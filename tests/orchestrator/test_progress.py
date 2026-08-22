@@ -324,6 +324,22 @@ class SummarizeUsage(unittest.TestCase):
         self.assertEqual(s["entries_total"], 2)
         self.assertNotIn("cleanup", s["roles"])
 
+    def test_turns_aggregated_per_role_and_total(self):
+        journal = {"entries": [
+            {"role": "implement", "usage": self._u(cache_read_input_tokens=200000, num_turns=8)},
+            {"role": "implement", "usage": self._u(cache_read_input_tokens=400000, num_turns=12)},
+            {"role": "review", "usage": self._u(cache_read_input_tokens=300000, num_turns=15)},
+            {"role": "fix", "usage": self._u(cache_read_input_tokens=100000)},  # pre-capture: no num_turns
+        ]}
+        s = progress.summarize_usage(journal)
+        self.assertEqual(s["roles"]["implement"]["turns"], 20)
+        self.assertEqual(s["roles"]["review"]["turns"], 15)
+        self.assertEqual(s["roles"]["fix"]["turns"], 0)
+        self.assertEqual(s["total"]["turns"], 35)
+        # cache_read / turns = the per-turn context the prefix actually costs.
+        self.assertEqual(progress._ctx_per_turn(s["roles"]["implement"]), 30000)
+        self.assertEqual(progress._ctx_per_turn(s["roles"]["fix"]), 0)  # no turns -> no div-by-zero
+
     def test_cache_hit_ratio(self):
         # 24K read of 48K input-side -> 50%.
         self.assertAlmostEqual(
@@ -345,6 +361,17 @@ class RenderUsage(unittest.TestCase):
         self.assertIn("implement", out)
         self.assertIn("TOTAL", out)
         self.assertIn("cache hit:", out)
+        self.assertIn("ctx/turn", out)
+        # No num_turns on the entry -> no per-turn amplification footer.
+        self.assertNotIn("re-read once per turn", out)
+
+    def test_turn_amplification_footer_when_turns_recorded(self):
+        journal = {"entries": [
+            {"role": "review", "usage": {"input_tokens": 20, "cache_read_input_tokens": 400000, "cache_creation_input_tokens": 30000, "output_tokens": 10000, "total_cost_usd": 0.8, "num_turns": 20}},
+        ]}
+        out = progress.render_usage(journal)
+        self.assertIn("20 turn(s) x ~20K ctx/turn", out)
+        self.assertIn("fewer turns, not a smaller spawn, is the lever", out)
 
     def test_empty_usage_explains_absence(self):
         out = progress.render_usage({"entries": [{"role": "implement"}, {"role": "review"}]})

@@ -299,7 +299,7 @@ def summarize_usage(journal: Dict[str, Any]) -> Dict[str, Any]:
     and how many entries actually carried usage (older runs carry none)."""
     roles: Dict[str, Dict[str, Any]] = {}
     total: Dict[str, Any] = {f: 0 for f in _USAGE_FIELDS}
-    total.update(cost=0.0, spawns=0)
+    total.update(cost=0.0, spawns=0, turns=0)
     entries = journal.get("entries", []) or []
     with_usage = 0
     for e in entries:
@@ -308,7 +308,8 @@ def summarize_usage(journal: Dict[str, Any]) -> Dict[str, Any]:
             continue
         with_usage += 1
         bucket = roles.setdefault(
-            e.get("role", "?"), {**{f: 0 for f in _USAGE_FIELDS}, "cost": 0.0, "spawns": 0}
+            e.get("role", "?"),
+            {**{f: 0 for f in _USAGE_FIELDS}, "cost": 0.0, "spawns": 0, "turns": 0},
         )
         for f in _USAGE_FIELDS:
             v = int(u.get(f, 0) or 0)
@@ -319,6 +320,16 @@ def summarize_usage(journal: Dict[str, Any]) -> Dict[str, Any]:
         total["cost"] += c
         bucket["spawns"] += 1
         total["spawns"] += 1
+        # `num_turns` is the agentic-loop length the spawn's `result` event
+        # reports (spawnlib captures it; journals that predate that capture
+        # carry 0). It is what turns a ~40K cold-spawn prefix into the
+        # 200K-2.6M cache_read figures a multi-turn worker reports: every
+        # turn re-reads the whole prefix, so cache_read ~= prefix x turns
+        # (r=0.94 across 41 spawns, docs/specs/research/
+        # worker-spawn-cache-read-amplification.md).
+        n = int(u.get("num_turns", 0) or 0)
+        bucket["turns"] += n
+        total["turns"] += n
     return {
         "roles": roles,
         "total": total,
@@ -366,12 +377,13 @@ def summarize_pool_usage(journal: Dict[str, Any]) -> Dict[str, Any]:
         with_agent += 1
         pool = _pool_for_agent(agent)
         bucket = pools.setdefault(pool, {}).setdefault(
-            agent, {**{f: 0 for f in _USAGE_FIELDS}, "cost": 0.0, "spawns": 0}
+            agent, {**{f: 0 for f in _USAGE_FIELDS}, "cost": 0.0, "spawns": 0, "turns": 0}
         )
         for f in _USAGE_FIELDS:
             bucket[f] += int(u.get(f, 0) or 0)
         bucket["cost"] += float(u.get("total_cost_usd", 0.0) or 0.0)
         bucket["spawns"] += 1
+        bucket["turns"] += int(u.get("num_turns", 0) or 0)
     return {"pools": pools, "entries_with_agent_label": with_agent}
 
 
@@ -381,6 +393,15 @@ def _cache_hit_ratio(d: Dict[str, Any]) -> float:
     read = d.get("cache_read_input_tokens", 0)
     base = read + d.get("input_tokens", 0) + d.get("cache_creation_input_tokens", 0)
     return (read / base) if base else 0.0
+
+
+def _ctx_per_turn(d: Dict[str, Any]) -> int:
+    """Average cached context re-read per agentic turn: cache_read / turns. This is
+    the per-spawn fixed prefix (harness system prompt + tools + CLAUDE.md + the
+    worker brief) as the model actually pays for it -- once per turn, not once per
+    spawn. 0 when the journal carries no turn counts (pre-capture runs)."""
+    turns = int(d.get("turns", 0) or 0)
+    return int(d.get("cache_read_input_tokens", 0) / turns) if turns else 0
 
 
 def render_usage(journal: Dict[str, Any]) -> str:
@@ -399,26 +420,32 @@ def render_usage(journal: Dict[str, Any]) -> str:
         return f"{n / 1000:.0f}K" if abs(n) >= 1000 else str(n)
 
     header = (
-        f"  {'role':10} {'spawns':>6} {'input':>8} {'cache_rd':>9} "
-        f"{'cache_wr':>9} {'output':>7} {'$cost':>8}"
+        f"  {'role':10} {'spawns':>6} {'turns':>6} {'input':>8} {'cache_rd':>9} "
+        f"{'cache_wr':>9} {'output':>7} {'ctx/turn':>9} {'$cost':>8}"
     )
     lines = ["token usage (per role):", header]
     for role in sorted(s["roles"]):
         d = s["roles"][role]
         lines.append(
-            f"  {role:10} {d['spawns']:>6} {_k(d['input_tokens']):>8} "
+            f"  {role:10} {d['spawns']:>6} {d['turns']:>6} {_k(d['input_tokens']):>8} "
             f"{_k(d['cache_read_input_tokens']):>9} {_k(d['cache_creation_input_tokens']):>9} "
-            f"{_k(d['output_tokens']):>7} {d['cost']:>8.2f}"
+            f"{_k(d['output_tokens']):>7} {_k(_ctx_per_turn(d)):>9} {d['cost']:>8.2f}"
         )
     lines.append(
-        f"  {'TOTAL':10} {t['spawns']:>6} {_k(t['input_tokens']):>8} "
+        f"  {'TOTAL':10} {t['spawns']:>6} {t['turns']:>6} {_k(t['input_tokens']):>8} "
         f"{_k(t['cache_read_input_tokens']):>9} {_k(t['cache_creation_input_tokens']):>9} "
-        f"{_k(t['output_tokens']):>7} {t['cost']:>8.2f}"
+        f"{_k(t['output_tokens']):>7} {_k(_ctx_per_turn(t)):>9} {t['cost']:>8.2f}"
     )
     lines.append(
         f"  cache hit: {100 * _cache_hit_ratio(t):.0f}% of input-side tokens from cache "
         f"| ${t['cost']:.2f} across {t['spawns']} spawn(s)"
     )
+    if t["turns"]:
+        lines.append(
+            f"  cache_rd is re-read once per turn: {t['turns']} turn(s) x "
+            f"~{_k(_ctx_per_turn(t))} ctx/turn -- fewer turns, not a smaller "
+            "spawn, is the lever"
+        )
 
     # Per-pool grouping (AC-027): only shown when at least one entry carries an
     # `agent` label. Pre-spec journals (no labels, AC-029) fall through here
@@ -436,9 +463,9 @@ def render_usage(journal: Dict[str, Any]) -> str:
             for agent in sorted(agents):
                 d = agents[agent]
                 lines.append(
-                    f"    {agent:10} {d['spawns']:>6} {_k(d['input_tokens']):>8} "
+                    f"    {agent:10} {d['spawns']:>6} {d['turns']:>6} {_k(d['input_tokens']):>8} "
                     f"{_k(d['cache_read_input_tokens']):>9} {_k(d['cache_creation_input_tokens']):>9} "
-                    f"{_k(d['output_tokens']):>7} {d['cost']:>8.2f}"
+                    f"{_k(d['output_tokens']):>7} {_k(_ctx_per_turn(d)):>9} {d['cost']:>8.2f}"
                 )
     return "\n".join(lines)
 

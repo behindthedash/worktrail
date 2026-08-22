@@ -177,6 +177,19 @@ This stamps `status: done` in `picked/` (the file stays as a kept log). Tell the
 handoff is complete and check if there are more items in the queue. If a claim is abandoned,
 `worktrail-work-queue release <id>` returns it to `queue/` for someone else.
 
+**Closing with a re-verification claim requires showing the re-run, not just asserting it.**
+A `--note` that claims a result was "disproven", "re-verified", or "no longer flags/triggers"
+(a detector, a check, a script) is rejected outright (`status:
+unverified_reverification_claim`, no mutation) unless the note also shows the actual command
+output — inside a fenced ` ``` ` block, or an explicit `Command:`/`Output:` pair — not prose
+alone. Actually run the cited check before writing the note; paste its real output. A brief
+closed on an unverified "disproven" claim can hide a still-real finding: brief
+20260817-101013-datalena-release-notes-consolidate-yml-missing-docs-skip-gate was closed
+2026-08-20 with "disproven — corrected detector no longer flags this file," but re-executing
+the cited detector afterward showed it still flagged the file. Closure notes that don't
+assert a re-verification result (e.g. "duplicate of X", "out of scope: different purpose")
+are unaffected.
+
 ### Decisions awaiting a human
 
 Unattended runs park genuine product decisions in a sibling queue

@@ -31,7 +31,9 @@ CLI (all subcommands accept --json):
                                         in one batch (per-brief atomic; see below)
   queue.py done     IDENTIFIER          stamp status: done in picked/ (file stays)
                                         Route-C briefs require --planning-only or
-                                        --implementation-complete
+                                        --implementation-complete; a --note claiming
+                                        re-verification with no shown re-run output
+                                        is rejected (see "Closure evidence gate")
   queue.py release  IDENTIFIER          move picked/ -> queue/ (abandoned claim)
 
 Exit codes for `claim`/`claim-batch`: 0 ok, 2 none, 3 ambiguous, 4 already-claimed,
@@ -49,6 +51,17 @@ false "claimed"/"done"/"released"/"linked". This exists because a write path tha
 merely returns success without checking its own output can silently leave a broken
 brief behind -- `list`, the dashboard, and `/go`'s picker would all have to cope with
 it downstream instead of the write itself catching it.
+
+Closure evidence gate (done --note)
+------------------------------------
+`done()` rejects a `--note` that asserts a re-verification result ("disproven",
+"re-verified", "no longer flags", ...) but shows no actual re-run output
+(`{"status": "unverified_reverification_claim"}`, no mutation) -- see
+`_reverification_claim_missing_evidence`. This closes the gap where a closure
+claim like "disproven -- corrected detector no longer flags this file" was
+accepted on prose alone; re-executing the cited detector later showed it still
+flagged the file (brief
+20260817-101013-datalena-release-notes-consolidate-yml-missing-docs-skip-gate).
 
 Batch consumption (claim-batch)
 -------------------------------
@@ -98,6 +111,45 @@ from ..shared.brief_frontmatter import (
 )
 
 _FM_RE = re.compile(r"^---\r?\n(.*?)\n---\r?\n", re.DOTALL)
+
+# Phrases in a closure --note that assert a claim was mechanically re-verified
+# ("disproven", "re-verified", "no longer flags", ...) rather than merely
+# described ("duplicate of X", "out of scope") -- the latter carry no
+# re-verification claim and are unaffected by `_reverification_claim_missing_evidence`.
+_REVERIFICATION_CLAIM_RE = re.compile(
+    r"\b(disproven|re-?verified|no longer (?:flags?|triggers?|applies)|"
+    r"corrected (?:detector|check|script)|already fixed)\b",
+    re.IGNORECASE,
+)
+
+# What counts as *shown* evidence rather than asserted evidence: a fenced code
+# block (the actual re-run transcript) or an explicit command/output label.
+_EVIDENCE_MARKER_RE = re.compile(
+    r"```|^\s*(?:\$ |command:|output:|detector output:)",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _reverification_claim_missing_evidence(note: str) -> bool:
+    """True when `note` asserts a re-verification result (e.g. "disproven",
+    "re-verified", "no longer flags") without showing the actual re-run
+    output that backs it up.
+
+    A deliberately narrow, code-enforced "show your work" check: it cannot
+    judge whether pasted output is honest, only whether something resembling
+    a real command transcript accompanies the claim -- mirroring
+    `skill_prose_advisory_scan.py`'s mandate-cue heuristic, but as a hard
+    `done()` gate rather than an advisory scan. Brief
+    20260817-101013-datalena-release-notes-consolidate-yml-missing-docs-skip-gate
+    was closed with exactly this claim ("disproven -- corrected detector no
+    longer flags this file") and no re-run output; re-executing the cited
+    detector afterward showed it still flagged the file.
+    """
+    if not note:
+        return False
+    if not _REVERIFICATION_CLAIM_RE.search(note):
+        return False
+    return not _EVIDENCE_MARKER_RE.search(note)
 
 
 # --------------------------------------------------------------------------- #
@@ -891,6 +943,11 @@ def done(
     ``note``, when truthy, is appended to the brief body as a ``## Closure
     Note`` section before the ``status: done`` / ``completed-at`` frontmatter
     stamp is applied, so a future reader can see why the brief was closed.
+
+    A ``note`` that asserts a re-verification result ("disproven",
+    "re-verified", "no longer flags", ...) without showing the actual re-run
+    output is rejected outright (``status: unverified_reverification_claim``,
+    no mutation) -- see `_reverification_claim_missing_evidence`.
     """
     if planning_only and implementation_complete:
         return {
@@ -918,6 +975,19 @@ def done(
             "error": (
                 "Route-C brief requires an explicit decision: continue to Route D "
                 "or finish with --planning-only"
+            ),
+        }
+    if note and _reverification_claim_missing_evidence(note):
+        return {
+            "status": "unverified_reverification_claim",
+            "path": str(path),
+            "candidates": [],
+            "error": (
+                "Closure note asserts a re-verification result (e.g. "
+                "'disproven'/'re-verified'/'no longer flags') without showing the "
+                "actual command output that backs it up. Paste the literal re-run "
+                "command and its output (e.g. inside a ``` fenced block, or a "
+                "'Command:'/'Output:' pair) and retry."
             ),
         }
     try:
@@ -1297,6 +1367,7 @@ def main(argv=None) -> int:
         "error",
         "write-verification-failed",
         "awaiting_implementation_decision",
+        "unverified_reverification_claim",
     ):
         return 1
     return 0

@@ -24,8 +24,10 @@ session to actually doing the work; a loose textual echo isn't enough). Emits:
 
     {"batch": [{"path": ..., "id": ..., "focus": ..., "reason": ...}, ...]}
 
-with reason one of "related-link" | "same-target-spec" | "score", capped at
-BATCH_TOP_N companions.
+with reason one of "related-link" | "same-target-spec" | "identifier-overlap" |
+"score", capped at BATCH_TOP_N companions. "identifier-overlap" marks a pair
+that only cleared BATCH_MIN because of a shared identifier-shaped token (a
+filename, snake_case, or kebab-case name) -- see IDENTIFIER_BOOST below.
 
 No import of work_queue.py.
 """
@@ -51,6 +53,24 @@ TOP_N = 3  # max combined candidates across auto_link + confirm
 BATCH_MIN = 0.45  # score floor for a companion with no structural signal
 TARGET_SPEC_BOOST = 0.25  # added when both briefs name the same target-spec
 BATCH_TOP_N = 3  # max companions per batch (keeps one run/PR reviewable)
+
+# A shared identifier-shaped token (filename, snake_case, kebab-case name) is a
+# far more precise signal than a shared plain word, but the flat token-overlap
+# coefficient below dilutes it into the surrounding prose on long focus text —
+# three datalena CI-guard briefs each sharing one concrete filename/job-name
+# identifier still scored 0.32/0.42/0.36 against BATCH_MIN (brief
+# 20260821-172334). Flat boost (not scaled by overlap magnitude, matching
+# SAME_REPO_BOOST/TARGET_SPEC_BOOST's own style) applied once per pair when at
+# least one identifier-shaped token is shared.
+IDENTIFIER_BOOST = 0.15
+
+# Filenames (foo.py), snake_case, and kebab-case compound tokens — segments of
+# letters/digits joined by '_', '.', or '-'. Plain words never match (no
+# joining character), so this is additive to, not a replacement for, _tokenize.
+# Each segment must be >= 2 chars, both to require a real leading segment and
+# to exclude "e.g"/"i.e."-style abbreviations that would otherwise match as a
+# spurious two-segment "identifier" and inflate unrelated-brief scores.
+_IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]+(?:[_.\-][A-Za-z0-9_]{2,})+")
 
 
 def _read_brief(path: Path):
@@ -79,6 +99,13 @@ def _overlap_coefficient(a: set, b: set) -> float:
     if not a or not b:
         return 0.0
     return len(a & b) / min(len(a), len(b))
+
+
+def _identifier_tokens(text: str) -> set:
+    """Return lowercase identifier-shaped tokens: filenames, snake_case, kebab-case."""
+    if not text:
+        return set()
+    return {t.lower() for t in _IDENTIFIER_RE.findall(text)}
 
 
 def _normalize_repo(val: Any) -> Optional[str]:
@@ -245,8 +272,10 @@ def batch_candidates(brief_path: Path, base_dir: Path) -> Dict[str, Any]:
     stem = brief_path.stem
     target_spec = _normalize_repo(fm.get("target-spec"))
     related_ids = _coerce_id_list(fm.get("related"))
-    focus_tokens = _tokenize(str(fm.get("focus") or ""))
+    focus_text = str(fm.get("focus") or "")
+    focus_tokens = _tokenize(focus_text)
     body_tokens = _tokenize(body or "")
+    ident_tokens = _identifier_tokens(focus_text) | _identifier_tokens(body or "")
 
     scored: List[Dict[str, Any]] = []
     for f in _md_files(base_dir / "queue"):
@@ -271,11 +300,23 @@ def batch_candidates(brief_path: Path, base_dir: Path) -> Dict[str, Any]:
             _overlap_coefficient(focus_tokens, _tokenize(cand_focus)) * 0.7
             + _overlap_coefficient(body_tokens, _tokenize(cand_body or "")) * 0.3
         )
-        total = base_score + SAME_REPO_BOOST + (TARGET_SPEC_BOOST if spec_match else 0.0)
+        cand_ident_tokens = _identifier_tokens(cand_focus) | _identifier_tokens(cand_body or "")
+        shares_identifier = bool(ident_tokens & cand_ident_tokens)
+
+        subtotal = base_score + SAME_REPO_BOOST + (TARGET_SPEC_BOOST if spec_match else 0.0)
+        identifier_boost = IDENTIFIER_BOOST if shares_identifier else 0.0
+        total = subtotal + identifier_boost
 
         if not (related_link or spec_match or total >= BATCH_MIN):
             continue
-        reason = "related-link" if related_link else ("same-target-spec" if spec_match else "score")
+        if related_link:
+            reason = "related-link"
+        elif spec_match:
+            reason = "same-target-spec"
+        elif identifier_boost and subtotal < BATCH_MIN:
+            reason = "identifier-overlap"
+        else:
+            reason = "score"
         scored.append(
             {
                 "path": str(f),

@@ -644,6 +644,86 @@ class TestDoneNote(QueueTestBase):
         self.assertEqual(cli_content, direct_content)
 
 
+class TestDoneClosureEvidenceGate(QueueTestBase):
+    """`done(..., note=...)` rejects a re-verification claim ("disproven",
+    "re-verified", "no longer flags", ...) that shows no actual re-run output,
+    instead of stamping the brief done on prose alone."""
+
+    def test_done_rejects_disproven_claim_with_no_evidence(self):
+        self.write("20260531-141200-auth.md", focus="auth")
+        q.claim("20260531-141200-auth")
+
+        res = q.done(
+            "20260531-141200-auth",
+            note="disproven -- corrected detector no longer flags this file",
+        )
+
+        self.assertEqual(res["status"], "unverified_reverification_claim")
+        self.assertIsNotNone(res["error"])
+        fm = q._read_frontmatter(self.picked / "20260531-141200-auth.md")
+        self.assertEqual(fm["status"], "picked", "must not stamp done on a rejected note")
+        body = (self.picked / "20260531-141200-auth.md").read_text(encoding="utf-8")
+        self.assertNotIn("## Closure Note", body)
+
+    def test_done_accepts_disproven_claim_with_fenced_evidence(self):
+        self.write("20260531-141200-auth.md", focus="auth")
+        q.claim("20260531-141200-auth")
+
+        res = q.done(
+            "20260531-141200-auth",
+            note=(
+                "disproven -- re-ran the detector against the live file:\n\n"
+                "```\n$ python3 fleet-workflow-hygiene-guard.py check foo.yml\nfalse\n```"
+            ),
+        )
+
+        self.assertEqual(res["status"], "done")
+        fm = q._read_frontmatter(self.picked / "20260531-141200-auth.md")
+        self.assertEqual(fm["status"], "done")
+
+    def test_done_accepts_disproven_claim_with_labeled_evidence(self):
+        self.write("20260531-141200-auth.md", focus="auth")
+        q.claim("20260531-141200-auth")
+
+        res = q.done(
+            "20260531-141200-auth",
+            note=(
+                "disproven -- corrected detector no longer flags this file.\n"
+                "Command: python3 fleet-workflow-hygiene-guard.py check foo.yml\n"
+                "Output: false"
+            ),
+        )
+
+        self.assertEqual(res["status"], "done")
+
+    def test_done_ordinary_closure_note_unaffected(self):
+        """A closure note with no re-verification claim (e.g. a plain
+        duplicate/superseded note) is unaffected -- the gate only fires on
+        the specific trigger phrases."""
+        self.write("20260531-141200-auth.md", focus="auth")
+        q.claim("20260531-141200-auth")
+
+        res = q.done("20260531-141200-auth", note="Superseded by spec-042")
+
+        self.assertEqual(res["status"], "done")
+
+    def test_done_cli_exit_code_is_one_on_rejected_claim(self):
+        self.write("20260531-141200-auth.md", focus="auth")
+        q.claim("20260531-141200-auth")
+
+        code = q.main(
+            [
+                "done",
+                "20260531-141200-auth",
+                "--note",
+                "disproven -- corrected detector no longer flags this file",
+                "--json",
+            ]
+        )
+
+        self.assertEqual(code, 1)
+
+
 class TestWriteVerification(QueueTestBase):
     """A mutation that would leave a broken brief on disk fails loudly
     (`status: write-verification-failed`) and rolls back instead of

@@ -568,6 +568,129 @@ class TestBatchMode(ScoreCandidatesTestBase):
             self.assertEqual(set(entry), {"path", "id", "focus", "reason"})
 
 
+class TestBatchModeIdentifierOverlap(ScoreCandidatesTestBase):
+    """Regression for brief 20260821-172334: three datalena CI-guard briefs
+    shared a concrete filename/job-name identifier each but scored 0.32/0.42/0.36
+    against BATCH_MIN (0.45) because the overlap coefficient treats every token
+    (plain word or identifier) the same, letting long prose dilute a strong,
+    precise identifier match into noise. Focus text below is trimmed but keeps
+    the exact shared identifiers from the live queue briefs so the reproduced
+    scores match what was observed (verified 2026-08-21)."""
+
+    REPO = "/home/briank/projects/datalena"
+
+    # Verbatim focus text from the live queue briefs (20260820-191437,
+    # 20260821-070329, 20260821-130630) that reproduced 0.42/0.36/0.32 against
+    # BATCH_MIN — trimmed synthetic text under-reproduces the dilution effect
+    # since fewer total tokens raises the overlap ratio artificially.
+    B1_FOCUS = (
+        "datalena: add a CI guard (AST-based, e.g. an ast.walk check similar to "
+        "scripts/ci/check_origin_referer_allowlist.py) that fails the build when "
+        "record_audit()/record_tenant_scope_denial() is followed by a bare "
+        "session.commit() not wrapped in db/session_context.py's "
+        "commit_tenant_scope_denial() -- the commit-clears-tenant-scoping-GUCs "
+        "regression has now shipped independently 2-3 times in embed_grants.py "
+        "alone (PR #2406, #2418, plus the organization_id/workspace_id FK bug "
+        "found in PR for 20260820-164131), and the new shared helper only "
+        "prevents recurrence if every future deny-branch author actually reaches "
+        "for it. Without an automated guard, the helper is a convention, not the "
+        "structural guarantee its own docstring claims."
+    )
+    B2_FOCUS = (
+        "datalena: promote ci-guardrails to a required status check in "
+        ".github/rulesets/protect-dev.json (and stg/prd if they mirror dev's "
+        "required list) now that it reports 0 violations (PR #2435 remediated "
+        "the 18 pre-existing timeout-minutes/continue-on-error findings). "
+        "Currently ci-guardrails runs on every PR but is advisory-only -- "
+        "nothing blocks a future PR from reintroducing an unguarded "
+        "continue-on-error step or a required-check job with no "
+        "timeout-minutes, which is exactly the regression class that produced "
+        "the 18-violation backlog PR #2435 just cleared. Suggested approach: "
+        "add the ci-guardrails job's check name to required_status_checks in "
+        "protect-dev.json (and any mirrored stg/prd rulesets per "
+        "CLAUDE.repo.md's job/ruleset sync rule), apply the ruleset via gh api, "
+        "and verify with the rulesets_drift_guard workflow."
+    )
+    B3_FOCUS = (
+        "datalena: add a deterministic CI guardrail (rg/AST-based check, "
+        "similar to check_origin_referer_allowlist.py's pattern) that flags "
+        "any FastAPI route parameter named limit/offset/page/size declared as "
+        "a bare 'int = <literal>' (or 'int' with no Query bound) instead of "
+        "Annotated[int, Query(ge=..., le=...)]. Motivation: PR #2438 found and "
+        "fixed 14 such sites across 10 routers (s3_watchers, managed_datasets, "
+        "schedules, email_channels, delivery_destinations, merge_runs, "
+        "ingestion_credentials, dashboard_releases, schedule_runs, "
+        "source_arrivals) that were unreachable by any existing lint rule -- "
+        "only Schemathesis's expensive nightly fuzz-and-manually-triage cycle "
+        "caught them, and only 9 of the 14 vulnerable sites had actually been "
+        "exercised by a fuzzer run yet. Without a structural guard, the exact "
+        "same bug class (unbounded pagination params -> unhandled 500 from "
+        "adversarial/malformed input) can reappear in any new endpoint written "
+        "after this fix, silently, until the next multi-hour fuzz-triage cycle "
+        "finds it again. A cheap static check run in CI (mirroring the "
+        "existing ci-guardrails job's shape) closes this permanently for "
+        "near-zero ongoing cost, converting a recurring expensive detection "
+        "loop into a one-time prevention."
+    )
+
+    def _write_brief(self, name: str, focus_text: str) -> Path:
+        # Block-scalar style (`focus: |-`) — the format the handoff capture
+        # flow actually writes (see TestBatchModeBlockScalarFocusRegression
+        # above). The plain-scalar `_brief()` helper breaks on this text's
+        # colons/brackets, which isn't the defect under test here.
+        content = (
+            "---\n"
+            "focus: |-\n"
+            f"  {focus_text}\n"
+            f"repo: {self.REPO}\n"
+            "status: queued\n"
+            "---\n"
+        )
+        p = self.queue / name
+        p.write_text(content, encoding="utf-8")
+        return p
+
+    def test_shared_filename_identifier_crosses_batch_min(self):
+        primary = self._write_brief("20260820-191437-b1.md", self.B1_FOCUS)
+        self._write_brief("20260821-130630-b3.md", self.B3_FOCUS)
+
+        result = sc.batch_candidates(primary, self.base)
+        ids = [c["id"] for c in result["batch"]]
+        self.assertIn("20260821-130630-b3", ids)
+
+    def test_shared_job_name_identifier_crosses_batch_min(self):
+        primary = self._write_brief("20260821-070329-b2.md", self.B2_FOCUS)
+        self._write_brief("20260821-130630-b3.md", self.B3_FOCUS)
+
+        result = sc.batch_candidates(primary, self.base)
+        ids = [c["id"] for c in result["batch"]]
+        self.assertIn("20260821-130630-b3", ids)
+        entry = next(c for c in result["batch"] if c["id"] == "20260821-130630-b3")
+        self.assertEqual(entry["reason"], "identifier-overlap")
+
+    def test_no_shared_identifier_stays_unbatched(self):
+        """b1 and b2 share no identifier-shaped token — legitimately different
+        topics (audit-commit fix vs. ruleset promotion) — so they should NOT be
+        forced together just because both mention 'CI guard' generically."""
+        primary = self._write_brief("20260820-191437-b1.md", self.B1_FOCUS)
+        self._write_brief("20260821-070329-b2.md", self.B2_FOCUS)
+
+        result = sc.batch_candidates(primary, self.base)
+        ids = [c["id"] for c in result["batch"]]
+        self.assertNotIn("20260821-070329-b2", ids)
+
+    def test_eg_abbreviation_is_not_an_identifier(self):
+        """"e.g" (from "e.g." in prose) matches the compound-token shape
+        (letter + '.' + letter) but is not an identifier — a live-queue false
+        positive found while validating this fix: two otherwise-unrelated
+        datalena briefs both used "e.g." and were spuriously batched on it."""
+        self.assertEqual(sc._identifier_tokens("similar to X (e.g. a widget)"), set())
+        self.assertEqual(sc._identifier_tokens("i.e. this one specifically"), set())
+        # Real two-char-segment identifiers must still match.
+        self.assertIn("ast.walk", sc._identifier_tokens("an ast.walk check"))
+        self.assertIn("s3_watchers", sc._identifier_tokens("across s3_watchers and others"))
+
+
 class TestReadBriefYamlParsing(unittest.TestCase):
     """Coverage for _read_brief's frontmatter parsing (delegated to the
     shared, PyYAML-backed worktrail.shared.brief_frontmatter parser since
