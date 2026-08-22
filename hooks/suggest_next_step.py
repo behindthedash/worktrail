@@ -157,7 +157,9 @@ def build_deferred_work_block(flagged: list[dict]) -> str:
     EXCEPTIONAL-VALUE gate's own trigger conditions stay untouched.
     """
     lines = "\n".join(
-        f"- {item.get('text')} (run record: {item.get('run_record')})" for item in flagged
+        f"- {item.get('text')} (run record: {item.get('run_record')})"
+        for item in flagged
+        if isinstance(item, dict)
     )
     return (
         "\n\n---\n\n"

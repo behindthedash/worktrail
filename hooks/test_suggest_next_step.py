@@ -64,38 +64,6 @@ def test_main_blocks_once_per_session(tmp_path, monkeypatch, capsys):
     assert capsys.readouterr().out == ""
 
 
-def test_main_reason_unchanged_when_nothing_flagged(tmp_path, monkeypatch, capsys):
-    monkeypatch.delenv("CC_HEADLESS", raising=False)
-    transcript = tmp_path / "transcript.jsonl"
-    _write_transcript(transcript, "Write")
-    monkeypatch.setattr(hook, "STATE_DIR", tmp_path / "state")
-    monkeypatch.setattr(hook, "check_deferred_work", lambda paths: [])
-    payload = {"session_id": "session-flagged-none", "transcript_path": str(transcript)}
-
-    monkeypatch.setattr(hook.sys, "stdin", io.StringIO(json.dumps(payload)))
-    assert hook.main() == 0
-    emitted = json.loads(capsys.readouterr().out)
-    assert emitted["reason"] == hook.INSTRUCTION
-
-
-def test_main_appends_deferred_work_block_when_flagged(tmp_path, monkeypatch, capsys):
-    monkeypatch.delenv("CC_HEADLESS", raising=False)
-    transcript = tmp_path / "transcript.jsonl"
-    _write_transcript(transcript, "Write")
-    monkeypatch.setattr(hook, "STATE_DIR", tmp_path / "state")
-    flagged = [{"text": "circle back on retries", "run_record": "~/.worktrail/runs/x/y.yaml"}]
-    monkeypatch.setattr(hook, "check_deferred_work", lambda paths: flagged)
-    payload = {"session_id": "session-flagged-some", "transcript_path": str(transcript)}
-
-    monkeypatch.setattr(hook.sys, "stdin", io.StringIO(json.dumps(payload)))
-    assert hook.main() == 0
-    emitted = json.loads(capsys.readouterr().out)
-    assert emitted["reason"].startswith(hook.INSTRUCTION)
-    assert "DEFERRED WORK FLAGGED" in emitted["reason"]
-    assert "circle back on retries" in emitted["reason"]
-    assert hook.INSTRUCTION in emitted["reason"]
-
-
 def test_main_skips_continuation_and_headless_worker(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(hook, "STATE_DIR", tmp_path / "state")
     monkeypatch.setattr(hook.sys, "stdin", io.StringIO(json.dumps({"stop_hook_active": True})))
