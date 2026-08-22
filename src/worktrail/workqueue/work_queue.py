@@ -33,7 +33,9 @@ CLI (all subcommands accept --json):
                                         Route-C briefs require --planning-only or
                                         --implementation-complete; a --note claiming
                                         re-verification with no shown re-run output
-                                        is rejected (see "Closure evidence gate")
+                                        is rejected, and closing a consolidation-batch
+                                        brief with no per-sub-item evidence is rejected
+                                        (see "Closure evidence gate")
   queue.py release  IDENTIFIER          move picked/ -> queue/ (abandoned claim)
 
 Exit codes for `claim`/`claim-batch`: 0 ok, 2 none, 3 ambiguous, 4 already-claimed,
@@ -62,6 +64,20 @@ claim like "disproven -- corrected detector no longer flags this file" was
 accepted on prose alone; re-executing the cited detector later showed it still
 flagged the file (brief
 20260817-101013-datalena-release-notes-consolidate-yml-missing-docs-skip-gate).
+
+`done()` also rejects closing a *consolidation-batch* brief (one carrying a
+`## Consolidated from` section -- see `consolidate_cluster.py`) with a --note
+that does not name every listed sub-item alongside shown evidence
+(`{"status": "unverified_consolidation_closure"}`, no mutation) -- see
+`_consolidation_closure_missing_evidence`. `execute_consolidation()` already
+stamps each sub-item `done` at batch-*authoring* time (before any of the
+described work exists to cite), so this gate applies instead at the point the
+batch *itself* is closed, when real evidence can exist. An audit of live
+consolidation batches (docs/specs/research/2026-08-21--consolidation-batch-closure-verification-audit.md,
+datalena PR #2450) found 4 of 12 sampled sub-items across 2 batches were never
+actually shipped despite their `done` stamp, and a 5th shipped only via
+unrelated work 5.5 weeks later -- all closed on the consolidating session's own
+unverified prose summary.
 
 Batch consumption (claim-batch)
 -------------------------------
@@ -150,6 +166,49 @@ def _reverification_claim_missing_evidence(note: str) -> bool:
     if not _REVERIFICATION_CLAIM_RE.search(note):
         return False
     return not _EVIDENCE_MARKER_RE.search(note)
+
+
+# A consolidation batch's own body lists its sub-items under this heading,
+# separated by a blank line (`_build_consolidated_brief_content` in
+# `consolidate_cluster.py`); one `- <member-id>` line per item.
+_CONSOLIDATED_FROM_RE = re.compile(
+    r"^##\s+Consolidated from\s*$\r?\n+((?:^-\s+.+$\r?\n?)+)", re.MULTILINE
+)
+
+
+def _consolidated_member_ids(body: str) -> List[str]:
+    """Member ids listed under a `## Consolidated from` section in `body`, or
+    `[]` when the brief carries no such section -- i.e. it is not itself a
+    consolidation-batch brief, the overwhelmingly common case for `done()`.
+    """
+    m = _CONSOLIDATED_FROM_RE.search(body)
+    if not m:
+        return []
+    return [line[2:].strip() for line in m.group(1).splitlines() if line.startswith("- ")]
+
+
+def _consolidation_closure_missing_evidence(body: str, note: Optional[str]) -> List[str]:
+    """Member ids from `body`'s `## Consolidated from` section that `note`
+    does not evidence. Empty means either `body` is not a consolidation-batch
+    brief (nothing to gate) or `note` evidences every listed member.
+
+    A deliberately narrow, code-enforced "show your work" check, mirroring
+    `_reverification_claim_missing_evidence`: it cannot judge whether cited
+    evidence is honest, only that the closer named each sub-item and pasted
+    something resembling a real re-run transcript rather than a bare summary
+    sentence. `execute_consolidation()` (`consolidate_cluster.py`) stamps each
+    sub-item `done` immediately when the batch is authored -- before the
+    described work has usually even been attempted, so gating *that* stamp
+    would only teach the closer to paste ignorable evidence. Gating the
+    batch's own later `done()` instead means real evidence can exist by the
+    time this fires: the work is either done (cite it) or isn't (don't close).
+    """
+    member_ids = _consolidated_member_ids(body)
+    if not member_ids:
+        return []
+    if not note or not _EVIDENCE_MARKER_RE.search(note):
+        return member_ids
+    return [member_id for member_id in member_ids if member_id not in note]
 
 
 # --------------------------------------------------------------------------- #
@@ -948,6 +1007,12 @@ def done(
     "re-verified", "no longer flags", ...) without showing the actual re-run
     output is rejected outright (``status: unverified_reverification_claim``,
     no mutation) -- see `_reverification_claim_missing_evidence`.
+
+    Closing a *consolidation-batch* brief (one with a ``## Consolidated
+    from`` section) with no ``note`` naming and evidencing every listed
+    sub-item is likewise rejected outright (``status:
+    unverified_consolidation_closure``, no mutation) -- see
+    `_consolidation_closure_missing_evidence`.
     """
     if planning_only and implementation_complete:
         return {
@@ -994,6 +1059,21 @@ def done(
         original = path.read_text(encoding="utf-8")
     except OSError as exc:
         return {"status": "error", "path": str(path), "candidates": [], "error": str(exc)}
+    consolidation_missing = _consolidation_closure_missing_evidence(original, note)
+    if consolidation_missing:
+        return {
+            "status": "unverified_consolidation_closure",
+            "path": str(path),
+            "candidates": [],
+            "error": (
+                "This brief consolidates sub-items with no evidence in the closure "
+                "note that their described work actually shipped: "
+                + ", ".join(consolidation_missing)
+                + ". Name each sub-item and paste the file/test/PR that landed it "
+                "(e.g. inside a ``` fenced block, or a 'Command:'/'Output:' pair) "
+                "and retry."
+            ),
+        }
     if note:
         try:
             path.write_text(original + f"\n## Closure Note\n\n{note}\n", encoding="utf-8")
@@ -1368,6 +1448,7 @@ def main(argv=None) -> int:
         "write-verification-failed",
         "awaiting_implementation_decision",
         "unverified_reverification_claim",
+        "unverified_consolidation_closure",
     ):
         return 1
     return 0
