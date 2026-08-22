@@ -348,26 +348,43 @@ def newest_run_record(
 # Capacity cache
 
 
-def capacity_gated(cache: dict, agent: str) -> bool:
-    """True when every cached entry for `agent` carries an active gate.
+def _entry_gated(state: dict, now: datetime) -> bool:
+    """True when `state` carries a gated status whose retry_after/reset_at has
+    not passed yet. A gated status with no timestamp at all is treated as
+    gated indefinitely (until cleared) -- unchanged from prior behavior. A
+    gated status with a timestamp that has already passed is NOT gated: the
+    whole point of persisting retry_after is so the drain picks the agent
+    back up automatically once its cooldown expires (see module docstring
+    above and record_capacity_gate()), which requires comparing it to now.
+    """
+    if str(state.get("status", "")).lower() not in ("gated", "unavailable", "blocked"):
+        return False
+    retry_at = (agent_capacity._parse_time(state.get("retry_after"))
+                or agent_capacity._parse_time(state.get("reset_at")))
+    if retry_at is None:
+        return True
+    return retry_at > now
+
+
+def capacity_gated(cache: dict, agent: str, now: Optional[datetime] = None) -> bool:
+    """True when every cached entry for `agent` carries an active (unexpired)
+    gate.
 
     The cache (agent_capacity.py) keys entries by provider identifiers like
     'claude' or 'claude:opus'. No entry for the agent means no known gate.
     """
+    now = now or agent_capacity._now()
     providers = cache.get("providers") if isinstance(cache.get("providers"), dict) else cache
     if not isinstance(providers, dict):
         return False
     bare = providers.get(agent)
     if isinstance(bare, dict):
-        return str(bare.get("status", "")).lower() in (
-            "gated", "unavailable", "blocked",
-        )
+        return _entry_gated(bare, now)
     matched = [v for k, v in providers.items()
                if isinstance(v, dict) and str(k).startswith(agent + ":")]
     if not matched:
         return False
-    return all(str(v.get("status", "")).lower() in ("gated", "unavailable", "blocked")
-               for v in matched)
+    return all(_entry_gated(v, now) for v in matched)
 
 
 def read_capacity_cache(path: Path) -> dict:
@@ -377,7 +394,8 @@ def read_capacity_cache(path: Path) -> dict:
         return {}
 
 
-def select_available_agent(cache: dict, candidates: List[str]) -> Optional[str]:
+def select_available_agent(cache: dict, candidates: List[str],
+                            now: Optional[datetime] = None) -> Optional[str]:
     """First candidate (in configured order) that is not capacity-gated; None
     when every candidate is gated. A candidate with no cache entry at all
     counts as available, matching capacity_gated()'s own semantics -- an
@@ -389,7 +407,7 @@ def select_available_agent(cache: dict, candidates: List[str]) -> Optional[str]:
     gate's retry_after passes -- no restart or config edit needed.
     """
     for candidate in candidates:
-        if not capacity_gated(cache, candidate):
+        if not capacity_gated(cache, candidate, now=now):
             return candidate
     return None
 
