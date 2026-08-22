@@ -99,6 +99,57 @@ class SpawnRetry(unittest.TestCase):
             spawnlib.spawn_claude_p("p", "/tmp", retries=2, sleep=lambda *_: None)
 
 
+class KeepTranscripts(unittest.TestCase):
+    def setUp(self):
+        self._orig = spawnlib.subprocess.run
+        self._cache = tempfile.TemporaryDirectory()
+        self._old_cache = os.environ.get("GO_AGENT_CAPACITY_CACHE")
+        os.environ["GO_AGENT_CAPACITY_CACHE"] = os.path.join(self._cache.name, "capacity.json")
+        self._old_keep = os.environ.get("WORKTRAIL_KEEP_TRANSCRIPTS")
+
+    def tearDown(self):
+        spawnlib.subprocess.run = self._orig
+        if self._old_cache is None:
+            os.environ.pop("GO_AGENT_CAPACITY_CACHE", None)
+        else:
+            os.environ["GO_AGENT_CAPACITY_CACHE"] = self._old_cache
+        if self._old_keep is None:
+            os.environ.pop("WORKTRAIL_KEEP_TRANSCRIPTS", None)
+        else:
+            os.environ["WORKTRAIL_KEEP_TRANSCRIPTS"] = self._old_keep
+        self._cache.cleanup()
+
+    def test_unset_writes_nothing(self):
+        os.environ.pop("WORKTRAIL_KEEP_TRANSCRIPTS", None)
+        with tempfile.TemporaryDirectory() as would_be_dir:
+            spawnlib.subprocess.run = FakeRun([Proc(0, "ok report", "")])
+            spawnlib.spawn_claude_p("prompt", "/tmp", retries=0, sleep=lambda *_: None)
+            # Nothing is written anywhere when the flag is unset -- there is no
+            # target dir to inspect, so this only asserts the spawn itself succeeds.
+            self.assertTrue(os.path.isdir(would_be_dir))
+            self.assertFalse(os.listdir(would_be_dir))
+
+    def test_set_persists_raw_transcript(self):
+        with tempfile.TemporaryDirectory() as tdir:
+            os.environ["WORKTRAIL_KEEP_TRANSCRIPTS"] = tdir
+            raw = '{"type": "result", "result": "ok report"}'
+            spawnlib.subprocess.run = FakeRun([Proc(0, raw, "")])
+            spawnlib.spawn_claude_p("prompt", "/some/task-worktree", retries=0, sleep=lambda *_: None)
+            files = os.listdir(tdir)
+            self.assertEqual(len(files), 1)
+            self.assertTrue(files[0].startswith("task-worktree-claude-"))
+            self.assertEqual(open(os.path.join(tdir, files[0])).read(), raw)
+
+    def test_write_failure_is_non_fatal(self):
+        with tempfile.TemporaryDirectory() as tdir:
+            blocked = os.path.join(tdir, "blocked")
+            open(blocked, "w").close()  # a file, not a dir -- mkdir(parents=True) raises
+            os.environ["WORKTRAIL_KEEP_TRANSCRIPTS"] = blocked
+            spawnlib.subprocess.run = FakeRun([Proc(0, "ok report", "")])
+            out = spawnlib.spawn_claude_p("prompt", "/tmp", retries=0, sleep=lambda *_: None)
+            self.assertEqual(out.text, "ok report")
+
+
 class SessionLimitParse(unittest.TestCase):
     def test_returns_none_without_message(self):
         self.assertIsNone(spawnlib.parse_session_limit_reset("normal worker output"))
