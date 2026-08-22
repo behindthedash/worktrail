@@ -64,6 +64,58 @@ def test_main_blocks_once_per_session(tmp_path, monkeypatch, capsys):
     assert capsys.readouterr().out == ""
 
 
+def test_main_output_unchanged_when_run_record_flags_nothing(tmp_path, monkeypatch, capsys):
+    """A run-record path in the transcript whose `deferred_work` is empty or fully
+    phrase-non-matching (simulated here by `check_deferred_work` returning `[]`, per
+    Requirement: Deferred-Work-Only Signal Source / Deferral-Phrase Matching, which
+    `check_deferred_work` delegates to and which are covered separately by
+    test_check_deferred_work_handoff.py) must not change the emitted `reason` at all.
+    """
+    monkeypatch.delenv("CC_HEADLESS", raising=False)
+    monkeypatch.setattr(hook, "STATE_DIR", tmp_path / "state")
+
+    baseline_transcript = tmp_path / "baseline.jsonl"
+    _write_transcript(baseline_transcript, "Write")
+    monkeypatch.setattr(
+        hook.sys,
+        "stdin",
+        io.StringIO(json.dumps({"session_id": "baseline", "transcript_path": str(baseline_transcript)})),
+    )
+    assert hook.main() == 0
+    baseline_output = capsys.readouterr().out
+    assert baseline_output == json.dumps({"decision": "block", "reason": hook.INSTRUCTION}) + "\n"
+
+    run_record_path = "~/.worktrail/runs/some-repo/run-1.yaml"
+    with_path_transcript = tmp_path / "with_path.jsonl"
+    entry = {
+        "message": {
+            "content": [
+                {"type": "tool_use", "name": "Write", "input": {}},
+                {"type": "text", "text": f"See run record {run_record_path} for details."},
+            ]
+        }
+    }
+    with_path_transcript.write_text(json.dumps(entry) + "\n", encoding="utf-8")
+
+    calls: list[list[str]] = []
+
+    def fake_check_deferred_work(paths):
+        calls.append(paths)
+        return []
+
+    monkeypatch.setattr(hook, "check_deferred_work", fake_check_deferred_work)
+    monkeypatch.setattr(
+        hook.sys,
+        "stdin",
+        io.StringIO(json.dumps({"session_id": "with-path", "transcript_path": str(with_path_transcript)})),
+    )
+    assert hook.main() == 0
+    with_path_output = capsys.readouterr().out
+
+    assert with_path_output == baseline_output
+    assert calls == [[run_record_path]]
+
+
 def test_main_skips_continuation_and_headless_worker(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(hook, "STATE_DIR", tmp_path / "state")
     monkeypatch.setattr(hook.sys, "stdin", io.StringIO(json.dumps({"stop_hook_active": True})))
