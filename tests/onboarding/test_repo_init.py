@@ -304,6 +304,21 @@ class ApplyTests(unittest.TestCase):
         self.assertEqual(rc, 1)
 
 
+class ResolveRepoDisplayNameTests(unittest.TestCase):
+    def test_no_git_remote_falls_back_to_directory_name(self):
+        repo = _tmp_repo()
+        with mock.patch.object(repo_init, "resolve_gh_repo", return_value=None):
+            self.assertEqual(repo_init.resolve_repo_display_name(repo), repo.name)
+
+    def test_worktree_directory_name_does_not_leak_into_repo_name(self):
+        # Regression: a worktree checkout conventionally lives at
+        # <repo>-worktrees/<branch>/, so repo.name alone would resolve to
+        # the branch name ("repo-standards"), not the actual repo ("hearsay").
+        worktree_path = Path("/home/user/projects/hearsay-worktrees/repo-standards")
+        with mock.patch.object(repo_init, "resolve_gh_repo", return_value="behindthedash/hearsay"):
+            self.assertEqual(repo_init.resolve_repo_display_name(worktree_path), "hearsay")
+
+
 class ApplyRulesetTests(unittest.TestCase):
     def test_creates_when_no_live_ruleset_shares_name(self):
         calls = []

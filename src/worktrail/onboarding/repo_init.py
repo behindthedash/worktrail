@@ -61,7 +61,7 @@ def split_claude_md(repo: Path) -> Tuple[bool, Optional[str]]:
     if claude_md.is_file():
         agents_md.write_text(claude_md.read_text(encoding="utf-8"), encoding="utf-8")
     else:
-        agents_md.write_text(f"# {repo.name}\n", encoding="utf-8")
+        agents_md.write_text(f"# {resolve_repo_display_name(repo)}\n", encoding="utf-8")
     claude_md.write_text("@AGENTS.md\n", encoding="utf-8")
     return True, None
 
@@ -214,6 +214,17 @@ def resolve_gh_repo(repo: Path) -> Optional[str]:
     return url.rstrip("/").removesuffix(".git").split("github.com", 1)[-1].lstrip(":/")
 
 
+def resolve_repo_display_name(repo: Path) -> str:
+    """The repo's own name (from `owner/repo` on `origin`), not the directory
+    basename `--repo` was invoked with -- a worktree checkout conventionally
+    lives at `<repo>-worktrees/<branch>/`, so `repo.name` there is the branch
+    name, not the repo name."""
+    gh_repo = resolve_gh_repo(repo)
+    if gh_repo and "/" in gh_repo:
+        return gh_repo.split("/", 1)[1]
+    return repo.name
+
+
 def _gh_raw(args: List[str]) -> Optional[str]:
     p = _run(["gh", *args])
     if p.returncode != 0:
@@ -355,7 +366,7 @@ def cmd_propose(args: argparse.Namespace) -> int:
         skipped.append(f"{policy_path.relative_to(repo)} (or legacy go-policy.yaml already exists)")
     else:
         policy_path.parent.mkdir(parents=True, exist_ok=True)
-        policy_path.write_text(default_policy_yaml(repo.name), encoding="utf-8")
+        policy_path.write_text(default_policy_yaml(resolve_repo_display_name(repo)), encoding="utf-8")
         written.append(str(policy_path.relative_to(repo)))
 
     if state["openspec_initialized"]:
