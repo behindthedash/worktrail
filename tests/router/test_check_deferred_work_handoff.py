@@ -16,6 +16,7 @@ from unittest.mock import patch
 from worktrail.router import run_record
 from worktrail.router.check_deferred_work_handoff import (
     find_flagged,
+    has_handoff_coverage,
     load_deferred_work_entries,
     matches_deferral_phrase,
 )
@@ -181,6 +182,93 @@ class PhraseMatchingCandidacyTests(unittest.TestCase):
             self.assertEqual(
                 flagged_texts, ["revisit this once calibrated against prod data"],
             )
+
+
+class HandoffCrossCheckTests(unittest.TestCase):
+    """Requirement: Handoff Cross-Check Before Flagging -- a candidate whose
+    extracted probes match an existing `queue/` or `picked/` brief's focus
+    text is not flagged; a candidate matching no brief is flagged; an
+    unreadable/missing work-queue directory yields "not flagged," never an
+    exception."""
+
+    _CANDIDATE = "clean up `src/widget.py` in a later pr"
+
+    def _write_brief(self, directory: Path, focus: str) -> Path:
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / "20260101-000000-some-brief.md"
+        path.write_text(
+            "---\nid: 20260101-000000-some-brief\ncreated: '2026-01-01T00:00:00-07:00'\n"
+            f"focus: |-\n  {focus}\nrepo: null\nstatus: queued\n---\n\n## Focus\n\n{focus}\n",
+            encoding="utf-8",
+        )
+        return path
+
+    def test_probe_matching_queue_brief_is_not_flagged(self):
+        with tempfile.TemporaryDirectory() as queue_home:
+            base = Path(queue_home) / "work-queue"
+            self._write_brief(base / "queue", "Touches src/widget.py for retry tuning.")
+
+            with patch.dict("os.environ", {"WORK_QUEUE_DIR": str(base)}):
+                covered = has_handoff_coverage(self._CANDIDATE)
+
+            self.assertTrue(covered)
+
+    def test_probe_matching_picked_brief_is_not_flagged(self):
+        with tempfile.TemporaryDirectory() as queue_home:
+            base = Path(queue_home) / "work-queue"
+            self._write_brief(base / "picked", "Touches src/widget.py for retry tuning.")
+
+            with patch.dict("os.environ", {"WORK_QUEUE_DIR": str(base)}):
+                covered = has_handoff_coverage(self._CANDIDATE)
+
+            self.assertTrue(covered)
+
+    def test_candidate_matching_no_brief_is_flagged(self):
+        with tempfile.TemporaryDirectory() as queue_home:
+            base = Path(queue_home) / "work-queue"
+            self._write_brief(base / "queue", "Touches src/other.py for unrelated work.")
+
+            with patch.dict("os.environ", {"WORK_QUEUE_DIR": str(base)}):
+                covered = has_handoff_coverage(self._CANDIDATE)
+
+            self.assertFalse(covered)
+
+    def test_missing_work_queue_directory_yields_not_flagged_never_raises(self):
+        with tempfile.TemporaryDirectory() as queue_home:
+            base = Path(queue_home) / "does-not-exist"
+
+            with patch.dict("os.environ", {"WORK_QUEUE_DIR": str(base)}):
+                covered = has_handoff_coverage(self._CANDIDATE)
+
+            self.assertFalse(covered)
+
+    def test_unreadable_queue_directory_yields_not_flagged_never_raises(self):
+        with tempfile.TemporaryDirectory() as queue_home:
+            base = Path(queue_home) / "work-queue"
+            queue = base / "queue"
+            queue.mkdir(parents=True)
+            self._write_brief(queue, "Touches src/widget.py for retry tuning.")
+            queue.chmod(0o000)
+            try:
+                with patch.dict("os.environ", {"WORK_QUEUE_DIR": str(base)}):
+                    covered = has_handoff_coverage(self._CANDIDATE)
+            finally:
+                queue.chmod(0o755)
+
+            self.assertFalse(covered)
+
+    def test_end_to_end_phrase_matching_candidate_covered_by_brief_is_not_flagged(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                tempfile.TemporaryDirectory() as queue_home:
+            path = _start_record(tmp)
+            _append(path, "deferred_work", self._CANDIDATE)
+            base = Path(queue_home) / "work-queue"
+            self._write_brief(base / "queue", "Touches src/widget.py for retry tuning.")
+
+            with patch.dict("os.environ", {"WORK_QUEUE_DIR": str(base)}):
+                flagged = find_flagged([path])
+
+            self.assertEqual(flagged, [])
 
 
 if __name__ == "__main__":
