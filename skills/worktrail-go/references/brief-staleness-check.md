@@ -30,30 +30,80 @@ each branch answers a different question and none suppresses another.
 ## Predicate re-check
 
 Before any of the probe-based checking below, re-derive whether the brief's own captured
-*predicate* is still true. Some briefs (e.g. those filed by a checkbox-drift sweep) do not just
-describe stale work to search for — they carry a specific claim about repo state in their
-frontmatter (`drift-source`, `drift-findings`) that may itself have already been resolved by the
-time the brief is dispatched. Read the claimed brief's frontmatter, then run:
+*predicate* is still true. Some briefs (e.g. those filed by a checkbox-drift sweep, or by an
+external sweep that captures a `predicate-kind: command`) do not just describe stale work to
+search for — they carry a specific claim about repo state in their frontmatter (`drift-source`,
+`drift-findings`) that may itself have already been resolved by the time the brief is dispatched.
+Read the claimed brief's frontmatter, then run:
 
 ```bash
 RECHECK_JSON=$(worktrail-recheck-brief-predicate \
   --repo "$REPO" --brief "$CLAIMED_BRIEF_PATH" --json 2>/dev/null)
 ```
 
+`recheck()`'s dispatch order for a brief that carries a `drift-source` is: (1) a named predicate
+registered for that `drift-source` (today, only `checkbox-drift-sweep`); else (2) the generic
+command predicate below, if the brief's frontmatter also declares `predicate-kind: command`; else
+(3) `outcome="unrecognized"`. A registered `drift-source` always wins over `predicate-kind:
+command` on the same brief — the two are not both consulted.
+
 Branch on `attempted` and `outcome` before ever reaching today's "Running it" step below:
 
 | `attempted` | `outcome` | Meaning | Action |
 |---|---|---|---|
 | `false` | `no-predicate` | Brief carries no `drift-source`; nothing to re-check. | Fall through to "Running it" unchanged. |
-| `false` | `unrecognized` | `drift-source` is set but no re-check is registered for it. | Fall through to "Running it" unchanged. |
-| `true` | `error` | A predicate was registered but re-checking it failed (missing `drift-findings`, an unreadable task file, or the recheck function itself raised). | Fall through to "Running it" unchanged. |
-| `true` | `still-true` | Every `drift-findings` entry still holds against current on-disk state. | Documented separately, below the probe-based flow. |
-| `true` | `resolved` | No `drift-findings` entry still holds. | Documented separately, below the probe-based flow. |
+| `false` | `unrecognized` | `drift-source` is set but neither a named predicate nor `predicate-kind: command` applies to it. | Fall through to "Running it" unchanged. |
+| `true` | `error` | A predicate was dispatched but re-checking it failed (missing `drift-findings`, an unreadable task file or malformed `predicate-cmd`, a command that exited outside `0`/`1`, timed out, or was missing, or the recheck function itself raised). | Fall through to "Running it" unchanged. |
+| `true` | `still-true` | Every `drift-findings` entry still holds against current on-disk state (or, for a command predicate, every `predicate-cmd` exited `0`). | Documented separately, below the probe-based flow. |
+| `true` | `resolved` | No `drift-findings` entry still holds (or, for a command predicate, every `predicate-cmd` exited `1`). | Documented separately, below the probe-based flow. |
 
 Any `attempted: false` outcome (`no-predicate`, `unrecognized`) or `outcome: "error"` is not a
 signal of anything — it means the same as never having run this check at all, and today's
 "Running it" section proceeds exactly as it does for a non-drift brief, with no new behavior
 inserted between the gate above and the `worktrail-check-brief-staleness` invocation below.
+
+### Command predicates (`predicate-kind: command`)
+
+A `drift-source` with no named predicate registered in `PREDICATE_RECHECKS` can still be
+re-checked deterministically if the sweep that filed the brief captured a **command predicate**
+instead — the generic capture contract for a detector this codebase cannot import (a separate
+repo, a separate language). To opt in, the capturing sweep's brief frontmatter must satisfy:
+
+- top-level `predicate-kind: command`;
+- every `drift-findings` entry carries, in addition to the `path` every finding already requires,
+  a `predicate-cmd` — a non-empty YAML list of strings (an argument vector, never a shell string;
+  it is executed with `shell=False` and is never shell-split or shell-interpreted, even if an
+  argument contains shell metacharacters);
+- fixed polarity, encoded in the field name like `grep -q`/`test`: the command must exit `0` when
+  the finding's condition **still holds** ("still-true") and `1` when it has been resolved. Any
+  other exit status, a timeout, or a missing executable is an error for the *whole brief's*
+  re-check, not just that finding;
+- bounds the capturing sweep must design within, not tune: each command runs with `cwd` pinned to
+  the brief's `--repo` and a 30s wall-clock timeout, and at most 20 `predicate-cmd` findings are
+  executed per brief — checked before the first command runs, so an oversized brief costs zero
+  executions.
+
+A worked frontmatter example, a two-finding brief filed by an external sweep that flags a
+deprecated symbol still referenced in the codebase:
+
+```yaml
+---
+drift-source: external-deprecated-symbol-sweep
+predicate-kind: command
+drift-findings:
+  - path: src/pkg/handler.py
+    predicate-cmd: ["grep", "-n", "legacy_client.connect", "src/pkg/handler.py"]
+  - path: src/pkg/util.py
+    predicate-cmd: ["grep", "-n", "legacy_client.connect", "src/pkg/util.py"]
+---
+```
+
+`grep -n PATTERN FILE` already matches the fixed polarity exactly — exit `0` when the pattern
+(the deprecated reference) is still present (still-true), with the matching line(s) captured as
+evidence output, and exit `1` when it is gone (resolved) — which is why the module docstring uses
+`grep -q`/`test` as the polarity's own mnemonic. A sweep whose detector's exit codes do not
+already line up this way (e.g. a linter that exits `0` for "clean") must wrap it in a small
+script that translates its exit status to match before capturing it as a `predicate-cmd`.
 
 **On `outcome: "still-true"`** — the predicate still holds, so there is nothing to prompt about
 and nothing to close: continue straight to Phase 6/7 unchanged, exactly as the probe-based
@@ -73,6 +123,26 @@ Unlike the probe-based evidence line, there is no commit SHA or PR number to cit
 search never runs on this path — so the still-true task-file paths themselves are the cited
 evidence.
 
+For a command-predicate result (`evidence` non-empty), the same formatter appends a re-run
+transcript section — one `command:`/`exit:`/`output:` line-triplet per still-true finding, blank
+line before it, newlines inside captured output collapsed to spaces — so the appended
+run-record entry shows exactly what was re-executed, not just which paths were still true. Using
+the worked `external-deprecated-symbol-sweep` example above, with both findings still true:
+
+```bash
+worktrail-run-record append "$RUN" decisions \
+  "Predicate re-check (external-deprecated-symbol-sweep) found the staleness predicate still \
+true for 2 finding(s): src/pkg/handler.py, src/pkg/util.py. Proceeded automatically without an \
+operator prompt.
+
+command: grep -n legacy_client.connect src/pkg/handler.py
+exit: 0
+output: 42:legacy_client.connect(host, port)
+command: grep -n legacy_client.connect src/pkg/util.py
+exit: 0
+output: 17:return legacy_client.connect(cfg)"
+```
+
 **On `outcome: "resolved"`** — every `drift-findings` entry has resolved, so the brief is already
 delivered and there is nothing left to dispatch: close it now, before Phase 6, exactly as the
 probe-based "close as already-delivered" branch does below (no operator prompt — the predicate
@@ -86,6 +156,26 @@ worktrail-work-queue done "$BRIEF_ID" --implementation-complete --note \
 predicate resolved for 2 finding(s): docs/specs/x/tasks/TASK-001.md, \
 docs/specs/x/tasks/TASK-004.md. Surfaced by the Phase 5.5 predicate re-check; closed \
 automatically without an operator prompt."
+```
+
+As with the still-true evidence line, a command-predicate result appends the same re-run
+transcript section to the closure note — one `command:`/`exit:`/`output:` line-triplet per
+resolved finding. Using the worked `external-deprecated-symbol-sweep` example above, with both
+findings resolved (the deprecated reference no longer present, so both `grep -n` invocations now
+exit `1` with no matching lines and hence no output):
+
+```bash
+worktrail-work-queue done "$BRIEF_ID" --implementation-complete --note \
+  "Closed as already-delivered: predicate re-check (external-deprecated-symbol-sweep) found the \
+staleness predicate resolved for 2 finding(s): src/pkg/handler.py, src/pkg/util.py. Surfaced by \
+the Phase 5.5 predicate re-check; closed automatically without an operator prompt.
+
+command: grep -n legacy_client.connect src/pkg/handler.py
+exit: 1
+output: 
+command: grep -n legacy_client.connect src/pkg/util.py
+exit: 1
+output: "
 ```
 
 Then report the closure in the run's status output (e.g. `Brief $BRIEF_ID closed: predicate
@@ -269,11 +359,20 @@ budget for the whole phase, mirroring `GH_PHASE_BUDGET_SECONDS`. As with the pro
 anything dropped by these — capped candidates, capped matches, or candidates not reached before
 the deadline — is counted in a warning, never silently discarded.
 
-The predicate re-check above (`check_brief_predicate.py`) adds no comparable cost: it spawns no
-subprocess and hits no network, only `Path.read_text` on the task files named in the brief's own
-`drift-findings` — bounded by however many findings the drift sweep that filed the brief captured,
-which is small in practice since it lists specific task files, not a repo-wide scan. It stays
-cheap enough that nobody weighs whether to run it, same as the probe-based check above.
+The predicate re-check above (`check_brief_predicate.py`) adds no comparable cost for a named
+predicate like `checkbox-drift-sweep`: it hits no network and no subprocess, only
+`Path.read_text` on the task files named in the brief's own `drift-findings` — bounded by however
+many findings the drift sweep that filed the brief captured, which is small in practice since it
+lists specific task files, not a repo-wide scan.
+
+A `predicate-kind: command` brief is different: it may spawn up to the per-brief cap
+(`_MAX_COMMANDS_PER_BRIEF`, 20) of subprocesses, each individually timeout-bounded
+(`_COMMAND_TIMEOUT_SECONDS`, 30s) and cwd-pinned to `--repo`, hitting whatever the captured
+`predicate-cmd` itself hits (network included, if the capturing sweep chose a command that does).
+The cap is enforced before the first command runs, so an oversized brief costs zero executions
+rather than partially running past a would-be cap. Even at the cap, this stays cheap enough that
+nobody weighs whether to run it, same as the probe-based check above — it is bounded by a brief's
+own captured findings, not a repo-wide scan.
 
 ## Relationship to the batch queue triager
 
