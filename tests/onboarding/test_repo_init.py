@@ -311,6 +311,16 @@ class ProposeTests(unittest.TestCase):
         policy_text = (repo / ".worktrail" / "policy.yaml").read_text()
         self.assertNotIn("gitnexus", policy_text)
 
+    def test_with_gitnexus_already_indexed_wires_through_skipped(self):
+        repo = _tmp_repo()
+        with mock.patch.object(repo_init, "enable_gitnexus", return_value=(False, None)) as eg:
+            rc, result = self._run_propose(repo, with_gitnexus=True)
+        self.assertEqual(rc, 0)
+        eg.assert_called_once()
+        self.assertIn(".gitnexus/ (already indexed)", result["skipped"])
+        policy_text = (repo / ".worktrail" / "policy.yaml").read_text()
+        self.assertNotIn("gitnexus", policy_text)
+
 
 class EnableAspensTests(unittest.TestCase):
     def test_noop_when_already_configured(self):
