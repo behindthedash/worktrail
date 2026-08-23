@@ -1,6 +1,6 @@
 ## 1. `enable_gitnexus` and CLI wiring
 
-- [ ] 1.1 Add `enable_gitnexus(repo: Path) -> Tuple[bool, Optional[str]]` to
+- [x] 1.1 Add `enable_gitnexus(repo: Path) -> Tuple[bool, Optional[str]]` to
       `src/worktrail/onboarding/repo_init.py`, placed near `enable_aspens`: return
       `(False, None)` immediately if `(repo / ".gitnexus").is_dir()`; otherwise run
       `gitnexus analyze --embeddings --index-only <repo>` via the existing `_run()` helper,
@@ -9,7 +9,7 @@
       a warning string on failure. (Requirement: Idempotent bootstrap indexing) (Requirement:
       Best-effort indexing with postcondition verification) (Requirement: Bootstrap indexing
       skips AGENTS.md/skills file injection)
-- [ ] 1.2 Add a `--with-gitnexus` boolean flag to the `propose` subparser in `build_parser`
+- [x] 1.2 Add a `--with-gitnexus` boolean flag to the `propose` subparser in `build_parser`
       (`main()`), matching `--with-aspens`'s `action="store_true"` style and help-text tone.
       (Requirement: `--with-gitnexus` opt-in flag on `propose`)
 - [ ] 1.3 In `cmd_propose`, after the existing `--with-aspens` block, call
