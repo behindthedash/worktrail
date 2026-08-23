@@ -17,9 +17,9 @@ from worktrail.router.policy import (
 
 def _repo_with(policy_text):
     tmp = tempfile.mkdtemp()
-    d = Path(tmp) / "docs" / "specs"
+    d = Path(tmp) / ".worktrail"
     d.mkdir(parents=True)
-    (d / "worktrail-go-policy.yaml").write_text(policy_text)
+    (d / "policy.yaml").write_text(policy_text)
     return Path(tmp)
 
 
@@ -31,9 +31,9 @@ def _repo_with_workflow(files, policy_text=None):
     for name, content in files.items():
         (wf_dir / name).write_text(content)
     if policy_text is not None:
-        specs = Path(tmp) / "docs" / "specs"
-        specs.mkdir(parents=True)
-        (specs / "worktrail-go-policy.yaml").write_text(policy_text)
+        worktrail_dir = Path(tmp) / ".worktrail"
+        worktrail_dir.mkdir(parents=True)
+        (worktrail_dir / "policy.yaml").write_text(policy_text)
     return Path(tmp)
 
 
@@ -80,10 +80,12 @@ class TestDefaults(unittest.TestCase):
 
 
 class TestLegacyPolicyFilename(unittest.TestCase):
-    """docs/specs/go-policy.yaml (pre-rename) must still load, with a
-    deprecation warning, until each repo migrates to worktrail-go-policy.yaml."""
+    """Both prior conventions -- docs/specs/go-policy.yaml (original) and
+    docs/specs/worktrail-go-policy.yaml (briefly canonical, 2026-08-22) --
+    must still load, with a deprecation warning, until each repo migrates to
+    .worktrail/policy.yaml."""
 
-    def test_legacy_filename_loads_with_deprecation_warning(self):
+    def test_original_filename_loads_with_deprecation_warning(self):
         tmp = tempfile.mkdtemp()
         specs = Path(tmp) / "docs" / "specs"
         specs.mkdir(parents=True)
@@ -93,9 +95,21 @@ class TestLegacyPolicyFilename(unittest.TestCase):
         self.assertEqual(pol["_meta"]["source"], str(specs / "go-policy.yaml"))
         self.assertEqual(len(pol["_meta"]["warnings"]), 1)
         self.assertIn("go-policy.yaml is deprecated", pol["_meta"]["warnings"][0])
-        self.assertIn("worktrail-go-policy.yaml", pol["_meta"]["warnings"][0])
+        self.assertIn(".worktrail/policy.yaml", pol["_meta"]["warnings"][0])
 
-    def test_new_filename_takes_precedence_over_legacy(self):
+    def test_interim_filename_loads_with_deprecation_warning(self):
+        tmp = tempfile.mkdtemp()
+        specs = Path(tmp) / "docs" / "specs"
+        specs.mkdir(parents=True)
+        (specs / "worktrail-go-policy.yaml").write_text("agent_cli: codex\n")
+        pol = load_policy(Path(tmp))
+        self.assertEqual(pol["agent_cli"], "codex")
+        self.assertEqual(pol["_meta"]["source"], str(specs / "worktrail-go-policy.yaml"))
+        self.assertEqual(len(pol["_meta"]["warnings"]), 1)
+        self.assertIn("worktrail-go-policy.yaml is deprecated", pol["_meta"]["warnings"][0])
+        self.assertIn(".worktrail/policy.yaml", pol["_meta"]["warnings"][0])
+
+    def test_interim_filename_takes_precedence_over_original(self):
         tmp = tempfile.mkdtemp()
         specs = Path(tmp) / "docs" / "specs"
         specs.mkdir(parents=True)
@@ -104,6 +118,19 @@ class TestLegacyPolicyFilename(unittest.TestCase):
         pol = load_policy(Path(tmp))
         self.assertEqual(pol["agent_cli"], "codex")
         self.assertEqual(pol["_meta"]["source"], str(specs / "worktrail-go-policy.yaml"))
+
+    def test_new_location_takes_precedence_over_both_legacy(self):
+        tmp = tempfile.mkdtemp()
+        specs = Path(tmp) / "docs" / "specs"
+        specs.mkdir(parents=True)
+        (specs / "go-policy.yaml").write_text("agent_cli: opencode\n")
+        (specs / "worktrail-go-policy.yaml").write_text("agent_cli: opencode\n")
+        worktrail_dir = Path(tmp) / ".worktrail"
+        worktrail_dir.mkdir(parents=True)
+        (worktrail_dir / "policy.yaml").write_text("agent_cli: codex\n")
+        pol = load_policy(Path(tmp))
+        self.assertEqual(pol["agent_cli"], "codex")
+        self.assertEqual(pol["_meta"]["source"], str(worktrail_dir / "policy.yaml"))
         self.assertEqual(pol["_meta"]["warnings"], [])
 
 
