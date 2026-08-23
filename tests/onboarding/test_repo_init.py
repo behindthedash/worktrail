@@ -196,6 +196,43 @@ class BuildRulesetsDriftGuardWorkflowTests(unittest.TestCase):
             "${{ github.event_name == 'push' && steps.app-token.outputs.token != '' }}")
 
 
+class BuildDependabotManifestCheckWorkflowTests(unittest.TestCase):
+    def test_two_branch_model_produces_expected_branches_list(self):
+        text = repo_init.build_dependabot_manifest_check_workflow(["dev", "prd"])
+        doc = yaml.safe_load(text)
+        self.assertEqual(doc[True]["pull_request"]["branches"], ["dev", "prd"])
+
+    def test_three_branch_model_produces_expected_branches_list(self):
+        text = repo_init.build_dependabot_manifest_check_workflow(["dev", "stg", "prd"])
+        doc = yaml.safe_load(text)
+        self.assertEqual(doc[True]["pull_request"]["branches"], ["dev", "stg", "prd"])
+
+    def test_pull_request_trigger_has_no_paths_filter(self):
+        text = repo_init.build_dependabot_manifest_check_workflow(["dev", "prd"])
+        doc = yaml.safe_load(text)
+        pull_request = doc[True]["pull_request"]
+        self.assertNotIn("paths", pull_request)
+        self.assertNotIn("paths-ignore", pull_request)
+
+    def test_no_step_references_secrets_or_vars(self):
+        text = repo_init.build_dependabot_manifest_check_workflow(["dev", "prd"])
+        doc = yaml.safe_load(text)
+        for job in doc["jobs"].values():
+            for step in job["steps"]:
+                self.assertNotIn("secrets.", str(step))
+                self.assertNotIn("vars.", str(step))
+
+    def test_a_step_runs_the_vendored_script_path(self):
+        text = repo_init.build_dependabot_manifest_check_workflow(["dev", "prd"])
+        doc = yaml.safe_load(text)
+        steps = doc["jobs"]["dependabot-manifest-check"]["steps"]
+        script_steps = [
+            s for s in steps
+            if "run" in s and repo_init.DEPENDABOT_CHECK_SCRIPT_RELPATH in s["run"]
+        ]
+        self.assertTrue(script_steps)
+
+
 class RulesetStructuralViewTests(unittest.TestCase):
     def test_strips_required_status_checks_rule_entirely(self):
         with_checks = repo_init.build_ruleset_for_branch("dev", "2", "some-check")
@@ -632,6 +669,73 @@ class ProposeTests(unittest.TestCase):
             (wf_dir / "rulesets_drift_guard.yml").read_text(), "# hand-customized\n")
         self.assertTrue(any("rulesets_drift_guard.yml" in s for s in result["skipped"]))
 
+    def test_fresh_repo_writes_dependabot_manifest_check_files(self):
+        # Task 3.8: a fresh repo -- with no .github/dependabot.yml at all --
+        # still gets the workflow, vendored script, and its requirements.txt
+        # (the check itself is what decides what to do about an absent
+        # config at run time, not `propose`).
+        repo = _tmp_repo()
+        self.assertFalse((repo / ".github" / "dependabot.yml").exists())
+
+        rc, result = self._run_propose(repo)
+
+        self.assertEqual(rc, 0)
+        self.assertIn(repo_init.DEPENDABOT_CHECK_WORKFLOW_RELPATH, result["written"])
+        self.assertIn(repo_init.DEPENDABOT_CHECK_SCRIPT_RELPATH, result["written"])
+        self.assertIn(repo_init.DEPENDABOT_CHECK_REQUIREMENTS_RELPATH, result["written"])
+
+        workflow_path = repo / repo_init.DEPENDABOT_CHECK_WORKFLOW_RELPATH
+        script_path = repo / repo_init.DEPENDABOT_CHECK_SCRIPT_RELPATH
+        requirements_path = repo / repo_init.DEPENDABOT_CHECK_REQUIREMENTS_RELPATH
+        self.assertTrue(workflow_path.is_file())
+        self.assertTrue(script_path.is_file())
+        self.assertTrue(requirements_path.is_file())
+        self.assertEqual(
+            workflow_path.read_text(),
+            repo_init.build_dependabot_manifest_check_workflow(["dev", "prd"]))
+        self.assertEqual(script_path.read_text(), repo_init.DEPENDABOT_MANIFEST_CHECK_PY)
+        self.assertEqual(
+            requirements_path.read_text(), repo_init.DEPENDABOT_MANIFEST_CHECK_REQUIREMENTS_TXT)
+
+    def test_rerun_leaves_hand_customized_dependabot_workflow_untouched(self):
+        repo = _tmp_repo()
+        wf_dir = repo / ".github" / "workflows"
+        wf_dir.mkdir(parents=True)
+        workflow_path = wf_dir / "dependabot_manifest_check.yml"
+        workflow_path.write_text("# hand-customized\n")
+
+        rc, result = self._run_propose(repo)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(workflow_path.read_text(), "# hand-customized\n")
+        self.assertTrue(
+            any(repo_init.DEPENDABOT_CHECK_WORKFLOW_RELPATH in s for s in result["skipped"]))
+        self.assertNotIn(repo_init.DEPENDABOT_CHECK_WORKFLOW_RELPATH, result["written"])
+
+    def test_existing_dependabot_script_with_missing_workflow_writes_only_workflow(self):
+        repo = _tmp_repo()
+        script_path = repo / repo_init.DEPENDABOT_CHECK_SCRIPT_RELPATH
+        requirements_path = repo / repo_init.DEPENDABOT_CHECK_REQUIREMENTS_RELPATH
+        script_path.parent.mkdir(parents=True)
+        script_path.write_text(repo_init.DEPENDABOT_MANIFEST_CHECK_PY)
+        requirements_path.write_text(repo_init.DEPENDABOT_MANIFEST_CHECK_REQUIREMENTS_TXT)
+
+        rc, result = self._run_propose(repo)
+
+        self.assertEqual(rc, 0)
+        self.assertIn(repo_init.DEPENDABOT_CHECK_WORKFLOW_RELPATH, result["written"])
+        self.assertTrue(
+            any(repo_init.DEPENDABOT_CHECK_SCRIPT_RELPATH in s for s in result["skipped"]))
+        self.assertTrue(
+            any(repo_init.DEPENDABOT_CHECK_REQUIREMENTS_RELPATH in s for s in result["skipped"]))
+        self.assertNotIn(repo_init.DEPENDABOT_CHECK_SCRIPT_RELPATH, result["written"])
+        self.assertNotIn(repo_init.DEPENDABOT_CHECK_REQUIREMENTS_RELPATH, result["written"])
+        self.assertEqual(script_path.read_text(), repo_init.DEPENDABOT_MANIFEST_CHECK_PY)
+        self.assertEqual(
+            requirements_path.read_text(), repo_init.DEPENDABOT_MANIFEST_CHECK_REQUIREMENTS_TXT)
+        self.assertTrue(
+            (repo / repo_init.DEPENDABOT_CHECK_WORKFLOW_RELPATH).is_file())
+
     def test_no_ungated_automerge_warning_when_ci_jobs_exist(self):
         repo = _tmp_repo()
         wf_dir = repo / ".github" / "workflows"
@@ -652,6 +756,56 @@ class ProposeTests(unittest.TestCase):
         self.assertFalse((repo / ".github").exists())
         state = json.loads(printed.call_args[0][0])
         self.assertFalse(state["claude_md_already_split"])
+
+    def test_check_mode_reports_dependabot_manifest_check_state_without_writing(self):
+        repo = _tmp_repo()
+        args = mock.Mock(repo=str(repo), branch_model="2", check=True, as_json=True)
+        with mock.patch("builtins.print") as printed:
+            rc = repo_init.cmd_propose(args)
+        self.assertEqual(rc, 0)
+        state = json.loads(printed.call_args[0][0])
+        self.assertFalse(state["dependabot_manifest_check_workflow_exists"])
+        self.assertFalse(state["dependabot_manifest_check_script_exists"])
+        self.assertFalse(state["dependabot_manifest_check_requirements_exists"])
+        self.assertFalse((repo / repo_init.DEPENDABOT_CHECK_WORKFLOW_RELPATH).exists())
+        self.assertFalse((repo / repo_init.DEPENDABOT_CHECK_SCRIPT_RELPATH).exists())
+        self.assertFalse((repo / repo_init.DEPENDABOT_CHECK_REQUIREMENTS_RELPATH).exists())
+
+    def test_dependabot_check_job_name_never_added_to_required_status_checks(self):
+        # Task 3.9: the manifest check is scaffolded (task 2.4) but
+        # deliberately never wired into required_status_checks -- unlike
+        # OPENSPEC_VALIDATE_JOB_NAME, DEPENDABOT_CHECK_JOB_NAME must not
+        # appear in either a freshly generated protect-*.json (fresh
+        # generation path) or one that already existed before this run
+        # (patch path).
+        repo = _tmp_repo()
+        rulesets_dir = repo / ".github" / "rulesets"
+        rulesets_dir.mkdir(parents=True)
+        preexisting_dev_ruleset = repo_init.build_ruleset(
+            "protect-dev", "dev", ["squash"], ["Lint, Test & Build"])
+        (rulesets_dir / "protect-dev.json").write_text(
+            json.dumps(preexisting_dev_ruleset, indent=2) + "\n")
+
+        rc, result = self._run_propose(repo)
+
+        self.assertEqual(rc, 0)
+        self.assertNotIn(
+            f"{repo_init.DEPENDABOT_CHECK_JOB_NAME} to required_status_checks",
+            " ".join(result["written"]))
+
+        # protect-dev.json: pre-existing before this run (patch path).
+        dev_rsc = next(
+            r for r in json.loads((rulesets_dir / "protect-dev.json").read_text())["rules"]
+            if r["type"] == "required_status_checks")
+        dev_contexts = [c["context"] for c in dev_rsc["parameters"]["required_status_checks"]]
+        self.assertNotIn(repo_init.DEPENDABOT_CHECK_JOB_NAME, dev_contexts)
+
+        # protect-prd.json: freshly generated by this run.
+        prd_rsc = next(
+            r for r in json.loads((rulesets_dir / "protect-prd.json").read_text())["rules"]
+            if r["type"] == "required_status_checks")
+        prd_contexts = [c["context"] for c in prd_rsc["parameters"]["required_status_checks"]]
+        self.assertNotIn(repo_init.DEPENDABOT_CHECK_JOB_NAME, prd_contexts)
 
     def test_nonexistent_repo_errors(self):
         args = mock.Mock(repo="/nonexistent/path/xyz", branch_model="2", check=False, as_json=True)

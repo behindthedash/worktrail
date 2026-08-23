@@ -56,6 +56,10 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 
 from ..router.policy import POLICY_RELPATH, has_policy_file
+from .dependabot_manifest_check_template import (
+    DEPENDABOT_MANIFEST_CHECK_PY,
+    DEPENDABOT_MANIFEST_CHECK_REQUIREMENTS_TXT,
+)
 from .rulesets_drift_guard_template import RULESETS_REQUIREMENTS_TXT, RULESETS_SYNC_PY
 
 OPENSPEC_PACKAGE = "@fission-ai/openspec@latest"
@@ -244,6 +248,69 @@ RULESETS_DRIFT_GUARD_WORKFLOW_RELPATH = ".github/workflows/rulesets_drift_guard.
 RULESETS_SCRIPT_DIR_RELPATH = "scripts/ci/rulesets"
 RULESETS_SYNC_SCRIPT_RELPATH = f"{RULESETS_SCRIPT_DIR_RELPATH}/rulesets_sync.py"
 RULESETS_REQUIREMENTS_RELPATH = f"{RULESETS_SCRIPT_DIR_RELPATH}/requirements.txt"
+
+# --------------------------------------------------------------------------
+# Dependabot manifest check
+# --------------------------------------------------------------------------
+
+DEPENDABOT_CHECK_WORKFLOW_RELPATH = ".github/workflows/dependabot_manifest_check.yml"
+DEPENDABOT_CHECK_SCRIPT_DIR_RELPATH = "scripts/ci/dependabot"
+DEPENDABOT_CHECK_SCRIPT_RELPATH = f"{DEPENDABOT_CHECK_SCRIPT_DIR_RELPATH}/test_dependabot_config.py"
+DEPENDABOT_CHECK_REQUIREMENTS_RELPATH = f"{DEPENDABOT_CHECK_SCRIPT_DIR_RELPATH}/requirements.txt"
+DEPENDABOT_CHECK_JOB_NAME = "Dependabot manifest check"
+
+
+def build_dependabot_manifest_check_workflow(branches: List[str]) -> str:
+    """A "CI: Dependabot Manifest Check" workflow targeting the repo's actual
+    branch model, running the vendored `test_dependabot_config.py`
+    (dependabot_manifest_check_template) against `.github/dependabot.yml`.
+
+    Deliberately has no `paths` filter (design D4): a broken entry can be
+    introduced without ever touching `dependabot.yml` itself -- moving or
+    deleting the manifest file an existing entry's `directory` points at is
+    enough to silently stop Dependabot-Updates for that entry, and that
+    diff would never trigger a `paths`-filtered run. Running unconditionally
+    on every pull request is the only way to catch that case.
+
+    The check only reads files already present in the checkout -- it makes
+    no GitHub API calls, so unlike `build_rulesets_drift_guard_workflow` it
+    needs no minted token and no elevated permissions beyond the default
+    `permissions: contents: read`."""
+    branches_yaml = "[" + ", ".join(branches) + "]"
+    return f'''\
+name: "CI: Dependabot Manifest Check"
+
+on:
+  pull_request:
+    branches: {branches_yaml}
+  workflow_dispatch: {{}}
+
+concurrency:
+  group: dependabot-manifest-check-${{{{ github.event.pull_request.number || github.ref }}}}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  dependabot-manifest-check:
+    name: {DEPENDABOT_CHECK_JOB_NAME}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: python -m pip install -r {DEPENDABOT_CHECK_REQUIREMENTS_RELPATH}
+
+      - name: Check dependabot.yml manifests
+        run: python {DEPENDABOT_CHECK_SCRIPT_RELPATH}
+'''
+
 
 _AUTOMERGE_WORKFLOW = '''\
 name: "CI: Auto-merge on open"
@@ -767,6 +834,15 @@ def detect_state(repo: Path) -> Dict[str, Any]:
         "rulesets_sync_script_exists": (repo / RULESETS_SYNC_SCRIPT_RELPATH).is_file(),
         "rulesets_requirements_exists": (repo / RULESETS_REQUIREMENTS_RELPATH).is_file(),
         "openspec_validate_workflow_exists": (repo / OPENSPEC_VALIDATE_WORKFLOW_RELPATH).is_file(),
+        "dependabot_manifest_check_workflow_exists": (
+            repo / DEPENDABOT_CHECK_WORKFLOW_RELPATH
+        ).is_file(),
+        "dependabot_manifest_check_script_exists": (
+            repo / DEPENDABOT_CHECK_SCRIPT_RELPATH
+        ).is_file(),
+        "dependabot_manifest_check_requirements_exists": (
+            repo / DEPENDABOT_CHECK_REQUIREMENTS_RELPATH
+        ).is_file(),
         "ci_jobs_discovered": discover_ci_checks(repo),
     }
 
@@ -919,6 +995,32 @@ def cmd_propose(args: argparse.Namespace) -> int:
         drift_guard_path.write_text(
             build_rulesets_drift_guard_workflow(branches), encoding="utf-8")
         written.append(str(drift_guard_path.relative_to(repo)))
+
+    dependabot_check_script_path = repo / DEPENDABOT_CHECK_SCRIPT_RELPATH
+    if state["dependabot_manifest_check_script_exists"]:
+        skipped.append(f"{DEPENDABOT_CHECK_SCRIPT_RELPATH} (already exists)")
+    else:
+        dependabot_check_script_path.parent.mkdir(parents=True, exist_ok=True)
+        dependabot_check_script_path.write_text(DEPENDABOT_MANIFEST_CHECK_PY, encoding="utf-8")
+        written.append(str(dependabot_check_script_path.relative_to(repo)))
+
+    dependabot_check_requirements_path = repo / DEPENDABOT_CHECK_REQUIREMENTS_RELPATH
+    if state["dependabot_manifest_check_requirements_exists"]:
+        skipped.append(f"{DEPENDABOT_CHECK_REQUIREMENTS_RELPATH} (already exists)")
+    else:
+        dependabot_check_requirements_path.parent.mkdir(parents=True, exist_ok=True)
+        dependabot_check_requirements_path.write_text(
+            DEPENDABOT_MANIFEST_CHECK_REQUIREMENTS_TXT, encoding="utf-8")
+        written.append(str(dependabot_check_requirements_path.relative_to(repo)))
+
+    dependabot_check_workflow_path = repo / DEPENDABOT_CHECK_WORKFLOW_RELPATH
+    if state["dependabot_manifest_check_workflow_exists"]:
+        skipped.append(f"{DEPENDABOT_CHECK_WORKFLOW_RELPATH} (already exists)")
+    else:
+        dependabot_check_workflow_path.parent.mkdir(parents=True, exist_ok=True)
+        dependabot_check_workflow_path.write_text(
+            build_dependabot_manifest_check_workflow(branches), encoding="utf-8")
+        written.append(str(dependabot_check_workflow_path.relative_to(repo)))
 
     policy_path = repo / POLICY_RELPATH
     if state["policy_file_exists"]:

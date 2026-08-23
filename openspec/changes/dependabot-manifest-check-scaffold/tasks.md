@@ -32,13 +32,13 @@
 
 ## 2. repo_init wiring
 
-- [ ] 2.1 In `src/worktrail/onboarding/repo_init.py`, add a "Dependabot manifest check" constants
+- [x] 2.1 In `src/worktrail/onboarding/repo_init.py`, add a "Dependabot manifest check" constants
   block next to the rulesets one: `DEPENDABOT_CHECK_WORKFLOW_RELPATH`
   (`.github/workflows/dependabot_manifest_check.yml`), `DEPENDABOT_CHECK_SCRIPT_DIR_RELPATH`
   (`scripts/ci/dependabot`), `DEPENDABOT_CHECK_SCRIPT_RELPATH`,
   `DEPENDABOT_CHECK_REQUIREMENTS_RELPATH`, and `DEPENDABOT_CHECK_JOB_NAME`
   (`Dependabot manifest check`, design D7). Import the two template constants.
-- [ ] 2.2 Add `build_dependabot_manifest_check_workflow(branches: List[str]) -> str`, modelled on
+- [x] 2.2 Add `build_dependabot_manifest_check_workflow(branches: List[str]) -> str`, modelled on
   `build_rulesets_drift_guard_workflow`: `name: "CI: Dependabot Manifest Check"`, a
   `pull_request` trigger with `branches:` substituted from the branch model and **no** `paths`
   key (design D4), `workflow_dispatch`, a `concurrency` group with `cancel-in-progress: true`,
@@ -47,9 +47,9 @@
   minted. Implements requirements: scaffolded workflow targets the repo's actual branch model;
   the check runs on every pull request, not only on dependabot.yml diffs; the check requires no
   GitHub credentials and makes no API calls.
-- [ ] 2.3 Add `dependabot_manifest_check_workflow_exists` and
+- [x] 2.3 Add `dependabot_manifest_check_workflow_exists` and
   `dependabot_manifest_check_script_exists` keys to `detect_state()`.
-- [ ] 2.4 In `cmd_propose()`, add three write-if-absent blocks (script, requirements, workflow)
+- [x] 2.4 In `cmd_propose()`, add three write-if-absent blocks (script, requirements, workflow)
   following the rulesets blocks' exact shape — `mkdir(parents=True, exist_ok=True)`, append to
   `written` or to `skipped` with the `(already exists)` suffix. Place them after the rulesets
   drift-guard blocks. Do **not** touch `required_status_checks` or `required_check_configured`.
@@ -75,22 +75,22 @@
 - [x] 3.6 Cover the config-level cases: no `.github/dependabot.yml` at all → exit zero; config
   with a missing/empty `updates` list → exit zero; malformed YAML → exit non-zero naming the
   parse failure.
-- [ ] 3.7 Add workflow-shape tests to `tests/onboarding/test_repo_init.py` alongside the existing
+- [x] 3.7 Add workflow-shape tests to `tests/onboarding/test_repo_init.py` alongside the existing
   `build_rulesets_drift_guard_workflow` tests: parse the generated YAML and assert
   `pull_request.branches` is `[dev, prd]` for the 2-branch model and `[dev, stg, prd]` for the
   3-branch model, that the `pull_request` trigger declares no `paths`/`paths-ignore`, that no
   step references `secrets.` or `vars.`, and that a step runs the vendored script path.
-- [ ] 3.8 Add `cmd_propose` integration tests to `tests/onboarding/test_repo_init.py`: fresh repo
+- [x] 3.8 Add `cmd_propose` integration tests to `tests/onboarding/test_repo_init.py`: fresh repo
   writes all three files (including when the repo has no `.github/dependabot.yml`); a re-run
   leaves a hand-customized workflow byte-identical and reports it skipped; an existing vendored
   script with a missing workflow writes only the workflow; `propose --check` reports both new
   state keys without writing.
-- [ ] 3.9 Add a regression test asserting `propose` does not add `DEPENDABOT_CHECK_JOB_NAME` to
+- [x] 3.9 Add a regression test asserting `propose` does not add `DEPENDABOT_CHECK_JOB_NAME` to
   `required_status_checks` in either a freshly generated `protect-*.json` or a pre-existing one.
 
 ## 4. Documentation and release
 
-- [ ] 4.1 Update `skills/worktrail-repo-init/SKILL.md`: add the workflow and its vendored script
+- [x] 4.1 Update `skills/worktrail-repo-init/SKILL.md`: add the workflow and its vendored script
   pair to the Overview list, and a short Step 2 paragraph next to the drift-guard one stating
   what the check does and that it needs no credentials at `apply` time.
 - [ ] 4.2 [cleanup] Run `pytest -q` and `python3 -m worktrail.orchestrator.orchestrate check`;
