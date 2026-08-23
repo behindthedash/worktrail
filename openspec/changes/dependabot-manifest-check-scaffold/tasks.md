@@ -58,21 +58,21 @@
 
 ## 3. Tests
 
-- [ ] 3.1 Add `tests/onboarding/test_dependabot_manifest_check.py` that writes
+- [x] 3.1 Add `tests/onboarding/test_dependabot_manifest_check.py` that writes
   `DEPENDABOT_MANIFEST_CHECK_PY` to a tmp file, loads it via
   `importlib.util.spec_from_file_location` (design D6), and provides a helper that builds a
   synthetic repo tree (`.github/dependabot.yml` + arbitrary manifest files) under `tmp_path`.
-- [ ] 3.2 Cover the passing paths: `pip` at `/` with `pyproject.toml`; `pip` at `/` with only
+- [x] 3.2 Cover the passing paths: `pip` at `/` with `pyproject.toml`; `pip` at `/` with only
   `requirements-dev.txt` (glob match); `npm` at a subdirectory with `package.json`; several
   entries all valid.
-- [ ] 3.3 Cover the failing paths: `pip` directory with no matching manifest; a `directory` that
+- [x] 3.3 Cover the failing paths: `pip` directory with no matching manifest; a `directory` that
   does not exist at all; `npm` at `/` where the only `package.json` is nested one level down;
   three entries with exactly one broken (assert the message names only the broken one).
-- [ ] 3.4 Cover the skip paths: `github-actions` entry; an unmapped ecosystem (`cargo`); an entry
+- [x] 3.4 Cover the skip paths: `github-actions` entry; an unmapped ecosystem (`cargo`); an entry
   with no `directory` key defaulting to the root.
-- [ ] 3.5 Cover `directories` (plural): a list with one valid and one broken directory (exit
+- [x] 3.5 Cover `directories` (plural): a list with one valid and one broken directory (exit
   non-zero, names the broken one), and a glob value `/apps/*` (skipped, exit zero).
-- [ ] 3.6 Cover the config-level cases: no `.github/dependabot.yml` at all → exit zero; config
+- [x] 3.6 Cover the config-level cases: no `.github/dependabot.yml` at all → exit zero; config
   with a missing/empty `updates` list → exit zero; malformed YAML → exit non-zero naming the
   parse failure.
 - [ ] 3.7 Add workflow-shape tests to `tests/onboarding/test_repo_init.py` alongside the existing
