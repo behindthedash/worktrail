@@ -42,6 +42,15 @@ import argparse
 import sys
 from pathlib import Path
 
+# Ecosystem -> manifest glob patterns Dependabot's updater looks for in an
+# entry's directory. Add a row here to make an ecosystem checkable; an
+# ecosystem absent from this table (e.g. "github-actions") is always
+# skipped, never failed.
+ECOSYSTEM_MANIFEST_GLOBS = {
+    "pip": ("requirements*.txt", "setup.py", "pyproject.toml", "Pipfile"),
+    "npm": ("package.json",),
+}
+
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
