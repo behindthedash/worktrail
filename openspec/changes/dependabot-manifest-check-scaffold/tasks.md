@@ -1,33 +1,33 @@
 ## 1. Vendored check script template
 
-- [ ] 1.1 Create `src/worktrail/onboarding/dependabot_manifest_check_template.py` with a
+- [x] 1.1 Create `src/worktrail/onboarding/dependabot_manifest_check_template.py` with a
   module docstring mirroring `rulesets_drift_guard_template.py`'s: what the vendored artifact
   guards against, why it is an inline string constant rather than package data, and that
   `behindthedash/devops` `scripts/test_dependabot_config.py` (PR #306) is the origin with no
   automated sync back.
-- [ ] 1.2 In that module, define `DEPENDABOT_MANIFEST_CHECK_PY` — the full standalone script:
+- [x] 1.2 In that module, define `DEPENDABOT_MANIFEST_CHECK_PY` — the full standalone script:
   shebang, docstring explaining the silent Dependabot-Updates failure it catches, `argparse`
   with `--repo` (default: the repo root inferred from the script's own location) and
   `--config` (default: `<repo>/.github/dependabot.yml`), and `sys.exit(main())`.
-- [ ] 1.3 In the script body, define the ecosystem-to-manifest-glob table as a single top-level
+- [x] 1.3 In the script body, define the ecosystem-to-manifest-glob table as a single top-level
   dict — `pip` → `("requirements*.txt", "setup.py", "pyproject.toml", "Pipfile")`, `npm` →
   `("package.json",)` — with a comment stating that adding a row is the extension point and that
   ecosystems absent from the table are skipped, never failed (design D2). Implements
   requirement: unrecognized ecosystems are skipped, never failed.
-- [ ] 1.4 Implement directory resolution and non-recursive manifest matching: `/` (and an omitted
+- [x] 1.4 Implement directory resolution and non-recursive manifest matching: `/` (and an omitted
   key) means the repo root, other values are repo-root-relative, and matching uses
   `Path.glob` directly in that directory with no recursion. Implements requirement: every
   checkable ecosystem entry must have a manifest under its directory.
-- [ ] 1.5 Implement `updates`-entry iteration covering both `directory` (string) and
+- [x] 1.5 Implement `updates`-entry iteration covering both `directory` (string) and
   `directories` (list); skip any directory value containing `*`, `?`, or `[` (design D3); skip
   entries whose `package-ecosystem` is not in the table. Implements requirement: multi-directory
   entries are checked per directory, with glob patterns skipped.
-- [ ] 1.6 Implement exit-code and output behavior: zero with a "nothing to check" message when
+- [x] 1.6 Implement exit-code and output behavior: zero with a "nothing to check" message when
   the config is absent or declares no `updates`; zero with an "in sync"-style summary when every
   checkable entry resolves; non-zero naming each offending `ecosystem` + `directory` pair on
   stderr; non-zero naming the parse error when the YAML is malformed. Implements requirement:
   absent or empty Dependabot config is a clean pass.
-- [ ] 1.7 In the same module, define `DEPENDABOT_MANIFEST_CHECK_REQUIREMENTS_TXT` declaring
+- [x] 1.7 In the same module, define `DEPENDABOT_MANIFEST_CHECK_REQUIREMENTS_TXT` declaring
   `pyyaml` (design D5).
 
 ## 2. repo_init wiring
