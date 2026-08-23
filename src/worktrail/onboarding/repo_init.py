@@ -605,6 +605,28 @@ def apply_ruleset(gh_repo: str, ruleset: Dict[str, Any]) -> Tuple[bool, str]:
     return True, f"{action} and verified live"
 
 
+def _gh_json_names(args: List[str]) -> List[str]:
+    p = _run(["gh", *args])
+    if p.returncode != 0:
+        return []
+    try:
+        data = json.loads(p.stdout)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(data, list):
+        return []
+    return [item.get("name") for item in data if isinstance(item, dict)]
+
+
+def app_credentials_configured(gh_repo: str) -> bool:
+    """True only if both `RELEASE_NOTES_APP_ID` (a repo variable) and
+    `RELEASE_NOTES_APP_PRIVATE_KEY` (a repo secret) are present -- the two
+    credentials the rulesets drift-guard workflow's App-token mint step needs."""
+    variable_names = _gh_json_names(["variable", "list", "--json", "name", "-R", gh_repo])
+    secret_names = _gh_json_names(["secret", "list", "--json", "name", "-R", gh_repo])
+    return "RELEASE_NOTES_APP_ID" in variable_names and "RELEASE_NOTES_APP_PRIVATE_KEY" in secret_names
+
+
 # --------------------------------------------------------------------------
 # propose
 # --------------------------------------------------------------------------
