@@ -669,6 +669,73 @@ class ProposeTests(unittest.TestCase):
             (wf_dir / "rulesets_drift_guard.yml").read_text(), "# hand-customized\n")
         self.assertTrue(any("rulesets_drift_guard.yml" in s for s in result["skipped"]))
 
+    def test_fresh_repo_writes_dependabot_manifest_check_files(self):
+        # Task 3.8: a fresh repo -- with no .github/dependabot.yml at all --
+        # still gets the workflow, vendored script, and its requirements.txt
+        # (the check itself is what decides what to do about an absent
+        # config at run time, not `propose`).
+        repo = _tmp_repo()
+        self.assertFalse((repo / ".github" / "dependabot.yml").exists())
+
+        rc, result = self._run_propose(repo)
+
+        self.assertEqual(rc, 0)
+        self.assertIn(repo_init.DEPENDABOT_CHECK_WORKFLOW_RELPATH, result["written"])
+        self.assertIn(repo_init.DEPENDABOT_CHECK_SCRIPT_RELPATH, result["written"])
+        self.assertIn(repo_init.DEPENDABOT_CHECK_REQUIREMENTS_RELPATH, result["written"])
+
+        workflow_path = repo / repo_init.DEPENDABOT_CHECK_WORKFLOW_RELPATH
+        script_path = repo / repo_init.DEPENDABOT_CHECK_SCRIPT_RELPATH
+        requirements_path = repo / repo_init.DEPENDABOT_CHECK_REQUIREMENTS_RELPATH
+        self.assertTrue(workflow_path.is_file())
+        self.assertTrue(script_path.is_file())
+        self.assertTrue(requirements_path.is_file())
+        self.assertEqual(
+            workflow_path.read_text(),
+            repo_init.build_dependabot_manifest_check_workflow(["dev", "prd"]))
+        self.assertEqual(script_path.read_text(), repo_init.DEPENDABOT_MANIFEST_CHECK_PY)
+        self.assertEqual(
+            requirements_path.read_text(), repo_init.DEPENDABOT_MANIFEST_CHECK_REQUIREMENTS_TXT)
+
+    def test_rerun_leaves_hand_customized_dependabot_workflow_untouched(self):
+        repo = _tmp_repo()
+        wf_dir = repo / ".github" / "workflows"
+        wf_dir.mkdir(parents=True)
+        workflow_path = wf_dir / "dependabot_manifest_check.yml"
+        workflow_path.write_text("# hand-customized\n")
+
+        rc, result = self._run_propose(repo)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(workflow_path.read_text(), "# hand-customized\n")
+        self.assertTrue(
+            any(repo_init.DEPENDABOT_CHECK_WORKFLOW_RELPATH in s for s in result["skipped"]))
+        self.assertNotIn(repo_init.DEPENDABOT_CHECK_WORKFLOW_RELPATH, result["written"])
+
+    def test_existing_dependabot_script_with_missing_workflow_writes_only_workflow(self):
+        repo = _tmp_repo()
+        script_path = repo / repo_init.DEPENDABOT_CHECK_SCRIPT_RELPATH
+        requirements_path = repo / repo_init.DEPENDABOT_CHECK_REQUIREMENTS_RELPATH
+        script_path.parent.mkdir(parents=True)
+        script_path.write_text(repo_init.DEPENDABOT_MANIFEST_CHECK_PY)
+        requirements_path.write_text(repo_init.DEPENDABOT_MANIFEST_CHECK_REQUIREMENTS_TXT)
+
+        rc, result = self._run_propose(repo)
+
+        self.assertEqual(rc, 0)
+        self.assertIn(repo_init.DEPENDABOT_CHECK_WORKFLOW_RELPATH, result["written"])
+        self.assertTrue(
+            any(repo_init.DEPENDABOT_CHECK_SCRIPT_RELPATH in s for s in result["skipped"]))
+        self.assertTrue(
+            any(repo_init.DEPENDABOT_CHECK_REQUIREMENTS_RELPATH in s for s in result["skipped"]))
+        self.assertNotIn(repo_init.DEPENDABOT_CHECK_SCRIPT_RELPATH, result["written"])
+        self.assertNotIn(repo_init.DEPENDABOT_CHECK_REQUIREMENTS_RELPATH, result["written"])
+        self.assertEqual(script_path.read_text(), repo_init.DEPENDABOT_MANIFEST_CHECK_PY)
+        self.assertEqual(
+            requirements_path.read_text(), repo_init.DEPENDABOT_MANIFEST_CHECK_REQUIREMENTS_TXT)
+        self.assertTrue(
+            (repo / repo_init.DEPENDABOT_CHECK_WORKFLOW_RELPATH).is_file())
+
     def test_no_ungated_automerge_warning_when_ci_jobs_exist(self):
         repo = _tmp_repo()
         wf_dir = repo / ".github" / "workflows"
@@ -689,6 +756,20 @@ class ProposeTests(unittest.TestCase):
         self.assertFalse((repo / ".github").exists())
         state = json.loads(printed.call_args[0][0])
         self.assertFalse(state["claude_md_already_split"])
+
+    def test_check_mode_reports_dependabot_manifest_check_state_without_writing(self):
+        repo = _tmp_repo()
+        args = mock.Mock(repo=str(repo), branch_model="2", check=True, as_json=True)
+        with mock.patch("builtins.print") as printed:
+            rc = repo_init.cmd_propose(args)
+        self.assertEqual(rc, 0)
+        state = json.loads(printed.call_args[0][0])
+        self.assertFalse(state["dependabot_manifest_check_workflow_exists"])
+        self.assertFalse(state["dependabot_manifest_check_script_exists"])
+        self.assertFalse(state["dependabot_manifest_check_requirements_exists"])
+        self.assertFalse((repo / repo_init.DEPENDABOT_CHECK_WORKFLOW_RELPATH).exists())
+        self.assertFalse((repo / repo_init.DEPENDABOT_CHECK_SCRIPT_RELPATH).exists())
+        self.assertFalse((repo / repo_init.DEPENDABOT_CHECK_REQUIREMENTS_RELPATH).exists())
 
     def test_nonexistent_repo_errors(self):
         args = mock.Mock(repo="/nonexistent/path/xyz", branch_model="2", check=False, as_json=True)
