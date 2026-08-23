@@ -152,16 +152,27 @@ def build_ruleset(
     }
 
 
-def build_ruleset_for_branch(branch: str, branch_model: str) -> Dict[str, Any]:
+def build_ruleset_for_branch(
+    branch: str, branch_model: str, extra_required_status_check: Optional[str] = None,
+) -> Dict[str, Any]:
     """branch_model "2" = dev/prd (GGB pattern); "3" = dev/stg/prd (datalena
-    pattern, dev is squash + required_linear_history)."""
+    pattern, dev is squash + required_linear_history).
+
+    extra_required_status_check, when given, is the sole entry ever placed in
+    the generated ruleset's required_status_checks -- callers pass it only
+    when generating a *fresh* ruleset file in the same `propose` run that
+    also newly writes the openspec-validate workflow (see
+    OPENSPEC_VALIDATE_JOB_NAME). Nothing from `state["ci_jobs_discovered"]`
+    is ever passed in here; `propose` still deliberately never
+    auto-populates required_status_checks from CI discovery otherwise."""
+    checks = [extra_required_status_check] if extra_required_status_check else []
     if branch == "dev":
         return build_ruleset(
-            "protect-dev", "dev", ["squash"], [], linear_history=(branch_model == "3"))
+            "protect-dev", "dev", ["squash"], checks, linear_history=(branch_model == "3"))
     if branch == "stg":
-        return build_ruleset("protect-stg", "stg", ["merge"], [])
+        return build_ruleset("protect-stg", "stg", ["merge"], checks)
     if branch == "prd":
-        return build_ruleset("protect-prd", "prd", ["merge"], [])
+        return build_ruleset("protect-prd", "prd", ["merge"], checks)
     raise ValueError(f"unknown branch {branch!r}")
 
 
