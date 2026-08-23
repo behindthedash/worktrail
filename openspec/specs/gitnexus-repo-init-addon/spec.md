@@ -1,10 +1,12 @@
+# gitnexus-repo-init-addon Specification
+
 ## Purpose
 
 Lets a repo bootstrapped via `worktrail-repo-init propose` opt into GitNexus code-index
 registration at bootstrap time, instead of requiring a human to remember to run
 `gitnexus analyze` by hand after onboarding.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: `--with-gitnexus` opt-in flag on `propose`
 The system SHALL provide a `--with-gitnexus` boolean flag on the `propose` subcommand. When
