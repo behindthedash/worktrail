@@ -65,7 +65,19 @@ jobs:
   lint-test-build:
     name: "Lint, Test & Build"
     needs: changes
-    if: needs.changes.outputs.bookkeeping == 'false'
+    # Always runs (never job-level `if:`-skipped) so its own check-run --
+    # the one the branch ruleset's required_status_checks actually watches --
+    # is always posted by *this* workflow run's own check suite. A separate
+    # bookkeeping-bypass job that instead called checks.create() to post a
+    # same-named synthetic check raced against every other workflow this same
+    # pull_request event also triggers (auto-merge.yml, scope-check,
+    # version-bump-check): each gets its own check suite from the
+    # github-actions app for the same commit, and the synthetic check could
+    # land in a sibling workflow's suite instead of this one. Required-check
+    # matching then never saw it there, so the required check sat "Expected
+    # -- Waiting for status to be reported" forever (worktrail PR #653).
+    # Gating each step individually below keeps the fast bookkeeping path
+    # cheap while guaranteeing the check-run itself is unambiguous.
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -73,48 +85,29 @@ jobs:
         python-version: ["3.11", "3.14"]
     steps:
       - uses: actions/checkout@v7.0.1
+        if: needs.changes.outputs.bookkeeping == 'false'
       - uses: actions/setup-python@v6.2.0
+        if: needs.changes.outputs.bookkeeping == 'false'
         with:
           python-version: ${{ matrix.python-version }}
       - name: Dev-install worktree guard
+        if: needs.changes.outputs.bookkeeping == 'false'
         run: bash scripts/ci/test_dev_install.sh
       - name: Install package
+        if: needs.changes.outputs.bookkeeping == 'false'
         run: pip install -e ".[dev]"
       - name: Test
         # The classifier coverage ratchet runs in its own advisory job below
         # (not yet in required_status_checks) so its baseline can be
         # recalibrated over a PR or two without blocking this required job.
+        if: needs.changes.outputs.bookkeeping == 'false'
         run: pytest -q --ignore=tests/router/test_classifier_coverage_ratchet.py
       - name: Golden regression (orchestrator)
+        if: needs.changes.outputs.bookkeeping == 'false'
         run: python3 -m worktrail.orchestrator.orchestrate check
       - name: Build
+        if: needs.changes.outputs.bookkeeping == 'false'
         run: pip install build && python3 -m build
-
-  bookkeeping-bypass:
-    name: Bookkeeping bypass
-    needs: changes
-    if: needs.changes.outputs.bookkeeping == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      checks: write
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.14"]
-    steps:
-      - name: Post passing check for skipped Lint, Test & Build (${{ matrix.python-version }})
-        uses: actions/github-script@v9
-        with:
-          script: |
-            await github.rest.checks.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              name: "Lint, Test & Build (${{ matrix.python-version }})",
-              head_sha: context.payload.pull_request
-                ? context.payload.pull_request.head.sha
-                : context.sha,
-              status: "completed",
-              conclusion: "success",
-            });
 
   classifier-coverage-ratchet:
     name: "Classifier Coverage Ratchet"
