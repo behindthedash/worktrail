@@ -25,7 +25,7 @@
 - [x] 5.3 Re-running `propose` after the workflow already exists: no changes to the workflow file or to `required_status_checks` (idempotent no-op). (Requirement: Idempotent on workflow-file presence, not solely on openspec_initialized — Scenario: Re-running propose on a fully onboarded repo; Requirement: Wire the new check... — Scenario: Workflow already present, not newly written)
 - [x] 5.4 A pre-existing ruleset file whose `required_status_checks` already contains this job's exact display name is left byte-for-byte unchanged. (Requirement: Wire the new check into required_status_checks, scoped to this job only — Scenario: New workflow written this run, ruleset file already exists, second AND clause)
 - [x] 5.5 An unrelated CI job discovered via `discover_ci_checks()` never appears in `required_status_checks` as a side effect of this change. (Requirement: Wire the new check into required_status_checks, scoped to this job only — Scenario: Other CI jobs remain unaffected)
-- [ ] 5.6 [e2e] `PYTHONPATH=src pytest -q` and `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` both green.
+- [x] 5.6 [e2e] `PYTHONPATH=src pytest -q` and `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` both green.
 
 ## 6. Plugin/doc surface
 
