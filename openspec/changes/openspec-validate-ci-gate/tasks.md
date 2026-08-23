@@ -29,4 +29,4 @@
 
 ## 6. Plugin/doc surface
 
-- [ ] 6.1 Update `src/worktrail/onboarding/repo_init.py`'s module docstring's `propose` description if it now needs a caveat about this one scoped `required_status_checks` exception, so a future reader doesn't take the "deliberately never auto-populates" line as still-unconditional.
+- [x] 6.1 Update `src/worktrail/onboarding/repo_init.py`'s module docstring's `propose` description if it now needs a caveat about this one scoped `required_status_checks` exception, so a future reader doesn't take the "deliberately never auto-populates" line as still-unconditional.
