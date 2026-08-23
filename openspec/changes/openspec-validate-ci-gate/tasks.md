@@ -1,22 +1,22 @@
 ## 1. Workflow scaffold
 
-- [ ] 1.1 Add `OPENSPEC_VALIDATE_WORKFLOW_RELPATH = ".github/workflows/worktrail-openspec-validate.yml"` and `build_openspec_validate_workflow()` to `src/worktrail/onboarding/repo_init.py`, mirroring `AUTOMERGE_WORKFLOW_RELPATH`/`build_automerge_workflow()`'s shape: a self-contained workflow paths-filtered to `openspec/**`, running `openspec validate --all --strict`, with a comment noting the unpinned `@fission-ai/openspec@latest` CLI-version tradeoff. (Requirement: Scaffold a portable openspec-validate workflow)
-- [ ] 1.2 Determine the job's exact display name (its `name:` field) so `discover_ci_checks()` and the ruleset entry use identical text.
+- [x] 1.1 Add `OPENSPEC_VALIDATE_WORKFLOW_RELPATH = ".github/workflows/worktrail-openspec-validate.yml"` and `build_openspec_validate_workflow()` to `src/worktrail/onboarding/repo_init.py`, mirroring `AUTOMERGE_WORKFLOW_RELPATH`/`build_automerge_workflow()`'s shape: a self-contained workflow paths-filtered to `openspec/**`, running `openspec validate --all --strict`, with a comment noting the unpinned `@fission-ai/openspec@latest` CLI-version tradeoff. (Requirement: Scaffold a portable openspec-validate workflow)
+- [x] 1.2 Determine the job's exact display name (its `name:` field) so `discover_ci_checks()` and the ruleset entry use identical text.
 
 ## 2. State detection and required_status_checks wiring
 
-- [ ] 2.1 Add `openspec_validate_workflow_exists` to `detect_state()`, mirroring `automerge_workflow_exists`, so the "will be newly written this run" predicate is known before the ruleset loop runs. (Requirement: Idempotent on workflow-file presence, not solely on openspec_initialized)
+- [x] 2.1 Add `openspec_validate_workflow_exists` to `detect_state()`, mirroring `automerge_workflow_exists`, so the "will be newly written this run" predicate is known before the ruleset loop runs. (Requirement: Idempotent on workflow-file presence, not solely on openspec_initialized)
 - [x] 2.2 Give `build_ruleset_for_branch()` (or its `build_ruleset()` caller) a way to include an extra `required_status_checks` entry, used only when generating a *fresh* ruleset file and the openspec-validate workflow is newly written this run — the only caller-supplied entry; no other entry from `state["ci_jobs_discovered"]` is ever passed in. (Requirement: Wire the new check into required_status_checks, scoped to this job only — Scenario: New workflow written this run, ruleset file not yet present; Scenario: Other CI jobs remain unaffected)
 
 ## 3. Existing-ruleset patch path
 
-- [ ] 3.1 Add a small in-place JSON patch step in `cmd_propose`, run only when the openspec-validate workflow is newly written this run and a given branch's `protect-<branch>.json` already exists: locate (or create) the `required_status_checks` rule and append `{"context": <job name>}` only if absent, leaving the rest of the file untouched. (Requirement: Wire the new check into required_status_checks, scoped to this job only — Scenario: New workflow written this run, ruleset file already exists)
-- [ ] 3.2 No-op when the entry is already present in an existing ruleset file's `required_status_checks`. (same Requirement — Scenario: same, second AND clause)
+- [x] 3.1 Add a small in-place JSON patch step in `cmd_propose`, run only when the openspec-validate workflow is newly written this run and a given branch's `protect-<branch>.json` already exists: locate (or create) the `required_status_checks` rule and append `{"context": <job name>}` only if absent, leaving the rest of the file untouched. (Requirement: Wire the new check into required_status_checks, scoped to this job only — Scenario: New workflow written this run, ruleset file already exists)
+- [x] 3.2 No-op when the entry is already present in an existing ruleset file's `required_status_checks`. (same Requirement — Scenario: same, second AND clause)
 
 ## 4. propose() write step and reporting
 
-- [ ] 4.1 Add the openspec-validate workflow write step to `cmd_propose`, gated on `state["openspec_validate_workflow_exists"]`, matching the existing automerge write step's `written`/`skipped` bookkeeping. (Requirement: Scaffold a portable openspec-validate workflow — Scenario: Fresh repo; Scenario: Already-onboarded repo, workflow missing; Scenario: Workflow already present)
-- [ ] 4.2 Record any ruleset file freshly generated with the check included, and any existing ruleset file patched by task 3.1, in `written` (or a clearly-labeled equivalent) so the CLI's human-facing report shows what changed.
+- [x] 4.1 Add the openspec-validate workflow write step to `cmd_propose`, gated on `state["openspec_validate_workflow_exists"]`, matching the existing automerge write step's `written`/`skipped` bookkeeping. (Requirement: Scaffold a portable openspec-validate workflow — Scenario: Fresh repo; Scenario: Already-onboarded repo, workflow missing; Scenario: Workflow already present)
+- [x] 4.2 Record any ruleset file freshly generated with the check included, and any existing ruleset file patched by task 3.1, in `written` (or a clearly-labeled equivalent) so the CLI's human-facing report shows what changed.
 
 ## 5. Tests
 

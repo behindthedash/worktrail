@@ -176,6 +176,34 @@ def build_ruleset_for_branch(
     raise ValueError(f"unknown branch {branch!r}")
 
 
+def patch_ruleset_required_check(path: Path, job_name: str) -> bool:
+    """In-place patch for an *existing* `protect-<branch>.json`: locate (or
+    create) the `required_status_checks` rule and append
+    `{"context": job_name}` only if no entry with that context is already
+    present. Everything else in the file -- other rules, key order, other
+    required_status_checks entries -- is left untouched. Returns True if the
+    file was changed (and thus rewritten), False on a no-op."""
+    data = json.loads(path.read_text(encoding="utf-8"))
+    rules = data.setdefault("rules", [])
+    rsc_rule = next((r for r in rules if r.get("type") == "required_status_checks"), None)
+    if rsc_rule is None:
+        rsc_rule = {
+            "type": "required_status_checks",
+            "parameters": {
+                "strict_required_status_checks_policy": False,
+                "do_not_enforce_on_create": False,
+                "required_status_checks": [],
+            },
+        }
+        rules.append(rsc_rule)
+    checks = rsc_rule.setdefault("parameters", {}).setdefault("required_status_checks", [])
+    if any(c.get("context") == job_name for c in checks):
+        return False
+    checks.append({"context": job_name})
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return True
+
+
 # --------------------------------------------------------------------------
 # Auto-merge workflow
 # --------------------------------------------------------------------------
@@ -741,13 +769,26 @@ def cmd_propose(args: argparse.Namespace) -> int:
 
     branches = ["dev", "stg", "prd"] if args.branch_model == "3" else ["dev", "prd"]
     rulesets_dir = repo / ".github" / "rulesets"
+    openspec_validate_newly_written = not state["openspec_validate_workflow_exists"]
+    required_check_configured = False
     for branch in branches:
         path = rulesets_dir / f"protect-{branch}.json"
         if path.is_file():
-            skipped.append(str(path.relative_to(repo)))
+            if openspec_validate_newly_written and patch_ruleset_required_check(
+                path, OPENSPEC_VALIDATE_JOB_NAME
+            ):
+                written.append(
+                    f"{path.relative_to(repo)} (patched: added "
+                    f"{OPENSPEC_VALIDATE_JOB_NAME} to required_status_checks)")
+                required_check_configured = True
+            else:
+                skipped.append(str(path.relative_to(repo)))
             continue
         rulesets_dir.mkdir(parents=True, exist_ok=True)
-        ruleset = build_ruleset_for_branch(branch, args.branch_model)
+        extra_check = OPENSPEC_VALIDATE_JOB_NAME if openspec_validate_newly_written else None
+        if extra_check:
+            required_check_configured = True
+        ruleset = build_ruleset_for_branch(branch, args.branch_model, extra_check)
         path.write_text(json.dumps(ruleset, indent=2) + "\n", encoding="utf-8")
         written.append(str(path.relative_to(repo)))
 
@@ -820,12 +861,20 @@ def cmd_propose(args: argparse.Namespace) -> int:
         automerge_path.parent.mkdir(parents=True, exist_ok=True)
         automerge_path.write_text(build_automerge_workflow(), encoding="utf-8")
         written.append(str(automerge_path.relative_to(repo)))
-        if not state["ci_jobs_discovered"]:
+        if not state["ci_jobs_discovered"] and not required_check_configured:
             warnings.append(
                 "No CI jobs discovered and no required_status_checks configured -- the "
                 "auto-merge workflow just written will merge any go:risk-low/medium-labeled "
                 "PR with nothing else to gate it. Add required checks to "
                 ".github/rulesets/*.json before applying risk labels to real PRs.")
+
+    openspec_validate_path = repo / OPENSPEC_VALIDATE_WORKFLOW_RELPATH
+    if state["openspec_validate_workflow_exists"]:
+        skipped.append(f"{OPENSPEC_VALIDATE_WORKFLOW_RELPATH} (already exists)")
+    else:
+        openspec_validate_path.parent.mkdir(parents=True, exist_ok=True)
+        openspec_validate_path.write_text(build_openspec_validate_workflow(), encoding="utf-8")
+        written.append(str(openspec_validate_path.relative_to(repo)))
 
     result = {
         "repo": str(repo),
