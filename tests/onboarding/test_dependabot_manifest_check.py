@@ -167,3 +167,85 @@ def test_several_entries_all_valid_passes(tmp_path, capsys):
     assert capsys.readouterr().out.strip() == (
         "in sync: 3 checkable updates entries have a manifest"
     )
+
+
+def test_pip_directory_with_no_matching_manifest_fails(tmp_path, capsys):
+    repo = build_repo(
+        tmp_path,
+        dependabot_yml={
+            "version": 2,
+            "updates": [{"package-ecosystem": "pip", "directory": "/tools"}],
+        },
+        manifests=["tools/README.md"],
+    )
+    module = load_check_module(tmp_path)
+
+    exit_code = module.main(["--repo", str(repo)])
+
+    assert exit_code == 1
+    assert capsys.readouterr().err.strip() == (
+        "no manifest for ecosystem='pip' directory='/tools'"
+    )
+
+
+def test_directory_that_does_not_exist_fails(tmp_path, capsys):
+    repo = build_repo(
+        tmp_path,
+        dependabot_yml={
+            "version": 2,
+            "updates": [{"package-ecosystem": "pip", "directory": "/missing"}],
+        },
+    )
+    module = load_check_module(tmp_path)
+
+    exit_code = module.main(["--repo", str(repo)])
+
+    assert exit_code == 1
+    assert capsys.readouterr().err.strip() == (
+        "no manifest for ecosystem='pip' directory='/missing'"
+    )
+
+
+def test_npm_root_with_package_json_nested_one_level_down_fails(tmp_path, capsys):
+    repo = build_repo(
+        tmp_path,
+        dependabot_yml={
+            "version": 2,
+            "updates": [{"package-ecosystem": "npm", "directory": "/"}],
+        },
+        manifests=["services/package.json"],
+    )
+    module = load_check_module(tmp_path)
+
+    exit_code = module.main(["--repo", str(repo)])
+
+    assert exit_code == 1
+    assert capsys.readouterr().err.strip() == (
+        "no manifest for ecosystem='npm' directory='/'"
+    )
+
+
+def test_three_entries_one_broken_names_only_the_broken_one(tmp_path, capsys):
+    repo = build_repo(
+        tmp_path,
+        dependabot_yml={
+            "version": 2,
+            "updates": [
+                {"package-ecosystem": "pip", "directory": "/"},
+                {"package-ecosystem": "npm", "directory": "/services/api"},
+                {"package-ecosystem": "pip", "directory": "/tools"},
+            ],
+        },
+        manifests=[
+            "pyproject.toml",
+            "services/api/package.json",
+        ],
+    )
+    module = load_check_module(tmp_path)
+
+    exit_code = module.main(["--repo", str(repo)])
+
+    assert exit_code == 1
+    assert capsys.readouterr().err.strip() == (
+        "no manifest for ecosystem='pip' directory='/tools'"
+    )
