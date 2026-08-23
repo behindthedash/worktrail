@@ -209,10 +209,32 @@ class ProposeTests(unittest.TestCase):
         rulesets_dir = repo / ".github" / "rulesets"
         rulesets_dir.mkdir(parents=True)
         original_rulesets = {}
-        for branch, file_name in (("dev", "protect-dev.json"), ("prd", "protect-prd.json")):
-            ruleset = repo_init.build_ruleset_for_branch(branch, "2")
-            original_rulesets[file_name] = ruleset
-            (rulesets_dir / file_name).write_text(json.dumps(ruleset, indent=2) + "\n")
+
+        # protect-dev.json: hand-customized -- non-empty bypass_actors, a
+        # non-default enforcement, and an extra rule type -- so that a
+        # wholesale-regenerate implementation (which would discard all of
+        # this and re-emit exactly what build_ruleset_for_branch produces)
+        # is distinguishable from a genuine in-place patch. No existing
+        # required_status_checks entries here, so this file also exercises
+        # the create-the-rule branch of patch_ruleset_required_check.
+        dev_ruleset = repo_init.build_ruleset_for_branch("dev", "2")
+        dev_ruleset["bypass_actors"] = [
+            {"actor_id": 1, "actor_type": "Team", "bypass_mode": "always"}]
+        dev_ruleset["enforcement"] = "evaluate"
+        dev_ruleset["rules"].append({"type": "creation"})
+        original_rulesets["protect-dev.json"] = dev_ruleset
+        (rulesets_dir / "protect-dev.json").write_text(
+            json.dumps(dev_ruleset, indent=2) + "\n")
+
+        # protect-prd.json: already has an unrelated required_status_checks
+        # entry, so this file exercises the append-onto-an-existing-list
+        # branch of patch_ruleset_required_check (task 5.4 covers the
+        # already-contains-this-job-name no-op, not this append case).
+        prd_ruleset = repo_init.build_ruleset(
+            "protect-prd", "prd", ["merge"], ["Lint, Test & Build"])
+        original_rulesets["protect-prd.json"] = prd_ruleset
+        (rulesets_dir / "protect-prd.json").write_text(
+            json.dumps(prd_ruleset, indent=2) + "\n")
 
         rc, result = self._run_propose(repo)
 
@@ -233,14 +255,28 @@ class ProposeTests(unittest.TestCase):
             self.assertEqual(patched_other_rules, original_other_rules)
             self.assertEqual(patched["name"], original["name"])
             self.assertEqual(patched["conditions"], original["conditions"])
-            # The new check was appended to required_status_checks.
-            rsc_rule = next(
-                r for r in patched["rules"] if r["type"] == "required_status_checks")
-            self.assertEqual(
-                rsc_rule["parameters"]["required_status_checks"],
-                [{"context": repo_init.OPENSPEC_VALIDATE_JOB_NAME}])
+            self.assertEqual(patched["bypass_actors"], original["bypass_actors"])
+            self.assertEqual(patched["enforcement"], original["enforcement"])
             self.assertTrue(
                 any(f"{file_name} (patched" in w for w in result["written"]))
+
+        # protect-dev.json had no pre-existing required_status_checks rule:
+        # the new check is the sole entry.
+        dev_rsc = next(
+            r for r in json.loads((rulesets_dir / "protect-dev.json").read_text())["rules"]
+            if r["type"] == "required_status_checks")
+        self.assertEqual(
+            dev_rsc["parameters"]["required_status_checks"],
+            [{"context": repo_init.OPENSPEC_VALIDATE_JOB_NAME}])
+
+        # protect-prd.json had a pre-existing "Lint, Test & Build" check:
+        # the new check is appended, not clobbering it.
+        prd_rsc = next(
+            r for r in json.loads((rulesets_dir / "protect-prd.json").read_text())["rules"]
+            if r["type"] == "required_status_checks")
+        self.assertEqual(
+            prd_rsc["parameters"]["required_status_checks"],
+            [{"context": "Lint, Test & Build"}, {"context": repo_init.OPENSPEC_VALIDATE_JOB_NAME}])
 
     def test_three_branch_model_writes_stg_too(self):
         repo = _tmp_repo()
