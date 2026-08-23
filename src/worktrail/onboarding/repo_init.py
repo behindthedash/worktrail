@@ -544,6 +544,15 @@ def cmd_propose(args: argparse.Namespace) -> int:
         else:
             skipped.append(".aspens.json (already configured)")
 
+    if args.with_gitnexus:
+        indexed, warn = enable_gitnexus(repo)
+        if warn:
+            warnings.append(warn)
+        elif indexed:
+            written.append(".gitnexus/ (gitnexus analyze)")
+        else:
+            skipped.append(".gitnexus/ (already indexed)")
+
     if state["openspec_initialized"]:
         skipped.append("openspec/config.yaml (already initialized)")
     else:
