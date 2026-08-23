@@ -388,6 +388,48 @@ class ApplyTests(unittest.TestCase):
         self.assertEqual(result["delete_branch_on_merge"], "enabled")
         self.assertEqual(result["rulesets"]["protect-dev.json"], "created and verified live")
         self.assertEqual(result["rulesets"]["protect-prd.json"], "created and verified live")
+        self.assertNotIn("labels", result)
+        self.assertEqual(rc, 0)
+
+    def test_labels_created_when_automerge_workflow_was_scaffolded(self):
+        """Regression: worktrail-repo-init used to generate the auto-merge
+        workflow (build_automerge_workflow()) without ever creating the
+        go:risk-*/go:no-automerge labels it depends on, so PR labeling
+        silently no-opped on every freshly onboarded repo."""
+        repo = self._repo_with_rulesets(("dev", "prd"))
+        workflow_path = repo / repo_init.AUTOMERGE_WORKFLOW_RELPATH
+        workflow_path.parent.mkdir(parents=True, exist_ok=True)
+        workflow_path.write_text(repo_init.build_automerge_workflow(), encoding="utf-8")
+        args = mock.Mock(repo=str(repo), as_json=True)
+        label_calls = []
+
+        def fake_run(cmd, **kw):
+            if cmd[:3] == ["git", "-C", str(repo)]:
+                return subprocess.CompletedProcess(cmd, 0, stdout="git@github.com:acme/widget.git\n", stderr="")
+            if cmd[:3] == ["gh", "label", "create"]:
+                label_calls.append(cmd)
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if " ".join(cmd) == "gh api repos/acme/widget -q .default_branch":
+                return subprocess.CompletedProcess(cmd, 0, stdout="dev\n", stderr="")
+            if " ".join(cmd) == "gh api repos/acme/widget -q .delete_branch_on_merge":
+                return subprocess.CompletedProcess(cmd, 0, stdout="true\n", stderr="")
+            if " ".join(cmd) == "gh api repos/acme/widget/rulesets":
+                return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(
+                    [{"id": 1, "name": "protect-dev"}, {"id": 2, "name": "protect-prd"}]), stderr="")
+            if cmd[:4] == ["gh", "api", "--method", "PUT"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        with mock.patch.object(repo_init, "_run", side_effect=fake_run):
+            with mock.patch("builtins.print") as printed:
+                rc = repo_init.cmd_apply(args)
+
+        result = json.loads(printed.call_args[0][0])
+        self.assertEqual(len(label_calls), 5)
+        self.assertEqual(set(result["labels"].keys()), {
+            "go:risk-low", "go:risk-medium", "go:risk-high",
+            "go:risk-critical", "go:no-automerge"})
+        self.assertTrue(all(status == "ok" for status in result["labels"].values()))
         self.assertEqual(rc, 0)
 
     def test_rerun_after_success_does_not_rename_dev(self):
@@ -495,6 +537,42 @@ class ApplyRulesetTests(unittest.TestCase):
             ok, detail = repo_init.apply_ruleset("acme/widget", {"name": "protect-dev"})
         self.assertFalse(ok)
         self.assertIn("FAILED", detail)
+
+
+class EnsureAutomergeLabelsTests(unittest.TestCase):
+    def test_creates_or_updates_all_five_labels_via_force(self):
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        with mock.patch.object(repo_init, "_run", side_effect=fake_run):
+            result = repo_init.ensure_automerge_labels("acme/widget")
+
+        expected_names = {"go:risk-low", "go:risk-medium", "go:risk-high",
+                           "go:risk-critical", "go:no-automerge"}
+        self.assertEqual(set(result.keys()), expected_names)
+        self.assertTrue(all(status == "ok" for status in result.values()))
+        self.assertEqual(len(calls), 5)
+        for cmd in calls:
+            self.assertEqual(cmd[:3], ["gh", "label", "create"])
+            self.assertIn("--force", cmd)
+            self.assertIn("--repo", cmd)
+            self.assertEqual(cmd[cmd.index("--repo") + 1], "acme/widget")
+
+    def test_one_label_failure_is_reported_without_aborting_the_rest(self):
+        def fake_run(cmd, **kw):
+            if cmd[3] == "go:risk-high":
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        with mock.patch.object(repo_init, "_run", side_effect=fake_run):
+            result = repo_init.ensure_automerge_labels("acme/widget")
+
+        self.assertIn("FAILED", result["go:risk-high"])
+        self.assertEqual(result["go:risk-low"], "ok")
+        self.assertEqual(result["go:no-automerge"], "ok")
 
 
 class InitOpenspecTests(unittest.TestCase):
