@@ -834,6 +834,12 @@ def detect_state(repo: Path) -> Dict[str, Any]:
         "rulesets_sync_script_exists": (repo / RULESETS_SYNC_SCRIPT_RELPATH).is_file(),
         "rulesets_requirements_exists": (repo / RULESETS_REQUIREMENTS_RELPATH).is_file(),
         "openspec_validate_workflow_exists": (repo / OPENSPEC_VALIDATE_WORKFLOW_RELPATH).is_file(),
+        "dependabot_manifest_check_workflow_exists": (
+            repo / DEPENDABOT_CHECK_WORKFLOW_RELPATH
+        ).is_file(),
+        "dependabot_manifest_check_script_exists": (
+            repo / DEPENDABOT_CHECK_SCRIPT_RELPATH
+        ).is_file(),
         "ci_jobs_discovered": discover_ci_checks(repo),
     }
 
