@@ -196,6 +196,93 @@ class BuildRulesetsDriftGuardWorkflowTests(unittest.TestCase):
             "${{ github.event_name == 'push' && steps.app-token.outputs.token != '' }}")
 
 
+class RulesetStructuralViewTests(unittest.TestCase):
+    def test_strips_required_status_checks_rule_entirely(self):
+        with_checks = repo_init.build_ruleset_for_branch("dev", "2", "some-check")
+        without_checks = repo_init.build_ruleset_for_branch("dev", "2")
+        self.assertEqual(
+            repo_init._ruleset_structural_view(with_checks),
+            repo_init._ruleset_structural_view(without_checks))
+
+    def test_structural_change_still_detected(self):
+        two_branch = repo_init.build_ruleset_for_branch("dev", "2")
+        three_branch = repo_init.build_ruleset_for_branch("dev", "3")
+        self.assertNotEqual(
+            repo_init._ruleset_structural_view(two_branch),
+            repo_init._ruleset_structural_view(three_branch))
+
+
+class ComputeDriftTests(unittest.TestCase):
+    def _state(self, repo: Path, **overrides):
+        state = repo_init.detect_state(repo)
+        state.update(overrides)
+        return state
+
+    def test_no_drift_when_files_match_current_templates(self):
+        repo = _tmp_repo()
+        rulesets_dir = repo / ".github" / "rulesets"
+        rulesets_dir.mkdir(parents=True)
+        for branch in ("dev", "prd"):
+            ruleset = repo_init.build_ruleset_for_branch(branch, "2")
+            (rulesets_dir / f"protect-{branch}.json").write_text(json.dumps(ruleset) + "\n")
+        automerge_path = repo / repo_init.AUTOMERGE_WORKFLOW_RELPATH
+        automerge_path.parent.mkdir(parents=True, exist_ok=True)
+        automerge_path.write_text(repo_init.build_automerge_workflow())
+        state = self._state(repo)
+        drift = repo_init.compute_drift(repo, state, ["dev", "prd"], "2")
+        self.assertEqual(drift, [])
+
+    def test_ruleset_structural_drift_detected_but_extra_required_check_is_not(self):
+        repo = _tmp_repo()
+        rulesets_dir = repo / ".github" / "rulesets"
+        rulesets_dir.mkdir(parents=True)
+        # Operator-grown required_status_checks: not drift on its own.
+        ruleset = repo_init.build_ruleset_for_branch("dev", "2", "some-other-check")
+        (rulesets_dir / "protect-dev.json").write_text(json.dumps(ruleset) + "\n")
+        state = self._state(repo)
+        self.assertEqual(repo_init.compute_drift(repo, state, ["dev"], "2"), [])
+
+        # Now introduce a genuine structural change (branch_model "3" adds
+        # required_linear_history to dev) and confirm it IS flagged.
+        ruleset3 = repo_init.build_ruleset_for_branch("dev", "3", "some-other-check")
+        (rulesets_dir / "protect-dev.json").write_text(json.dumps(ruleset3) + "\n")
+        drift = repo_init.compute_drift(repo, state, ["dev"], "2")
+        self.assertEqual(len(drift), 1)
+        self.assertEqual(drift[0]["path"], ".github/rulesets/protect-dev.json")
+        self.assertIn("required_status_checks is intentionally excluded", drift[0]["detail"])
+
+    def test_automerge_workflow_content_drift_detected(self):
+        repo = _tmp_repo()
+        automerge_path = repo / repo_init.AUTOMERGE_WORKFLOW_RELPATH
+        automerge_path.parent.mkdir(parents=True, exist_ok=True)
+        automerge_path.write_text("name: stale hand-edited workflow\n")
+        state = self._state(repo, automerge_workflow_exists=True)
+        drift = repo_init.compute_drift(repo, state, ["dev", "prd"], "2")
+        paths = [d["path"] for d in drift]
+        self.assertIn(repo_init.AUTOMERGE_WORKFLOW_RELPATH, paths)
+
+    def test_openspec_validate_workflow_content_drift_detected(self):
+        repo = _tmp_repo()
+        wf_path = repo / repo_init.OPENSPEC_VALIDATE_WORKFLOW_RELPATH
+        wf_path.parent.mkdir(parents=True, exist_ok=True)
+        wf_path.write_text("name: stale\n")
+        state = self._state(repo, openspec_validate_workflow_exists=True)
+        drift = repo_init.compute_drift(repo, state, ["dev", "prd"], "2")
+        paths = [d["path"] for d in drift]
+        self.assertIn(repo_init.OPENSPEC_VALIDATE_WORKFLOW_RELPATH, paths)
+
+    def test_policy_yaml_and_agents_md_never_flagged_as_drift(self):
+        repo = _tmp_repo()
+        (repo / ".worktrail").mkdir(parents=True)
+        (repo / ".worktrail" / "policy.yaml").write_text("pre_pr_cmd: pytest -q\n")
+        (repo / "AGENTS.md").write_text("# hand-authored content\n")
+        state = self._state(repo)
+        drift = repo_init.compute_drift(repo, state, ["dev", "prd"], "2")
+        paths = [d["path"] for d in drift]
+        self.assertNotIn(".worktrail/policy.yaml", paths)
+        self.assertNotIn("AGENTS.md", paths)
+
+
 def _fake_init_openspec(repo: Path):
     """Mirrors repo_init.init_openspec's file-existence idempotency without
     actually shelling out to npx."""
@@ -636,6 +723,42 @@ class ProposeTests(unittest.TestCase):
         self.assertIn(".gitnexus/ (already indexed)", result["skipped"])
         policy_text = (repo / ".worktrail" / "policy.yaml").read_text()
         self.assertNotIn("gitnexus", policy_text)
+
+    def test_fresh_repo_reports_no_drift(self):
+        repo = _tmp_repo()
+        rc, result = self._run_propose(repo)
+        self.assertEqual(rc, 0)
+        self.assertEqual(result["drift"], [])
+
+    def test_second_run_on_already_onboarded_repo_reports_no_drift(self):
+        repo = _tmp_repo()
+        self._run_propose(repo)
+        rc, result = self._run_propose(repo)
+        self.assertEqual(rc, 0)
+        self.assertEqual(result["drift"], [])
+
+    def test_stale_automerge_workflow_surfaces_in_drift_and_is_not_rewritten(self):
+        repo = _tmp_repo()
+        self._run_propose(repo)
+        automerge_path = repo / repo_init.AUTOMERGE_WORKFLOW_RELPATH
+        automerge_path.write_text("name: hand-edited stale content\n")
+        rc, result = self._run_propose(repo)
+        self.assertEqual(rc, 0)
+        drift_paths = [d["path"] for d in result["drift"]]
+        self.assertIn(repo_init.AUTOMERGE_WORKFLOW_RELPATH, drift_paths)
+        # Report-only: propose must never overwrite a drifted file on its own.
+        self.assertEqual(automerge_path.read_text(), "name: hand-edited stale content\n")
+        self.assertIn(f"{repo_init.AUTOMERGE_WORKFLOW_RELPATH} (already exists)", result["skipped"])
+
+    def test_check_mode_includes_drift(self):
+        repo = _tmp_repo()
+        self._run_propose(repo)
+        automerge_path = repo / repo_init.AUTOMERGE_WORKFLOW_RELPATH
+        automerge_path.write_text("name: hand-edited stale content\n")
+        rc, result = self._run_propose(repo, check=True)
+        self.assertEqual(rc, 0)
+        drift_paths = [d["path"] for d in result["drift"]]
+        self.assertIn(repo_init.AUTOMERGE_WORKFLOW_RELPATH, drift_paths)
 
 
 class EnableAspensTests(unittest.TestCase):
