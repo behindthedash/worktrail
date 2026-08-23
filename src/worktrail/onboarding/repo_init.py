@@ -332,6 +332,37 @@ def enable_aspens(repo: Path) -> Tuple[bool, Optional[str]]:
 
 
 # --------------------------------------------------------------------------
+# GitNexus add-on (opt-in)
+# --------------------------------------------------------------------------
+
+def enable_gitnexus(repo: Path) -> Tuple[bool, Optional[str]]:
+    """Opt a repo into a GitNexus index at bootstrap time: run
+    `gitnexus analyze --embeddings --index-only` so a freshly onboarded repo
+    doesn't wait for its first orchestrated task to get indexed.
+    `--index-only` deliberately skips AGENTS.md/skills file injection --
+    bootstrap only wants the index, not a second copy of files this repo
+    already manages.
+
+    Returns (configured, warning). `configured` is True only if `.gitnexus/`
+    now exists -- the subprocess call is swallowed on timeout or launch
+    failure (best-effort indexing, matching `enable_aspens`'s posture), so
+    directory existence, not the return code, is the only reliable
+    postcondition available here."""
+    if (repo / ".gitnexus").is_dir():
+        return False, None
+    try:
+        _run(["gitnexus", "analyze", "--embeddings", "--index-only", str(repo)])
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+    if (repo / ".gitnexus").is_dir():
+        return True, None
+    return False, (
+        "gitnexus analyze did not produce .gitnexus/ -- the gitnexus CLI may not be "
+        "installed/reachable; run `gitnexus analyze --embeddings --index-only` by hand "
+        "once it is")
+
+
+# --------------------------------------------------------------------------
 # OpenSpec scaffold
 # --------------------------------------------------------------------------
 
@@ -738,6 +769,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="opt into the aspens skill-doc-sync add-on: declares add_ons.aspens in the "
              "seeded policy file and runs `aspens doc init` now instead of waiting for the "
              "repo's first orchestrated task")
+    propose_p.add_argument(
+        "--with-gitnexus", action="store_true",
+        help="opt into bootstrap GitNexus indexing: runs `gitnexus analyze --embeddings "
+             "--index-only` now instead of waiting for the repo's first orchestrated task")
     propose_p.add_argument("--json", action="store_true", dest="as_json")
 
     apply_p = subs.add_parser(
