@@ -339,6 +339,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{{{ steps.app-token.outputs.token }}}}
         run: python {RULESETS_SCRIPT_DIR_RELPATH}/rulesets_sync.py --apply
+
+      - name: Note skipped run due to missing App credentials
+        if: ${{{{ always() && (env.RULESETS_APP_ID == '' || env.RULESETS_APP_PRIVATE_KEY == '') }}}}
+        run: echo "::notice::Rulesets drift guard skipped -- install the release-notes GitHub App and set vars.RELEASE_NOTES_APP_ID / secrets.RELEASE_NOTES_APP_PRIVATE_KEY to enable it."
 '''
 
 
