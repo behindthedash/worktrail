@@ -20,7 +20,9 @@ allowed-tools: Read, Write, Bash, AskUserQuestion
 Applies the workspace's repo-standards doctrine to one repo at a time: the
 `CLAUDE.md` → `@AGENTS.md` split, a branch model with matching
 `.github/rulesets/*.json`, an OpenSpec scaffold,
-`.github/workflows/worktrail-auto-merge.yml`, and a seeded
+`.github/workflows/worktrail-auto-merge.yml`,
+`.github/workflows/rulesets_drift_guard.yml` (plus its vendored
+`scripts/ci/rulesets/rulesets_sync.py` + `requirements.txt`), and a seeded
 `.worktrail/policy.yaml`. The CLI (`worktrail-repo-init`) owns
 file generation and the GitHub API calls; this skill owns the git workflow
 around it (worktree, commit, PR) and the judgment calls the CLI deliberately
@@ -69,6 +71,15 @@ hand-edit the generated `.github/rulesets/*.json` files to add them to
 does this automatically (a wrongly-required informational/flaky job would
 deadlock every future PR).
 
+`propose` also scaffolds `.github/workflows/rulesets_drift_guard.yml`, a
+scheduled/PR-triggered workflow that runs the vendored
+`scripts/ci/rulesets/rulesets_sync.py` to check (and, on `main`, apply) drift
+between the committed `.github/rulesets/*.json` files and the rulesets
+actually configured on GitHub. It mints its own GitHub App token for the
+rulesets API calls rather than using `secrets.GITHUB_TOKEN`; nothing to
+configure at `propose` time, but see Step 4 for the App credentials it needs
+at runtime.
+
 Ask the user whether to also pass `--with-aspens` (declares `add_ons.aspens`
 in the seeded policy file and runs `aspens doc init` immediately, instead of
 waiting for the repo's first orchestrated task) — don't default it on. There
@@ -105,6 +116,13 @@ open PRs onto `dev`,
 `apply` exited non-zero — investigate and re-run; it is safe to re-run (it
 skips branches/renames already done, and PUT-then-reverifies rulesets
 whether or not they already exist).
+
+If the repo's `RELEASE_NOTES_APP_ID` variable and
+`RELEASE_NOTES_APP_PRIVATE_KEY` secret aren't both already set, `apply`
+prints a warning that the scaffolded `rulesets_drift_guard.yml` will skip
+until the release-notes GitHub App is installed on the repo and those two
+credentials are configured — pass this reminder on to the user rather than
+treating it as a failure.
 
 ## Examples
 
