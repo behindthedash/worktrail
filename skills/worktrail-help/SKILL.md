@@ -27,20 +27,36 @@ The help skill itself is available as `/worktrail-help` in Claude Code or
 
 ## Accepted forms
 
+This block is generated from the parser's own form registry
+(`worktrail-go-parse --forms`) and pinned by
+`tests/router/test_parse_invocation.py`, so it cannot drift from what the front
+door actually accepts. Regenerate it rather than editing it by hand.
+
 ```text
-<front-door>                         dashboard and interactive picker
-<front-door> help                    show this reference
-<front-door> <brief-id>              claim or resume a queued handoff
-<front-door> <repo>                  show active work for a repository
-<front-door> auto                    auto-pick one ranked queue brief
-<front-door> <repo> auto             auto-pick one brief for that repository
-<front-door> drain [max-items] [repo] drain multiple items in fresh contexts
-<front-door> fix <request>            classify and route a defect/request
-<front-door> implement spec <id>      execute a specification
-<front-door> <repo> implement spec <id>
-<front-door> route:<A-J>              force a route
-<front-door> <repo> route:<A-J> <id>  force a route for a repo/spec
+<front-door>                               dashboard and interactive picker
+<front-door> help                          show this reference
+<front-door> drain [max-items] [repo]      drain multiple items in fresh contexts
+<front-door> auto                          auto-pick one ranked queue brief
+<front-door> <repo> auto                   auto-pick one brief for that repository
+<front-door> route:<A-J>                   force a route
+<front-door> <repo> route:<A-J> <id>       force a route for a repo/spec
+<front-door> new <request>                 plan a new feature
+<front-door> implement spec <id>           execute a specification
+<front-door> <repo> implement spec <id>    execute a specification in that repo
+<front-door> continue                      resume in-flight work
+<front-door> pr                            PR / CI repair
+<front-door> brainstorm                    idea discovery
+<front-door> handoff:<id>                  claim or resume a queued handoff
+<front-door> <brief-id>                    claim or resume a queued handoff
+<front-door> <repo>                        show active work for a repository
+<front-door> fix <request>               * classify and route a defect/request
+<front-door> <free text>                 * classify and route any other request
+
+* not a parsed form -- reaches the route classifier as free text
 ```
+
+Forms are listed in the order the parser checks them, so an earlier line wins
+over a later one.
 
 `<brief-id>` is a Worktrail queue handoff identifier, such as
 `20260726-140500`. A specification identifier is deterministic when used with
