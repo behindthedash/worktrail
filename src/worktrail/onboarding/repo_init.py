@@ -56,6 +56,10 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 
 from ..router.policy import POLICY_RELPATH, has_policy_file
+from .dependabot_manifest_check_template import (
+    DEPENDABOT_MANIFEST_CHECK_PY,
+    DEPENDABOT_MANIFEST_CHECK_REQUIREMENTS_TXT,
+)
 from .rulesets_drift_guard_template import RULESETS_REQUIREMENTS_TXT, RULESETS_SYNC_PY
 
 OPENSPEC_PACKAGE = "@fission-ai/openspec@latest"
@@ -244,6 +248,16 @@ RULESETS_DRIFT_GUARD_WORKFLOW_RELPATH = ".github/workflows/rulesets_drift_guard.
 RULESETS_SCRIPT_DIR_RELPATH = "scripts/ci/rulesets"
 RULESETS_SYNC_SCRIPT_RELPATH = f"{RULESETS_SCRIPT_DIR_RELPATH}/rulesets_sync.py"
 RULESETS_REQUIREMENTS_RELPATH = f"{RULESETS_SCRIPT_DIR_RELPATH}/requirements.txt"
+
+# --------------------------------------------------------------------------
+# Dependabot manifest check
+# --------------------------------------------------------------------------
+
+DEPENDABOT_CHECK_WORKFLOW_RELPATH = ".github/workflows/dependabot_manifest_check.yml"
+DEPENDABOT_CHECK_SCRIPT_DIR_RELPATH = "scripts/ci/dependabot"
+DEPENDABOT_CHECK_SCRIPT_RELPATH = f"{DEPENDABOT_CHECK_SCRIPT_DIR_RELPATH}/test_dependabot_config.py"
+DEPENDABOT_CHECK_REQUIREMENTS_RELPATH = f"{DEPENDABOT_CHECK_SCRIPT_DIR_RELPATH}/requirements.txt"
+DEPENDABOT_CHECK_JOB_NAME = "Dependabot manifest check"
 
 _AUTOMERGE_WORKFLOW = '''\
 name: "CI: Auto-merge on open"
