@@ -174,6 +174,8 @@ AUTOMERGE_WORKFLOW_RELPATH = ".github/workflows/worktrail-auto-merge.yml"
 
 RULESETS_DRIFT_GUARD_WORKFLOW_RELPATH = ".github/workflows/rulesets_drift_guard.yml"
 RULESETS_SCRIPT_DIR_RELPATH = "scripts/ci/rulesets"
+RULESETS_SYNC_SCRIPT_RELPATH = f"{RULESETS_SCRIPT_DIR_RELPATH}/rulesets_sync.py"
+RULESETS_REQUIREMENTS_RELPATH = f"{RULESETS_SCRIPT_DIR_RELPATH}/requirements.txt"
 
 _AUTOMERGE_WORKFLOW = '''\
 name: "CI: Auto-merge on open"
@@ -556,6 +558,10 @@ def detect_state(repo: Path) -> Dict[str, Any]:
         "policy_file_exists": policy_exists,
         "openspec_initialized": (repo / "openspec" / "config.yaml").is_file(),
         "automerge_workflow_exists": (repo / AUTOMERGE_WORKFLOW_RELPATH).is_file(),
+        "rulesets_drift_guard_exists": (
+            repo / RULESETS_DRIFT_GUARD_WORKFLOW_RELPATH
+        ).is_file(),
+        "rulesets_sync_script_exists": (repo / RULESETS_SYNC_SCRIPT_RELPATH).is_file(),
         "ci_jobs_discovered": discover_ci_checks(repo),
     }
 
