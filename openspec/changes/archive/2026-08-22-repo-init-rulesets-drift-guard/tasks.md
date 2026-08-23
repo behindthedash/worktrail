@@ -67,5 +67,5 @@
 - [x] 6.1 Update `skills/worktrail-repo-init/SKILL.md` to mention the newly scaffolded
       `rulesets_drift_guard.yml` + vendored sync script, and the apply-time App-credential
       reminder.
-- [ ] 6.2 [cleanup] Confirm `PYTHONPATH=src pytest -q` and
+- [x] 6.2 [cleanup] Confirm `PYTHONPATH=src pytest -q` and
       `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` both pass.
