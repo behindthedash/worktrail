@@ -6,7 +6,7 @@
 ## 2. State detection and required_status_checks wiring
 
 - [ ] 2.1 Add `openspec_validate_workflow_exists` to `detect_state()`, mirroring `automerge_workflow_exists`, so the "will be newly written this run" predicate is known before the ruleset loop runs. (Requirement: Idempotent on workflow-file presence, not solely on openspec_initialized)
-- [ ] 2.2 Give `build_ruleset_for_branch()` (or its `build_ruleset()` caller) a way to include an extra `required_status_checks` entry, used only when generating a *fresh* ruleset file and the openspec-validate workflow is newly written this run — the only caller-supplied entry; no other entry from `state["ci_jobs_discovered"]` is ever passed in. (Requirement: Wire the new check into required_status_checks, scoped to this job only — Scenario: New workflow written this run, ruleset file not yet present; Scenario: Other CI jobs remain unaffected)
+- [x] 2.2 Give `build_ruleset_for_branch()` (or its `build_ruleset()` caller) a way to include an extra `required_status_checks` entry, used only when generating a *fresh* ruleset file and the openspec-validate workflow is newly written this run — the only caller-supplied entry; no other entry from `state["ci_jobs_discovered"]` is ever passed in. (Requirement: Wire the new check into required_status_checks, scoped to this job only — Scenario: New workflow written this run, ruleset file not yet present; Scenario: Other CI jobs remain unaffected)
 
 ## 3. Existing-ruleset patch path
 

@@ -152,16 +152,27 @@ def build_ruleset(
     }
 
 
-def build_ruleset_for_branch(branch: str, branch_model: str) -> Dict[str, Any]:
+def build_ruleset_for_branch(
+    branch: str, branch_model: str, extra_required_status_check: Optional[str] = None,
+) -> Dict[str, Any]:
     """branch_model "2" = dev/prd (GGB pattern); "3" = dev/stg/prd (datalena
-    pattern, dev is squash + required_linear_history)."""
+    pattern, dev is squash + required_linear_history).
+
+    extra_required_status_check, when given, is the sole entry ever placed in
+    the generated ruleset's required_status_checks -- callers pass it only
+    when generating a *fresh* ruleset file in the same `propose` run that
+    also newly writes the openspec-validate workflow (see
+    OPENSPEC_VALIDATE_JOB_NAME). Nothing from `state["ci_jobs_discovered"]`
+    is ever passed in here; `propose` still deliberately never
+    auto-populates required_status_checks from CI discovery otherwise."""
+    checks = [extra_required_status_check] if extra_required_status_check else []
     if branch == "dev":
         return build_ruleset(
-            "protect-dev", "dev", ["squash"], [], linear_history=(branch_model == "3"))
+            "protect-dev", "dev", ["squash"], checks, linear_history=(branch_model == "3"))
     if branch == "stg":
-        return build_ruleset("protect-stg", "stg", ["merge"], [])
+        return build_ruleset("protect-stg", "stg", ["merge"], checks)
     if branch == "prd":
-        return build_ruleset("protect-prd", "prd", ["merge"], [])
+        return build_ruleset("protect-prd", "prd", ["merge"], checks)
     raise ValueError(f"unknown branch {branch!r}")
 
 
@@ -383,6 +394,54 @@ jobs:
         if: ${{{{ always() && (env.RULESETS_APP_ID == '' || env.RULESETS_APP_PRIVATE_KEY == '') }}}}
         run: echo "::notice::Rulesets drift guard skipped -- install the release-notes GitHub App and set vars.RELEASE_NOTES_APP_ID / secrets.RELEASE_NOTES_APP_PRIVATE_KEY to enable it."
 '''
+
+
+# --------------------------------------------------------------------------
+# OpenSpec validate workflow
+# --------------------------------------------------------------------------
+
+OPENSPEC_VALIDATE_WORKFLOW_RELPATH = ".github/workflows/worktrail-openspec-validate.yml"
+
+# _OPENSPEC_VALIDATE_WORKFLOW sets no job-level `name:` on `openspec-validate`,
+# so GitHub's own default display -- and discover_ci_checks()'s name-or-id
+# fallback -- both resolve to the job id itself. Keeping that string as a
+# constant here, instead of re-typing it at each required_status_checks call
+# site, is what keeps discover_ci_checks() and the ruleset entry from ever
+# drifting apart.
+OPENSPEC_VALIDATE_JOB_NAME = "openspec-validate"
+
+_OPENSPEC_VALIDATE_WORKFLOW = '''\
+name: "CI: OpenSpec validate"
+on:
+  pull_request:
+    paths:
+      - "openspec/**"
+
+jobs:
+  openspec-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Unpinned @latest: OpenSpec has no stable major yet and this workflow
+      # is meant to be a portable drop-in with no repo-local lockfile to keep
+      # current -- the tradeoff is a validate rule that can shift under a repo
+      # without warning if OpenSpec ships a breaking release, in exchange for
+      # never going stale on an old CLI version.
+      - name: openspec validate --all --strict
+        run: npx --yes @fission-ai/openspec@latest validate --all --strict
+'''
+
+
+def build_openspec_validate_workflow() -> str:
+    """A portable, drop-in "CI: OpenSpec validate" workflow: paths-filtered
+    to `openspec/**` so it only runs on PRs that touch the spec tree, running
+    `openspec validate --all --strict` via the same unpinned
+    `@fission-ai/openspec@latest` CLI this module's own `init_openspec()`
+    uses (see OPENSPEC_PACKAGE) -- kept as an inline literal here rather than
+    templated from that constant so the workflow stays copy-pasteable on its
+    own, matching build_automerge_workflow()'s shape."""
+    return _OPENSPEC_VALIDATE_WORKFLOW
 
 
 # --------------------------------------------------------------------------
@@ -652,6 +711,7 @@ def detect_state(repo: Path) -> Dict[str, Any]:
             repo / RULESETS_DRIFT_GUARD_WORKFLOW_RELPATH
         ).is_file(),
         "rulesets_sync_script_exists": (repo / RULESETS_SYNC_SCRIPT_RELPATH).is_file(),
+        "openspec_validate_workflow_exists": (repo / OPENSPEC_VALIDATE_WORKFLOW_RELPATH).is_file(),
         "ci_jobs_discovered": discover_ci_checks(repo),
     }
 
