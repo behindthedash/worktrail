@@ -129,25 +129,33 @@ defeats the whole guarantee (see
 
 ### Phase 1 — Classify the Invocation, Then Show the Orientation Dashboard
 
-**Classify the raw positional argument(s) first — before fetching or printing the dashboard, and before any `AskUserQuestion` call.** This is the single place invocation parsing happens; nothing later in this skill re-derives it. Check in this order:
+**Classify the raw positional argument(s) first — before fetching or printing the dashboard, and before any `AskUserQuestion` call.** This is the single place invocation parsing happens; nothing later in this skill re-derives it.
 
-- **help** — delegate to `Skill("worktrail-help", args="<remaining topic>")` and stop; do not fetch or render the dashboard.
-- **drain** — `drain [max-items] [repo]`: read `references/drain.md` and run the installed `worktrail-drain` console script with the resolved invocation agent; do not fetch or render the dashboard, and do not claim a brief in the interactive process. The console script is an internal executor; users enter drain requests through `worktrail-go` only.
-- **auto** — `auto` argument (spec 017): hold `$AUTO_MODE=true` for the rest of the dispatch (combinable with a repo arg, `/go REPO auto`).
-- **route:X** — explicit route override A-J: hold as `$ROUTE_OVERRIDE`, skip classification later (Phase 5), dispatch directly.
-- **v1 intent keywords** — new, implement, continue, pr, brainstorm: map to routes, skip classification later.
-- **handoff:ID** — explicit brief ID from queue: hold as `$BRIEF_ID`.
-- **Bare integer** — no global numbered list exists; this only resolves within an active Level-2 category picker (Phase 1b). A standalone `/go N` argument, with no picker yet active, is free-text.
-- **Bare or prefix brief ID** — any argument not already matched above (not `help`/`drain`/`auto`/`route:X`/a v1 intent keyword, and not a resolved repo name): resolve it against the queue right now, before doing anything else with the dashboard —
+**The grammar is owned by `worktrail-go-parse`, not by this prose.** Run it and act on the result — do not re-implement the precedence here, and do not hand-classify an argument you think you recognize:
 
-  ```bash
-  worktrail-work-queue resolve "$ARG" --json
-  ```
+```bash
+REPO_NAMES=$(worktrail-resolve-repo --start "$PWD" --json \
+  | python3 -c 'import json,os,sys; print(",".join(os.path.basename(c) for c in json.load(sys.stdin).get("candidates", [])))')
+worktrail-go-parse "$ARGS" --repos "$REPO_NAMES"
+```
 
-  A `match` (full filename, stem, unique leading prefix, or `id` frontmatter — the same resolution `claim` uses) makes this a Brief-ID invocation: hold the result as `$BRIEF_ID` and treat it identically to `handoff:ID`. `none` or `ambiguous` means this argument is not a brief ID — it falls through to free-text.
-- **Free-text** — anything left unmatched: unstructured request, classified later by `classify.py` (Phase 5).
+`$ARGS` is the raw positional argument string exactly as typed. Add `--picker-active` when a Level-2 category picker is already open (Phase 1b); without it a bare integer is free text, because no global numbered list exists.
 
-Extract from the arguments: `$ARG_REPO` (first positional arg if it looks like a repo path or keyword), `$ARG_INTENT` (free-text request or intent keyword), `$ARG_SPEC` (spec folder name, e.g. `003-payments`, if provided).
+The result always carries every field, so no existence checks are needed. Act on `mode`:
+
+| `mode` | Action |
+|---|---|
+| `dashboard` | Proceed to the orientation dashboard below. When `repo` is set, scope it to that repository. |
+| `help` | Delegate to `Skill("worktrail-help", args="<help_topic>")` and stop; do not fetch or render the dashboard. |
+| `drain` | Read `references/drain.md` and run the installed `worktrail-drain` console script with the resolved invocation agent, passing `drain_max_items` and `drain_repo`. Do not fetch or render the dashboard, and do not claim a brief in the interactive process. The console script is an internal executor; users enter drain requests through `worktrail-go` only. |
+| `auto` | Hold `$AUTO_MODE=true` for the rest of the dispatch (spec 017). `repo`, when set, scopes it. |
+| `route` | Explicit route override: hold `route` as `$ROUTE_OVERRIDE` and `spec` as `$ARG_SPEC`. Skip classification later (Phase 5) and dispatch directly. |
+| `intent` | v1 intent keyword in `intent` — maps to routes, skips classification later. `spec` carries the spec id when one was given. |
+| `brief` | Hold `brief_id` as `$BRIEF_ID` and `brief_path` as its resolved path. `brief_status: ambiguous` → show `brief_candidates` and ask which; `brief_status: none` → that id isn't in the queue, say so and re-list. |
+| `picker_index` | A Level-2 picker selection (Phase 1b); the choice is in `picker_index`. |
+| `free_text` | Unstructured request in `free_text`, classified later by `classify.py` (Phase 5). |
+
+Then hold `$ARG_REPO` from `repo`, `$ARG_INTENT` from `intent` (or `free_text` when no intent keyword was given), and `$ARG_SPEC` from `spec`.
 
 **Now fetch the dashboard** (already skipped entirely above for `help`/`drain`). Detect mode via `resolve_repo.py --start "$PWD" --json`. Fetch queue JSON first and pass it to dashboard so the picker options are computed by the script, not by Claude — pass `--auto`/`--auto-repo` here when `$AUTO_MODE=true`, since that changes what the script itself computes:
 
