@@ -337,6 +337,36 @@ class ProposeTests(unittest.TestCase):
             prd_rsc["parameters"]["required_status_checks"],
             [{"context": "Lint, Test & Build"}, {"context": repo_init.OPENSPEC_VALIDATE_JOB_NAME}])
 
+    def test_preexisting_ruleset_already_containing_check_is_byte_for_byte_unchanged(self):
+        # Task 5.4: the workflow is newly written this run, and one ruleset
+        # file already exists AND already has the job's exact display name
+        # in required_status_checks -- patch_ruleset_required_check's
+        # already-present short-circuit (task 3.2) must leave the file
+        # byte-for-byte untouched, not merely semantically equivalent.
+        repo = _tmp_repo()
+        rulesets_dir = repo / ".github" / "rulesets"
+        rulesets_dir.mkdir(parents=True)
+        dev_ruleset = repo_init.build_ruleset(
+            "protect-dev", "dev", ["squash"], [repo_init.OPENSPEC_VALIDATE_JOB_NAME])
+        dev_path = rulesets_dir / "protect-dev.json"
+        dev_text_before = json.dumps(dev_ruleset, indent=2) + "\n"
+        dev_path.write_text(dev_text_before)
+        dev_mtime_before = dev_path.stat().st_mtime_ns
+
+        rc, result = self._run_propose(repo)
+
+        self.assertEqual(rc, 0)
+        # The workflow was absent, so this run still writes it.
+        self.assertIn(repo_init.OPENSPEC_VALIDATE_WORKFLOW_RELPATH, result["written"])
+        # protect-dev.json is untouched: not reported as patched or written,
+        # its bytes are identical, and it was never rewritten to disk.
+        self.assertFalse(any("patched" in w for w in result["written"]))
+        self.assertNotIn(str(dev_path.relative_to(repo)), result["written"])
+        self.assertTrue(
+            any(str(dev_path.relative_to(repo)) in s for s in result["skipped"]))
+        self.assertEqual(dev_path.read_text(), dev_text_before)
+        self.assertEqual(dev_path.stat().st_mtime_ns, dev_mtime_before)
+
     def test_three_branch_model_writes_stg_too(self):
         repo = _tmp_repo()
         rc, result = self._run_propose(repo, branch_model="3")
