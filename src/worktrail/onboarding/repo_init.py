@@ -259,6 +259,59 @@ DEPENDABOT_CHECK_SCRIPT_RELPATH = f"{DEPENDABOT_CHECK_SCRIPT_DIR_RELPATH}/test_d
 DEPENDABOT_CHECK_REQUIREMENTS_RELPATH = f"{DEPENDABOT_CHECK_SCRIPT_DIR_RELPATH}/requirements.txt"
 DEPENDABOT_CHECK_JOB_NAME = "Dependabot manifest check"
 
+
+def build_dependabot_manifest_check_workflow(branches: List[str]) -> str:
+    """A "CI: Dependabot Manifest Check" workflow targeting the repo's actual
+    branch model, running the vendored `test_dependabot_config.py`
+    (dependabot_manifest_check_template) against `.github/dependabot.yml`.
+
+    Deliberately has no `paths` filter (design D4): a broken entry can be
+    introduced without ever touching `dependabot.yml` itself -- moving or
+    deleting the manifest file an existing entry's `directory` points at is
+    enough to silently stop Dependabot-Updates for that entry, and that
+    diff would never trigger a `paths`-filtered run. Running unconditionally
+    on every pull request is the only way to catch that case.
+
+    The check only reads files already present in the checkout -- it makes
+    no GitHub API calls, so unlike `build_rulesets_drift_guard_workflow` it
+    needs no minted token and no elevated permissions beyond the default
+    `permissions: contents: read`."""
+    branches_yaml = "[" + ", ".join(branches) + "]"
+    return f'''\
+name: "CI: Dependabot Manifest Check"
+
+on:
+  pull_request:
+    branches: {branches_yaml}
+  workflow_dispatch: {{}}
+
+concurrency:
+  group: dependabot-manifest-check-${{{{ github.event.pull_request.number || github.ref }}}}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  dependabot-manifest-check:
+    name: {DEPENDABOT_CHECK_JOB_NAME}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: python -m pip install -r {DEPENDABOT_CHECK_REQUIREMENTS_RELPATH}
+
+      - name: Check dependabot.yml manifests
+        run: python {DEPENDABOT_CHECK_SCRIPT_RELPATH}
+'''
+
+
 _AUTOMERGE_WORKFLOW = '''\
 name: "CI: Auto-merge on open"
 on:
