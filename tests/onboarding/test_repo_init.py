@@ -388,6 +388,65 @@ class ProposeTests(unittest.TestCase):
             prd_rsc["parameters"]["required_status_checks"],
             [{"context": "Lint, Test & Build"}, {"context": repo_init.OPENSPEC_VALIDATE_JOB_NAME}])
 
+    def test_unrelated_discovered_ci_job_is_not_added_to_required_status_checks(self):
+        # Task 5.5: discover_ci_checks() finding an unrelated CI job must
+        # not leak it into required_status_checks -- only
+        # OPENSPEC_VALIDATE_JOB_NAME is ever caller-supplied to
+        # build_ruleset_for_branch (task 2.2). This exercises the
+        # fresh-ruleset-generation path.
+        repo = _tmp_repo()
+        wf_dir = repo / ".github" / "workflows"
+        wf_dir.mkdir(parents=True)
+        (wf_dir / "ci.yml").write_text(
+            "on: pull_request\n"
+            "jobs:\n"
+            "  test:\n"
+            "    name: Lint, Test & Build\n"
+            "    runs-on: ubuntu-latest\n")
+
+        rc, result = self._run_propose(repo)
+
+        self.assertEqual(rc, 0)
+        self.assertIn("Lint, Test & Build", result["ci_jobs_discovered"])
+        for branch_file in ("protect-dev.json", "protect-prd.json"):
+            ruleset = json.loads(
+                (repo / ".github" / "rulesets" / branch_file).read_text())
+            rsc_rule = next(
+                r for r in ruleset["rules"] if r["type"] == "required_status_checks")
+            self.assertEqual(
+                rsc_rule["parameters"]["required_status_checks"],
+                [{"context": repo_init.OPENSPEC_VALIDATE_JOB_NAME}])
+
+    def test_unrelated_discovered_ci_job_is_not_patched_into_existing_ruleset(self):
+        # Same scenario as above, but exercising the patch-an-existing-file
+        # path (task 3.1) rather than fresh generation.
+        repo = _tmp_repo()
+        wf_dir = repo / ".github" / "workflows"
+        wf_dir.mkdir(parents=True)
+        (wf_dir / "ci.yml").write_text(
+            "on: pull_request\n"
+            "jobs:\n"
+            "  test:\n"
+            "    name: Lint, Test & Build\n"
+            "    runs-on: ubuntu-latest\n")
+
+        rulesets_dir = repo / ".github" / "rulesets"
+        rulesets_dir.mkdir(parents=True)
+        dev_ruleset = repo_init.build_ruleset_for_branch("dev", "2")
+        (rulesets_dir / "protect-dev.json").write_text(
+            json.dumps(dev_ruleset, indent=2) + "\n")
+
+        rc, result = self._run_propose(repo)
+
+        self.assertEqual(rc, 0)
+        self.assertIn("Lint, Test & Build", result["ci_jobs_discovered"])
+        patched = json.loads((rulesets_dir / "protect-dev.json").read_text())
+        rsc_rule = next(
+            r for r in patched["rules"] if r["type"] == "required_status_checks")
+        self.assertEqual(
+            rsc_rule["parameters"]["required_status_checks"],
+            [{"context": repo_init.OPENSPEC_VALIDATE_JOB_NAME}])
+
     def test_preexisting_ruleset_already_containing_check_is_byte_for_byte_unchanged(self):
         # Task 5.4: the workflow is newly written this run, and one ruleset
         # file already exists AND already has the job's exact display name
