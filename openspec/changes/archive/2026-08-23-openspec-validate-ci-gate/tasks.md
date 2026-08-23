@@ -15,7 +15,7 @@
 
 ## 4. propose() write step and reporting
 
-- [x] 4.1 Add the openspec-validate workflow write step to `cmd_propose`, gated on `state["openspec_validate_workflow_exists"]`, matching the existing automerge write step's `written`/`skipped` bookkeeping. (Requirement: Scaffold a portable openspec-validate workflow — Scenario: Fresh repo; Scenario: Already-onboarded repo, workflow missing; Scenario: Workflow already present)
+- [x] 4.1 Add the openspec-validate workflow write step to `cmd_propose`, gated on  `state["openspec_validate_workflow_exists"]`, matching the existing automerge write step's `written`/`skipped` bookkeeping. (Requirement: Scaffold a portable openspec-validate workflow — Scenario: Fresh repo; Scenario: Already-onboarded repo, workflow missing; Scenario: Workflow already present)
 - [x] 4.2 Record any ruleset file freshly generated with the check included, and any existing ruleset file patched by task 3.1, in `written` (or a clearly-labeled equivalent) so the CLI's human-facing report shows what changed.
 
 ## 5. Tests
