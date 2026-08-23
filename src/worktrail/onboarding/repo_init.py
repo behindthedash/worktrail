@@ -43,6 +43,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 
 from ..router.policy import POLICY_RELPATH, has_policy_file
+from .rulesets_drift_guard_template import RULESETS_REQUIREMENTS_TXT, RULESETS_SYNC_PY
 
 OPENSPEC_PACKAGE = "@fission-ai/openspec@latest"
 
@@ -667,6 +668,31 @@ def cmd_propose(args: argparse.Namespace) -> int:
         ruleset = build_ruleset_for_branch(branch, args.branch_model)
         path.write_text(json.dumps(ruleset, indent=2) + "\n", encoding="utf-8")
         written.append(str(path.relative_to(repo)))
+
+    sync_script_path = repo / RULESETS_SYNC_SCRIPT_RELPATH
+    if state["rulesets_sync_script_exists"]:
+        skipped.append(f"{RULESETS_SYNC_SCRIPT_RELPATH} (already exists)")
+    else:
+        sync_script_path.parent.mkdir(parents=True, exist_ok=True)
+        sync_script_path.write_text(RULESETS_SYNC_PY, encoding="utf-8")
+        written.append(str(sync_script_path.relative_to(repo)))
+
+    requirements_path = repo / RULESETS_REQUIREMENTS_RELPATH
+    if requirements_path.is_file():
+        skipped.append(f"{RULESETS_REQUIREMENTS_RELPATH} (already exists)")
+    else:
+        requirements_path.parent.mkdir(parents=True, exist_ok=True)
+        requirements_path.write_text(RULESETS_REQUIREMENTS_TXT, encoding="utf-8")
+        written.append(str(requirements_path.relative_to(repo)))
+
+    drift_guard_path = repo / RULESETS_DRIFT_GUARD_WORKFLOW_RELPATH
+    if state["rulesets_drift_guard_exists"]:
+        skipped.append(f"{RULESETS_DRIFT_GUARD_WORKFLOW_RELPATH} (already exists)")
+    else:
+        drift_guard_path.parent.mkdir(parents=True, exist_ok=True)
+        drift_guard_path.write_text(
+            build_rulesets_drift_guard_workflow(branches), encoding="utf-8")
+        written.append(str(drift_guard_path.relative_to(repo)))
 
     policy_path = repo / POLICY_RELPATH
     if state["policy_file_exists"]:
