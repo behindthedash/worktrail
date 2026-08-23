@@ -4,8 +4,8 @@ description: >
   Bootstrap a new repo, or migrate an existing single-branch repo, onto the
   workspace's repo-standards doctrine (~/rules/CLAUDE.repo.md): the
   AGENTS.md-is-truth/CLAUDE.md-imports-it split, a dev/prd or dev/stg/prd
-  branch model with matching GitHub rulesets, an OpenSpec scaffold, and a
-  seeded docs/specs/worktrail-go-policy.yaml. Trigger phrases: "onboard this
+  branch model with matching GitHub rulesets, an OpenSpec scaffold, an
+  auto-merge workflow, and a seeded .worktrail/policy.yaml. Trigger phrases: "onboard this
   repo", "apply repo standards", "initialize repo standards", "set up this
   repo like the rest of the fleet", "bring this repo into line with the repo
   standards doctrine".
@@ -19,8 +19,9 @@ allowed-tools: Read, Write, Bash, AskUserQuestion
 
 Applies the workspace's repo-standards doctrine to one repo at a time: the
 `CLAUDE.md` → `@AGENTS.md` split, a branch model with matching
-`.github/rulesets/*.json`, an OpenSpec scaffold, and a seeded
-`docs/specs/worktrail-go-policy.yaml`. The CLI (`worktrail-repo-init`) owns
+`.github/rulesets/*.json`, an OpenSpec scaffold,
+`.github/workflows/worktrail-auto-merge.yml`, and a seeded
+`.worktrail/policy.yaml`. The CLI (`worktrail-repo-init`) owns
 file generation and the GitHub API calls; this skill owns the git workflow
 around it (worktree, commit, PR) and the judgment calls the CLI deliberately
 leaves to a human — see `references/branch-model-decision.md`.
@@ -68,6 +69,14 @@ hand-edit the generated `.github/rulesets/*.json` files to add them to
 does this automatically (a wrongly-required informational/flaky job would
 deadlock every future PR).
 
+Ask the user whether to also pass `--with-aspens` (declares `add_ons.aspens`
+in the seeded policy file and runs `aspens doc init` immediately, instead of
+waiting for the repo's first orchestrated task) — don't default it on. There
+is no equivalent flag for GitNexus: indexing/cron registration lives entirely
+in `devops`'s own tooling (`.claude/skills/gitnexus-index-maintenance/`) with
+no bridge into worktrail today; capture it as a `worktrail-handoff` brief if
+it comes up rather than improvising something here.
+
 ### Step 3 — Commit, push, open the PR
 
 Standard worktree workflow: `git add`, commit, push, `gh pr create` targeting
@@ -79,9 +88,9 @@ should know the branch structure is about to change underneath this PR.
 ### Step 4 — Apply, after the PR merges
 
 This step mutates live GitHub state (branch creation/rename, default branch,
-branch protection) — **get explicit user confirmation before running it**,
-especially on a public repo. Run from the canonical checkout (not the
-worktree, which may be torn down already):
+delete-branch-on-merge, branch protection) — **get explicit user confirmation
+before running it**, especially on a public repo. Run from the canonical
+checkout (not the worktree, which may be torn down already):
 
 ```bash
 cd ~/projects/<repo>
@@ -89,8 +98,9 @@ git checkout <old-default-branch> && git pull
 worktrail-repo-init apply --repo . --json
 ```
 
-Report the result's `branches`/`default_branch`/`rulesets` status lines and
-the manual-follow-up checklist (retarget other open PRs onto `dev`,
+Report the result's `branches`/`default_branch`/`delete_branch_on_merge`/
+`rulesets` status lines and the manual-follow-up checklist (retarget other
+open PRs onto `dev`,
 `git fetch && git switch dev` in every local clone). Any `FAILED` entry means
 `apply` exited non-zero — investigate and re-run; it is safe to re-run (it
 skips branches/renames already done, and PUT-then-reverifies rulesets
@@ -121,8 +131,22 @@ duplicate that without adding a real gate.
   own `AGENTS.md`, "Claude Code plugin surface" section) — running
   `openspec init --tools claude` per onboarded repo would generate a second,
   un-vetted copy that conflicts with it.
-- `docs/specs/worktrail-go-policy.yaml` is seeded with header comments only,
+- `.worktrail/policy.yaml` is seeded with header comments only,
   no keys set — every key defaults to a safe, do-nothing value (see
   `router/policy.py`'s `DEFAULTS`). Don't guess a repo's `pre_pr_cmd` or
   `automerge` settings on its behalf; that's a follow-up decision for
   whoever owns the repo, not this skill.
+- `worktrail-auto-merge.yml` is inert until something applies a
+  `go:risk-low`/`go:risk-medium` label — a repo that never uses worktrail-go's
+  classifier for its PRs never has it fire. But if `ci_jobs_discovered` came
+  back empty (no CI, no `required_status_checks`), flag this explicitly to the
+  user: a risk-labeled PR on that repo will merge with nothing gating it at
+  all until real CI checks are added to `.github/rulesets/*.json`.
+- `--with-aspens` reuses the existing `AspensAddOn` (`worktrail.addons.aspens`)
+  directly for a one-time `install()`+`configure()` at bootstrap — it never
+  calls `AddOn.run()` (`aspens doc sync`), since that's the per-task
+  stage-and-commit path `worktrail.addons.runner` owns, not a bootstrap
+  concern. A failed/unreachable `aspens` CLI surfaces as a warning, not a
+  propose failure — `.aspens.json` existing is the only reliable success
+  signal available (the add-on swallows subprocess errors as best-effort
+  priming).

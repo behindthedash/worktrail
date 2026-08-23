@@ -1,7 +1,7 @@
 """worktrail-repo-init -- bootstrap or migrate a repo onto the workspace's
 repo-standards doctrine (~/rules/CLAUDE.repo.md): an AGENTS.md/CLAUDE.md split,
 a dev/prd (or dev/stg/prd) branch model, GitHub rulesets, an OpenSpec scaffold,
-and a seeded docs/specs/worktrail-go-policy.yaml.
+and a seeded .worktrail/policy.yaml.
 
 Two subcommands, mirroring devops's ruleset-fleet-rollout.py's propose/apply
 split so branch protection and the default-branch change are never made from
@@ -15,8 +15,9 @@ an unmerged PR:
   apply    Run once that PR has merged: create `dev` (and `stg` for a 3-branch
            model) from the current default branch's tip SHA, rename the
            current default branch to `prd`, set `dev` as the new GitHub
-           default branch, then live-apply and verify the committed rulesets
-           (same PUT-then-reverify idiom as ruleset-fleet-rollout.py).
+           default branch, enable "delete branch on merge", then live-apply
+           and verify the committed rulesets (same PUT-then-reverify idiom as
+           ruleset-fleet-rollout.py).
 
 `propose` deliberately never auto-populates `required_status_checks` -- it
 reports discovered CI job display names (from `.github/workflows/*.yml`) for
@@ -38,6 +39,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
+
+from ..router.policy import POLICY_RELPATH, has_policy_file
 
 OPENSPEC_PACKAGE = "@fission-ai/openspec@latest"
 
@@ -160,17 +163,136 @@ def build_ruleset_for_branch(branch: str, branch_model: str) -> Dict[str, Any]:
 
 
 # --------------------------------------------------------------------------
-# docs/specs/worktrail-go-policy.yaml seed
+# Auto-merge workflow
 # --------------------------------------------------------------------------
 
-def default_policy_yaml(repo_name: str) -> str:
-    return (
+AUTOMERGE_WORKFLOW_RELPATH = ".github/workflows/worktrail-auto-merge.yml"
+
+_AUTOMERGE_WORKFLOW = '''\
+name: "CI: Auto-merge on open"
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, labeled, unlabeled]
+
+# A `labeled` run must never cancel an in-flight opened/reopened/ready_for_review
+# run for the same PR -- a cancelled run of a required check stays on the head
+# SHA and blocks the merge/auto-merge even after a newer run succeeds. The label
+# name is included too: a PR opened with two `gh pr create --label` flags fires
+# two separate `labeled` events that would otherwise share one group and cancel
+# each other.
+concurrency:
+  group: worktrail-auto-merge-${{ github.event.pull_request.number }}-${{ github.event.action }}-${{ github.event.label.name || '' }}
+  cancel-in-progress: true
+
+jobs:
+  auto-merge:
+    # Never attempt auto-merge on a draft PR -- GitHub rejects it.
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: write
+    steps:
+      - name: Check automerge eligibility
+        id: check-automerge
+        run: |
+          labels=$(gh pr view "${{ github.event.pull_request.number }}" \\
+            --json labels --jq '.labels[].name' -R "${{ github.repository }}")
+          eligible="false"
+          if echo "$labels" | grep -qE "^go:risk-(low|medium)$" \\
+              && ! echo "$labels" | grep -q "^go:no-automerge$"; then
+            eligible="true"
+          fi
+          echo "eligible=$eligible" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Native GitHub auto-merge persists once armed regardless of later label
+      # changes -- disarming on every ineligible re-check is what actually
+      # stops a merge that an earlier, more permissive trigger already armed.
+      # `|| true` because disarming a PR that was never armed is a no-op.
+      - name: Disarm on ineligible
+        if: steps.check-automerge.outputs.eligible != 'true'
+        run: gh pr merge --disable-auto "${{ github.event.pull_request.number }}" -R "${{ github.repository }}" || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Arm auto-merge
+        if: steps.check-automerge.outputs.eligible == 'true'
+        run: |
+          if [ "${{ github.event.pull_request.base.ref }}" = "dev" ]; then
+            gh pr merge --auto --squash "${{ github.event.pull_request.number }}" -R "${{ github.repository }}"
+          else
+            gh pr merge --auto --merge "${{ github.event.pull_request.number }}" -R "${{ github.repository }}"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+'''
+
+
+def build_automerge_workflow() -> str:
+    """A portable, drop-in "CI: Auto-merge on open" workflow: arms/disarms
+    GitHub-native auto-merge based on the go:risk-low/go:risk-medium /
+    go:no-automerge labels worktrail-go itself applies (policy.py's
+    automerge_labels()). Matches the convention already used by
+    datalena/GGB/worktrail's own .github/workflows/auto-merge.yml, but
+    inlined here with no external ci/scripts/automerge_eligibility.sh
+    dependency, and picks squash vs merge the same way build_ruleset_for_branch
+    does (dev -> squash, everything else -> merge).
+
+    Inert until something applies a go:risk-* label -- a repo not using
+    worktrail-go's classifier for its PRs never has this fire."""
+    return _AUTOMERGE_WORKFLOW
+
+
+# --------------------------------------------------------------------------
+# .worktrail/policy.yaml seed
+# --------------------------------------------------------------------------
+
+def default_policy_yaml(repo_name: str, *, enable_aspens: bool = False) -> str:
+    header = (
         f"# {repo_name} -- worktrail-go policy.\n"
         "# See worktrail's src/worktrail/router/policy.py DEFAULTS for the full\n"
         "# schema. Every key is optional and defaults to a safe, do-nothing value\n"
         "# until this repo opts in explicitly (e.g. pre_pr_cmd for the pre-PR test\n"
         "# gate, automerge for GitHub-native auto-merge eligibility).\n"
     )
+    if not enable_aspens:
+        return header
+    return header + "add_ons:\n  aspens: {}\n"
+
+
+# --------------------------------------------------------------------------
+# Aspens add-on (opt-in)
+# --------------------------------------------------------------------------
+
+def enable_aspens(repo: Path) -> Tuple[bool, Optional[str]]:
+    """Opt a repo into the `aspens` add-on at bootstrap time: install the CLI
+    if needed and run its one-time `aspens doc init`
+    (`AspensAddOn.install()`/`.configure()`), so a freshly onboarded repo
+    doesn't wait for its first orchestrated task to get configured.
+    Deliberately never runs `AddOn.run()` (`aspens doc sync`) -- that's a
+    per-task concern (`worktrail.addons.runner`'s stage-and-commit path), not
+    a bootstrap one.
+
+    Returns (configured, warning). `configured` is True only if
+    `.aspens.json` now exists -- `AspensAddOn.configure()` swallows subprocess
+    failures silently (best-effort priming, matching its own posture), so
+    file existence is the only reliable postcondition available here."""
+    if (repo / ".aspens.json").is_file():
+        return False, None
+    from ..addons.aspens import AspensAddOn
+    from ..addons.runner import ADDON_TIMEOUT_DEFAULT, AddOnContext
+
+    ctx = AddOnContext(worktree=repo, repo=repo, config={}, timeout=ADDON_TIMEOUT_DEFAULT)
+    addon = AspensAddOn()
+    addon.install(ctx)
+    addon.configure(ctx)
+    if (repo / ".aspens.json").is_file():
+        return True, None
+    return False, (
+        "aspens doc init did not produce .aspens.json -- the aspens CLI may not be "
+        "installed/reachable; run `aspens doc init` by hand once it is")
 
 
 # --------------------------------------------------------------------------
@@ -262,6 +384,19 @@ def set_default_branch(gh_repo: str, branch: str) -> bool:
     return p.returncode == 0
 
 
+def get_delete_branch_on_merge(gh_repo: str) -> Optional[bool]:
+    raw = _gh_raw(["api", f"repos/{gh_repo}", "-q", ".delete_branch_on_merge"])
+    if raw is None:
+        return None
+    return raw.strip().lower() == "true"
+
+
+def set_delete_branch_on_merge(gh_repo: str) -> bool:
+    p = _run(["gh", "api", "--method", "PATCH", f"repos/{gh_repo}",
+              "-f", "delete_branch_on_merge=true"])
+    return p.returncode == 0
+
+
 def _list_live_rulesets(gh_repo: str) -> List[Dict[str, Any]]:
     p = _run(["gh", "api", f"repos/{gh_repo}/rulesets"])
     if p.returncode != 0:
@@ -312,16 +447,14 @@ def detect_state(repo: Path) -> Dict[str, Any]:
     existing_rulesets = (
         sorted(p.name for p in rulesets_dir.glob("*.json")) if rulesets_dir.is_dir() else []
     )
-    policy_exists = (
-        (repo / "docs" / "specs" / "worktrail-go-policy.yaml").is_file()
-        or (repo / "docs" / "specs" / "go-policy.yaml").is_file()
-    )
+    policy_exists = has_policy_file(repo)
     return {
         "claude_md_already_split": already_split,
         "agents_md_exists": (repo / "AGENTS.md").is_file(),
         "existing_rulesets": existing_rulesets,
         "policy_file_exists": policy_exists,
         "openspec_initialized": (repo / "openspec" / "config.yaml").is_file(),
+        "automerge_workflow_exists": (repo / AUTOMERGE_WORKFLOW_RELPATH).is_file(),
         "ci_jobs_discovered": discover_ci_checks(repo),
     }
 
@@ -361,13 +494,24 @@ def cmd_propose(args: argparse.Namespace) -> int:
         path.write_text(json.dumps(ruleset, indent=2) + "\n", encoding="utf-8")
         written.append(str(path.relative_to(repo)))
 
-    policy_path = repo / "docs" / "specs" / "worktrail-go-policy.yaml"
+    policy_path = repo / POLICY_RELPATH
     if state["policy_file_exists"]:
-        skipped.append(f"{policy_path.relative_to(repo)} (or legacy go-policy.yaml already exists)")
+        skipped.append(f"{POLICY_RELPATH} (or a legacy policy filename) already exists")
     else:
         policy_path.parent.mkdir(parents=True, exist_ok=True)
-        policy_path.write_text(default_policy_yaml(resolve_repo_display_name(repo)), encoding="utf-8")
+        policy_path.write_text(
+            default_policy_yaml(resolve_repo_display_name(repo), enable_aspens=args.with_aspens),
+            encoding="utf-8")
         written.append(str(policy_path.relative_to(repo)))
+
+    if args.with_aspens:
+        configured, warn = enable_aspens(repo)
+        if warn:
+            warnings.append(warn)
+        elif configured:
+            written.append(".aspens.json (aspens doc init)")
+        else:
+            skipped.append(".aspens.json (already configured)")
 
     if state["openspec_initialized"]:
         skipped.append("openspec/config.yaml (already initialized)")
@@ -377,6 +521,20 @@ def cmd_propose(args: argparse.Namespace) -> int:
             warnings.append(warn)
         elif ok:
             written.append("openspec/ (config.yaml, specs/, changes/)")
+
+    automerge_path = repo / AUTOMERGE_WORKFLOW_RELPATH
+    if state["automerge_workflow_exists"]:
+        skipped.append(f"{AUTOMERGE_WORKFLOW_RELPATH} (already exists)")
+    else:
+        automerge_path.parent.mkdir(parents=True, exist_ok=True)
+        automerge_path.write_text(build_automerge_workflow(), encoding="utf-8")
+        written.append(str(automerge_path.relative_to(repo)))
+        if not state["ci_jobs_discovered"]:
+            warnings.append(
+                "No CI jobs discovered and no required_status_checks configured -- the "
+                "auto-merge workflow just written will merge any go:risk-low/medium-labeled "
+                "PR with nothing else to gate it. Add required checks to "
+                ".github/rulesets/*.json before applying risk labels to real PRs.")
 
     result = {
         "repo": str(repo),
@@ -468,6 +626,12 @@ def cmd_apply(args: argparse.Namespace) -> int:
         ok = set_default_branch(gh_repo, "dev")
         result["default_branch"] = "set to dev" if ok else "FAILED to set to dev"
 
+    if get_delete_branch_on_merge(gh_repo):
+        result["delete_branch_on_merge"] = "already enabled"
+    else:
+        ok = set_delete_branch_on_merge(gh_repo)
+        result["delete_branch_on_merge"] = "enabled" if ok else "FAILED to enable"
+
     rulesets_failed = False
     for f in ruleset_files:
         try:
@@ -488,6 +652,7 @@ def cmd_apply(args: argparse.Namespace) -> int:
         for branch, status in result["branches"].items():
             print(f"  branch {branch}: {status}")
         print(f"  default branch: {result['default_branch']}")
+        print(f"  delete branch on merge: {result['delete_branch_on_merge']}")
         for name, status in result["rulesets"].items():
             print(f"  ruleset {name}: {status}")
         for w in result["warnings"]:
@@ -500,6 +665,7 @@ def cmd_apply(args: argparse.Namespace) -> int:
     failed = (
         any("FAILED" in str(v) for v in result["branches"].values())
         or "FAILED" in str(result.get("default_branch", ""))
+        or "FAILED" in str(result.get("delete_branch_on_merge", ""))
         or rulesets_failed
     )
     return 1 if failed else 0
@@ -515,20 +681,26 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     propose_p = subs.add_parser(
         "propose",
-        help="write AGENTS.md/CLAUDE.md, .github/rulesets/*.json, docs/specs/worktrail-go-policy.yaml, "
-             "and an OpenSpec scaffold into --repo")
+        help="write AGENTS.md/CLAUDE.md, .github/rulesets/*.json, .worktrail/policy.yaml, "
+             "an OpenSpec scaffold, and an auto-merge workflow into --repo")
     propose_p.add_argument("--repo", required=True)
     propose_p.add_argument(
         "--branch-model", choices=("2", "3"), default="2",
         help="2 = dev/prd (default -- use unless the repo has a real staging environment "
              "to gate against); 3 = dev/stg/prd")
     propose_p.add_argument("--check", action="store_true", help="report current state only; write nothing")
+    propose_p.add_argument(
+        "--with-aspens", action="store_true",
+        help="opt into the aspens skill-doc-sync add-on: declares add_ons.aspens in the "
+             "seeded policy file and runs `aspens doc init` now instead of waiting for the "
+             "repo's first orchestrated task")
     propose_p.add_argument("--json", action="store_true", dest="as_json")
 
     apply_p = subs.add_parser(
         "apply",
         help="after propose's PR merges: create branches, rename to prd, set the default "
-             "branch to dev, live-apply and verify the committed rulesets")
+             "branch to dev, enable delete-branch-on-merge, live-apply and verify the "
+             "committed rulesets")
     apply_p.add_argument("--repo", required=True)
     apply_p.add_argument("--json", action="store_true", dest="as_json")
 

@@ -41,6 +41,7 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
+from worktrail.onboarding.repo_init import build_automerge_workflow
 from worktrail.router import check_review_threads as check_review_threads_mod
 from worktrail.router import pre_pr_gate as pre_pr_gate_mod
 from worktrail.router import reconcile_pr_labels as reconcile_pr_labels_mod
@@ -142,6 +143,24 @@ def _proves_reconcile_repo_self_heals_both_labels():
             "-- worktrail-go SKILL.md's self-heal claim is now prose-only")
 
 
+def _proves_generated_automerge_workflow_gates_on_risk_labels():
+    """worktrail-repo-init SKILL.md claims the worktrail-auto-merge.yml it
+    generates is 'inert until something applies a go:risk-low/go:risk-medium
+    label' and is disarmed by go:no-automerge. Prove the generated workflow
+    TEXT actually encodes that gate (build_automerge_workflow() is a fixed
+    template, so grepping its own literal output -- not a live GHA run -- is
+    the correct proof shape here), not just the prose claiming it does."""
+    text = build_automerge_workflow()
+    if "go:risk-(low|medium)" not in text:
+        raise AssertionError(
+            "build_automerge_workflow() no longer gates on go:risk-low/medium -- "
+            "worktrail-repo-init SKILL.md's inert-until-labeled claim is now prose-only")
+    if "go:no-automerge" not in text:
+        raise AssertionError(
+            "build_automerge_workflow() no longer checks go:no-automerge -- "
+            "worktrail-repo-init SKILL.md's disarm claim is now prose-only")
+
+
 # skills/-relative path -> callable proving the file's go:risk-*/go:no-automerge
 # claim is actually code-enforced. Every file extract_label_correction_mentions()
 # finds MUST have an entry here.
@@ -150,6 +169,7 @@ FILE_CONSUMERS = {
     "worktrail-go/references/routes.md": _proves_pre_pr_gate_computes_automerge_labels,
     "worktrail-go/references/ci-watch-loop.md": _proves_ci_watch_loop_stamps_no_automerge_on_blocking,
     "worktrail-sdd-workflow/SKILL.md": _proves_run_record_finish_applies_risk_label_unconditionally,
+    "worktrail-repo-init/SKILL.md": _proves_generated_automerge_workflow_gates_on_risk_labels,
 }
 
 KNOWN_FILES = set(FILE_CONSUMERS)

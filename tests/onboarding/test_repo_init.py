@@ -7,6 +7,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import yaml
+
 from worktrail.onboarding import repo_init
 
 
@@ -123,6 +125,27 @@ class BuildRulesetTests(unittest.TestCase):
             repo_init.build_ruleset_for_branch("staging", "2")
 
 
+class BuildAutomergeWorkflowTests(unittest.TestCase):
+    def test_is_valid_yaml_with_expected_shape(self):
+        doc = yaml.safe_load(repo_init.build_automerge_workflow())
+        self.assertEqual(doc["name"], "CI: Auto-merge on open")
+        self.assertIn("auto-merge", doc["jobs"])
+        # PyYAML's SafeLoader resolves the bare `on:` GHA trigger key to the
+        # boolean True (YAML 1.1), not the string "on" -- a well-known gotcha.
+        self.assertIn("pull_request", doc[True])
+
+    def test_gates_on_risk_labels_not_bare_arm(self):
+        text = repo_init.build_automerge_workflow()
+        self.assertIn("go:risk-(low|medium)", text)
+        self.assertIn("go:no-automerge", text)
+
+    def test_picks_squash_for_dev_merge_otherwise(self):
+        text = repo_init.build_automerge_workflow()
+        self.assertIn('base.ref }}" = "dev"', text)
+        self.assertIn("--auto --squash", text)
+        self.assertIn("--auto --merge", text)
+
+
 def _fake_init_openspec(repo: Path):
     """Mirrors repo_init.init_openspec's file-existence idempotency without
     actually shelling out to npx."""
@@ -136,7 +159,8 @@ def _fake_init_openspec(repo: Path):
 
 class ProposeTests(unittest.TestCase):
     def _run_propose(self, repo: Path, **overrides):
-        args = mock.Mock(repo=str(repo), branch_model="2", check=False, as_json=True)
+        args = mock.Mock(
+            repo=str(repo), branch_model="2", check=False, with_aspens=False, as_json=True)
         for key, value in overrides.items():
             setattr(args, key, value)
         with mock.patch.object(repo_init, "init_openspec", side_effect=_fake_init_openspec):
@@ -152,9 +176,13 @@ class ProposeTests(unittest.TestCase):
         self.assertIn("CLAUDE.md", result["written"])
         self.assertIn(".github/rulesets/protect-dev.json", result["written"])
         self.assertIn(".github/rulesets/protect-prd.json", result["written"])
-        self.assertIn("docs/specs/worktrail-go-policy.yaml", result["written"])
+        self.assertIn(".worktrail/policy.yaml", result["written"])
+        self.assertIn(".github/workflows/worktrail-auto-merge.yml", result["written"])
         self.assertTrue((repo / ".github" / "rulesets" / "protect-dev.json").is_file())
-        self.assertTrue((repo / "docs" / "specs" / "worktrail-go-policy.yaml").is_file())
+        self.assertTrue((repo / ".worktrail" / "policy.yaml").is_file())
+        self.assertTrue((repo / ".github" / "workflows" / "worktrail-auto-merge.yml").is_file())
+        # No CI discovered -> the safety warning about an ungated auto-merge must fire.
+        self.assertTrue(any("nothing else to gate" in w for w in result["warnings"]))
 
     def test_three_branch_model_writes_stg_too(self):
         repo = _tmp_repo()
@@ -177,8 +205,38 @@ class ProposeTests(unittest.TestCase):
         (repo / "docs" / "specs" / "go-policy.yaml").write_text("agent_cli: codex\n")
         rc, result = self._run_propose(repo)
         self.assertEqual(rc, 0)
-        self.assertFalse((repo / "docs" / "specs" / "worktrail-go-policy.yaml").is_file())
-        self.assertTrue(any("go-policy.yaml" in s for s in result["skipped"]))
+        self.assertFalse((repo / ".worktrail" / "policy.yaml").is_file())
+        self.assertTrue(any("legacy policy filename" in s for s in result["skipped"]))
+
+    def test_interim_policy_filename_is_respected_not_overwritten(self):
+        repo = _tmp_repo()
+        (repo / "docs" / "specs").mkdir(parents=True)
+        (repo / "docs" / "specs" / "worktrail-go-policy.yaml").write_text("agent_cli: codex\n")
+        rc, result = self._run_propose(repo)
+        self.assertEqual(rc, 0)
+        self.assertFalse((repo / ".worktrail" / "policy.yaml").is_file())
+        self.assertTrue(any("legacy policy filename" in s for s in result["skipped"]))
+
+    def test_automerge_workflow_skipped_when_already_present(self):
+        repo = _tmp_repo()
+        wf_dir = repo / ".github" / "workflows"
+        wf_dir.mkdir(parents=True)
+        (wf_dir / "worktrail-auto-merge.yml").write_text("# hand-customized\n")
+        rc, result = self._run_propose(repo)
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            (wf_dir / "worktrail-auto-merge.yml").read_text(), "# hand-customized\n")
+        self.assertTrue(any("worktrail-auto-merge.yml" in s for s in result["skipped"]))
+
+    def test_no_ungated_automerge_warning_when_ci_jobs_exist(self):
+        repo = _tmp_repo()
+        wf_dir = repo / ".github" / "workflows"
+        wf_dir.mkdir(parents=True)
+        (wf_dir / "ci.yml").write_text(
+            "on: pull_request\njobs:\n  test:\n    name: Lint, Test & Build\n    runs-on: ubuntu-latest\n")
+        rc, result = self._run_propose(repo)
+        self.assertEqual(rc, 0)
+        self.assertFalse(any("nothing else to gate" in w for w in result["warnings"]))
 
     def test_check_mode_writes_nothing(self):
         repo = _tmp_repo()
@@ -195,6 +253,65 @@ class ProposeTests(unittest.TestCase):
         args = mock.Mock(repo="/nonexistent/path/xyz", branch_model="2", check=False, as_json=True)
         rc = repo_init.cmd_propose(args)
         self.assertEqual(rc, 1)
+
+    def test_with_aspens_writes_add_ons_block_and_runs_configure(self):
+        repo = _tmp_repo()
+        with mock.patch.object(repo_init, "enable_aspens", return_value=(True, None)) as ea:
+            rc, result = self._run_propose(repo, with_aspens=True)
+        self.assertEqual(rc, 0)
+        ea.assert_called_once()
+        policy_text = (repo / ".worktrail" / "policy.yaml").read_text()
+        self.assertIn("add_ons:", policy_text)
+        self.assertIn("aspens:", policy_text)
+        self.assertIn(".aspens.json (aspens doc init)", result["written"])
+
+    def test_without_aspens_flag_leaves_policy_file_bare(self):
+        repo = _tmp_repo()
+        rc, result = self._run_propose(repo)
+        policy_text = (repo / ".worktrail" / "policy.yaml").read_text()
+        self.assertNotIn("add_ons:", policy_text)
+
+    def test_aspens_warning_surfaces_without_failing_propose(self):
+        repo = _tmp_repo()
+        with mock.patch.object(
+            repo_init, "enable_aspens", return_value=(False, "aspens doc init did not produce ...")
+        ):
+            rc, result = self._run_propose(repo, with_aspens=True)
+        self.assertEqual(rc, 0)
+        self.assertTrue(any("aspens doc init" in w for w in result["warnings"]))
+
+
+class EnableAspensTests(unittest.TestCase):
+    def test_noop_when_already_configured(self):
+        repo = _tmp_repo()
+        (repo / ".aspens.json").write_text("{}\n")
+        with mock.patch("worktrail.addons.aspens.AspensAddOn") as addon_cls:
+            configured, warning = repo_init.enable_aspens(repo)
+        self.assertFalse(configured)
+        self.assertIsNone(warning)
+        addon_cls.assert_not_called()
+
+    def test_successful_configure_reports_configured(self):
+        repo = _tmp_repo()
+
+        def fake_configure(ctx):
+            (Path(ctx.worktree) / ".aspens.json").write_text("{}\n")
+
+        with mock.patch("worktrail.addons.aspens.AspensAddOn") as addon_cls:
+            instance = addon_cls.return_value
+            instance.configure.side_effect = fake_configure
+            configured, warning = repo_init.enable_aspens(repo)
+        self.assertTrue(configured)
+        self.assertIsNone(warning)
+        instance.install.assert_called_once()
+        instance.configure.assert_called_once()
+
+    def test_failed_configure_reports_warning_not_raised(self):
+        repo = _tmp_repo()
+        with mock.patch("worktrail.addons.aspens.AspensAddOn"):
+            configured, warning = repo_init.enable_aspens(repo)
+        self.assertFalse(configured)
+        self.assertIn("aspens doc init did not produce", warning)
 
 
 class ApplyTests(unittest.TestCase):
@@ -219,7 +336,10 @@ class ApplyTests(unittest.TestCase):
         real rather than assumed."""
         repo = self._repo_with_rulesets(("dev", "prd"))
         args = mock.Mock(repo=str(repo), as_json=True)
-        state = {"default_branch": "master", "branches": {"master"}, "rulesets": []}
+        state = {
+            "default_branch": "master", "branches": {"master"}, "rulesets": [],
+            "delete_branch_on_merge": False,
+        }
 
         def fake_run(cmd, **kw):
             joined = " ".join(cmd)
@@ -227,6 +347,9 @@ class ApplyTests(unittest.TestCase):
                 return subprocess.CompletedProcess(cmd, 0, stdout="git@github.com:acme/widget.git\n", stderr="")
             if joined == "gh api repos/acme/widget -q .default_branch":
                 return subprocess.CompletedProcess(cmd, 0, stdout=f"{state['default_branch']}\n", stderr="")
+            if joined == "gh api repos/acme/widget -q .delete_branch_on_merge":
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout=f"{str(state['delete_branch_on_merge']).lower()}\n", stderr="")
             if joined == "gh api repos/acme/widget/branches/master -q .commit.sha":
                 return subprocess.CompletedProcess(cmd, 0, stdout="deadbeef\n", stderr="")
             if joined == "gh api repos/acme/widget/branches/dev":
@@ -239,8 +362,11 @@ class ApplyTests(unittest.TestCase):
                 state["branches"].discard("master")
                 state["branches"].add("prd")
                 return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-            if cmd[:4] == ["gh", "api", "--method", "PATCH"]:
+            if joined == "gh api --method PATCH repos/acme/widget -f default_branch=dev":
                 state["default_branch"] = "dev"
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if joined == "gh api --method PATCH repos/acme/widget -f delete_branch_on_merge=true":
+                state["delete_branch_on_merge"] = True
                 return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
             if joined == "gh api repos/acme/widget/rulesets":
                 return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(state["rulesets"]), stderr="")
@@ -259,6 +385,7 @@ class ApplyTests(unittest.TestCase):
         self.assertEqual(result["branches"]["dev"], "created")
         self.assertEqual(result["branches"]["master"], "renamed to prd")
         self.assertEqual(result["default_branch"], "set to dev")
+        self.assertEqual(result["delete_branch_on_merge"], "enabled")
         self.assertEqual(result["rulesets"]["protect-dev.json"], "created and verified live")
         self.assertEqual(result["rulesets"]["protect-prd.json"], "created and verified live")
         self.assertEqual(rc, 0)
@@ -275,13 +402,16 @@ class ApplyTests(unittest.TestCase):
                 return subprocess.CompletedProcess(cmd, 0, stdout="git@github.com:acme/widget.git\n", stderr="")
             if joined == "gh api repos/acme/widget -q .default_branch":
                 return subprocess.CompletedProcess(cmd, 0, stdout="dev\n", stderr="")
+            if joined == "gh api repos/acme/widget -q .delete_branch_on_merge":
+                return subprocess.CompletedProcess(cmd, 0, stdout="true\n", stderr="")
             if joined == "gh api repos/acme/widget/rulesets":
                 return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(
                     [{"id": 1, "name": "protect-dev"}, {"id": 2, "name": "protect-prd"}]), stderr="")
             if cmd[:4] == ["gh", "api", "--method", "PUT"]:
                 return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-            # Any attempt to touch branches (create/rename) is a bug on a re-run.
-            self.fail(f"unexpected branch-mutating call on an already-applied repo: {cmd}")
+            # Any attempt to touch branches (create/rename) or re-enable an
+            # already-enabled setting is a bug on a re-run.
+            self.fail(f"unexpected branch/setting-mutating call on an already-applied repo: {cmd}")
 
         with mock.patch.object(repo_init, "_run", side_effect=fake_run):
             with mock.patch("builtins.print") as printed:
@@ -291,6 +421,7 @@ class ApplyTests(unittest.TestCase):
         self.assertEqual(result["branches"], {})
         self.assertIn("already", " ".join(result["warnings"]))
         self.assertEqual(result["default_branch"], "already dev")
+        self.assertEqual(result["delete_branch_on_merge"], "already enabled")
         self.assertEqual(rc, 0)
 
     def test_gh_repo_unresolvable_errors(self):

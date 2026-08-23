@@ -32,7 +32,7 @@ COMMAND_RE = re.compile(r"\bworktrail-[a-z0-9-]+")
 # `docs/specs/worktrail-go-policy.yaml` mention matches "worktrail-go-policy"
 # (everything up to the literal '.') -- that's the per-repo policy filename,
 # not a console script.
-_NON_COMMAND_TOKENS = frozenset({"worktrail-go-policy"})
+_NON_COMMAND_TOKENS = frozenset({"worktrail-go-policy", "worktrail-auto-merge"})
 
 # The shell form that actually resolves a plugin path. Prose may legitimately
 # name the variable to state that it is no longer used, so match the expansion,
