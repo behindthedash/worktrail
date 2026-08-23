@@ -232,8 +232,9 @@ class ProposeTests(unittest.TestCase):
         self.assertTrue((repo / ".github" / "rulesets" / "protect-dev.json").is_file())
         self.assertTrue((repo / ".worktrail" / "policy.yaml").is_file())
         self.assertTrue((repo / ".github" / "workflows" / "worktrail-auto-merge.yml").is_file())
-        # No CI discovered -> the safety warning about an ungated auto-merge must fire.
-        self.assertTrue(any("nothing else to gate" in w for w in result["warnings"]))
+        # This run itself configured required_status_checks (openspec-validate), so the
+        # ungated-automerge warning must not fire -- it would be false.
+        self.assertFalse(any("nothing else to gate" in w for w in result["warnings"]))
 
     def test_three_branch_model_writes_stg_too(self):
         repo = _tmp_repo()

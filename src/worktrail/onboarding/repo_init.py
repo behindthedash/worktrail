@@ -770,18 +770,24 @@ def cmd_propose(args: argparse.Namespace) -> int:
     branches = ["dev", "stg", "prd"] if args.branch_model == "3" else ["dev", "prd"]
     rulesets_dir = repo / ".github" / "rulesets"
     openspec_validate_newly_written = not state["openspec_validate_workflow_exists"]
+    required_check_configured = False
     for branch in branches:
         path = rulesets_dir / f"protect-{branch}.json"
         if path.is_file():
             if openspec_validate_newly_written and patch_ruleset_required_check(
                 path, OPENSPEC_VALIDATE_JOB_NAME
             ):
-                written.append(f"{path.relative_to(repo)} (patched: added {OPENSPEC_VALIDATE_JOB_NAME} to required_status_checks)")
+                written.append(
+                    f"{path.relative_to(repo)} (patched: added "
+                    f"{OPENSPEC_VALIDATE_JOB_NAME} to required_status_checks)")
+                required_check_configured = True
             else:
                 skipped.append(str(path.relative_to(repo)))
             continue
         rulesets_dir.mkdir(parents=True, exist_ok=True)
         extra_check = OPENSPEC_VALIDATE_JOB_NAME if openspec_validate_newly_written else None
+        if extra_check:
+            required_check_configured = True
         ruleset = build_ruleset_for_branch(branch, args.branch_model, extra_check)
         path.write_text(json.dumps(ruleset, indent=2) + "\n", encoding="utf-8")
         written.append(str(path.relative_to(repo)))
@@ -855,7 +861,7 @@ def cmd_propose(args: argparse.Namespace) -> int:
         automerge_path.parent.mkdir(parents=True, exist_ok=True)
         automerge_path.write_text(build_automerge_workflow(), encoding="utf-8")
         written.append(str(automerge_path.relative_to(repo)))
-        if not state["ci_jobs_discovered"]:
+        if not state["ci_jobs_discovered"] and not required_check_configured:
             warnings.append(
                 "No CI jobs discovered and no required_status_checks configured -- the "
                 "auto-merge workflow just written will merge any go:risk-low/medium-labeled "
