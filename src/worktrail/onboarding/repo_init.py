@@ -173,6 +173,34 @@ def build_ruleset_for_branch(
     raise ValueError(f"unknown branch {branch!r}")
 
 
+def patch_ruleset_required_check(path: Path, job_name: str) -> bool:
+    """In-place patch for an *existing* `protect-<branch>.json`: locate (or
+    create) the `required_status_checks` rule and append
+    `{"context": job_name}` only if no entry with that context is already
+    present. Everything else in the file -- other rules, key order, other
+    required_status_checks entries -- is left untouched. Returns True if the
+    file was changed (and thus rewritten), False on a no-op."""
+    data = json.loads(path.read_text(encoding="utf-8"))
+    rules = data.setdefault("rules", [])
+    rsc_rule = next((r for r in rules if r.get("type") == "required_status_checks"), None)
+    if rsc_rule is None:
+        rsc_rule = {
+            "type": "required_status_checks",
+            "parameters": {
+                "strict_required_status_checks_policy": False,
+                "do_not_enforce_on_create": False,
+                "required_status_checks": [],
+            },
+        }
+        rules.append(rsc_rule)
+    checks = rsc_rule.setdefault("parameters", {}).setdefault("required_status_checks", [])
+    if any(c.get("context") == job_name for c in checks):
+        return False
+    checks.append({"context": job_name})
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return True
+
+
 # --------------------------------------------------------------------------
 # Auto-merge workflow
 # --------------------------------------------------------------------------
@@ -544,9 +572,12 @@ def cmd_propose(args: argparse.Namespace) -> int:
 
     branches = ["dev", "stg", "prd"] if args.branch_model == "3" else ["dev", "prd"]
     rulesets_dir = repo / ".github" / "rulesets"
+    openspec_validate_newly_written = not state["openspec_validate_workflow_exists"]
     for branch in branches:
         path = rulesets_dir / f"protect-{branch}.json"
         if path.is_file():
+            if openspec_validate_newly_written:
+                patch_ruleset_required_check(path, OPENSPEC_VALIDATE_JOB_NAME)
             skipped.append(str(path.relative_to(repo)))
             continue
         rulesets_dir.mkdir(parents=True, exist_ok=True)
