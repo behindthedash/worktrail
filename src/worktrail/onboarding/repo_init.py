@@ -168,6 +168,13 @@ def build_ruleset_for_branch(branch: str, branch_model: str) -> Dict[str, Any]:
 
 AUTOMERGE_WORKFLOW_RELPATH = ".github/workflows/worktrail-auto-merge.yml"
 
+# --------------------------------------------------------------------------
+# Rulesets drift guard workflow
+# --------------------------------------------------------------------------
+
+RULESETS_DRIFT_GUARD_WORKFLOW_RELPATH = ".github/workflows/rulesets_drift_guard.yml"
+RULESETS_SCRIPT_DIR_RELPATH = "scripts/ci/rulesets"
+
 _AUTOMERGE_WORKFLOW = '''\
 name: "CI: Auto-merge on open"
 on:
