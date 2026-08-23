@@ -202,6 +202,46 @@ class ProposeTests(unittest.TestCase):
                 rsc_rule["parameters"]["required_status_checks"],
                 [{"context": repo_init.OPENSPEC_VALIDATE_JOB_NAME}])
 
+    def test_already_onboarded_repo_patches_existing_rulesets_without_altering_other_rules(self):
+        repo = _tmp_repo()
+        (repo / "openspec").mkdir()
+        (repo / "openspec" / "config.yaml").write_text("schema: spec-driven\n")
+        rulesets_dir = repo / ".github" / "rulesets"
+        rulesets_dir.mkdir(parents=True)
+        original_rulesets = {}
+        for branch, file_name in (("dev", "protect-dev.json"), ("prd", "protect-prd.json")):
+            ruleset = repo_init.build_ruleset_for_branch(branch, "2")
+            original_rulesets[file_name] = ruleset
+            (rulesets_dir / file_name).write_text(json.dumps(ruleset, indent=2) + "\n")
+
+        rc, result = self._run_propose(repo)
+
+        self.assertEqual(rc, 0)
+        # The workflow was absent, so this run writes it.
+        self.assertIn(repo_init.OPENSPEC_VALIDATE_WORKFLOW_RELPATH, result["written"])
+        self.assertTrue(
+            (repo / repo_init.OPENSPEC_VALIDATE_WORKFLOW_RELPATH).is_file())
+
+        for file_name, original in original_rulesets.items():
+            path = rulesets_dir / file_name
+            patched = json.loads(path.read_text())
+            # Every rule other than required_status_checks is untouched.
+            original_other_rules = [
+                r for r in original["rules"] if r["type"] != "required_status_checks"]
+            patched_other_rules = [
+                r for r in patched["rules"] if r["type"] != "required_status_checks"]
+            self.assertEqual(patched_other_rules, original_other_rules)
+            self.assertEqual(patched["name"], original["name"])
+            self.assertEqual(patched["conditions"], original["conditions"])
+            # The new check was appended to required_status_checks.
+            rsc_rule = next(
+                r for r in patched["rules"] if r["type"] == "required_status_checks")
+            self.assertEqual(
+                rsc_rule["parameters"]["required_status_checks"],
+                [{"context": repo_init.OPENSPEC_VALIDATE_JOB_NAME}])
+            self.assertTrue(
+                any(f"{file_name} (patched" in w for w in result["written"]))
+
     def test_three_branch_model_writes_stg_too(self):
         repo = _tmp_repo()
         rc, result = self._run_propose(repo, branch_model="3")
