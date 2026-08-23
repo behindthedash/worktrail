@@ -39,7 +39,7 @@
       written `.worktrail/policy.yaml` never contains a `gitnexus` key regardless of the flag.
       (Requirement: `--with-gitnexus` opt-in flag on `propose`) (Requirement: No per-task
       add-on wiring)
-- [ ] 2.3 [e2e] Run `PYTHONPATH=src pytest -q` and confirm the full suite passes, then run
+- [x] 2.3 [e2e] Run `PYTHONPATH=src pytest -q` and confirm the full suite passes, then run
       `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` and confirm the
       golden record/replay regression still passes.
 
