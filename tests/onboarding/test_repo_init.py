@@ -173,6 +173,28 @@ class BuildRulesetsDriftGuardWorkflowTests(unittest.TestCase):
         for step in rulesets_steps:
             self.assertNotIn("secrets.GITHUB_TOKEN", str(step))
 
+    def test_credential_guard_if_conditions_present(self):
+        text = repo_init.build_rulesets_drift_guard_workflow(["dev", "prd"])
+        doc = yaml.safe_load(text)
+        steps = doc["jobs"]["rulesets-check"]["steps"]
+
+        app_token_step = next(s for s in steps if s.get("id") == "app-token")
+        self.assertEqual(
+            app_token_step["if"],
+            "${{ env.RULESETS_APP_ID != '' && env.RULESETS_APP_PRIVATE_KEY != '' }}")
+
+        check_step = next(
+            s for s in steps if s.get("name") == "Check committed rulesets against live GitHub rulesets")
+        self.assertEqual(
+            check_step["if"],
+            "${{ github.event_name != 'push' && steps.app-token.outputs.token != '' }}")
+
+        apply_step = next(
+            s for s in steps if s.get("name") == "Apply committed rulesets to live GitHub rulesets")
+        self.assertEqual(
+            apply_step["if"],
+            "${{ github.event_name == 'push' && steps.app-token.outputs.token != '' }}")
+
 
 def _fake_init_openspec(repo: Path):
     """Mirrors repo_init.init_openspec's file-existence idempotency without
