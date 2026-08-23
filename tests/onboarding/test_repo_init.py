@@ -395,6 +395,50 @@ class ProposeTests(unittest.TestCase):
         policy_text = (repo / ".worktrail" / "policy.yaml").read_text()
         self.assertNotIn("gitnexus", policy_text)
 
+    def test_fresh_ruleset_includes_openspec_validate_check(self):
+        repo = _tmp_repo()
+        rc, result = self._run_propose(repo)
+        self.assertEqual(rc, 0)
+        dev_ruleset = json.loads((repo / ".github" / "rulesets" / "protect-dev.json").read_text())
+        rsc_rule = next(
+            r for r in dev_ruleset["rules"] if r["type"] == "required_status_checks")
+        self.assertIn(
+            {"context": repo_init.OPENSPEC_VALIDATE_JOB_NAME},
+            rsc_rule["parameters"]["required_status_checks"])
+
+    def test_existing_ruleset_patched_and_reported_in_written(self):
+        repo = _tmp_repo()
+        rulesets_dir = repo / ".github" / "rulesets"
+        rulesets_dir.mkdir(parents=True)
+        for branch in ("dev", "prd"):
+            (rulesets_dir / f"protect-{branch}.json").write_text(
+                json.dumps(repo_init.build_ruleset_for_branch(branch, "2")) + "\n")
+        rc, result = self._run_propose(repo)
+        self.assertEqual(rc, 0)
+        self.assertTrue(
+            any("protect-dev.json" in w and "patched" in w for w in result["written"]))
+        self.assertFalse(any("protect-dev.json" in s for s in result["skipped"]))
+        patched = json.loads((rulesets_dir / "protect-dev.json").read_text())
+        rsc_rule = next(r for r in patched["rules"] if r["type"] == "required_status_checks")
+        self.assertIn(
+            {"context": repo_init.OPENSPEC_VALIDATE_JOB_NAME},
+            rsc_rule["parameters"]["required_status_checks"])
+
+    def test_ruleset_already_containing_check_is_skipped_not_rewritten(self):
+        repo = _tmp_repo()
+        rulesets_dir = repo / ".github" / "rulesets"
+        rulesets_dir.mkdir(parents=True)
+        for branch in ("dev", "prd"):
+            ruleset = repo_init.build_ruleset_for_branch(
+                branch, "2", repo_init.OPENSPEC_VALIDATE_JOB_NAME)
+            (rulesets_dir / f"protect-{branch}.json").write_text(json.dumps(ruleset) + "\n")
+        before = (rulesets_dir / "protect-dev.json").read_text()
+        rc, result = self._run_propose(repo)
+        self.assertEqual(rc, 0)
+        self.assertEqual((rulesets_dir / "protect-dev.json").read_text(), before)
+        self.assertTrue(any("protect-dev.json" in s for s in result["skipped"]))
+        self.assertFalse(any("protect-dev.json" in w for w in result["written"]))
+
 
 class EnableAspensTests(unittest.TestCase):
     def test_noop_when_already_configured(self):

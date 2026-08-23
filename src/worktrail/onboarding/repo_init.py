@@ -773,12 +773,16 @@ def cmd_propose(args: argparse.Namespace) -> int:
     for branch in branches:
         path = rulesets_dir / f"protect-{branch}.json"
         if path.is_file():
-            if openspec_validate_newly_written:
-                patch_ruleset_required_check(path, OPENSPEC_VALIDATE_JOB_NAME)
-            skipped.append(str(path.relative_to(repo)))
+            if openspec_validate_newly_written and patch_ruleset_required_check(
+                path, OPENSPEC_VALIDATE_JOB_NAME
+            ):
+                written.append(f"{path.relative_to(repo)} (patched: added {OPENSPEC_VALIDATE_JOB_NAME} to required_status_checks)")
+            else:
+                skipped.append(str(path.relative_to(repo)))
             continue
         rulesets_dir.mkdir(parents=True, exist_ok=True)
-        ruleset = build_ruleset_for_branch(branch, args.branch_model)
+        extra_check = OPENSPEC_VALIDATE_JOB_NAME if openspec_validate_newly_written else None
+        ruleset = build_ruleset_for_branch(branch, args.branch_model, extra_check)
         path.write_text(json.dumps(ruleset, indent=2) + "\n", encoding="utf-8")
         written.append(str(path.relative_to(repo)))
 
