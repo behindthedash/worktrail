@@ -13,7 +13,7 @@ Conventions used by every route:
   transition; `finish` with one of the ten completion states — no vague endings.
 - **Scope:** smallest complete change. Complete every requested outcome before
   opening a PR. Only genuinely separate work may become a handoff brief
-  (`/handoff new`), and its run-record scope review must identify it as
+  (`worktrail-handoff --focus ...`), and its run-record scope review must identify it as
   `different purpose:` or `user approved:`; a handoff cannot replace unfinished
   acceptance work.
 - **PR body:** all implementation routes use the template at the bottom of this
