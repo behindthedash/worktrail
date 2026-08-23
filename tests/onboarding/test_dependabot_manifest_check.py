@@ -81,3 +81,89 @@ def test_build_repo_helper_creates_expected_tree(tmp_path):
 def test_build_repo_helper_omits_dependabot_yml_when_not_given(tmp_path):
     repo = build_repo(tmp_path)
     assert not (repo / ".github").exists()
+
+
+def test_pip_root_with_pyproject_toml_passes(tmp_path, capsys):
+    repo = build_repo(
+        tmp_path,
+        dependabot_yml={
+            "version": 2,
+            "updates": [{"package-ecosystem": "pip", "directory": "/"}],
+        },
+        manifests=["pyproject.toml"],
+    )
+    module = load_check_module(tmp_path)
+
+    exit_code = module.main(["--repo", str(repo)])
+
+    assert exit_code == 0
+    assert capsys.readouterr().out.strip() == (
+        "in sync: 1 checkable updates entry have a manifest"
+    )
+
+
+def test_pip_root_with_only_requirements_dev_txt_glob_match_passes(tmp_path, capsys):
+    repo = build_repo(
+        tmp_path,
+        dependabot_yml={
+            "version": 2,
+            "updates": [{"package-ecosystem": "pip", "directory": "/"}],
+        },
+        manifests=["requirements-dev.txt"],
+    )
+    module = load_check_module(tmp_path)
+
+    exit_code = module.main(["--repo", str(repo)])
+
+    assert exit_code == 0
+    assert capsys.readouterr().out.strip() == (
+        "in sync: 1 checkable updates entry have a manifest"
+    )
+
+
+def test_npm_subdirectory_with_package_json_passes(tmp_path, capsys):
+    repo = build_repo(
+        tmp_path,
+        dependabot_yml={
+            "version": 2,
+            "updates": [
+                {"package-ecosystem": "npm", "directory": "/services/api"}
+            ],
+        },
+        manifests=["services/api/package.json"],
+    )
+    module = load_check_module(tmp_path)
+
+    exit_code = module.main(["--repo", str(repo)])
+
+    assert exit_code == 0
+    assert capsys.readouterr().out.strip() == (
+        "in sync: 1 checkable updates entry have a manifest"
+    )
+
+
+def test_several_entries_all_valid_passes(tmp_path, capsys):
+    repo = build_repo(
+        tmp_path,
+        dependabot_yml={
+            "version": 2,
+            "updates": [
+                {"package-ecosystem": "pip", "directory": "/"},
+                {"package-ecosystem": "npm", "directory": "/services/api"},
+                {"package-ecosystem": "pip", "directory": "/tools"},
+            ],
+        },
+        manifests=[
+            "pyproject.toml",
+            "services/api/package.json",
+            "tools/requirements.txt",
+        ],
+    )
+    module = load_check_module(tmp_path)
+
+    exit_code = module.main(["--repo", str(repo)])
+
+    assert exit_code == 0
+    assert capsys.readouterr().out.strip() == (
+        "in sync: 3 checkable updates entries have a manifest"
+    )
