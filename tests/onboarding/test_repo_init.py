@@ -228,6 +228,30 @@ class ProposeTests(unittest.TestCase):
             (wf_dir / "worktrail-auto-merge.yml").read_text(), "# hand-customized\n")
         self.assertTrue(any("worktrail-auto-merge.yml" in s for s in result["skipped"]))
 
+    def test_fresh_repo_writes_rulesets_drift_guard_workflow_and_script(self):
+        repo = _tmp_repo()
+        rc, result = self._run_propose(repo)
+        self.assertEqual(rc, 0)
+        self.assertIn(".github/workflows/rulesets_drift_guard.yml", result["written"])
+        self.assertIn("scripts/ci/rulesets/rulesets_sync.py", result["written"])
+        self.assertIn("scripts/ci/rulesets/requirements.txt", result["written"])
+        self.assertTrue(
+            (repo / ".github" / "workflows" / "rulesets_drift_guard.yml").is_file())
+        self.assertTrue((repo / "scripts" / "ci" / "rulesets" / "rulesets_sync.py").is_file())
+        self.assertTrue(
+            (repo / "scripts" / "ci" / "rulesets" / "requirements.txt").is_file())
+
+    def test_rerun_skips_already_present_drift_guard_workflow(self):
+        repo = _tmp_repo()
+        wf_dir = repo / ".github" / "workflows"
+        wf_dir.mkdir(parents=True)
+        (wf_dir / "rulesets_drift_guard.yml").write_text("# hand-customized\n")
+        rc, result = self._run_propose(repo)
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            (wf_dir / "rulesets_drift_guard.yml").read_text(), "# hand-customized\n")
+        self.assertTrue(any("rulesets_drift_guard.yml" in s for s in result["skipped"]))
+
     def test_no_ungated_automerge_warning_when_ci_jobs_exist(self):
         repo = _tmp_repo()
         wf_dir = repo / ".github" / "workflows"
