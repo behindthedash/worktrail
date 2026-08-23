@@ -725,6 +725,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="opt into the aspens skill-doc-sync add-on: declares add_ons.aspens in the "
              "seeded policy file and runs `aspens doc init` now instead of waiting for the "
              "repo's first orchestrated task")
+    propose_p.add_argument(
+        "--with-gitnexus", action="store_true",
+        help="opt into bootstrap GitNexus indexing: runs `gitnexus analyze --embeddings "
+             "--index-only` now instead of waiting for the repo's first orchestrated task")
     propose_p.add_argument("--json", action="store_true", dest="as_json")
 
     apply_p = subs.add_parser(
