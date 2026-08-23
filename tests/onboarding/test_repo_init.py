@@ -314,6 +314,40 @@ class EnableAspensTests(unittest.TestCase):
         self.assertIn("aspens doc init did not produce", warning)
 
 
+class EnableGitnexusTests(unittest.TestCase):
+    def test_noop_when_already_indexed(self):
+        repo = _tmp_repo()
+        (repo / ".gitnexus").mkdir()
+        with mock.patch("worktrail.onboarding.repo_init._run") as run:
+            configured, warning = repo_init.enable_gitnexus(repo)
+        self.assertFalse(configured)
+        self.assertIsNone(warning)
+        run.assert_not_called()
+
+    def test_successful_indexing_reports_configured(self):
+        repo = _tmp_repo()
+
+        def fake_run(cmd, **kw):
+            (repo / ".gitnexus").mkdir()
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        with mock.patch("worktrail.onboarding.repo_init._run", side_effect=fake_run) as run:
+            configured, warning = repo_init.enable_gitnexus(repo)
+        self.assertTrue(configured)
+        self.assertIsNone(warning)
+        run.assert_called_once()
+
+    def test_failed_or_timeout_reports_warning_not_raised(self):
+        repo = _tmp_repo()
+        with mock.patch(
+            "worktrail.onboarding.repo_init._run",
+            side_effect=subprocess.TimeoutExpired(cmd="gitnexus", timeout=1),
+        ):
+            configured, warning = repo_init.enable_gitnexus(repo)
+        self.assertFalse(configured)
+        self.assertIn("gitnexus analyze did not produce", warning)
+
+
 class ApplyTests(unittest.TestCase):
     def _repo_with_rulesets(self, branches=("dev", "prd")) -> Path:
         repo = _tmp_repo()
