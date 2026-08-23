@@ -236,6 +236,23 @@ class ProposeTests(unittest.TestCase):
         # ungated-automerge warning must not fire -- it would be false.
         self.assertFalse(any("nothing else to gate" in w for w in result["warnings"]))
 
+    def test_fresh_repo_writes_openspec_validate_workflow_and_gates_rulesets(self):
+        repo = _tmp_repo()
+        rc, result = self._run_propose(repo)
+        self.assertEqual(rc, 0)
+        self.assertIn(repo_init.OPENSPEC_VALIDATE_WORKFLOW_RELPATH, result["written"])
+        workflow_path = repo / repo_init.OPENSPEC_VALIDATE_WORKFLOW_RELPATH
+        self.assertTrue(workflow_path.is_file())
+        self.assertEqual(workflow_path.read_text(), repo_init.build_openspec_validate_workflow())
+        for branch_file in ("protect-dev.json", "protect-prd.json"):
+            ruleset = json.loads(
+                (repo / ".github" / "rulesets" / branch_file).read_text())
+            rsc_rule = next(
+                r for r in ruleset["rules"] if r["type"] == "required_status_checks")
+            self.assertEqual(
+                rsc_rule["parameters"]["required_status_checks"],
+                [{"context": repo_init.OPENSPEC_VALIDATE_JOB_NAME}])
+
     def test_three_branch_model_writes_stg_too(self):
         repo = _tmp_repo()
         rc, result = self._run_propose(repo, branch_model="3")
