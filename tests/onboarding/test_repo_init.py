@@ -160,7 +160,8 @@ def _fake_init_openspec(repo: Path):
 class ProposeTests(unittest.TestCase):
     def _run_propose(self, repo: Path, **overrides):
         args = mock.Mock(
-            repo=str(repo), branch_model="2", check=False, with_aspens=False, as_json=True)
+            repo=str(repo), branch_model="2", check=False, with_aspens=False,
+            with_gitnexus=False, as_json=True)
         for key, value in overrides.items():
             setattr(args, key, value)
         with mock.patch.object(repo_init, "init_openspec", side_effect=_fake_init_openspec):
@@ -279,6 +280,36 @@ class ProposeTests(unittest.TestCase):
             rc, result = self._run_propose(repo, with_aspens=True)
         self.assertEqual(rc, 0)
         self.assertTrue(any("aspens doc init" in w for w in result["warnings"]))
+
+    def test_with_gitnexus_runs_indexing_and_leaves_policy_bare(self):
+        repo = _tmp_repo()
+        with mock.patch.object(repo_init, "enable_gitnexus", return_value=(True, None)) as eg:
+            rc, result = self._run_propose(repo, with_gitnexus=True)
+        self.assertEqual(rc, 0)
+        eg.assert_called_once()
+        self.assertIn(".gitnexus/ (gitnexus analyze)", result["written"])
+        policy_text = (repo / ".worktrail" / "policy.yaml").read_text()
+        self.assertNotIn("gitnexus", policy_text)
+
+    def test_without_gitnexus_flag_invokes_no_gitnexus_behavior(self):
+        repo = _tmp_repo()
+        with mock.patch.object(repo_init, "enable_gitnexus") as eg:
+            rc, result = self._run_propose(repo)
+        self.assertEqual(rc, 0)
+        eg.assert_not_called()
+        policy_text = (repo / ".worktrail" / "policy.yaml").read_text()
+        self.assertNotIn("gitnexus", policy_text)
+
+    def test_gitnexus_warning_surfaces_without_failing_propose(self):
+        repo = _tmp_repo()
+        with mock.patch.object(
+            repo_init, "enable_gitnexus", return_value=(False, "gitnexus analyze did not produce ...")
+        ):
+            rc, result = self._run_propose(repo, with_gitnexus=True)
+        self.assertEqual(rc, 0)
+        self.assertTrue(any("gitnexus analyze" in w for w in result["warnings"]))
+        policy_text = (repo / ".worktrail" / "policy.yaml").read_text()
+        self.assertNotIn("gitnexus", policy_text)
 
 
 class EnableAspensTests(unittest.TestCase):
