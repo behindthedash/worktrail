@@ -993,6 +993,32 @@ def cmd_propose(args: argparse.Namespace) -> int:
             build_rulesets_drift_guard_workflow(branches), encoding="utf-8")
         written.append(str(drift_guard_path.relative_to(repo)))
 
+    dependabot_check_script_path = repo / DEPENDABOT_CHECK_SCRIPT_RELPATH
+    if state["dependabot_manifest_check_script_exists"]:
+        skipped.append(f"{DEPENDABOT_CHECK_SCRIPT_RELPATH} (already exists)")
+    else:
+        dependabot_check_script_path.parent.mkdir(parents=True, exist_ok=True)
+        dependabot_check_script_path.write_text(DEPENDABOT_MANIFEST_CHECK_PY, encoding="utf-8")
+        written.append(str(dependabot_check_script_path.relative_to(repo)))
+
+    dependabot_check_requirements_path = repo / DEPENDABOT_CHECK_REQUIREMENTS_RELPATH
+    if dependabot_check_requirements_path.is_file():
+        skipped.append(f"{DEPENDABOT_CHECK_REQUIREMENTS_RELPATH} (already exists)")
+    else:
+        dependabot_check_requirements_path.parent.mkdir(parents=True, exist_ok=True)
+        dependabot_check_requirements_path.write_text(
+            DEPENDABOT_MANIFEST_CHECK_REQUIREMENTS_TXT, encoding="utf-8")
+        written.append(str(dependabot_check_requirements_path.relative_to(repo)))
+
+    dependabot_check_workflow_path = repo / DEPENDABOT_CHECK_WORKFLOW_RELPATH
+    if state["dependabot_manifest_check_workflow_exists"]:
+        skipped.append(f"{DEPENDABOT_CHECK_WORKFLOW_RELPATH} (already exists)")
+    else:
+        dependabot_check_workflow_path.parent.mkdir(parents=True, exist_ok=True)
+        dependabot_check_workflow_path.write_text(
+            build_dependabot_manifest_check_workflow(branches), encoding="utf-8")
+        written.append(str(dependabot_check_workflow_path.relative_to(repo)))
+
     policy_path = repo / POLICY_RELPATH
     if state["policy_file_exists"]:
         skipped.append(f"{POLICY_RELPATH} (or a legacy policy filename) already exists")
