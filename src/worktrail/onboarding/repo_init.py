@@ -11,7 +11,15 @@ an unmerged PR:
            to already have checked out as a clean worktree (this tool does not
            create worktrees, commit, push, or open the PR -- that is the
            calling skill's job, same as every other worktrail CLI). Safe to
-           re-run; already-present files are left alone.
+           re-run; already-present files are left alone -- write-if-absent,
+           never regenerate-in-place. `propose`'s JSON/text result carries a
+           `drift` list (see `compute_drift`) reporting which already-present,
+           worktrail-owned files no longer match what today's template would
+           produce; this is report-only and never auto-applied -- the caller
+           (a human reading the CLI output, or an agent presenting the list
+           via a per-file question) decides whether to delete and regenerate
+           each one. Files meant for hand-editing or owned by a third-party
+           tool are out of scope for drift (see `compute_drift`'s docstring).
   apply    Run once that PR has merged: create `dev` (and `stg` for a 3-branch
            model) from the current default branch's tip SHA, rename the
            current default branch to `prd`, set `dev` as the new GitHub
@@ -179,6 +187,19 @@ def build_ruleset_for_branch(
     if branch == "prd":
         return build_ruleset("protect-prd", "prd", ["merge"], checks)
     raise ValueError(f"unknown branch {branch!r}")
+
+
+def _ruleset_structural_view(ruleset: Dict[str, Any]) -> Dict[str, Any]:
+    """`ruleset` with any `required_status_checks` rule removed entirely, so
+    drift detection can compare merge methods, review-thread resolution, and
+    linear-history policy independent of the required-check list -- operators
+    are expected to grow that list over time via `discover_ci_checks()`'s own
+    human-review flow, so its presence/contents is never drift."""
+    view = json.loads(json.dumps(ruleset))
+    view["rules"] = [
+        r for r in view.get("rules", []) if r.get("type") != "required_status_checks"
+    ]
+    return view
 
 
 def patch_ruleset_required_check(path: Path, job_name: str) -> bool:
@@ -744,9 +765,84 @@ def detect_state(repo: Path) -> Dict[str, Any]:
             repo / RULESETS_DRIFT_GUARD_WORKFLOW_RELPATH
         ).is_file(),
         "rulesets_sync_script_exists": (repo / RULESETS_SYNC_SCRIPT_RELPATH).is_file(),
+        "rulesets_requirements_exists": (repo / RULESETS_REQUIREMENTS_RELPATH).is_file(),
         "openspec_validate_workflow_exists": (repo / OPENSPEC_VALIDATE_WORKFLOW_RELPATH).is_file(),
         "ci_jobs_discovered": discover_ci_checks(repo),
     }
+
+
+def _content_drift(repo: Path, relpath: str, current_content: str) -> Optional[Dict[str, str]]:
+    on_disk = (repo / relpath).read_text(encoding="utf-8")
+    if on_disk == current_content:
+        return None
+    return {
+        "path": relpath,
+        "detail": "content differs from what today's template would generate -- delete "
+                   "the file and re-run propose to regenerate it",
+    }
+
+
+def _ruleset_drift(repo: Path, branch: str, branch_model: str) -> Optional[Dict[str, str]]:
+    relpath = f".github/rulesets/protect-{branch}.json"
+    try:
+        on_disk = json.loads((repo / relpath).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    baseline = build_ruleset_for_branch(branch, branch_model)
+    if _ruleset_structural_view(on_disk) == _ruleset_structural_view(baseline):
+        return None
+    return {
+        "path": relpath,
+        "detail": "ruleset structure (merge methods, review-thread resolution, linear "
+                   "history) differs from today's template -- required_status_checks is "
+                   "intentionally excluded from this comparison since operators are "
+                   "expected to grow it over time; review the rest by hand",
+    }
+
+
+def compute_drift(
+    repo: Path, state: Dict[str, Any], branches: List[str], branch_model: str,
+) -> List[Dict[str, str]]:
+    """Report-only: files `propose` owns and skips when already present,
+    whose on-disk content no longer matches what today's generator would
+    produce. Never auto-applied and `propose` never regenerates a file on
+    its own account of this -- a human (or an agent on their behalf,
+    presenting this list via a per-file question) decides whether to
+    upgrade. Only worktrail-owned templates are checked; files meant for
+    hand-editing (`.worktrail/policy.yaml`, `CLAUDE.md`/`AGENTS.md`) and
+    third-party-tool state (`openspec/`, `.aspens.json`, `.gitnexus/`) are
+    out of scope -- there is no single "current" content to diff them
+    against."""
+    drift: List[Dict[str, str]] = []
+    for branch in branches:
+        if f"protect-{branch}.json" in state["existing_rulesets"]:
+            found = _ruleset_drift(repo, branch, branch_model)
+            if found:
+                drift.append(found)
+    if state["rulesets_sync_script_exists"]:
+        found = _content_drift(repo, RULESETS_SYNC_SCRIPT_RELPATH, RULESETS_SYNC_PY)
+        if found:
+            drift.append(found)
+    if state["rulesets_requirements_exists"]:
+        found = _content_drift(repo, RULESETS_REQUIREMENTS_RELPATH, RULESETS_REQUIREMENTS_TXT)
+        if found:
+            drift.append(found)
+    if state["rulesets_drift_guard_exists"]:
+        found = _content_drift(
+            repo, RULESETS_DRIFT_GUARD_WORKFLOW_RELPATH,
+            build_rulesets_drift_guard_workflow(branches))
+        if found:
+            drift.append(found)
+    if state["automerge_workflow_exists"]:
+        found = _content_drift(repo, AUTOMERGE_WORKFLOW_RELPATH, build_automerge_workflow())
+        if found:
+            drift.append(found)
+    if state["openspec_validate_workflow_exists"]:
+        found = _content_drift(
+            repo, OPENSPEC_VALIDATE_WORKFLOW_RELPATH, build_openspec_validate_workflow())
+        if found:
+            drift.append(found)
+    return drift
 
 
 def cmd_propose(args: argparse.Namespace) -> int:
@@ -757,7 +853,9 @@ def cmd_propose(args: argparse.Namespace) -> int:
 
     state = detect_state(repo)
     if args.check:
-        print(json.dumps(state, indent=2) if args.as_json else state)
+        check_branches = ["dev", "stg", "prd"] if args.branch_model == "3" else ["dev", "prd"]
+        check_result = dict(state, drift=compute_drift(repo, state, check_branches, args.branch_model))
+        print(json.dumps(check_result, indent=2) if args.as_json else check_result)
         return 0
 
     written: List[str] = []
@@ -806,7 +904,7 @@ def cmd_propose(args: argparse.Namespace) -> int:
         written.append(str(sync_script_path.relative_to(repo)))
 
     requirements_path = repo / RULESETS_REQUIREMENTS_RELPATH
-    if requirements_path.is_file():
+    if state["rulesets_requirements_exists"]:
         skipped.append(f"{RULESETS_REQUIREMENTS_RELPATH} (already exists)")
     else:
         requirements_path.parent.mkdir(parents=True, exist_ok=True)
@@ -881,6 +979,8 @@ def cmd_propose(args: argparse.Namespace) -> int:
         openspec_validate_path.write_text(build_openspec_validate_workflow(), encoding="utf-8")
         written.append(str(openspec_validate_path.relative_to(repo)))
 
+    drift = compute_drift(repo, state, branches, args.branch_model)
+
     result = {
         "repo": str(repo),
         "branch_model": args.branch_model,
@@ -888,6 +988,7 @@ def cmd_propose(args: argparse.Namespace) -> int:
         "skipped": skipped,
         "warnings": warnings,
         "ci_jobs_discovered": state["ci_jobs_discovered"],
+        "drift": drift,
     }
     if args.as_json:
         print(json.dumps(result, indent=2))
@@ -899,6 +1000,11 @@ def cmd_propose(args: argparse.Namespace) -> int:
             print(f"  skipped: {s}")
         for w in warnings:
             print(f"  warning: {w}")
+        if drift:
+            print("  Drift found (skipped files that no longer match today's template --")
+            print("  never auto-upgraded; review each and decide whether to regenerate):")
+            for d in drift:
+                print(f"    - {d['path']}: {d['detail']}")
         if state["ci_jobs_discovered"]:
             print("  CI jobs discovered (NOT auto-required -- review and add the ones that")
             print("  should gate merges to .github/rulesets/*.json before opening the PR):")
