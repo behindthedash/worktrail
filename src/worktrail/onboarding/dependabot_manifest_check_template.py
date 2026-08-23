@@ -73,6 +73,44 @@ def _has_manifest(directory: Path, globs) -> bool:
     return any(any(directory.glob(pattern)) for pattern in globs)
 
 
+_GLOB_CHARS = frozenset("*?[")
+
+
+def _directory_values(entry: dict):
+    """Yield the raw `directory`/`directories` value(s) declared on one
+    `updates` entry, in declaration order.
+
+    A dependabot.yml entry declares exactly one of the two keys; yielding
+    `directory` as a single value keeps both shapes uniform for the caller.
+    """
+    if "directories" in entry:
+        for directory in entry["directories"] or []:
+            yield directory
+    elif "directory" in entry:
+        yield entry["directory"]
+
+
+def iter_checkable_entries(updates):
+    """Yield `(ecosystem, directory)` for every `updates` entry/directory
+    pair that should be manifest-checked.
+
+    Skips entries whose `package-ecosystem` is absent from
+    `ECOSYSTEM_MANIFEST_GLOBS` (design D2), and skips any directory value
+    containing a glob character (`*`, `?`, `[`) since Dependabot itself
+    does not expand globs there and such a value cannot resolve to a single
+    on-disk path (design D3). A `directories` entry is checked once per
+    directory, independently of its siblings.
+    """
+    for entry in updates or []:
+        ecosystem = entry.get("package-ecosystem")
+        if ecosystem not in ECOSYSTEM_MANIFEST_GLOBS:
+            continue
+        for directory in _directory_values(entry):
+            if not isinstance(directory, str) or any(c in directory for c in _GLOB_CHARS):
+                continue
+            yield ecosystem, directory
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
