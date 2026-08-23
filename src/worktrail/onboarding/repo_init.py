@@ -391,6 +391,14 @@ jobs:
 
 OPENSPEC_VALIDATE_WORKFLOW_RELPATH = ".github/workflows/worktrail-openspec-validate.yml"
 
+# _OPENSPEC_VALIDATE_WORKFLOW sets no job-level `name:` on `openspec-validate`,
+# so GitHub's own default display -- and discover_ci_checks()'s name-or-id
+# fallback -- both resolve to the job id itself. Keeping that string as a
+# constant here, instead of re-typing it at each required_status_checks call
+# site, is what keeps discover_ci_checks() and the ruleset entry from ever
+# drifting apart.
+OPENSPEC_VALIDATE_JOB_NAME = "openspec-validate"
+
 _OPENSPEC_VALIDATE_WORKFLOW = '''\
 name: "CI: OpenSpec validate"
 on:
