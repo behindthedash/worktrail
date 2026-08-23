@@ -202,6 +202,32 @@ class ProposeTests(unittest.TestCase):
                 rsc_rule["parameters"]["required_status_checks"],
                 [{"context": repo_init.OPENSPEC_VALIDATE_JOB_NAME}])
 
+    def test_rerun_after_workflow_written_is_noop_on_workflow_and_required_checks(self):
+        # Task 5.3: once the openspec-validate workflow exists (whether from
+        # a prior propose run or hand-authored), a second propose run must
+        # not touch the workflow file or required_status_checks -- gating is
+        # keyed on OPENSPEC_VALIDATE_WORKFLOW_RELPATH's presence, not on
+        # openspec_initialized or on any other state.
+        repo = _tmp_repo()
+        self._run_propose(repo)
+        workflow_path = repo / repo_init.OPENSPEC_VALIDATE_WORKFLOW_RELPATH
+        dev_ruleset_path = repo / ".github" / "rulesets" / "protect-dev.json"
+        prd_ruleset_path = repo / ".github" / "rulesets" / "protect-prd.json"
+        workflow_before = workflow_path.read_text()
+        dev_ruleset_before = dev_ruleset_path.read_text()
+        prd_ruleset_before = prd_ruleset_path.read_text()
+
+        rc, result = self._run_propose(repo)
+
+        self.assertEqual(rc, 0)
+        self.assertNotIn(repo_init.OPENSPEC_VALIDATE_WORKFLOW_RELPATH, result["written"])
+        self.assertTrue(
+            any(repo_init.OPENSPEC_VALIDATE_WORKFLOW_RELPATH in s for s in result["skipped"]))
+        self.assertFalse(any("patched" in s for s in result["written"]))
+        self.assertEqual(workflow_path.read_text(), workflow_before)
+        self.assertEqual(dev_ruleset_path.read_text(), dev_ruleset_before)
+        self.assertEqual(prd_ruleset_path.read_text(), prd_ruleset_before)
+
     def test_already_onboarded_repo_patches_existing_rulesets_without_altering_other_rules(self):
         repo = _tmp_repo()
         (repo / "openspec").mkdir()
