@@ -21,11 +21,16 @@ an unmerged PR:
            scaffolded -- idempotently create/update the go:risk-*/
            go:no-automerge labels it depends on.
 
-`propose` deliberately never auto-populates `required_status_checks` -- it
-reports discovered CI job display names (from `.github/workflows/*.yml`) for
-a human to review, since not every job should gate every branch (informational
-jobs, matrix jobs, etc.). A repo with no CI gets a ruleset with zero required
-checks, not a copy-pasted list that would deadlock every future PR.
+`propose` deliberately never auto-populates `required_status_checks` from CI
+discovery -- it reports discovered CI job display names (from
+`.github/workflows/*.yml`) for a human to review, since not every job should
+gate every branch (informational jobs, matrix jobs, etc.). A repo with no CI
+gets a ruleset with zero required checks, not a copy-pasted list that would
+deadlock every future PR. The one scoped exception: when the same `propose`
+run newly writes the openspec-validate workflow (see
+OPENSPEC_VALIDATE_JOB_NAME) alongside a *fresh* `protect-<branch>.json`, that
+one job is seeded as the ruleset's sole required check -- see
+`build_ruleset_for_branch` and `patch_ruleset_required_check`.
 
 Usage:
   worktrail-repo-init propose --repo /path/to/repo [--branch-model 2|3] [--check] [--json]
