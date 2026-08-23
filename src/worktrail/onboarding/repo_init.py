@@ -288,6 +288,96 @@ def ensure_automerge_labels(gh_repo: str) -> Dict[str, str]:
     return result
 
 
+def build_rulesets_drift_guard_workflow(branches: List[str]) -> str:
+    """A "CI: Rulesets Drift Guard" workflow targeting the repo's actual
+    branch model: `--check`s committed `.github/rulesets/*.json` against
+    live GitHub rulesets on a PR touching them (plus a weekly schedule, to
+    catch out-of-band UI edits) and `--apply`s them on push to a protected
+    branch, using vendored `rulesets_sync.py` (rulesets_drift_guard_template).
+
+    Reading/writing live rulesets needs repository Administration
+    read/write, a GitHub App installation permission that cannot be granted
+    to the default GITHUB_TOKEN via the workflow-level `permissions:` block
+    -- so this mints a token from the same fleet-wide App already used for
+    release-notes automation (`vars.RELEASE_NOTES_APP_ID` /
+    `secrets.RELEASE_NOTES_APP_PRIVATE_KEY`), matching this repo's own
+    .github/workflows/rulesets_drift_guard.yml. A repo where that App is not
+    yet installed/configured must not fail CI over it: the token-mint step
+    and every rulesets-check/apply step are gated on
+    `vars.RELEASE_NOTES_APP_ID` (respectively the minted token) being
+    non-empty, so they report `skipped`, not `failure`."""
+    branches_yaml = "[" + ", ".join(branches) + "]"
+    return f'''\
+name: 'CI: Rulesets Drift Guard'
+
+on:
+  pull_request:
+    branches: {branches_yaml}
+    paths:
+      - '.github/rulesets/**'
+      - '{RULESETS_DRIFT_GUARD_WORKFLOW_RELPATH}'
+      - '{RULESETS_SCRIPT_DIR_RELPATH}/**'
+  push:
+    branches: {branches_yaml}
+    paths:
+      - '.github/rulesets/**'
+  workflow_dispatch: {{}}
+  schedule:
+    # Weekly drift check to catch out-of-band GitHub UI edits.
+    - cron: '0 9 * * 1'
+
+concurrency:
+  group: rulesets-drift-guard-${{{{ github.event.pull_request.number || github.ref }}}}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  rulesets-check:
+    name: Rulesets drift check
+    runs-on: ubuntu-latest
+    env:
+      RULESETS_APP_ID: ${{{{ vars.RELEASE_NOTES_APP_ID }}}}
+      RULESETS_APP_PRIVATE_KEY: ${{{{ secrets.RELEASE_NOTES_APP_PRIVATE_KEY }}}}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: python -m pip install -r {RULESETS_SCRIPT_DIR_RELPATH}/requirements.txt
+
+      # Reading/writing live rulesets requires repository Administration,
+      # a GitHub App installation permission -- it cannot be granted to the
+      # default GITHUB_TOKEN via the workflow-level `permissions:` block.
+      # Mint a token from the fleet-wide App already installed for bot
+      # automation instead.
+      - name: Generate rulesets-check bot token
+        id: app-token
+        if: ${{{{ env.RULESETS_APP_ID != '' && env.RULESETS_APP_PRIVATE_KEY != '' }}}}
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{{{ env.RULESETS_APP_ID }}}}
+          private-key: ${{{{ env.RULESETS_APP_PRIVATE_KEY }}}}
+
+      - name: Check committed rulesets against live GitHub rulesets
+        if: ${{{{ github.event_name != 'push' && steps.app-token.outputs.token != '' }}}}
+        env:
+          GITHUB_TOKEN: ${{{{ steps.app-token.outputs.token }}}}
+        run: python {RULESETS_SCRIPT_DIR_RELPATH}/rulesets_sync.py --check
+
+      - name: Apply committed rulesets to live GitHub rulesets
+        if: ${{{{ github.event_name == 'push' && steps.app-token.outputs.token != '' }}}}
+        env:
+          GITHUB_TOKEN: ${{{{ steps.app-token.outputs.token }}}}
+        run: python {RULESETS_SCRIPT_DIR_RELPATH}/rulesets_sync.py --apply
+'''
+
+
 # --------------------------------------------------------------------------
 # .worktrail/policy.yaml seed
 # --------------------------------------------------------------------------
