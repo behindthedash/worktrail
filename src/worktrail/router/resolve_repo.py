@@ -45,7 +45,7 @@ def is_git_repo(path: Path) -> bool:
 def is_workspace_root(path: Path) -> bool:
     """A workspace root carries a project index plus a sibling `projects/` container."""
     path = Path(path)
-    return (path / "PROJECT.md").is_file() and (path / "projects").is_dir()
+    return (path / "REPOS.md").is_file() and (path / "projects").is_dir()
 
 
 def _canonical_repo_from_worktree(dot_git_file: Path) -> Optional[Path]:
@@ -160,7 +160,7 @@ def resolve(start: Path, hint: str = "") -> Dict:
 
     # in-repo detection must win when start is inside a project repo; the
     # workspace walk below would otherwise shadow it on any machine with the
-    # standard layout (~/PROJECT.md + ~/projects/), because every repo under
+    # standard layout (~/REPOS.md + ~/projects/), because every repo under
     # ~/projects has the workspace root as an ancestor. Workspace mode applies
     # only when the enclosing repo IS the workspace root itself (e.g. a
     # dotfiles-tracked home dir) or start is outside any repo.
