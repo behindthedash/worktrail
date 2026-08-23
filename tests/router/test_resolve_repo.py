@@ -187,7 +187,7 @@ class ResolveTests(unittest.TestCase):
 
     def test_workspace_root_prefers_projects_over_home_git(self):
         with _isolated_tmp() as root:
-            (root / "PROJECT.md").write_text("# Workspace\n")
+            (root / "REPOS.md").write_text("# Workspace\n")
             projects = root / "projects"
             projects.mkdir()
             alpha = _mkrepo(projects, "alpha")
@@ -203,7 +203,7 @@ class ResolveTests(unittest.TestCase):
         to the workspace-root ambiguous picker (the workspace walk used to
         shadow in-repo detection on the standard layout)."""
         with _isolated_tmp() as root:
-            (root / "PROJECT.md").write_text("# Workspace\n")
+            (root / "REPOS.md").write_text("# Workspace\n")
             (root / ".git").mkdir()  # home dir itself is a git repo
             projects = root / "projects"
             projects.mkdir()
@@ -217,7 +217,7 @@ class ResolveTests(unittest.TestCase):
 
     def test_workspace_root_hint_derives_repo(self):
         with _isolated_tmp() as root:
-            (root / "PROJECT.md").write_text("# Workspace\n")
+            (root / "REPOS.md").write_text("# Workspace\n")
             projects = root / "projects"
             projects.mkdir()
             ggb = _mkrepo(projects, "gracefully-giving-back")
