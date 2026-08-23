@@ -43,6 +43,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 
 from ..router.policy import POLICY_RELPATH, has_policy_file
+from .rulesets_drift_guard_template import RULESETS_REQUIREMENTS_TXT, RULESETS_SYNC_PY
 
 OPENSPEC_PACKAGE = "@fission-ai/openspec@latest"
 
@@ -176,6 +177,8 @@ AUTOMERGE_WORKFLOW_RELPATH = ".github/workflows/worktrail-auto-merge.yml"
 
 RULESETS_DRIFT_GUARD_WORKFLOW_RELPATH = ".github/workflows/rulesets_drift_guard.yml"
 RULESETS_SCRIPT_DIR_RELPATH = "scripts/ci/rulesets"
+RULESETS_SYNC_SCRIPT_RELPATH = f"{RULESETS_SCRIPT_DIR_RELPATH}/rulesets_sync.py"
+RULESETS_REQUIREMENTS_RELPATH = f"{RULESETS_SCRIPT_DIR_RELPATH}/requirements.txt"
 
 _AUTOMERGE_WORKFLOW = '''\
 name: "CI: Auto-merge on open"
@@ -286,6 +289,100 @@ def ensure_automerge_labels(gh_repo: str) -> Dict[str, str]:
         ])
         result[label["name"]] = "ok" if p.returncode == 0 else f"FAILED: {p.stderr.strip()}"
     return result
+
+
+def build_rulesets_drift_guard_workflow(branches: List[str]) -> str:
+    """A "CI: Rulesets Drift Guard" workflow targeting the repo's actual
+    branch model: `--check`s committed `.github/rulesets/*.json` against
+    live GitHub rulesets on a PR touching them (plus a weekly schedule, to
+    catch out-of-band UI edits) and `--apply`s them on push to a protected
+    branch, using vendored `rulesets_sync.py` (rulesets_drift_guard_template).
+
+    Reading/writing live rulesets needs repository Administration
+    read/write, a GitHub App installation permission that cannot be granted
+    to the default GITHUB_TOKEN via the workflow-level `permissions:` block
+    -- so this mints a token from the same fleet-wide App already used for
+    release-notes automation (`vars.RELEASE_NOTES_APP_ID` /
+    `secrets.RELEASE_NOTES_APP_PRIVATE_KEY`), matching this repo's own
+    .github/workflows/rulesets_drift_guard.yml. A repo where that App is not
+    yet installed/configured must not fail CI over it: the token-mint step
+    and every rulesets-check/apply step are gated on
+    `vars.RELEASE_NOTES_APP_ID` (respectively the minted token) being
+    non-empty, so they report `skipped`, not `failure`."""
+    branches_yaml = "[" + ", ".join(branches) + "]"
+    return f'''\
+name: 'CI: Rulesets Drift Guard'
+
+on:
+  pull_request:
+    branches: {branches_yaml}
+    paths:
+      - '.github/rulesets/**'
+      - '{RULESETS_DRIFT_GUARD_WORKFLOW_RELPATH}'
+      - '{RULESETS_SCRIPT_DIR_RELPATH}/**'
+  push:
+    branches: {branches_yaml}
+    paths:
+      - '.github/rulesets/**'
+  workflow_dispatch: {{}}
+  schedule:
+    # Weekly drift check to catch out-of-band GitHub UI edits.
+    - cron: '0 9 * * 1'
+
+concurrency:
+  group: rulesets-drift-guard-${{{{ github.event.pull_request.number || github.ref }}}}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  rulesets-check:
+    name: Rulesets drift check
+    runs-on: ubuntu-latest
+    env:
+      RULESETS_APP_ID: ${{{{ vars.RELEASE_NOTES_APP_ID }}}}
+      RULESETS_APP_PRIVATE_KEY: ${{{{ secrets.RELEASE_NOTES_APP_PRIVATE_KEY }}}}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: python -m pip install -r {RULESETS_SCRIPT_DIR_RELPATH}/requirements.txt
+
+      # Reading/writing live rulesets requires repository Administration,
+      # a GitHub App installation permission -- it cannot be granted to the
+      # default GITHUB_TOKEN via the workflow-level `permissions:` block.
+      # Mint a token from the fleet-wide App already installed for bot
+      # automation instead.
+      - name: Generate rulesets-check bot token
+        id: app-token
+        if: ${{{{ env.RULESETS_APP_ID != '' && env.RULESETS_APP_PRIVATE_KEY != '' }}}}
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{{{ env.RULESETS_APP_ID }}}}
+          private-key: ${{{{ env.RULESETS_APP_PRIVATE_KEY }}}}
+
+      - name: Check committed rulesets against live GitHub rulesets
+        if: ${{{{ github.event_name != 'push' && steps.app-token.outputs.token != '' }}}}
+        env:
+          GITHUB_TOKEN: ${{{{ steps.app-token.outputs.token }}}}
+        run: python {RULESETS_SCRIPT_DIR_RELPATH}/rulesets_sync.py --check
+
+      - name: Apply committed rulesets to live GitHub rulesets
+        if: ${{{{ github.event_name == 'push' && steps.app-token.outputs.token != '' }}}}
+        env:
+          GITHUB_TOKEN: ${{{{ steps.app-token.outputs.token }}}}
+        run: python {RULESETS_SCRIPT_DIR_RELPATH}/rulesets_sync.py --apply
+
+      - name: Note skipped run due to missing App credentials
+        if: ${{{{ always() && (env.RULESETS_APP_ID == '' || env.RULESETS_APP_PRIVATE_KEY == '') }}}}
+        run: echo "::notice::Rulesets drift guard skipped -- install the release-notes GitHub App and set vars.RELEASE_NOTES_APP_ID / secrets.RELEASE_NOTES_APP_PRIVATE_KEY to enable it."
+'''
 
 
 # --------------------------------------------------------------------------
@@ -508,6 +605,28 @@ def apply_ruleset(gh_repo: str, ruleset: Dict[str, Any]) -> Tuple[bool, str]:
     return True, f"{action} and verified live"
 
 
+def _gh_json_names(args: List[str]) -> List[str]:
+    p = _run(["gh", *args])
+    if p.returncode != 0:
+        return []
+    try:
+        data = json.loads(p.stdout)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(data, list):
+        return []
+    return [item.get("name") for item in data if isinstance(item, dict)]
+
+
+def app_credentials_configured(gh_repo: str) -> bool:
+    """True only if both `RELEASE_NOTES_APP_ID` (a repo variable) and
+    `RELEASE_NOTES_APP_PRIVATE_KEY` (a repo secret) are present -- the two
+    credentials the rulesets drift-guard workflow's App-token mint step needs."""
+    variable_names = _gh_json_names(["variable", "list", "--json", "name", "-R", gh_repo])
+    secret_names = _gh_json_names(["secret", "list", "--json", "name", "-R", gh_repo])
+    return "RELEASE_NOTES_APP_ID" in variable_names and "RELEASE_NOTES_APP_PRIVATE_KEY" in secret_names
+
+
 # --------------------------------------------------------------------------
 # propose
 # --------------------------------------------------------------------------
@@ -529,6 +648,10 @@ def detect_state(repo: Path) -> Dict[str, Any]:
         "policy_file_exists": policy_exists,
         "openspec_initialized": (repo / "openspec" / "config.yaml").is_file(),
         "automerge_workflow_exists": (repo / AUTOMERGE_WORKFLOW_RELPATH).is_file(),
+        "rulesets_drift_guard_exists": (
+            repo / RULESETS_DRIFT_GUARD_WORKFLOW_RELPATH
+        ).is_file(),
+        "rulesets_sync_script_exists": (repo / RULESETS_SYNC_SCRIPT_RELPATH).is_file(),
         "ci_jobs_discovered": discover_ci_checks(repo),
     }
 
@@ -567,6 +690,31 @@ def cmd_propose(args: argparse.Namespace) -> int:
         ruleset = build_ruleset_for_branch(branch, args.branch_model)
         path.write_text(json.dumps(ruleset, indent=2) + "\n", encoding="utf-8")
         written.append(str(path.relative_to(repo)))
+
+    sync_script_path = repo / RULESETS_SYNC_SCRIPT_RELPATH
+    if state["rulesets_sync_script_exists"]:
+        skipped.append(f"{RULESETS_SYNC_SCRIPT_RELPATH} (already exists)")
+    else:
+        sync_script_path.parent.mkdir(parents=True, exist_ok=True)
+        sync_script_path.write_text(RULESETS_SYNC_PY, encoding="utf-8")
+        written.append(str(sync_script_path.relative_to(repo)))
+
+    requirements_path = repo / RULESETS_REQUIREMENTS_RELPATH
+    if requirements_path.is_file():
+        skipped.append(f"{RULESETS_REQUIREMENTS_RELPATH} (already exists)")
+    else:
+        requirements_path.parent.mkdir(parents=True, exist_ok=True)
+        requirements_path.write_text(RULESETS_REQUIREMENTS_TXT, encoding="utf-8")
+        written.append(str(requirements_path.relative_to(repo)))
+
+    drift_guard_path = repo / RULESETS_DRIFT_GUARD_WORKFLOW_RELPATH
+    if state["rulesets_drift_guard_exists"]:
+        skipped.append(f"{RULESETS_DRIFT_GUARD_WORKFLOW_RELPATH} (already exists)")
+    else:
+        drift_guard_path.parent.mkdir(parents=True, exist_ok=True)
+        drift_guard_path.write_text(
+            build_rulesets_drift_guard_workflow(branches), encoding="utf-8")
+        written.append(str(drift_guard_path.relative_to(repo)))
 
     policy_path = repo / POLICY_RELPATH
     if state["policy_file_exists"]:
@@ -732,6 +880,12 @@ def cmd_apply(args: argparse.Namespace) -> int:
     if (repo / AUTOMERGE_WORKFLOW_RELPATH).is_file():
         result["labels"] = ensure_automerge_labels(gh_repo)
         labels_failed = any("FAILED" in status for status in result["labels"].values())
+
+    if not app_credentials_configured(gh_repo):
+        result["warnings"].append(
+            "rulesets drift-guard workflow will skip -- install the release-notes GitHub App "
+            "on this repo and set the RELEASE_NOTES_APP_ID variable / "
+            "RELEASE_NOTES_APP_PRIVATE_KEY secret to enable it")
 
     if args.as_json:
         print(json.dumps(result, indent=2))

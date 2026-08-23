@@ -146,6 +146,56 @@ class BuildAutomergeWorkflowTests(unittest.TestCase):
         self.assertIn("--auto --merge", text)
 
 
+class BuildRulesetsDriftGuardWorkflowTests(unittest.TestCase):
+    def test_two_branch_model_produces_expected_branches_list(self):
+        text = repo_init.build_rulesets_drift_guard_workflow(["dev", "prd"])
+        doc = yaml.safe_load(text)
+        self.assertEqual(doc[True]["pull_request"]["branches"], ["dev", "prd"])
+        self.assertEqual(doc[True]["push"]["branches"], ["dev", "prd"])
+
+    def test_three_branch_model_produces_expected_branches_list(self):
+        text = repo_init.build_rulesets_drift_guard_workflow(["dev", "stg", "prd"])
+        doc = yaml.safe_load(text)
+        self.assertEqual(doc[True]["pull_request"]["branches"], ["dev", "stg", "prd"])
+        self.assertEqual(doc[True]["push"]["branches"], ["dev", "stg", "prd"])
+
+    def test_has_app_token_step_and_no_secrets_github_token_for_rulesets_api(self):
+        text = repo_init.build_rulesets_drift_guard_workflow(["dev", "prd"])
+        doc = yaml.safe_load(text)
+        steps = doc["jobs"]["rulesets-check"]["steps"]
+        app_token_step = next(s for s in steps if s.get("id") == "app-token")
+        self.assertEqual(app_token_step["uses"], "actions/create-github-app-token@v3")
+        rulesets_steps = [
+            s for s in steps
+            if "run" in s and "rulesets_sync.py" in s["run"]
+        ]
+        self.assertTrue(rulesets_steps)
+        for step in rulesets_steps:
+            self.assertNotIn("secrets.GITHUB_TOKEN", str(step))
+
+    def test_credential_guard_if_conditions_present(self):
+        text = repo_init.build_rulesets_drift_guard_workflow(["dev", "prd"])
+        doc = yaml.safe_load(text)
+        steps = doc["jobs"]["rulesets-check"]["steps"]
+
+        app_token_step = next(s for s in steps if s.get("id") == "app-token")
+        self.assertEqual(
+            app_token_step["if"],
+            "${{ env.RULESETS_APP_ID != '' && env.RULESETS_APP_PRIVATE_KEY != '' }}")
+
+        check_step = next(
+            s for s in steps if s.get("name") == "Check committed rulesets against live GitHub rulesets")
+        self.assertEqual(
+            check_step["if"],
+            "${{ github.event_name != 'push' && steps.app-token.outputs.token != '' }}")
+
+        apply_step = next(
+            s for s in steps if s.get("name") == "Apply committed rulesets to live GitHub rulesets")
+        self.assertEqual(
+            apply_step["if"],
+            "${{ github.event_name == 'push' && steps.app-token.outputs.token != '' }}")
+
+
 def _fake_init_openspec(repo: Path):
     """Mirrors repo_init.init_openspec's file-existence idempotency without
     actually shelling out to npx."""
@@ -228,6 +278,30 @@ class ProposeTests(unittest.TestCase):
         self.assertEqual(
             (wf_dir / "worktrail-auto-merge.yml").read_text(), "# hand-customized\n")
         self.assertTrue(any("worktrail-auto-merge.yml" in s for s in result["skipped"]))
+
+    def test_fresh_repo_writes_rulesets_drift_guard_workflow_and_script(self):
+        repo = _tmp_repo()
+        rc, result = self._run_propose(repo)
+        self.assertEqual(rc, 0)
+        self.assertIn(".github/workflows/rulesets_drift_guard.yml", result["written"])
+        self.assertIn("scripts/ci/rulesets/rulesets_sync.py", result["written"])
+        self.assertIn("scripts/ci/rulesets/requirements.txt", result["written"])
+        self.assertTrue(
+            (repo / ".github" / "workflows" / "rulesets_drift_guard.yml").is_file())
+        self.assertTrue((repo / "scripts" / "ci" / "rulesets" / "rulesets_sync.py").is_file())
+        self.assertTrue(
+            (repo / "scripts" / "ci" / "rulesets" / "requirements.txt").is_file())
+
+    def test_rerun_skips_already_present_drift_guard_workflow(self):
+        repo = _tmp_repo()
+        wf_dir = repo / ".github" / "workflows"
+        wf_dir.mkdir(parents=True)
+        (wf_dir / "rulesets_drift_guard.yml").write_text("# hand-customized\n")
+        rc, result = self._run_propose(repo)
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            (wf_dir / "rulesets_drift_guard.yml").read_text(), "# hand-customized\n")
+        self.assertTrue(any("rulesets_drift_guard.yml" in s for s in result["skipped"]))
 
     def test_no_ungated_automerge_warning_when_ci_jobs_exist(self):
         repo = _tmp_repo()
@@ -526,6 +600,12 @@ class ApplyTests(unittest.TestCase):
                     [{"id": 1, "name": "protect-dev"}, {"id": 2, "name": "protect-prd"}]), stderr="")
             if cmd[:4] == ["gh", "api", "--method", "PUT"]:
                 return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if joined == "gh variable list --json name -R acme/widget":
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout=json.dumps([{"name": "RELEASE_NOTES_APP_ID"}]), stderr="")
+            if joined == "gh secret list --json name -R acme/widget":
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout=json.dumps([{"name": "RELEASE_NOTES_APP_PRIVATE_KEY"}]), stderr="")
             # Any attempt to touch branches (create/rename) or re-enable an
             # already-enabled setting is a bug on a re-run.
             self.fail(f"unexpected branch/setting-mutating call on an already-applied repo: {cmd}")
@@ -550,6 +630,68 @@ class ApplyTests(unittest.TestCase):
         ):
             rc = repo_init.cmd_apply(args)
         self.assertEqual(rc, 1)
+
+    def _fake_run_already_applied(self, repo, variable_names, secret_names):
+        """An 'already applied' repo (default is dev) so branch/ruleset calls
+        are all no-ops, isolating the credential-reminder check under test."""
+        def fake_run(cmd, **kw):
+            joined = " ".join(cmd)
+            if cmd[:3] == ["git", "-C", str(repo)]:
+                return subprocess.CompletedProcess(cmd, 0, stdout="git@github.com:acme/widget.git\n", stderr="")
+            if joined == "gh api repos/acme/widget -q .default_branch":
+                return subprocess.CompletedProcess(cmd, 0, stdout="dev\n", stderr="")
+            if joined == "gh api repos/acme/widget -q .delete_branch_on_merge":
+                return subprocess.CompletedProcess(cmd, 0, stdout="true\n", stderr="")
+            if joined == "gh api repos/acme/widget/rulesets":
+                return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(
+                    [{"id": 1, "name": "protect-dev"}, {"id": 2, "name": "protect-prd"}]), stderr="")
+            if cmd[:4] == ["gh", "api", "--method", "PUT"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if joined == "gh variable list --json name -R acme/widget":
+                data = [{"name": name} for name in variable_names]
+                return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(data), stderr="")
+            if joined == "gh secret list --json name -R acme/widget":
+                data = [{"name": name} for name in secret_names]
+                return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(data), stderr="")
+            self.fail(f"unexpected call in credential-reminder test: {cmd}")
+        return fake_run
+
+    def test_reminder_printed_when_app_credentials_missing(self):
+        repo = self._repo_with_rulesets(("dev", "prd"))
+        args = mock.Mock(repo=str(repo), as_json=True)
+        fake_run = self._fake_run_already_applied(repo, variable_names=[], secret_names=[])
+
+        with mock.patch.object(repo_init, "_run", side_effect=fake_run):
+            with mock.patch("builtins.print") as printed:
+                rc = repo_init.cmd_apply(args)
+
+        result = json.loads(printed.call_args[0][0])
+        self.assertEqual(rc, 0)
+        self.assertTrue(
+            any("RELEASE_NOTES_APP_ID" in w and "RELEASE_NOTES_APP_PRIVATE_KEY" in w
+                for w in result["warnings"]),
+            result["warnings"],
+        )
+
+    def test_no_reminder_when_app_credentials_present(self):
+        repo = self._repo_with_rulesets(("dev", "prd"))
+        args = mock.Mock(repo=str(repo), as_json=True)
+        fake_run = self._fake_run_already_applied(
+            repo,
+            variable_names=["RELEASE_NOTES_APP_ID"],
+            secret_names=["RELEASE_NOTES_APP_PRIVATE_KEY"],
+        )
+
+        with mock.patch.object(repo_init, "_run", side_effect=fake_run):
+            with mock.patch("builtins.print") as printed:
+                rc = repo_init.cmd_apply(args)
+
+        result = json.loads(printed.call_args[0][0])
+        self.assertEqual(rc, 0)
+        self.assertFalse(
+            any("RELEASE_NOTES_APP_ID" in w for w in result["warnings"]),
+            result["warnings"],
+        )
 
 
 class ResolveRepoDisplayNameTests(unittest.TestCase):
