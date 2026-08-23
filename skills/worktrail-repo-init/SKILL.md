@@ -22,8 +22,10 @@ Applies the workspace's repo-standards doctrine to one repo at a time: the
 `.github/rulesets/*.json`, an OpenSpec scaffold,
 `.github/workflows/worktrail-auto-merge.yml`,
 `.github/workflows/rulesets_drift_guard.yml` (plus its vendored
-`scripts/ci/rulesets/rulesets_sync.py` + `requirements.txt`), and a seeded
-`.worktrail/policy.yaml`. The CLI (`worktrail-repo-init`) owns
+`scripts/ci/rulesets/rulesets_sync.py` + `requirements.txt`),
+`.github/workflows/dependabot_manifest_check.yml` (plus its vendored
+`scripts/ci/dependabot/test_dependabot_config.py` + `requirements.txt`), and a
+seeded `.worktrail/policy.yaml`. The CLI (`worktrail-repo-init`) owns
 file generation and the GitHub API calls; this skill owns the git workflow
 around it (worktree, commit, PR) and the judgment calls the CLI deliberately
 leaves to a human — see `references/branch-model-decision.md`.
@@ -79,6 +81,15 @@ actually configured on GitHub. It mints its own GitHub App token for the
 rulesets API calls rather than using `secrets.GITHUB_TOKEN`; nothing to
 configure at `propose` time, but see Step 4 for the App credentials it needs
 at runtime.
+
+`propose` also scaffolds `.github/workflows/dependabot_manifest_check.yml`, a
+PR-triggered workflow that runs the vendored
+`scripts/ci/dependabot/test_dependabot_config.py` to catch a silent
+Dependabot-Updates failure mode: an `updates` entry in `.github/dependabot.yml`
+whose `directory` has no manifest file the declared `package-ecosystem`
+recognizes. Unlike the rulesets drift guard, it needs no GitHub credentials at
+all — no App token, no `secrets.GITHUB_TOKEN` — since it only reads files
+already checked out in the runner.
 
 Ask the user whether to also pass `--with-aspens` (declares `add_ons.aspens`
 in the seeded policy file and runs `aspens doc init` immediately, instead of
