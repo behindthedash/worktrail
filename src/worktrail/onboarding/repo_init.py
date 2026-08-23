@@ -15,9 +15,11 @@ an unmerged PR:
   apply    Run once that PR has merged: create `dev` (and `stg` for a 3-branch
            model) from the current default branch's tip SHA, rename the
            current default branch to `prd`, set `dev` as the new GitHub
-           default branch, enable "delete branch on merge", then live-apply
+           default branch, enable "delete branch on merge", live-apply
            and verify the committed rulesets (same PUT-then-reverify idiom as
-           ruleset-fleet-rollout.py).
+           ruleset-fleet-rollout.py), and -- if the auto-merge workflow was
+           scaffolded -- idempotently create/update the go:risk-*/
+           go:no-automerge labels it depends on.
 
 `propose` deliberately never auto-populates `required_status_checks` -- it
 reports discovered CI job display names (from `.github/workflows/*.yml`) for
@@ -243,6 +245,40 @@ def build_automerge_workflow() -> str:
     Inert until something applies a go:risk-* label -- a repo not using
     worktrail-go's classifier for its PRs never has this fire."""
     return _AUTOMERGE_WORKFLOW
+
+
+# Colors/descriptions match the live label sets already in use on
+# behindthedash/gracefully-giving-back and behindthedash/datalena (checked via
+# `gh label list --search "go:"` -- both repos agree on this scheme).
+AUTOMERGE_LABELS: List[Dict[str, str]] = [
+    {"name": "go:risk-low", "color": "0e8a16", "description": "GO v2: low risk tier"},
+    {"name": "go:risk-medium", "color": "fbca04", "description": "GO v2: medium risk tier"},
+    {"name": "go:risk-high", "color": "d93f0b", "description": "GO v2: high risk tier"},
+    {"name": "go:risk-critical", "color": "b60205", "description": "GO v2: critical risk tier"},
+    {"name": "go:no-automerge", "color": "5319e7", "description": "GO v2: not eligible for auto-merge"},
+]
+
+
+def ensure_automerge_labels(gh_repo: str) -> Dict[str, str]:
+    """Idempotently create (or update in place) the go:risk-*/go:no-automerge
+    labels the generated auto-merge workflow (build_automerge_workflow())
+    depends on. `gh label create --force` create-or-updates in a single call,
+    so unlike apply_ruleset()'s PUT-then-reverify there is no separate
+    existence check needed here.
+
+    Without these labels pre-existing, ensure_pr_risk_label()/
+    ensure_pr_no_automerge_label() (router/pr_labels.py) log a stderr warning
+    and silently no-op on a freshly onboarded repo -- PRs never get labeled at
+    all until an operator notices and creates the labels by hand."""
+    result: Dict[str, str] = {}
+    for label in AUTOMERGE_LABELS:
+        p = _run([
+            "gh", "label", "create", label["name"], "--force",
+            "--color", label["color"], "--description", label["description"],
+            "--repo", gh_repo,
+        ])
+        result[label["name"]] = "ok" if p.returncode == 0 else f"FAILED: {p.stderr.strip()}"
+    return result
 
 
 # --------------------------------------------------------------------------
@@ -645,6 +681,11 @@ def cmd_apply(args: argparse.Namespace) -> int:
         if not ok:
             rulesets_failed = True
 
+    labels_failed = False
+    if (repo / AUTOMERGE_WORKFLOW_RELPATH).is_file():
+        result["labels"] = ensure_automerge_labels(gh_repo)
+        labels_failed = any("FAILED" in status for status in result["labels"].values())
+
     if args.as_json:
         print(json.dumps(result, indent=2))
     else:
@@ -655,6 +696,8 @@ def cmd_apply(args: argparse.Namespace) -> int:
         print(f"  delete branch on merge: {result['delete_branch_on_merge']}")
         for name, status in result["rulesets"].items():
             print(f"  ruleset {name}: {status}")
+        for name, status in result.get("labels", {}).items():
+            print(f"  label {name}: {status}")
         for w in result["warnings"]:
             print(f"  warning: {w}")
         print()
@@ -667,6 +710,7 @@ def cmd_apply(args: argparse.Namespace) -> int:
         or "FAILED" in str(result.get("default_branch", ""))
         or "FAILED" in str(result.get("delete_branch_on_merge", ""))
         or rulesets_failed
+        or labels_failed
     )
     return 1 if failed else 0
 
