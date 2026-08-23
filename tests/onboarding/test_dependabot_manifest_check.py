@@ -249,3 +249,58 @@ def test_three_entries_one_broken_names_only_the_broken_one(tmp_path, capsys):
     assert capsys.readouterr().err.strip() == (
         "no manifest for ecosystem='pip' directory='/tools'"
     )
+
+
+def test_github_actions_entry_is_skipped(tmp_path, capsys):
+    repo = build_repo(
+        tmp_path,
+        dependabot_yml={
+            "version": 2,
+            "updates": [{"package-ecosystem": "github-actions", "directory": "/"}],
+        },
+    )
+    module = load_check_module(tmp_path)
+
+    exit_code = module.main(["--repo", str(repo)])
+
+    assert exit_code == 0
+    assert capsys.readouterr().out.strip() == (
+        "in sync: 0 checkable updates entries have a manifest"
+    )
+
+
+def test_unmapped_ecosystem_cargo_is_skipped(tmp_path, capsys):
+    repo = build_repo(
+        tmp_path,
+        dependabot_yml={
+            "version": 2,
+            "updates": [{"package-ecosystem": "cargo", "directory": "/"}],
+        },
+    )
+    module = load_check_module(tmp_path)
+
+    exit_code = module.main(["--repo", str(repo)])
+
+    assert exit_code == 0
+    assert capsys.readouterr().out.strip() == (
+        "in sync: 0 checkable updates entries have a manifest"
+    )
+
+
+def test_entry_with_no_directory_key_is_skipped(tmp_path, capsys):
+    repo = build_repo(
+        tmp_path,
+        dependabot_yml={
+            "version": 2,
+            "updates": [{"package-ecosystem": "pip"}],
+        },
+        manifests=["pyproject.toml"],
+    )
+    module = load_check_module(tmp_path)
+
+    exit_code = module.main(["--repo", str(repo)])
+
+    assert exit_code == 0
+    assert capsys.readouterr().out.strip() == (
+        "in sync: 0 checkable updates entries have a manifest"
+    )
