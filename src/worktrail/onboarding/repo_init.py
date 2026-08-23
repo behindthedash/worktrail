@@ -858,6 +858,14 @@ def cmd_propose(args: argparse.Namespace) -> int:
                 "PR with nothing else to gate it. Add required checks to "
                 ".github/rulesets/*.json before applying risk labels to real PRs.")
 
+    openspec_validate_path = repo / OPENSPEC_VALIDATE_WORKFLOW_RELPATH
+    if state["openspec_validate_workflow_exists"]:
+        skipped.append(f"{OPENSPEC_VALIDATE_WORKFLOW_RELPATH} (already exists)")
+    else:
+        openspec_validate_path.parent.mkdir(parents=True, exist_ok=True)
+        openspec_validate_path.write_text(build_openspec_validate_workflow(), encoding="utf-8")
+        written.append(str(openspec_validate_path.relative_to(repo)))
+
     result = {
         "repo": str(repo),
         "branch_model": args.branch_model,
