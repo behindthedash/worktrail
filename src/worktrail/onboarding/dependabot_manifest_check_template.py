@@ -42,6 +42,8 @@ import argparse
 import sys
 from pathlib import Path
 
+import yaml
+
 # Ecosystem -> manifest glob patterns Dependabot's updater looks for in an
 # entry's directory. Add a row here to make an ecosystem checkable; an
 # ecosystem absent from this table (e.g. "github-actions") is always
@@ -128,6 +130,38 @@ def main(argv=None) -> int:
     repo = Path(args.repo)
     config = Path(args.config) if args.config else repo / ".github" / "dependabot.yml"
 
+    if not config.is_file():
+        print(f"nothing to check: no {config} in this repo")
+        return 0
+
+    try:
+        data = yaml.safe_load(config.read_text())
+    except yaml.YAMLError as exc:
+        print(f"could not parse {config}: {exc}", file=sys.stderr)
+        return 1
+
+    updates = (data or {}).get("updates")
+    if not updates:
+        print(f"nothing to check: {config} declares no updates")
+        return 0
+
+    broken = []
+    checked = 0
+    for ecosystem, directory in iter_checkable_entries(updates):
+        checked += 1
+        resolved = _resolve_directory(repo, directory)
+        if not _has_manifest(resolved, ECOSYSTEM_MANIFEST_GLOBS[ecosystem]):
+            broken.append((ecosystem, directory))
+
+    if broken:
+        for ecosystem, directory in broken:
+            print(
+                f"no manifest for ecosystem={ecosystem!r} directory={directory!r}",
+                file=sys.stderr,
+            )
+        return 1
+
+    print(f"in sync: {checked} checkable updates entr{'y' if checked == 1 else 'ies'} have a manifest")
     return 0
 
 
