@@ -77,8 +77,13 @@ This is an **agent-driven** operation - you will read delta specs and directly e
 
    d. **Create new main spec** if capability doesn't exist yet:
       - Create `openspec/specs/<capability>/spec.md`
+      - Start the file with the title line `# <capability> Specification` (using the
+        capability's directory name) followed by a blank line — a main spec is not a
+        delta and `openspec validate` requires this line
       - Add Purpose section (can be brief, mark as TBD)
-      - Add Requirements section with the ADDED requirements
+      - Add a `## Requirements` header — **not** the delta's `## ADDED Requirements`
+        header, which is delta-only syntax and fails `openspec validate` on a main
+        spec — followed by the ADDED requirements verbatim
 
 5. **Show summary**
 
@@ -146,3 +151,7 @@ Main specs are now updated. The change remains active - archive when implementat
 - If something is unclear, ask for clarification
 - Show what you're changing as you go
 - The operation should be idempotent - running twice should give same result
+- After creating or modifying a main spec, run `openspec validate <capability> --json`
+  (or `--all` for the whole batch) and fix any reported issues before summarizing —
+  a spec missing its title line or still carrying a delta-only `## ADDED Requirements`
+  header fails validation
