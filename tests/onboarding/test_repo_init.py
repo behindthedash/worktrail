@@ -160,7 +160,8 @@ def _fake_init_openspec(repo: Path):
 class ProposeTests(unittest.TestCase):
     def _run_propose(self, repo: Path, **overrides):
         args = mock.Mock(
-            repo=str(repo), branch_model="2", check=False, with_aspens=False, as_json=True)
+            repo=str(repo), branch_model="2", check=False, with_aspens=False,
+            with_gitnexus=False, as_json=True)
         for key, value in overrides.items():
             setattr(args, key, value)
         with mock.patch.object(repo_init, "init_openspec", side_effect=_fake_init_openspec):
@@ -280,6 +281,46 @@ class ProposeTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertTrue(any("aspens doc init" in w for w in result["warnings"]))
 
+    def test_with_gitnexus_runs_indexing_and_leaves_policy_bare(self):
+        repo = _tmp_repo()
+        with mock.patch.object(repo_init, "enable_gitnexus", return_value=(True, None)) as eg:
+            rc, result = self._run_propose(repo, with_gitnexus=True)
+        self.assertEqual(rc, 0)
+        eg.assert_called_once()
+        self.assertIn(".gitnexus/ (gitnexus analyze)", result["written"])
+        policy_text = (repo / ".worktrail" / "policy.yaml").read_text()
+        self.assertNotIn("gitnexus", policy_text)
+
+    def test_without_gitnexus_flag_invokes_no_gitnexus_behavior(self):
+        repo = _tmp_repo()
+        with mock.patch.object(repo_init, "enable_gitnexus") as eg:
+            rc, result = self._run_propose(repo)
+        self.assertEqual(rc, 0)
+        eg.assert_not_called()
+        policy_text = (repo / ".worktrail" / "policy.yaml").read_text()
+        self.assertNotIn("gitnexus", policy_text)
+
+    def test_gitnexus_warning_surfaces_without_failing_propose(self):
+        repo = _tmp_repo()
+        with mock.patch.object(
+            repo_init, "enable_gitnexus", return_value=(False, "gitnexus analyze did not produce ...")
+        ):
+            rc, result = self._run_propose(repo, with_gitnexus=True)
+        self.assertEqual(rc, 0)
+        self.assertTrue(any("gitnexus analyze" in w for w in result["warnings"]))
+        policy_text = (repo / ".worktrail" / "policy.yaml").read_text()
+        self.assertNotIn("gitnexus", policy_text)
+
+    def test_with_gitnexus_already_indexed_wires_through_skipped(self):
+        repo = _tmp_repo()
+        with mock.patch.object(repo_init, "enable_gitnexus", return_value=(False, None)) as eg:
+            rc, result = self._run_propose(repo, with_gitnexus=True)
+        self.assertEqual(rc, 0)
+        eg.assert_called_once()
+        self.assertIn(".gitnexus/ (already indexed)", result["skipped"])
+        policy_text = (repo / ".worktrail" / "policy.yaml").read_text()
+        self.assertNotIn("gitnexus", policy_text)
+
 
 class EnableAspensTests(unittest.TestCase):
     def test_noop_when_already_configured(self):
@@ -312,6 +353,40 @@ class EnableAspensTests(unittest.TestCase):
             configured, warning = repo_init.enable_aspens(repo)
         self.assertFalse(configured)
         self.assertIn("aspens doc init did not produce", warning)
+
+
+class EnableGitnexusTests(unittest.TestCase):
+    def test_noop_when_already_indexed(self):
+        repo = _tmp_repo()
+        (repo / ".gitnexus").mkdir()
+        with mock.patch("worktrail.onboarding.repo_init._run") as run:
+            configured, warning = repo_init.enable_gitnexus(repo)
+        self.assertFalse(configured)
+        self.assertIsNone(warning)
+        run.assert_not_called()
+
+    def test_successful_indexing_reports_configured(self):
+        repo = _tmp_repo()
+
+        def fake_run(cmd, **kw):
+            (repo / ".gitnexus").mkdir()
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        with mock.patch("worktrail.onboarding.repo_init._run", side_effect=fake_run) as run:
+            configured, warning = repo_init.enable_gitnexus(repo)
+        self.assertTrue(configured)
+        self.assertIsNone(warning)
+        run.assert_called_once()
+
+    def test_failed_or_timeout_reports_warning_not_raised(self):
+        repo = _tmp_repo()
+        with mock.patch(
+            "worktrail.onboarding.repo_init._run",
+            side_effect=subprocess.TimeoutExpired(cmd="gitnexus", timeout=1),
+        ):
+            configured, warning = repo_init.enable_gitnexus(repo)
+        self.assertFalse(configured)
+        self.assertIn("gitnexus analyze did not produce", warning)
 
 
 class ApplyTests(unittest.TestCase):

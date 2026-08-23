@@ -71,11 +71,16 @@ deadlock every future PR).
 
 Ask the user whether to also pass `--with-aspens` (declares `add_ons.aspens`
 in the seeded policy file and runs `aspens doc init` immediately, instead of
-waiting for the repo's first orchestrated task) — don't default it on. There
-is no equivalent flag for GitNexus: indexing/cron registration lives entirely
-in `devops`'s own tooling (`.claude/skills/gitnexus-index-maintenance/`) with
-no bridge into worktrail today; capture it as a `worktrail-handoff` brief if
-it comes up rather than improvising something here.
+waiting for the repo's first orchestrated task) — don't default it on. Ask
+the user the same question about `--with-gitnexus` (runs `gitnexus analyze
+--embeddings --index-only` immediately, so the repo has a GitNexus index from
+the first commit instead of waiting for something else to trigger one) —
+also don't default it on. Ongoing index maintenance (cron re-indexing) still
+lives entirely in `devops`'s own tooling
+(`.claude/skills/gitnexus-index-maintenance/`), with no bridge into worktrail
+today; `--with-gitnexus` only covers the one-time bootstrap index, not
+ongoing maintenance — capture that as a `worktrail-handoff` brief if it comes
+up.
 
 ### Step 3 — Commit, push, open the PR
 
@@ -150,3 +155,13 @@ duplicate that without adding a real gate.
   propose failure — `.aspens.json` existing is the only reliable success
   signal available (the add-on swallows subprocess errors as best-effort
   priming).
+- `--with-gitnexus` is idempotent by `.gitnexus/` existing — `propose` checks
+  for the directory first and skips the `gitnexus analyze` call entirely if a
+  repo is already indexed, so re-running `propose` on a partially-onboarded
+  repo never re-indexes. `--index-only` is deliberate: it skips GitNexus's own
+  AGENTS.md/skills file injection, since bootstrap only wants the index, not a
+  second, un-vetted copy of files this skill and the OpenSpec scaffold already
+  manage. Like `--with-aspens`, it's best-effort — a failed/unreachable
+  `gitnexus` CLI or a timeout surfaces as a warning, not a propose failure,
+  because `.gitnexus/` existing afterward, not the subprocess return code, is
+  the only reliable success signal available.
