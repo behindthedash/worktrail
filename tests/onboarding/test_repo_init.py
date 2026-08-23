@@ -236,6 +236,247 @@ class ProposeTests(unittest.TestCase):
         # ungated-automerge warning must not fire -- it would be false.
         self.assertFalse(any("nothing else to gate" in w for w in result["warnings"]))
 
+    def test_fresh_repo_writes_openspec_validate_workflow_and_gates_rulesets(self):
+        repo = _tmp_repo()
+        rc, result = self._run_propose(repo)
+        self.assertEqual(rc, 0)
+        self.assertIn(repo_init.OPENSPEC_VALIDATE_WORKFLOW_RELPATH, result["written"])
+        workflow_path = repo / repo_init.OPENSPEC_VALIDATE_WORKFLOW_RELPATH
+        self.assertTrue(workflow_path.is_file())
+        self.assertEqual(workflow_path.read_text(), repo_init.build_openspec_validate_workflow())
+        for branch_file in ("protect-dev.json", "protect-prd.json"):
+            ruleset = json.loads(
+                (repo / ".github" / "rulesets" / branch_file).read_text())
+            rsc_rule = next(
+                r for r in ruleset["rules"] if r["type"] == "required_status_checks")
+            self.assertEqual(
+                rsc_rule["parameters"]["required_status_checks"],
+                [{"context": repo_init.OPENSPEC_VALIDATE_JOB_NAME}])
+
+    def test_rerun_after_workflow_written_is_noop_on_workflow_and_required_checks(self):
+        # Task 5.3: once the openspec-validate workflow exists from a prior
+        # propose run, a second propose run must not touch the workflow file
+        # or required_status_checks -- gating is keyed on
+        # OPENSPEC_VALIDATE_WORKFLOW_RELPATH's presence, not on
+        # openspec_initialized or on any other state. The hand-authored
+        # variant is covered by
+        # test_hand_authored_workflow_and_ruleset_missing_check_is_full_noop
+        # below.
+        repo = _tmp_repo()
+        self._run_propose(repo)
+        workflow_path = repo / repo_init.OPENSPEC_VALIDATE_WORKFLOW_RELPATH
+        dev_ruleset_path = repo / ".github" / "rulesets" / "protect-dev.json"
+        prd_ruleset_path = repo / ".github" / "rulesets" / "protect-prd.json"
+        workflow_before = workflow_path.read_text()
+        dev_ruleset_before = dev_ruleset_path.read_text()
+        prd_ruleset_before = prd_ruleset_path.read_text()
+
+        rc, result = self._run_propose(repo)
+
+        self.assertEqual(rc, 0)
+        self.assertNotIn(repo_init.OPENSPEC_VALIDATE_WORKFLOW_RELPATH, result["written"])
+        self.assertTrue(
+            any(repo_init.OPENSPEC_VALIDATE_WORKFLOW_RELPATH in s for s in result["skipped"]))
+        self.assertFalse(any("patched" in s for s in result["written"]))
+        self.assertEqual(workflow_path.read_text(), workflow_before)
+        self.assertEqual(dev_ruleset_path.read_text(), dev_ruleset_before)
+        self.assertEqual(prd_ruleset_path.read_text(), prd_ruleset_before)
+
+    def test_hand_authored_workflow_and_ruleset_missing_check_is_full_noop(self):
+        # Task 5.3, "workflow already present, not newly written": unlike the
+        # rerun-after-propose case above, this ruleset does NOT already
+        # contain the check, so this pins the openspec_validate_newly_written
+        # gate itself -- patch_ruleset_required_check's already-present
+        # short-circuit (task 3.2) cannot account for a no-op here.
+        repo = _tmp_repo()
+        workflow_path = repo / repo_init.OPENSPEC_VALIDATE_WORKFLOW_RELPATH
+        workflow_path.parent.mkdir(parents=True)
+        hand_authored_workflow = "# hand-authored, not the generated workflow\n"
+        workflow_path.write_text(hand_authored_workflow)
+
+        rulesets_dir = repo / ".github" / "rulesets"
+        rulesets_dir.mkdir(parents=True)
+        dev_ruleset = repo_init.build_ruleset_for_branch("dev", "2")
+        prd_ruleset = repo_init.build_ruleset_for_branch("prd", "2")
+        (rulesets_dir / "protect-dev.json").write_text(json.dumps(dev_ruleset, indent=2) + "\n")
+        (rulesets_dir / "protect-prd.json").write_text(json.dumps(prd_ruleset, indent=2) + "\n")
+        dev_ruleset_before = (rulesets_dir / "protect-dev.json").read_text()
+        prd_ruleset_before = (rulesets_dir / "protect-prd.json").read_text()
+
+        rc, result = self._run_propose(repo)
+
+        self.assertEqual(rc, 0)
+        self.assertNotIn(repo_init.OPENSPEC_VALIDATE_WORKFLOW_RELPATH, result["written"])
+        self.assertFalse(any("patched" in s for s in result["written"]))
+        self.assertEqual(workflow_path.read_text(), hand_authored_workflow)
+        self.assertEqual((rulesets_dir / "protect-dev.json").read_text(), dev_ruleset_before)
+        self.assertEqual((rulesets_dir / "protect-prd.json").read_text(), prd_ruleset_before)
+
+    def test_already_onboarded_repo_patches_existing_rulesets_without_altering_other_rules(self):
+        repo = _tmp_repo()
+        (repo / "openspec").mkdir()
+        (repo / "openspec" / "config.yaml").write_text("schema: spec-driven\n")
+        rulesets_dir = repo / ".github" / "rulesets"
+        rulesets_dir.mkdir(parents=True)
+        original_rulesets = {}
+
+        # protect-dev.json: hand-customized -- non-empty bypass_actors, a
+        # non-default enforcement, and an extra rule type -- so that a
+        # wholesale-regenerate implementation (which would discard all of
+        # this and re-emit exactly what build_ruleset_for_branch produces)
+        # is distinguishable from a genuine in-place patch. No existing
+        # required_status_checks entries here, so this file also exercises
+        # the create-the-rule branch of patch_ruleset_required_check.
+        dev_ruleset = repo_init.build_ruleset_for_branch("dev", "2")
+        dev_ruleset["bypass_actors"] = [
+            {"actor_id": 1, "actor_type": "Team", "bypass_mode": "always"}]
+        dev_ruleset["enforcement"] = "evaluate"
+        dev_ruleset["rules"].append({"type": "creation"})
+        original_rulesets["protect-dev.json"] = dev_ruleset
+        (rulesets_dir / "protect-dev.json").write_text(
+            json.dumps(dev_ruleset, indent=2) + "\n")
+
+        # protect-prd.json: already has an unrelated required_status_checks
+        # entry, so this file exercises the append-onto-an-existing-list
+        # branch of patch_ruleset_required_check (task 5.4 covers the
+        # already-contains-this-job-name no-op, not this append case).
+        prd_ruleset = repo_init.build_ruleset(
+            "protect-prd", "prd", ["merge"], ["Lint, Test & Build"])
+        original_rulesets["protect-prd.json"] = prd_ruleset
+        (rulesets_dir / "protect-prd.json").write_text(
+            json.dumps(prd_ruleset, indent=2) + "\n")
+
+        rc, result = self._run_propose(repo)
+
+        self.assertEqual(rc, 0)
+        # The workflow was absent, so this run writes it.
+        self.assertIn(repo_init.OPENSPEC_VALIDATE_WORKFLOW_RELPATH, result["written"])
+        self.assertTrue(
+            (repo / repo_init.OPENSPEC_VALIDATE_WORKFLOW_RELPATH).is_file())
+
+        for file_name, original in original_rulesets.items():
+            path = rulesets_dir / file_name
+            patched = json.loads(path.read_text())
+            # Every rule other than required_status_checks is untouched.
+            original_other_rules = [
+                r for r in original["rules"] if r["type"] != "required_status_checks"]
+            patched_other_rules = [
+                r for r in patched["rules"] if r["type"] != "required_status_checks"]
+            self.assertEqual(patched_other_rules, original_other_rules)
+            self.assertEqual(patched["name"], original["name"])
+            self.assertEqual(patched["conditions"], original["conditions"])
+            self.assertEqual(patched["bypass_actors"], original["bypass_actors"])
+            self.assertEqual(patched["enforcement"], original["enforcement"])
+            self.assertTrue(
+                any(f"{file_name} (patched" in w for w in result["written"]))
+
+        # protect-dev.json had no pre-existing required_status_checks rule:
+        # the new check is the sole entry.
+        dev_rsc = next(
+            r for r in json.loads((rulesets_dir / "protect-dev.json").read_text())["rules"]
+            if r["type"] == "required_status_checks")
+        self.assertEqual(
+            dev_rsc["parameters"]["required_status_checks"],
+            [{"context": repo_init.OPENSPEC_VALIDATE_JOB_NAME}])
+
+        # protect-prd.json had a pre-existing "Lint, Test & Build" check:
+        # the new check is appended, not clobbering it.
+        prd_rsc = next(
+            r for r in json.loads((rulesets_dir / "protect-prd.json").read_text())["rules"]
+            if r["type"] == "required_status_checks")
+        self.assertEqual(
+            prd_rsc["parameters"]["required_status_checks"],
+            [{"context": "Lint, Test & Build"}, {"context": repo_init.OPENSPEC_VALIDATE_JOB_NAME}])
+
+    def test_unrelated_discovered_ci_job_is_not_added_to_required_status_checks(self):
+        # Task 5.5: discover_ci_checks() finding an unrelated CI job must
+        # not leak it into required_status_checks -- only
+        # OPENSPEC_VALIDATE_JOB_NAME is ever caller-supplied to
+        # build_ruleset_for_branch (task 2.2). This exercises the
+        # fresh-ruleset-generation path.
+        repo = _tmp_repo()
+        wf_dir = repo / ".github" / "workflows"
+        wf_dir.mkdir(parents=True)
+        (wf_dir / "ci.yml").write_text(
+            "on: pull_request\n"
+            "jobs:\n"
+            "  test:\n"
+            "    name: Lint, Test & Build\n"
+            "    runs-on: ubuntu-latest\n")
+
+        rc, result = self._run_propose(repo)
+
+        self.assertEqual(rc, 0)
+        self.assertIn("Lint, Test & Build", result["ci_jobs_discovered"])
+        for branch_file in ("protect-dev.json", "protect-prd.json"):
+            ruleset = json.loads(
+                (repo / ".github" / "rulesets" / branch_file).read_text())
+            rsc_rule = next(
+                r for r in ruleset["rules"] if r["type"] == "required_status_checks")
+            self.assertEqual(
+                rsc_rule["parameters"]["required_status_checks"],
+                [{"context": repo_init.OPENSPEC_VALIDATE_JOB_NAME}])
+
+    def test_unrelated_discovered_ci_job_is_not_patched_into_existing_ruleset(self):
+        # Same scenario as above, but exercising the patch-an-existing-file
+        # path (task 3.1) rather than fresh generation.
+        repo = _tmp_repo()
+        wf_dir = repo / ".github" / "workflows"
+        wf_dir.mkdir(parents=True)
+        (wf_dir / "ci.yml").write_text(
+            "on: pull_request\n"
+            "jobs:\n"
+            "  test:\n"
+            "    name: Lint, Test & Build\n"
+            "    runs-on: ubuntu-latest\n")
+
+        rulesets_dir = repo / ".github" / "rulesets"
+        rulesets_dir.mkdir(parents=True)
+        dev_ruleset = repo_init.build_ruleset_for_branch("dev", "2")
+        (rulesets_dir / "protect-dev.json").write_text(
+            json.dumps(dev_ruleset, indent=2) + "\n")
+
+        rc, result = self._run_propose(repo)
+
+        self.assertEqual(rc, 0)
+        self.assertIn("Lint, Test & Build", result["ci_jobs_discovered"])
+        patched = json.loads((rulesets_dir / "protect-dev.json").read_text())
+        rsc_rule = next(
+            r for r in patched["rules"] if r["type"] == "required_status_checks")
+        self.assertEqual(
+            rsc_rule["parameters"]["required_status_checks"],
+            [{"context": repo_init.OPENSPEC_VALIDATE_JOB_NAME}])
+
+    def test_preexisting_ruleset_already_containing_check_is_byte_for_byte_unchanged(self):
+        # Task 5.4: the workflow is newly written this run, and one ruleset
+        # file already exists AND already has the job's exact display name
+        # in required_status_checks -- patch_ruleset_required_check's
+        # already-present short-circuit (task 3.2) must leave the file
+        # byte-for-byte untouched, not merely semantically equivalent.
+        repo = _tmp_repo()
+        rulesets_dir = repo / ".github" / "rulesets"
+        rulesets_dir.mkdir(parents=True)
+        dev_ruleset = repo_init.build_ruleset(
+            "protect-dev", "dev", ["squash"], [repo_init.OPENSPEC_VALIDATE_JOB_NAME])
+        dev_path = rulesets_dir / "protect-dev.json"
+        dev_text_before = json.dumps(dev_ruleset, indent=2) + "\n"
+        dev_path.write_text(dev_text_before)
+        dev_mtime_before = dev_path.stat().st_mtime_ns
+
+        rc, result = self._run_propose(repo)
+
+        self.assertEqual(rc, 0)
+        # The workflow was absent, so this run still writes it.
+        self.assertIn(repo_init.OPENSPEC_VALIDATE_WORKFLOW_RELPATH, result["written"])
+        # protect-dev.json is untouched: not reported as patched or written,
+        # its bytes are identical, and it was never rewritten to disk.
+        self.assertFalse(any("patched" in w for w in result["written"]))
+        self.assertNotIn(str(dev_path.relative_to(repo)), result["written"])
+        self.assertTrue(
+            any(str(dev_path.relative_to(repo)) in s for s in result["skipped"]))
+        self.assertEqual(dev_path.read_text(), dev_text_before)
+        self.assertEqual(dev_path.stat().st_mtime_ns, dev_mtime_before)
+
     def test_three_branch_model_writes_stg_too(self):
         repo = _tmp_repo()
         rc, result = self._run_propose(repo, branch_model="3")
