@@ -52,6 +52,27 @@ ECOSYSTEM_MANIFEST_GLOBS = {
 }
 
 
+def _resolve_directory(repo: Path, directory: str) -> Path:
+    """Resolve a dependabot.yml ``directory``/``directories`` entry to an
+    absolute path. ``/`` (and an omitted key, which callers pass as ``/``)
+    means the repo root; every other value is repo-root-relative.
+    """
+    if not directory or directory == "/":
+        return repo
+    return repo / directory.lstrip("/")
+
+
+def _has_manifest(directory: Path, globs) -> bool:
+    """Whether `directory` directly contains a file matching one of `globs`.
+
+    Uses `Path.glob` (non-recursive) since Dependabot's own updater only
+    looks in the declared directory itself, never its subdirectories.
+    """
+    if not directory.is_dir():
+        return False
+    return any(any(directory.glob(pattern)) for pattern in globs)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
