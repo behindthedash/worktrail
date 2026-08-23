@@ -503,6 +503,7 @@ def detect_state(repo: Path) -> Dict[str, Any]:
         "policy_file_exists": policy_exists,
         "openspec_initialized": (repo / "openspec" / "config.yaml").is_file(),
         "automerge_workflow_exists": (repo / AUTOMERGE_WORKFLOW_RELPATH).is_file(),
+        "openspec_validate_workflow_exists": (repo / OPENSPEC_VALIDATE_WORKFLOW_RELPATH).is_file(),
         "ci_jobs_discovered": discover_ci_checks(repo),
     }
 
