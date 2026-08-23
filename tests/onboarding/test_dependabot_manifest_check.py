@@ -351,3 +351,57 @@ def test_entry_with_no_directory_key_is_skipped(tmp_path, capsys):
     assert capsys.readouterr().out.strip() == (
         "in sync: 0 checkable updates entries have a manifest"
     )
+
+
+def test_no_dependabot_yml_at_all_exits_zero(tmp_path, capsys):
+    repo = build_repo(tmp_path)
+    module = load_check_module(tmp_path)
+
+    exit_code = module.main(["--repo", str(repo)])
+
+    assert exit_code == 0
+    expected_config = repo / ".github" / "dependabot.yml"
+    assert capsys.readouterr().out.strip() == (
+        f"nothing to check: no {expected_config} in this repo"
+    )
+
+
+def test_missing_updates_key_exits_zero(tmp_path, capsys):
+    repo = build_repo(tmp_path, dependabot_yml={"version": 2})
+    module = load_check_module(tmp_path)
+
+    exit_code = module.main(["--repo", str(repo)])
+
+    assert exit_code == 0
+    expected_config = repo / ".github" / "dependabot.yml"
+    assert capsys.readouterr().out.strip() == (
+        f"nothing to check: {expected_config} declares no updates"
+    )
+
+
+def test_empty_updates_list_exits_zero(tmp_path, capsys):
+    repo = build_repo(tmp_path, dependabot_yml={"version": 2, "updates": []})
+    module = load_check_module(tmp_path)
+
+    exit_code = module.main(["--repo", str(repo)])
+
+    assert exit_code == 0
+    expected_config = repo / ".github" / "dependabot.yml"
+    assert capsys.readouterr().out.strip() == (
+        f"nothing to check: {expected_config} declares no updates"
+    )
+
+
+def test_malformed_yaml_exits_non_zero_naming_the_parse_failure(tmp_path, capsys):
+    repo = build_repo(
+        tmp_path,
+        dependabot_yml="version: 2\nupdates: [\n  - package-ecosystem: pip\n",
+    )
+    module = load_check_module(tmp_path)
+
+    exit_code = module.main(["--repo", str(repo)])
+
+    assert exit_code == 1
+    expected_config = repo / ".github" / "dependabot.yml"
+    stderr = capsys.readouterr().err.strip()
+    assert stderr.startswith(f"could not parse {expected_config}:")
