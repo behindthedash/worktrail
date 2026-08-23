@@ -17,7 +17,7 @@ jobs:
     outputs:
       bookkeeping: ${{ steps.gate.outputs.bookkeeping }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
 
@@ -67,11 +67,15 @@ jobs:
     needs: changes
     if: needs.changes.outputs.bookkeeping == 'false'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.14"]
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v6.2.0
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
       - name: Dev-install worktree guard
         run: bash scripts/ci/test_dev_install.sh
       - name: Install package
@@ -115,8 +119,8 @@ jobs:
     if: needs.changes.outputs.bookkeeping == 'false'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v6.2.0
         with:
           python-version: "3.11"
       - name: Install package
@@ -135,8 +139,8 @@ jobs:
       matrix:
         agent: [claude, codex, opencode]
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v6.2.0
         with:
           python-version: "3.11"
       - name: Build wheel
