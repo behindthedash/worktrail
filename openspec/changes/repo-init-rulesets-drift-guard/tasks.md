@@ -1,11 +1,11 @@
 ## 1. Vendor the drift-guard template content
 
-- [ ] 1.1 Add vendored `rulesets_sync.py` and `requirements.txt` content as string constants
+- [x] 1.1 Add vendored `rulesets_sync.py` and `requirements.txt` content as string constants
       (mirroring devops's canonical `scripts/ci/rulesets/{rulesets_sync.py,requirements.txt}`),
       either inlined in `src/worktrail/onboarding/repo_init.py` next to `_AUTOMERGE_WORKFLOW` or
       in a sibling `src/worktrail/onboarding/rulesets_drift_guard_template.py` module if inlining
       makes `repo_init.py` unreadable.
-- [ ] 1.2 Add a `RULESETS_DRIFT_GUARD_WORKFLOW_RELPATH` constant
+- [x] 1.2 Add a `RULESETS_DRIFT_GUARD_WORKFLOW_RELPATH` constant
       (`.github/workflows/rulesets_drift_guard.yml`) and `RULESETS_SCRIPT_DIR_RELPATH`
       (`scripts/ci/rulesets`) constants, matching `AUTOMERGE_WORKFLOW_RELPATH`'s naming
       convention.
