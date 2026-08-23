@@ -483,6 +483,12 @@ class ApplyTests(unittest.TestCase):
                     [{"id": 1, "name": "protect-dev"}, {"id": 2, "name": "protect-prd"}]), stderr="")
             if cmd[:4] == ["gh", "api", "--method", "PUT"]:
                 return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if joined == "gh variable list --json name -R acme/widget":
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout=json.dumps([{"name": "RELEASE_NOTES_APP_ID"}]), stderr="")
+            if joined == "gh secret list --json name -R acme/widget":
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout=json.dumps([{"name": "RELEASE_NOTES_APP_PRIVATE_KEY"}]), stderr="")
             # Any attempt to touch branches (create/rename) or re-enable an
             # already-enabled setting is a bug on a re-run.
             self.fail(f"unexpected branch/setting-mutating call on an already-applied repo: {cmd}")
@@ -507,6 +513,68 @@ class ApplyTests(unittest.TestCase):
         ):
             rc = repo_init.cmd_apply(args)
         self.assertEqual(rc, 1)
+
+    def _fake_run_already_applied(self, repo, variable_names, secret_names):
+        """An 'already applied' repo (default is dev) so branch/ruleset calls
+        are all no-ops, isolating the credential-reminder check under test."""
+        def fake_run(cmd, **kw):
+            joined = " ".join(cmd)
+            if cmd[:3] == ["git", "-C", str(repo)]:
+                return subprocess.CompletedProcess(cmd, 0, stdout="git@github.com:acme/widget.git\n", stderr="")
+            if joined == "gh api repos/acme/widget -q .default_branch":
+                return subprocess.CompletedProcess(cmd, 0, stdout="dev\n", stderr="")
+            if joined == "gh api repos/acme/widget -q .delete_branch_on_merge":
+                return subprocess.CompletedProcess(cmd, 0, stdout="true\n", stderr="")
+            if joined == "gh api repos/acme/widget/rulesets":
+                return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(
+                    [{"id": 1, "name": "protect-dev"}, {"id": 2, "name": "protect-prd"}]), stderr="")
+            if cmd[:4] == ["gh", "api", "--method", "PUT"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if joined == "gh variable list --json name -R acme/widget":
+                data = [{"name": name} for name in variable_names]
+                return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(data), stderr="")
+            if joined == "gh secret list --json name -R acme/widget":
+                data = [{"name": name} for name in secret_names]
+                return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(data), stderr="")
+            self.fail(f"unexpected call in credential-reminder test: {cmd}")
+        return fake_run
+
+    def test_reminder_printed_when_app_credentials_missing(self):
+        repo = self._repo_with_rulesets(("dev", "prd"))
+        args = mock.Mock(repo=str(repo), as_json=True)
+        fake_run = self._fake_run_already_applied(repo, variable_names=[], secret_names=[])
+
+        with mock.patch.object(repo_init, "_run", side_effect=fake_run):
+            with mock.patch("builtins.print") as printed:
+                rc = repo_init.cmd_apply(args)
+
+        result = json.loads(printed.call_args[0][0])
+        self.assertEqual(rc, 0)
+        self.assertTrue(
+            any("RELEASE_NOTES_APP_ID" in w and "RELEASE_NOTES_APP_PRIVATE_KEY" in w
+                for w in result["warnings"]),
+            result["warnings"],
+        )
+
+    def test_no_reminder_when_app_credentials_present(self):
+        repo = self._repo_with_rulesets(("dev", "prd"))
+        args = mock.Mock(repo=str(repo), as_json=True)
+        fake_run = self._fake_run_already_applied(
+            repo,
+            variable_names=["RELEASE_NOTES_APP_ID"],
+            secret_names=["RELEASE_NOTES_APP_PRIVATE_KEY"],
+        )
+
+        with mock.patch.object(repo_init, "_run", side_effect=fake_run):
+            with mock.patch("builtins.print") as printed:
+                rc = repo_init.cmd_apply(args)
+
+        result = json.loads(printed.call_args[0][0])
+        self.assertEqual(rc, 0)
+        self.assertFalse(
+            any("RELEASE_NOTES_APP_ID" in w for w in result["warnings"]),
+            result["warnings"],
+        )
 
 
 class ResolveRepoDisplayNameTests(unittest.TestCase):
