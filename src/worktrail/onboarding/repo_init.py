@@ -872,6 +872,12 @@ def cmd_apply(args: argparse.Namespace) -> int:
         result["labels"] = ensure_automerge_labels(gh_repo)
         labels_failed = any("FAILED" in status for status in result["labels"].values())
 
+    if not app_credentials_configured(gh_repo):
+        result["warnings"].append(
+            "rulesets drift-guard workflow will skip -- install the release-notes GitHub App "
+            "on this repo and set the RELEASE_NOTES_APP_ID variable / "
+            "RELEASE_NOTES_APP_PRIVATE_KEY secret to enable it")
+
     if args.as_json:
         print(json.dumps(result, indent=2))
     else:
