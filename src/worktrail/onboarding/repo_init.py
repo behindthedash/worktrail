@@ -700,6 +700,7 @@ def detect_state(repo: Path) -> Dict[str, Any]:
             repo / RULESETS_DRIFT_GUARD_WORKFLOW_RELPATH
         ).is_file(),
         "rulesets_sync_script_exists": (repo / RULESETS_SYNC_SCRIPT_RELPATH).is_file(),
+        "openspec_validate_workflow_exists": (repo / OPENSPEC_VALIDATE_WORKFLOW_RELPATH).is_file(),
         "ci_jobs_discovered": discover_ci_checks(repo),
     }
 
