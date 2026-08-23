@@ -386,6 +386,46 @@ jobs:
 
 
 # --------------------------------------------------------------------------
+# OpenSpec validate workflow
+# --------------------------------------------------------------------------
+
+OPENSPEC_VALIDATE_WORKFLOW_RELPATH = ".github/workflows/worktrail-openspec-validate.yml"
+
+_OPENSPEC_VALIDATE_WORKFLOW = '''\
+name: "CI: OpenSpec validate"
+on:
+  pull_request:
+    paths:
+      - "openspec/**"
+
+jobs:
+  openspec-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Unpinned @latest: OpenSpec has no stable major yet and this workflow
+      # is meant to be a portable drop-in with no repo-local lockfile to keep
+      # current -- the tradeoff is a validate rule that can shift under a repo
+      # without warning if OpenSpec ships a breaking release, in exchange for
+      # never going stale on an old CLI version.
+      - name: openspec validate --all --strict
+        run: npx --yes @fission-ai/openspec@latest validate --all --strict
+'''
+
+
+def build_openspec_validate_workflow() -> str:
+    """A portable, drop-in "CI: OpenSpec validate" workflow: paths-filtered
+    to `openspec/**` so it only runs on PRs that touch the spec tree, running
+    `openspec validate --all --strict` via the same unpinned
+    `@fission-ai/openspec@latest` CLI this module's own `init_openspec()`
+    uses (see OPENSPEC_PACKAGE) -- kept as an inline literal here rather than
+    templated from that constant so the workflow stays copy-pasteable on its
+    own, matching build_automerge_workflow()'s shape."""
+    return _OPENSPEC_VALIDATE_WORKFLOW
+
+
+# --------------------------------------------------------------------------
 # .worktrail/policy.yaml seed
 # --------------------------------------------------------------------------
 
