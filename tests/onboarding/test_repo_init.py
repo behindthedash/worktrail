@@ -196,6 +196,43 @@ class BuildRulesetsDriftGuardWorkflowTests(unittest.TestCase):
             "${{ github.event_name == 'push' && steps.app-token.outputs.token != '' }}")
 
 
+class BuildDependabotManifestCheckWorkflowTests(unittest.TestCase):
+    def test_two_branch_model_produces_expected_branches_list(self):
+        text = repo_init.build_dependabot_manifest_check_workflow(["dev", "prd"])
+        doc = yaml.safe_load(text)
+        self.assertEqual(doc[True]["pull_request"]["branches"], ["dev", "prd"])
+
+    def test_three_branch_model_produces_expected_branches_list(self):
+        text = repo_init.build_dependabot_manifest_check_workflow(["dev", "stg", "prd"])
+        doc = yaml.safe_load(text)
+        self.assertEqual(doc[True]["pull_request"]["branches"], ["dev", "stg", "prd"])
+
+    def test_pull_request_trigger_has_no_paths_filter(self):
+        text = repo_init.build_dependabot_manifest_check_workflow(["dev", "prd"])
+        doc = yaml.safe_load(text)
+        pull_request = doc[True]["pull_request"]
+        self.assertNotIn("paths", pull_request)
+        self.assertNotIn("paths-ignore", pull_request)
+
+    def test_no_step_references_secrets_or_vars(self):
+        text = repo_init.build_dependabot_manifest_check_workflow(["dev", "prd"])
+        doc = yaml.safe_load(text)
+        for job in doc["jobs"].values():
+            for step in job["steps"]:
+                self.assertNotIn("secrets.", str(step))
+                self.assertNotIn("vars.", str(step))
+
+    def test_a_step_runs_the_vendored_script_path(self):
+        text = repo_init.build_dependabot_manifest_check_workflow(["dev", "prd"])
+        doc = yaml.safe_load(text)
+        steps = doc["jobs"]["dependabot-manifest-check"]["steps"]
+        script_steps = [
+            s for s in steps
+            if "run" in s and repo_init.DEPENDABOT_CHECK_SCRIPT_RELPATH in s["run"]
+        ]
+        self.assertTrue(script_steps)
+
+
 class RulesetStructuralViewTests(unittest.TestCase):
     def test_strips_required_status_checks_rule_entirely(self):
         with_checks = repo_init.build_ruleset_for_branch("dev", "2", "some-check")
