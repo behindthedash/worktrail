@@ -12,6 +12,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+import pytest
 import yaml
 
 from worktrail.onboarding.dependabot_manifest_check_template import (
@@ -287,7 +288,18 @@ def test_unmapped_ecosystem_cargo_is_skipped(tmp_path, capsys):
     )
 
 
-def test_entry_with_no_directory_key_is_skipped(tmp_path, capsys):
+@pytest.mark.xfail(
+    reason=(
+        "_directory_values() only yields when an entry has a directory/directories "
+        "key at all, so an entry with neither is dropped from iter_checkable_entries "
+        "entirely instead of defaulting to '/' and being checked -- contradicting "
+        "_resolve_directory's own docstring ('/' and an omitted key mean the repo "
+        "root) and task 1.4's design. Bug lives in dependabot_manifest_check_template.py, "
+        "out of this test file's scope to fix."
+    ),
+    strict=True,
+)
+def test_entry_with_no_directory_key_defaults_to_root(tmp_path, capsys):
     repo = build_repo(
         tmp_path,
         dependabot_yml={
@@ -302,5 +314,5 @@ def test_entry_with_no_directory_key_is_skipped(tmp_path, capsys):
 
     assert exit_code == 0
     assert capsys.readouterr().out.strip() == (
-        "in sync: 0 checkable updates entries have a manifest"
+        "in sync: 1 checkable updates entry have a manifest"
     )
