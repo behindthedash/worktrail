@@ -840,6 +840,9 @@ def detect_state(repo: Path) -> Dict[str, Any]:
         "dependabot_manifest_check_script_exists": (
             repo / DEPENDABOT_CHECK_SCRIPT_RELPATH
         ).is_file(),
+        "dependabot_manifest_check_requirements_exists": (
+            repo / DEPENDABOT_CHECK_REQUIREMENTS_RELPATH
+        ).is_file(),
         "ci_jobs_discovered": discover_ci_checks(repo),
     }
 
@@ -1002,7 +1005,7 @@ def cmd_propose(args: argparse.Namespace) -> int:
         written.append(str(dependabot_check_script_path.relative_to(repo)))
 
     dependabot_check_requirements_path = repo / DEPENDABOT_CHECK_REQUIREMENTS_RELPATH
-    if dependabot_check_requirements_path.is_file():
+    if state["dependabot_manifest_check_requirements_exists"]:
         skipped.append(f"{DEPENDABOT_CHECK_REQUIREMENTS_RELPATH} (already exists)")
     else:
         dependabot_check_requirements_path.parent.mkdir(parents=True, exist_ok=True)
