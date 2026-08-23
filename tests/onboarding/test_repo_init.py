@@ -146,6 +146,34 @@ class BuildAutomergeWorkflowTests(unittest.TestCase):
         self.assertIn("--auto --merge", text)
 
 
+class BuildRulesetsDriftGuardWorkflowTests(unittest.TestCase):
+    def test_two_branch_model_produces_expected_branches_list(self):
+        text = repo_init.build_rulesets_drift_guard_workflow(["dev", "prd"])
+        doc = yaml.safe_load(text)
+        self.assertEqual(doc[True]["pull_request"]["branches"], ["dev", "prd"])
+        self.assertEqual(doc[True]["push"]["branches"], ["dev", "prd"])
+
+    def test_three_branch_model_produces_expected_branches_list(self):
+        text = repo_init.build_rulesets_drift_guard_workflow(["dev", "stg", "prd"])
+        doc = yaml.safe_load(text)
+        self.assertEqual(doc[True]["pull_request"]["branches"], ["dev", "stg", "prd"])
+        self.assertEqual(doc[True]["push"]["branches"], ["dev", "stg", "prd"])
+
+    def test_has_app_token_step_and_no_secrets_github_token_for_rulesets_api(self):
+        text = repo_init.build_rulesets_drift_guard_workflow(["dev", "prd"])
+        doc = yaml.safe_load(text)
+        steps = doc["jobs"]["rulesets-check"]["steps"]
+        app_token_step = next(s for s in steps if s.get("id") == "app-token")
+        self.assertEqual(app_token_step["uses"], "actions/create-github-app-token@v3")
+        rulesets_steps = [
+            s for s in steps
+            if "run" in s and "rulesets_sync.py" in s["run"]
+        ]
+        self.assertTrue(rulesets_steps)
+        for step in rulesets_steps:
+            self.assertNotIn("secrets.GITHUB_TOKEN", str(step))
+
+
 def _fake_init_openspec(repo: Path):
     """Mirrors repo_init.init_openspec's file-existence idempotency without
     actually shelling out to npx."""
