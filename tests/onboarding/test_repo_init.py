@@ -203,11 +203,14 @@ class ProposeTests(unittest.TestCase):
                 [{"context": repo_init.OPENSPEC_VALIDATE_JOB_NAME}])
 
     def test_rerun_after_workflow_written_is_noop_on_workflow_and_required_checks(self):
-        # Task 5.3: once the openspec-validate workflow exists (whether from
-        # a prior propose run or hand-authored), a second propose run must
-        # not touch the workflow file or required_status_checks -- gating is
-        # keyed on OPENSPEC_VALIDATE_WORKFLOW_RELPATH's presence, not on
-        # openspec_initialized or on any other state.
+        # Task 5.3: once the openspec-validate workflow exists from a prior
+        # propose run, a second propose run must not touch the workflow file
+        # or required_status_checks -- gating is keyed on
+        # OPENSPEC_VALIDATE_WORKFLOW_RELPATH's presence, not on
+        # openspec_initialized or on any other state. The hand-authored
+        # variant is covered by
+        # test_hand_authored_workflow_and_ruleset_missing_check_is_full_noop
+        # below.
         repo = _tmp_repo()
         self._run_propose(repo)
         workflow_path = repo / repo_init.OPENSPEC_VALIDATE_WORKFLOW_RELPATH
@@ -227,6 +230,36 @@ class ProposeTests(unittest.TestCase):
         self.assertEqual(workflow_path.read_text(), workflow_before)
         self.assertEqual(dev_ruleset_path.read_text(), dev_ruleset_before)
         self.assertEqual(prd_ruleset_path.read_text(), prd_ruleset_before)
+
+    def test_hand_authored_workflow_and_ruleset_missing_check_is_full_noop(self):
+        # Task 5.3, "workflow already present, not newly written": unlike the
+        # rerun-after-propose case above, this ruleset does NOT already
+        # contain the check, so this pins the openspec_validate_newly_written
+        # gate itself -- patch_ruleset_required_check's already-present
+        # short-circuit (task 3.2) cannot account for a no-op here.
+        repo = _tmp_repo()
+        workflow_path = repo / repo_init.OPENSPEC_VALIDATE_WORKFLOW_RELPATH
+        workflow_path.parent.mkdir(parents=True)
+        hand_authored_workflow = "# hand-authored, not the generated workflow\n"
+        workflow_path.write_text(hand_authored_workflow)
+
+        rulesets_dir = repo / ".github" / "rulesets"
+        rulesets_dir.mkdir(parents=True)
+        dev_ruleset = repo_init.build_ruleset_for_branch("dev", "2")
+        prd_ruleset = repo_init.build_ruleset_for_branch("prd", "2")
+        (rulesets_dir / "protect-dev.json").write_text(json.dumps(dev_ruleset, indent=2) + "\n")
+        (rulesets_dir / "protect-prd.json").write_text(json.dumps(prd_ruleset, indent=2) + "\n")
+        dev_ruleset_before = (rulesets_dir / "protect-dev.json").read_text()
+        prd_ruleset_before = (rulesets_dir / "protect-prd.json").read_text()
+
+        rc, result = self._run_propose(repo)
+
+        self.assertEqual(rc, 0)
+        self.assertNotIn(repo_init.OPENSPEC_VALIDATE_WORKFLOW_RELPATH, result["written"])
+        self.assertFalse(any("patched" in s for s in result["written"]))
+        self.assertEqual(workflow_path.read_text(), hand_authored_workflow)
+        self.assertEqual((rulesets_dir / "protect-dev.json").read_text(), dev_ruleset_before)
+        self.assertEqual((rulesets_dir / "protect-prd.json").read_text(), prd_ruleset_before)
 
     def test_already_onboarded_repo_patches_existing_rulesets_without_altering_other_rules(self):
         repo = _tmp_repo()
