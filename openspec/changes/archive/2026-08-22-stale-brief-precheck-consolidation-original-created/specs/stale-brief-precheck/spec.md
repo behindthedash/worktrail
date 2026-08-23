@@ -4,17 +4,22 @@
 
 The system SHALL search the repository's base-branch history for changes matching each probe,
 restricted to commits authored at or after a **search boundary** computed as the brief's
-**capture timestamp** minus a fixed, documented grace period (`RACE_GRACE_SECONDS`). The
-capture timestamp SHALL be the brief's `original-created:` frontmatter field when present, and
-SHALL fall back to the brief's `created:` frontmatter field otherwise. A brief produced by
-consolidating other briefs carries `original-created:` set to the earliest of its source
-briefs' true creation timestamps, distinct from its own `created:` field (which records the
-time of consolidation, not original capture) — reading `original-created:` in preference to
-`created:` prevents a consolidated brief's later consolidation time from masking work that
-already landed against one of its source briefs before consolidation happened. The grace
-period exists to catch a delivering commit that lands on the base branch moments before the
-brief describing the same work is captured, in the same session — a same-session race that an
-exact-timestamp boundary would otherwise miss entirely. Path probes SHALL be searched by path;
+**anchor timestamp** minus a fixed, documented grace period (`RACE_GRACE_SECONDS`). The anchor
+timestamp SHALL be selected by preference order: the brief's `released-at:` frontmatter field
+when present, else its `original-created:` frontmatter field when present, else its `created:`
+frontmatter field. `released-at:` is stamped whenever a brief is released back to the queue
+(including after a recheck) and, when present, records the most recent time the brief was
+looked at — reading it in preference to `original-created:`/`created:` prevents a repeatedly
+rechecked brief's own already-cited, already-resolved history from re-surfacing as staleness
+evidence on every subsequent recheck. `original-created:` remains the anchor for a
+consolidated brief that has not yet been released post-consolidation, distinct from its own
+`created:` field (which records the time of consolidation, not original capture) — reading
+`original-created:` in preference to `created:` prevents a consolidated brief's later
+consolidation time from masking work that already landed against one of its source briefs
+before consolidation happened. The grace period exists to catch a delivering commit that lands
+on the base branch moments before the brief describing the same work is captured (or, for a
+released brief, re-released), in the same session — a same-session race that an exact-
+timestamp boundary would otherwise miss entirely. Path probes SHALL be searched by path;
 symbol probes (including CLI-flag-shaped probes) SHALL be searched **both** by
 change-in-occurrence-count (`git log -S`) and by commit message (`git log --grep`), since a
 commit that moved, reverted, or merely described the work can name the symbol in its subject
@@ -57,12 +62,27 @@ search sees work that landed upstream but has not been merged into the local che
 #### Scenario: A consolidated brief's original-created predates its created and bounds the search
 - **WHEN** a consolidated brief's `created:` frontmatter records the time it was consolidated,
   its `original-created:` frontmatter records an earlier timestamp `T0` from its earliest
-  source brief, and a commit touching one of its probes landed on the base branch at `T0` plus
-  one day but before the brief's `created:` timestamp
+  source brief, it carries no `released-at:` field, and a commit touching one of its probes
+  landed on the base branch at `T0` plus one day but before the brief's `created:` timestamp
 - **THEN** that commit is reported as a match, because the search boundary is computed from
   `original-created:` (`T0`), not from the later `created:` timestamp
 
-#### Scenario: A non-consolidated brief without original-created is bounded by created as before
-- **WHEN** a brief carries a `created:` frontmatter field and no `original-created:` field
+#### Scenario: A non-consolidated, never-released brief is bounded by created as before
+- **WHEN** a brief carries a `created:` frontmatter field and no `original-created:` or
+  `released-at:` field
 - **THEN** the search boundary is computed from `created:` exactly as before this requirement
   was modified
+
+#### Scenario: A rechecked brief's released-at excludes history already accounted for
+- **WHEN** a brief's `created:` timestamp is `T0`, it was released back to the queue after a
+  prior recheck with `released-at:` timestamp `T1` (well after `T0`), and a commit touching
+  one of its probes landed on the base branch between `T0` and `T1` minus `RACE_GRACE_SECONDS`
+- **THEN** that commit is NOT reported as a match, because the search boundary is computed
+  from `released-at:` (`T1`), not from the brief's original `created:` (`T0`) — the commit
+  landed before the brief's most recent recheck and was already accounted for at that time
+
+#### Scenario: released-at takes precedence over original-created when both are present
+- **WHEN** a brief carries both `original-created:` (`T0`, from consolidation) and
+  `released-at:` (`T1`, from a post-consolidation recheck, later than `T0`)
+- **THEN** the search boundary is computed from `released-at:` (`T1`), not from
+  `original-created:` (`T0`)
