@@ -299,6 +299,15 @@ common case, and it is why the operator decides.
 
 ## The operator prompt
 
+**Reached only on `inconclusive`.** This section fires only when file-state verification (above)
+classified the matched evidence as `inconclusive` — not unconditionally on any non-empty
+`matches`/`pull_requests`/`research_notes`. A `verifiably-absent` or `verifiably-present`
+classification takes its own proceed/close action above and never falls through to a prompt. The
+other way this section goes unreached is pre-existing and unchanged by verification: when there
+was no evidence to verify in the first place (`checked: false`, or `checked: true` with all three
+empty — see "Reading the result" above), file-state verification never runs at all, and the
+dispatch proceeds without a prompt exactly as it always has.
+
 Show the matching commits, PRs, and research notes, then ask exactly one question. Two outcomes,
 both first-class:
 
