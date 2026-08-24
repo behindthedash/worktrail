@@ -268,6 +268,11 @@ run-record start or Phase 7 dispatch. As with the predicate re-check's `resolved
 *before* Phase 6, so there is no run record to open or finish. Do not open a worktree, and do not
 create a follow-up handoff — nothing was deferred.
 
+**On `inconclusive`** — no confident absent/present call could be made, so this is a no-op
+fall-through: continue to "The operator prompt" section unchanged, exactly as if file-state
+verification had never run. Nothing is appended, closed, or reported here; the matched
+commits/PRs/research notes carry forward to that section's prompt as-is.
+
 ## Reading the result
 
 ```json
