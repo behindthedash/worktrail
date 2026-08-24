@@ -331,7 +331,13 @@ AskUserQuestion(
 
 Never default-select, never auto-close, and never infer the answer from the match count.
 
-**`$AUTO_MODE=true`: no ask.** There is no human present to answer, and `AskUserQuestion` is not
+**`$AUTO_MODE=true`: no ask.** This subsection is reached only when file-state verification
+classified the evidence `inconclusive` (or never ran at all — the pre-existing no-evidence case),
+the same scope as the rest of "The operator prompt" above. A `verifiably-absent` or
+`verifiably-present` classification already resolved automatically — proceed or close,
+respectively — before this section, in `AUTO_MODE` exactly as it does interactively, since that
+step is a file-state check, not a human-facing prompt, and `AUTO_MODE` only changes how a
+human-facing prompt is handled. There is no human present to answer, and `AskUserQuestion` is not
 even a callable tool inside the headless one-shot `worktrail-go drain` spawns — do not attempt
 the call above. Phase 6 has not run yet for this dispatch, so open a minimal run record now
 (the same fields Phase 6 would use) purely to record the block. **Before** finishing it, file
