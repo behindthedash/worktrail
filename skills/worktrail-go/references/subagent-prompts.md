@@ -349,6 +349,18 @@ Parse each JSON `specs` array and merge them into one list. Each entry has `spec
 core capability — the actor + capability + primary domain — is the same or is a clear
 sub-set/extension of an existing spec.
 
+**Task-level candidates, when a target is known:** `overlap_check.task_candidates(specs_root,
+target)` can additionally enumerate one `{task_id, task_text, checked}` entry per open,
+unchecked task in a specific OpenSpec change's `tasks.md`, kept separate from the whole-spec
+`specs` index above — but this step has no known `target` change to scope against (it runs
+*before* a spec exists, deciding whether to create one at all), so it always calls the
+whole-spec/whole-change path (`scan()`, unchanged). The scoped, target-aware form is exercised
+downstream, once a request is already headed at a specific change: `check_spec_collision.py`'s
+Phase 5.5 dispatch-time guard (`references/spec-collision-check.md`, "Task-level matches:
+redirect, never auto-close") passes an explicit `target` — a claimed brief's `target-spec:`
+field — through to this same function so a Route C/D/F/G dispatch can be redirected onto an
+already-open, matching task instead of duplicating it.
+
 **If overlap is found:** Present `AskUserQuestion` before continuing (see `#overlap-menu`).
 `$AUTO_MODE=true`: no ask — finish `blocked_product_decision` per
 `#auto-mode-ask-fallbacks` naming the overlapping `{spec_id}`; do not proceed to step 0.
