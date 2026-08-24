@@ -9,12 +9,30 @@
       `format_verified_present_closure_note(matches, pull_requests, finding)` — builds the
       canonical closure-note string for `work_queue.py done --note`, mirroring
       `check_brief_predicate.format_resolved_closure_note`'s shape and docstring style.
-- [ ] 1.3 Add `tests/router/test_check_brief_staleness.py` coverage for both helpers: matches
+- [x] 1.3 Add `tests/router/test_check_brief_staleness.py` coverage for both helpers: matches
       only, pull requests only, both, and the exact rendered string shape (mirroring the
       existing `test_check_brief_predicate.py` coverage style for
       `format_still_true_evidence`/`format_resolved_closure_note`).
+      <!-- Checkbox-drift remediation (20260823-211154): implemented pre-archive, never ticked.
+           Verified: TestFormatVerifiedAbsentEvidence / TestFormatVerifiedPresentClosureNote in
+           tests/router/test_check_brief_staleness.py cover matches-only, PRs-only, both, empty,
+           and research-notes variants. 74 passed, 5 subtests passed. -->
 
 ## 2. Skill-doc verification step
+
+<!-- Checkbox-drift remediation (20260823-211154): 2.3-2.7 verified as a genuine remaining gap,
+     NOT checkbox drift. The living spec delta in this change's own specs/stale-brief-precheck/
+     spec.md already carries the ADDED Requirements "Verified Absent Proceeds Automatically With
+     Recorded Verification" and "Verified Present Closes The Brief Automatically Citing The
+     Verification" -- but skills/worktrail-go/references/brief-staleness-check.md's "File-state
+     verification" section (2.1/2.2, correctly ticked) only classifies into
+     verifiably-absent/verifiably-present/inconclusive and never wires that classification to any
+     outcome: "The operator prompt" fires unconditionally regardless of classification, and the
+     $AUTO_MODE section is gated on evidence being non-empty, not on inconclusive. Left unchecked
+     here per remediation discipline (do not tick unimplemented work); tracked in a new narrowly-
+     scoped active OpenSpec change referencing this archived one -- see
+     openspec/changes/wire-stale-brief-verification-outcomes/. -->
+
 
 - [x] 2.1 In `skills/worktrail-go/references/brief-staleness-check.md`, insert a new section
       "File-state verification" implementing the requirement "File-State Verification Precedes Evidence Surfacing",
@@ -59,8 +77,17 @@
       `stale-brief-precheck-consolidation-original-created` (both scoped to the "History Search
       Is Bounded By The Brief's Capture Time" requirement, untouched by this change).
       files: openspec/changes/stale-brief-precheck-verify-before-prompt/specs/stale-brief-precheck/spec.md
-- [ ] 3.2 [e2e] Run `openspec validate --change stale-brief-precheck-verify-before-prompt --strict`
+- [x] 3.2 [e2e] Run `openspec validate --change stale-brief-precheck-verify-before-prompt --strict`
       and resolve any reported issues.
-- [ ] 3.3 [e2e] Run `PYTHONPATH=src pytest -q` and
+      <!-- Checkbox-drift remediation (20260823-211154): the CLI (openspec 1.8.0) has no
+           --change flag (only --changes for bulk), and the archived change is not addressable
+           by this slug post-archive ("Unknown item ..."). Substituted `openspec validate
+           stale-brief-precheck --type spec --strict` -> "Specification 'stale-brief-precheck'
+           is valid". No issues to resolve. -->
+- [x] 3.3 [e2e] Run `PYTHONPATH=src pytest -q` and
       `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`; both green before
       this change is considered implementation-complete.
+      <!-- Checkbox-drift remediation (20260823-211154): re-run now from the worktree root --
+           `PYTHONPATH=src pytest -q`: 4401 passed, 2 skipped, 271 subtests passed. `orchestrate
+           check`: GOLDEN OK. Also independently confirmed green on the implementation PRs'
+           own CI at merge time (#510, #512, both "Lint, Test & Build": pass). -->
