@@ -16,17 +16,17 @@
 
 ## 2. Dispatch-Time Guard Extension (Phase 5.5)
 
-- [ ] 2.1 Extend `check_spec_collision.py` so a caller can pass an explicit target change id and
+- [x] 2.1 Extend `check_spec_collision.py` so a caller can pass an explicit target change id and
   receive task-level match candidates (via the 1.1 function) alongside the existing whole-spec
   `Implemented` verification path, returned in a shape that lets the caller distinguish a
   task-level match (open, unchecked) from a whole-spec match (Implemented, shipped) so a task
   match is never treated as grounds for the existing auto-close-on-Implemented behavior.
   (Requirement: Dispatch-Time Guard Distinguishes Task-Level Matches From Whole-Spec Matches)
   files: src/worktrail/router/check_spec_collision.py
-- [ ] 2.2 Add unit tests: task-level match surfaced distinctly from whole-spec match; Route C/D
+- [x] 2.2 Add unit tests: task-level match surfaced distinctly from whole-spec match; Route C/D
   does not auto-close on a task-level match; no task-level match leaves dispatch unmodified.
   files: tests/router/test_check_spec_collision.py
-- [ ] 2.3 Update `spec-collision-check.md` (task-level match handling, redirect-not-auto-close
+- [x] 2.3 Update `spec-collision-check.md` (task-level match handling, redirect-not-auto-close
   wording) and `subagent-prompts.md`'s `#overlap-check` section (task-level candidates now
   possible when a target spec is known) to document the extended contract.
   files: skills/worktrail-go/references/spec-collision-check.md, skills/worktrail-go/references/subagent-prompts.md
