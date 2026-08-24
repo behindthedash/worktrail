@@ -3634,11 +3634,31 @@ def live_run_real(
                 for fut in futures:
                     fut.result()
     _stop_emitter.set()
-    if with_tail:
+    if with_tail and _budget_stopped_at[0] is None:
         # Tail tasks are serialized, but still form a dependency DAG. Never
         # start a cleanup/e2e task until every prerequisite is terminal-success;
         # failed prerequisites are journaled as blocked failures so the run cannot
         # silently advance past a failed acceptance gate.
+        #
+        # Gated on _budget_stopped_at[0] is None (i.e. the main loop exited
+        # because the frontier genuinely emptied, not because run_budget cut
+        # it off): below, any non-tail dep not yet in coordinator.DONE is
+        # treated as a permanent failure on the premise that "the fan-out is
+        # over, so a never-dispatched dep's status will never advance past
+        # its initial value." That premise is false when run_budget stopped
+        # the main loop early with real fan-out tasks still pending -- they
+        # will run on the next resume, not never. Entering this loop anyway
+        # would journal a `dependency-gate` failure with terminal_status
+        # "failed" for any tail task depending on one of those tasks; on
+        # every future resume, reconcile_from_journal replays that
+        # terminal_status onto the tail task unconditionally (with no
+        # re-check of whether the blocker has since completed), and drive()
+        # then no-ops on it (its while-loop is guarded on status not in
+        # orchestrate.TERMINAL) -- so the tail task is permanently stuck
+        # failed even after its real blocker succeeds, recoverable only via
+        # an explicit `clear-task` (handoff 20260824-023938). Skipping tail
+        # evaluation here instead leaves pending tail tasks untouched, so the
+        # next resume re-evaluates them once the fan-out actually completes.
         pending_tail = [t for t in tasks if t.get("kind") in ("e2e", "cleanup")]
         while pending_tail:
             progressed = False
@@ -3683,6 +3703,11 @@ def live_run_real(
                 raise RuntimeError(
                     f"tail dependency gate stalled with unresolved tasks: {unresolved}"
                 )
+    elif with_tail:
+        print(
+            f"{_ts()} TAIL: deferred to next resume -- run budget stopped the fan-out "
+            f"before it genuinely completed"
+        )
 
     done = sum(1 for t in tasks if t["status"] in coordinator.DONE)
     print(f"{_ts()} LIVE RUN DONE: {done}/{len(tasks)} tasks done; {len(entries)} cassette entries")

@@ -368,5 +368,73 @@ class _FakeVerifier:
         pass
 
 
+# =========================================================================== #
+# Test 6: budget-exceeded tail-loop entry falsely gates a tail task, and the
+# stale gate survives even after the true blocker later completes
+# (handoff 20260824-023938)
+# =========================================================================== #
+class TailGateSurvivesBlockerCompletion(unittest.TestCase):
+    def test_tail_task_not_stuck_failed_after_blocker_completes(self):
+        # TASK-001 (impl, no deps) completes tick 1. Budget fires before
+        # TASK-002 (impl, dep TASK-001) can be dispatched -- so TASK-002 is
+        # left "pending", not failed (the already-fixed Test 1 behavior).
+        # TASK-003 (kind: cleanup, dep TASK-002) is the tail task.
+        #
+        # Bug: live_run_real entered its with_tail loop unconditionally after
+        # a budget-triggered break, even though TASK-002 (a real fan-out
+        # prerequisite, not itself a tail task) never got a chance to run.
+        # The tail loop treated "not yet DONE" the same as "permanently
+        # failed" and journaled a dependency-gate failure for TASK-003.
+        #
+        # On the next resume, TASK-002 completes normally -- but
+        # reconcile_from_journal replayed the stale dependency-gate entry's
+        # terminal_status onto TASK-003 BEFORE the tail loop re-checked it,
+        # so drive() (its while-loop guarded on status not in TERMINAL)
+        # no-opped and TASK-003 stayed "failed" forever, even though its
+        # real blocker was now done -- only an explicit clear-task recovered
+        # it.
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            repo = _init_repo(
+                Path(tmp),
+                {
+                    "TASK-001": _fm("TASK-001", "src/task-001.txt"),
+                    "TASK-002": _fm("TASK-002", "src/task-002.txt", deps="TASK-001"),
+                    "TASK-003": _fm(
+                        "TASK-003", "src/task-003.txt", deps="TASK-002", kind="cleanup"
+                    ),
+                },
+            )
+            journal = str(Path(tmp) / "run-001-x.json")
+
+            # Call 1: tiny budget -- TASK-001 completes, budget fires before
+            # TASK-002 dispatches.
+            fake1 = FakeSpawn()
+            live.live_run_real(
+                repo, "docs/specs/001-x",
+                max_workers=2, out_cassette=journal,
+                run_id="tail-gate-test", spawn=fake1,
+                run_budget=0.001, with_tail=True, resume=True,
+            )
+            data = json.loads(Path(journal).read_text())
+            self.assertIn("budget_stopped_at", data, "test setup: budget must have fired")
+
+            # Call 2: resume, unlimited budget -- TASK-002 now completes.
+            fake2 = FakeSpawn()
+            res = live.live_run_real(
+                repo, "docs/specs/001-x",
+                max_workers=2, out_cassette=journal,
+                run_id="tail-gate-test", spawn=fake2,
+                run_budget=0, with_tail=True, resume=True,
+            )
+            by_id = {t["id"]: t for t in res["tasks"]}
+            self.assertEqual(by_id["TASK-002"]["status"], "done")
+            # The real blocker is done -- TASK-003 must not be stuck failed.
+            self.assertEqual(
+                by_id["TASK-003"]["status"], "done",
+                "TASK-003 stayed stuck on a stale dependency-gate entry even "
+                "though its real blocker (TASK-002) completed this resume",
+            )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
