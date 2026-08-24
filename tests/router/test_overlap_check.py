@@ -16,6 +16,7 @@ from worktrail.router.overlap_check import (
     _spec_title,
     extract_spec_summary,
     scan,
+    task_candidates,
 )
 
 
@@ -531,6 +532,69 @@ class TestScanDevkitRegression(unittest.TestCase):
 
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0], direct)
+
+
+class TestTaskCandidates(unittest.TestCase):
+
+    def test_target_change_with_unchecked_tasks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write(root / "changes" / "add-donor-search" / "tasks.md",
+                   "## 1. Setup\n\n"
+                   "- [x] 1.1 Done already.\n"
+                   "  files: a.py\n"
+                   "- [ ] 1.2 Still open, with wrapped continuation text.\n"
+                   "  files: b.py\n"
+                   "- [ ] 2.1 Also open.\n")
+            results = task_candidates(root, target="add-donor-search")
+            self.assertEqual(len(results), 2)
+            ids = [r["task_id"] for r in results]
+            self.assertEqual(ids, ["1.2", "2.1"])
+            for entry in results:
+                self.assertFalse(entry["checked"])
+                self.assertEqual(set(entry.keys()), {"task_id", "task_text", "checked"})
+            self.assertIn("Still open", results[0]["task_text"])
+            self.assertIn("wrapped continuation", results[0]["task_text"])
+
+    def test_target_change_fully_checked_returns_empty_no_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write(root / "changes" / "add-donor-search" / "tasks.md",
+                   "## 1. Setup\n\n"
+                   "- [x] 1.1 Done.\n"
+                   "- [X] 1.2 Also done.\n")
+            results = task_candidates(root, target="add-donor-search")
+            self.assertEqual(results, [])
+
+    def test_no_target_supplied_unchanged_behavior(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write(root / "changes" / "add-donor-search" / "proposal.md",
+                   "## Capabilities\n\nSearch nonprofits by cause.\n")
+            _write(root / "changes" / "add-donor-search" / "tasks.md",
+                   "- [ ] 1.1 Some open task.\n")
+            self.assertEqual(task_candidates(root, target=None), scan(root))
+            results = task_candidates(root)
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0]["spec_id"], "add-donor-search")
+
+    def test_devkit_shaped_target_not_populated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write(root / "001-donor-search" / "2025-01-01--feature.md",
+                   "**Feature Summary**: Donors can search nonprofits by cause.\n")
+            results = task_candidates(root, target="001-donor-search")
+            self.assertEqual(results, scan(root))
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0]["spec_id"], "001-donor-search")
+
+    def test_target_with_no_readable_tasks_file_falls_back_to_scan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write(root / "changes" / "add-donor-search" / "proposal.md",
+                   "## Capabilities\n\nSearch nonprofits by cause.\n")
+            results = task_candidates(root, target="nonexistent-change")
+            self.assertEqual(results, scan(root))
 
 
 if __name__ == "__main__":

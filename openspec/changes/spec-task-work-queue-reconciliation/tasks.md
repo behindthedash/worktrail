@@ -9,7 +9,7 @@
   with no per-task scan. (Requirement: Task-Level Candidate Enumeration Scoped To A Known Target)
   (Requirement: Task Candidate Shape) (Requirement: OpenSpec Per-Task Candidate Enumeration)
   files: src/worktrail/router/overlap_check.py
-- [ ] 1.2 Add unit tests: target change with unchecked tasks, target change fully checked (empty
+- [x] 1.2 Add unit tests: target change with unchecked tasks, target change fully checked (empty
   per-task list, no error), no target supplied (unchanged behavior), devkit-shaped target
   (per-task list not populated).
   files: tests/router/test_overlap_check.py
