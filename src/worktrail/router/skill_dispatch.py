@@ -25,12 +25,33 @@ _CHATGPT_LOGIN_STATUS = "Logged in using ChatGPT"
 _INTERNAL_SKILLS = frozenset({"worktrail-sdd-workflow"})
 _DISPATCH_DEPTH_ENV = "WORKTRAIL_SKILL_DISPATCH_DEPTH"
 _MAX_DISPATCH_DEPTH = 1
+# The bundled OpenSpec integration ships as Claude Code *commands*
+# (commands/opsx/*.md), not Skills, so claude/opencode resolve them only
+# under the plugin's own namespace prefix -- unlike a Skill's frontmatter
+# `name:`, which those hosts match bare with no prefix. Live-verified
+# 2026-08-24: bare `/opsx:propose` fails with "Unknown command" (exit 0, no
+# artifacts written); `/worktrail:opsx:propose` is accepted.
+_OPSX_COMMAND_PREFIX = "opsx:"
+_OPSX_NAMESPACE = "worktrail:"
 
 
 def _validate_skill_name(name: str) -> str:
     if not _SKILL_NAME.fullmatch(name):
         raise ValueError(f"invalid skill name: {name!r}")
     return name
+
+
+def _namespaced_invocation_skill(agent: str, skill: str) -> str:
+    """Return the skill name as the given host actually resolves it.
+
+    Only the bundled `opsx:*` commands need this -- accept an
+    already-namespaced value as a no-op so callers may pass either form.
+    """
+    if (agent in {"claude", "opencode"}
+            and skill.startswith(_OPSX_COMMAND_PREFIX)
+            and not skill.startswith(_OPSX_NAMESPACE)):
+        return f"{_OPSX_NAMESPACE}{skill}"
+    return skill
 
 
 def _prompt(agent: str, skill: str, args: str) -> str:
@@ -52,7 +73,8 @@ def _prompt(agent: str, skill: str, args: str) -> str:
             return f"{invocation}\n\n{authorization}"
         return authorization
     if agent in {"claude", "opencode"}:
-        return f"/{skill} {args}".rstrip()
+        invocation_skill = _namespaced_invocation_skill(agent, skill)
+        return f"/{invocation_skill} {args}".rstrip()
     return f"Use the installed skill {skill!r}. Execute it with these arguments: {args}".rstrip()
 
 

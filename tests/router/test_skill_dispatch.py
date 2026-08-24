@@ -74,6 +74,31 @@ class SkillDispatchTests(unittest.TestCase):
             skill_dispatch.main(["--agent", "opencode", "--skill", "x:y", "--json", "--dry-run"])
         self.assertEqual(json.loads(output.getvalue())[0], "opencode")
 
+
+class OpsxCommandNamespacingTests(unittest.TestCase):
+    """The bundled OpenSpec integration ships as Claude Code *commands*
+    (commands/opsx/*.md), not Skills -- claude/opencode resolve a bare
+    `/opsx:propose` as `Unknown command` (exit 0, no artifacts written).
+    Live-verified 2026-08-24 against the namespaced form."""
+
+    def test_claude_namespaces_a_bare_opsx_command(self):
+        command = skill_dispatch.build_command("claude", "opsx:propose", "the request")
+        self.assertIn("/worktrail:opsx:propose the request", command)
+
+    def test_opencode_namespaces_a_bare_opsx_command(self):
+        command = skill_dispatch.build_command("opencode", "opsx:sync", "spec-a")
+        self.assertIn("/worktrail:opsx:sync spec-a", command)
+
+    def test_an_already_namespaced_opsx_command_is_left_alone(self):
+        command = skill_dispatch.build_command("claude", "worktrail:opsx:propose", "req")
+        self.assertIn("/worktrail:opsx:propose req", command)
+
+    def test_a_non_opsx_skill_is_never_namespaced(self):
+        # openspec-propose is a real bundled Skill and resolves bare by its
+        # own frontmatter `name:`, unlike the opsx:* commands above.
+        command = skill_dispatch.build_command("claude", "openspec-propose", "req")
+        self.assertIn("/openspec-propose req", command)
+
     @patch("worktrail.router.skill_dispatch.subprocess.run")
     def test_default_cli_executes_the_selected_provider(self, run):
         run.return_value.returncode = 0
