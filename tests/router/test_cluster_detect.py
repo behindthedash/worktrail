@@ -88,6 +88,7 @@ def _write_brief(
     *,
     repo: Optional[str] = None,
     target_spec: Optional[str] = None,
+    target_task: Optional[str] = None,
     related: Union[None, str, List[str]] = None,
     blocked_by: Union[None, str, List[str]] = None,
     focus: str = "",
@@ -97,6 +98,8 @@ def _write_brief(
         lines.append(f"repo: {repo}")
     if target_spec is not None:
         lines.append(f"target-spec: {target_spec}")
+    if target_task is not None:
+        lines.append(f"target-task: {target_task}")
     if related is not None:
         if isinstance(related, str):
             lines.append(f"related: {related}")
@@ -702,6 +705,94 @@ class ComputeClustersTests(unittest.TestCase):
         self.assertEqual(len(clusters), 1)
         self.assertEqual(clusters[0]["members"], sorted([a.stem, b.stem]))
         self.assertIn("duplicate-slug", clusters[0]["signals"])
+
+
+class TargetTaskMatchTests(unittest.TestCase):
+    """Dashboard Advisory Surfaces Brief-vs-Task Matches: `target-task-match`
+    edges from `_target_task_edges`, exercised end-to-end through
+    `compute_clusters(..., task_candidates_fn=...)`."""
+
+    _TASK_ID = "3.1"
+    _TASK_TEXT = "extend cluster detect target spec task match"
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _task_candidates_fn(self, repo: str, target_spec: str) -> List[Dict[str, Any]]:
+        return [{"task_id": self._TASK_ID, "task_text": self._TASK_TEXT, "checked": False}]
+
+    def test_two_undispatched_briefs_sharing_target_spec_and_matching_same_task_surface_advisory(
+        self,
+    ):
+        # Neither brief names target-task explicitly; both focus texts
+        # overlap the open task's text at/above OVERLAP_THRESHOLD, so each
+        # forms its own edge to the same synthetic task node, folding both
+        # briefs into one connected component with no brief-vs-brief signal
+        # needed.
+        a = _write_brief(
+            self.dir,
+            "20260820-090000-alpha.md",
+            repo="repo-a",
+            target_spec="020",
+            focus=self._TASK_TEXT,
+        )
+        b = _write_brief(
+            self.dir,
+            "20260820-091000-beta.md",
+            repo="repo-a",
+            target_spec="020",
+            focus=self._TASK_TEXT,
+        )
+
+        clusters = compute_clusters(
+            self.dir, _fake_parse_frontmatter, task_candidates_fn=self._task_candidates_fn
+        )
+
+        self.assertEqual(len(clusters), 1)
+        cluster = clusters[0]
+        self.assertIn(a.stem, cluster["members"])
+        self.assertIn(b.stem, cluster["members"])
+        self.assertIn("target-task-match", cluster["signals"])
+        task_node_id = f"task::repo-a::020::{self._TASK_ID}"
+        self.assertIn(task_node_id, cluster["members"])
+
+    def test_brief_already_naming_matched_target_task_produces_no_new_advisory(self):
+        # The brief's own `target-task:` already names the matched task, so
+        # `_target_task_edges` skips it — no edge, no advisory, even though
+        # its focus text overlaps the task text at/above OVERLAP_THRESHOLD.
+        _write_brief(
+            self.dir,
+            "20260820-090000-alpha.md",
+            repo="repo-a",
+            target_spec="020",
+            target_task=self._TASK_ID,
+            focus=self._TASK_TEXT,
+        )
+
+        clusters = compute_clusters(
+            self.dir, _fake_parse_frontmatter, task_candidates_fn=self._task_candidates_fn
+        )
+
+        self.assertEqual(clusters, [])
+
+    def test_omitting_task_candidates_fn_computes_no_task_edges(self):
+        # Preserves prior behavior exactly when the caller doesn't inject a
+        # task_candidates_fn: no target-task-match edges at all.
+        _write_brief(
+            self.dir,
+            "20260820-090000-alpha.md",
+            repo="repo-a",
+            target_spec="020",
+            focus=self._TASK_TEXT,
+        )
+
+        clusters = compute_clusters(self.dir, _fake_parse_frontmatter)
+
+        self.assertEqual(clusters, [])
 
 
 class RealPR93RegressionTests(unittest.TestCase):
