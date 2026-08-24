@@ -4,14 +4,25 @@ Cluster signal extraction and pairwise Signal Match computation for the go
 skill's Consume-time cluster detection (see the `duplicate-brief-detection`
 change/spec).
 
-Extracts a Cluster Signal (repo, target-spec, related-ID list, blocked-by-ID
-list, descriptive slug, focus-text tokens) from each queued brief and computes
-pairwise Signal Matches between briefs across four signal types:
-duplicate-slug, same-target-spec, related-link, focus-overlap. A `blocked-by`
-relationship between a pair excludes it from every signal (including
-duplicate-slug, which is otherwise repo-independent); same-target-spec,
-related-link, and focus-overlap additionally require both briefs to share a
-non-null `repo`.
+Extracts a Cluster Signal (repo, target-spec, target-task, related-ID list,
+blocked-by-ID list, descriptive slug, focus-text tokens) from each queued
+brief and computes pairwise Signal Matches between briefs across four signal
+types: duplicate-slug, same-target-spec, related-link, focus-overlap. A
+`blocked-by` relationship between a pair excludes it from every signal
+(including duplicate-slug, which is otherwise repo-independent);
+same-target-spec, related-link, and focus-overlap additionally require both
+briefs to share a non-null `repo`.
+
+A fifth signal, `target-task-match`, connects a single brief to a synthetic
+task node (rather than to another brief) when the brief carries both `repo`
+and `target-spec` and its focus text overlaps an open, unchecked task in
+that target change at/above `OVERLAP_THRESHOLD` (see `_target_task_edges`).
+Two briefs that independently match the same task are thereby folded into
+one connected component via that shared task node, with no special-case
+"two briefs, one task" logic needed — the existing connected-component
+assembly below does it for free. Computing this signal requires a caller-
+injected `task_candidates_fn` (see `compute_clusters`); omitting it computes
+none of these edges, preserving prior behavior exactly.
 
 Cluster assembly (connected components over the Signal Match edges) is
 implemented here too; every assembled component is surfaced, size 2
@@ -121,9 +132,10 @@ def _extract_signal(
 ) -> Optional[Dict[str, Any]]:
     """Extract a Cluster Signal from a queued brief.
 
-    Returns a dict with `repo`, `target_spec`, `related`, `blocked_by`,
-    `slug`, and `focus_tokens` (plus `path`/`stem` for pair-matching), or None
-    if the brief is unreadable or its frontmatter can't be parsed/is empty.
+    Returns a dict with `repo`, `target_spec`, `target_task`, `related`,
+    `blocked_by`, `slug`, and `focus_tokens` (plus `path`/`stem` for
+    pair-matching), or None if the brief is unreadable or its frontmatter
+    can't be parsed/is empty.
     """
     try:
         text = path.read_text(encoding="utf-8")
@@ -140,6 +152,7 @@ def _extract_signal(
         "stem": path.stem,
         "repo": _normalize_repo(fm.get("repo")),
         "target_spec": _normalize_repo(fm.get("target-spec")),
+        "target_task": _normalize_repo(fm.get("target-task")),
         "related": _coerce_id_list(fm.get("related")),
         "blocked_by": _coerce_id_list(fm.get("blocked-by")),
         "slug": _slug(path.stem),
@@ -208,6 +221,76 @@ def _signal_matches(
         matches.append(("focus-overlap", overlap))
 
     return matches
+
+
+_Edge = Tuple[str, str, List[Tuple[str, Optional[float]]]]
+
+
+def _target_task_edges(
+    signals: List[Dict[str, Any]],
+    task_candidates_fn: Optional[Callable[[str, str], List[Dict[str, Any]]]],
+) -> List[_Edge]:
+    """Compute brief-vs-task `target-task-match` edges (Dashboard Advisory
+    Surfaces Brief-vs-Task Matches).
+
+    For every Cluster Signal carrying both a non-null `repo` and
+    `target_spec`, looks up that target change's open, unchecked task
+    candidates via the caller-injected `task_candidates_fn(repo,
+    target_spec)` — the 1.1 per-task enumeration
+    (`overlap_check.task_candidates`), resolved to a concrete repo/specs-root
+    by the caller the same way `parse_frontmatter` is caller-injected, so
+    this module does no cross-repo filesystem lookup or format detection of
+    its own. Results are cached per `(repo, target_spec)` pair since several
+    briefs commonly share a target change.
+
+    Adds one edge per task whose `task_text` overlaps the brief's focus text
+    at/above `OVERLAP_THRESHOLD`, connecting the brief's stem to a synthetic,
+    repo-scoped task node id (`task::<repo>::<target_spec>::<task_id>` —
+    scoped so two different repos' changes never collide on a shared
+    target-spec/task-id pair, mirroring the repo-scoping every other
+    cross-repo signal in this module already enforces). A brief whose own
+    `target_task` already names the matched task is skipped for that task —
+    the link is already explicit, no advisory needed.
+
+    Candidate entries without a `task_id` (the whole-spec/whole-change
+    fallback shape `task_candidates` returns for a non-OpenSpec or
+    unresolved target) are ignored, since only real per-task entries
+    participate in this signal. `task_candidates_fn` is optional; omitting
+    it (the default) returns no edges, preserving prior behavior exactly.
+    Never raises: a lookup failure for one `(repo, target_spec)` pair
+    degrades to no task edges for that pair, matching this module's
+    fail-open posture elsewhere.
+    """
+    if task_candidates_fn is None:
+        return []
+
+    edges: List[_Edge] = []
+    cache: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+    for sig in signals:
+        repo = sig["repo"]
+        target = sig["target_spec"]
+        if repo is None or target is None:
+            continue
+        key = (repo, target)
+        if key not in cache:
+            try:
+                cache[key] = task_candidates_fn(repo, target)
+            except Exception:  # noqa: BLE001 — best-effort, never break clustering
+                cache[key] = []
+        for entry in cache[key]:
+            task_id = entry.get("task_id")
+            if not task_id:
+                continue  # whole-spec/whole-change fallback candidate, not a task
+            if sig["target_task"] is not None and sig["target_task"] == task_id:
+                continue  # brief already explicitly names this task
+            overlap = _overlap_coefficient(
+                sig["focus_tokens"], _tokenize(str(entry.get("task_text") or ""))
+            )
+            if overlap < OVERLAP_THRESHOLD:
+                continue
+            node_id = f"task::{repo}::{target}::{task_id}"
+            edges.append((sig["stem"], node_id, [("target-task-match", overlap)]))
+    return edges
 
 
 # LLM verification gate (duplicate-brief-detection design.md D3/D4/D5): asks
@@ -379,9 +462,6 @@ def _llm_gate_clusters(
     return gate_clusters
 
 
-_Edge = Tuple[str, str, List[Tuple[str, Optional[float]]]]
-
-
 def _connected_components(edges: List[_Edge]) -> List[Dict[str, Any]]:
     """Assemble Signal Match edges into connected components via union-find.
 
@@ -473,6 +553,7 @@ def _compute_clusters_inner(
     *,
     repo_root: Optional[Path],
     agent_cli: Optional[str],
+    task_candidates_fn: Optional[Callable[[str, str], List[Dict[str, Any]]]],
 ) -> List[Dict[str, Any]]:
     """Unguarded body of `compute_clusters` (see there for the public
     contract). Split out so the broad exception handler wraps the whole
@@ -493,6 +574,7 @@ def _compute_clusters_inner(
             sig_a, sig_b = signals[i], signals[j]
             matches = _signal_matches(sig_a, sig_b)
             edges.append((sig_a["stem"], sig_b["stem"], matches))
+    edges.extend(_target_task_edges(signals, task_candidates_fn))
 
     return _assemble_clusters(edges, signals=signals, repo_root=repo_root, agent_cli=agent_cli)
 
@@ -503,6 +585,7 @@ def compute_clusters(
     *,
     repo_root: Optional[Path] = None,
     agent_cli: Optional[str] = None,
+    task_candidates_fn: Optional[Callable[[str, str], List[Dict[str, Any]]]] = None,
 ) -> List[Dict[str, Any]]:
     """Public entry point: scan `queue_dir` for queued briefs, extract Cluster
     Signals (skipping any brief whose frontmatter can't be read or parsed),
@@ -523,10 +606,24 @@ def compute_clusters(
     (primarily for tests). Neither is required — omitting both simply means
     the gate never has a CLI to call, so gate-band candidates fail open to
     "not verified" (not surfaced), same as any other resolution failure.
+
+    `task_candidates_fn` is optional and feeds the `target-task-match` signal
+    (Dashboard Advisory Surfaces Brief-vs-Task Matches): a `(repo,
+    target_spec) -> [{task_id, task_text, checked}, ...]` callable — a
+    caller-supplied adapter over `overlap_check.task_candidates`, resolving a
+    brief's `repo` frontmatter to a concrete specs root the same way
+    `parse_frontmatter` is caller-injected — used to match a queued brief's
+    focus text against open, unchecked tasks in its `target-spec` change.
+    Omitting it (the default) computes no task edges, preserving prior
+    behavior exactly. See `_target_task_edges` for the matching rule.
     """
     try:
         return _compute_clusters_inner(
-            queue_dir, parse_frontmatter, repo_root=repo_root, agent_cli=agent_cli
+            queue_dir,
+            parse_frontmatter,
+            repo_root=repo_root,
+            agent_cli=agent_cli,
+            task_candidates_fn=task_candidates_fn,
         )
     except Exception:  # noqa: BLE001 — degrade, never crash the dashboard render
         return []
