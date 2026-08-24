@@ -43,7 +43,7 @@
   `cluster_detect.compute_clusters` results are already merged into the rendered/JSON dashboard
   output.
   files: src/worktrail/router/dashboard.py
-- [ ] 3.3 Add unit tests: two undispatched briefs sharing `target-spec:` and matching the same
+- [x] 3.3 Add unit tests: two undispatched briefs sharing `target-spec:` and matching the same
   open task surface an advisory; a brief that already carries `target-task:` naming the matched
   task produces no new advisory.
   files: tests/router/test_cluster_detect.py
@@ -85,7 +85,7 @@
 
 ## 6. End-to-End Verification
 
-- [ ] 6.1 [e2e] Build a throwaway fixture reproducing the discovery incident's shape (one active
+- [x] 6.1 [e2e] Build a throwaway fixture reproducing the discovery incident's shape (one active
   OpenSpec change with open tasks; two queued briefs both carrying that change's `target-spec:`
   and independently matching the same open task) and confirm both the dashboard advisory (3.1/3.2)
   and the Phase 5.5 guard (2.1) surface the task-level match, then run the full suite
