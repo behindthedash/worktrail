@@ -146,12 +146,17 @@ def derive_dod_checks(frontmatter: dict, body: str, task_relpath: str) -> list[d
     Always includes one `ac_checkboxes_complete` check (covering both
     Acceptance Criteria and Definition of Done checkboxes) against the task
     file itself; for each path in frontmatter `files:` (if present), adds a
-    `file_tracked` check and a `no_stub_markers` check for that path.
+    `file_tracked` check and a `no_stub_markers` check for that path, unless
+    the path is also listed in `files-sync-exempt` (same opt-out field
+    check_spec_sync.py's Check C respects).
     """
     checks: list[dict] = [
         {"type": "ac_checkboxes_complete", "task_path": task_relpath},
     ]
+    exempt = {e for e in (frontmatter.get("files-sync-exempt") or []) if isinstance(e, str)}
     for path in frontmatter.get("files") or []:
+        if path in exempt:
+            continue
         checks.append({"type": "file_tracked", "path": path})
         checks.append({"type": "no_stub_markers", "path": path})
     return checks
