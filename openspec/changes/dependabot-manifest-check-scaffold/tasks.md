@@ -93,8 +93,8 @@
 - [x] 4.1 Update `skills/worktrail-repo-init/SKILL.md`: add the workflow and its vendored script
   pair to the Overview list, and a short Step 2 paragraph next to the drift-guard one stating
   what the check does and that it needs no credentials at `apply` time.
-- [ ] 4.2 [cleanup] Run `pytest -q` and `python3 -m worktrail.orchestrator.orchestrate check`;
+- [x] 4.2 [cleanup] Run `pytest -q` and `python3 -m worktrail.orchestrator.orchestrate check`;
   both green.
-- [ ] 4.3 Bump `version` in `pyproject.toml` and `.codex-plugin/plugin.json` together, or apply
+- [x] 4.3 Bump `version` in `pyproject.toml` and `.codex-plugin/plugin.json` together, or apply
   the `go:no-version-bump` label if this lands in a deferred batch bump —
   `CI: Version Bump Check` fails otherwise because `src/worktrail/**` changed.
