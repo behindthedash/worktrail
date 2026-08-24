@@ -229,6 +229,159 @@ class TestCheckThenVerifyIntegration(unittest.TestCase):
         self.assertEqual(verified["files"], ["src/feature.py"])
 
 
+def _write_openspec_tasks(repo: str, change_id: str, body: str) -> None:
+    _write(Path(repo) / "openspec" / "changes" / change_id / "tasks.md", body)
+
+
+def _write_openspec_proposal(repo: str, change_id: str, capability: str) -> None:
+    _write(
+        Path(repo) / "openspec" / "changes" / change_id / "proposal.md",
+        f"## Capabilities\n\n{capability}\n",
+    )
+
+
+class TestCheckTaskCandidatesDistinctFromWholeSpecMatch(unittest.TestCase):
+    """Requirement: Dispatch-Time Guard Distinguishes Task-Level Matches From
+    Whole-Spec Matches -- `task_candidates` is a separate key from
+    `candidates`, populated only when an explicit `target` resolves to an
+    OpenSpec change with open, unchecked tasks."""
+
+    def test_target_with_unchecked_tasks_populates_task_candidates_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_openspec_proposal(tmp, "add-auth", "Users can log in.")
+            _write_openspec_tasks(
+                tmp, "add-auth",
+                "## 1. Login\n\n"
+                "- [ ] 1.1 Add login form\n"
+                "- [x] 1.2 Add logout button\n",
+            )
+            res = csc.check(Path(tmp), root="openspec", target="add-auth")
+
+            self.assertTrue(res["checked"])
+            self.assertEqual(len(res["task_candidates"]), 1)
+            task = res["task_candidates"][0]
+            self.assertEqual(task["spec_id"], "add-auth")
+            self.assertEqual(task["task_id"], "1.1")
+            self.assertIn("Add login form", task["task_text"])
+            self.assertFalse(task["checked"])
+
+    def test_task_candidates_never_merged_into_whole_spec_candidates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_openspec_proposal(tmp, "add-auth", "Users can log in.")
+            _write_openspec_tasks(
+                tmp, "add-auth",
+                "## 1. Login\n\n- [ ] 1.1 Add login form\n",
+            )
+            res = csc.check(Path(tmp), root="openspec", target="add-auth")
+
+            self.assertEqual(len(res["candidates"]), 1)
+            self.assertEqual(res["candidates"][0]["spec_id"], "add-auth")
+            # The whole-spec candidate shape carries no task_id/checked --
+            # a task-level match is structurally distinguishable from it.
+            self.assertNotIn("task_id", res["candidates"][0])
+            self.assertNotIn("checked", res["candidates"][0])
+            self.assertEqual(len(res["task_candidates"]), 1)
+            self.assertIn("task_id", res["task_candidates"][0])
+
+    def test_no_target_leaves_task_candidates_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_openspec_proposal(tmp, "add-auth", "Users can log in.")
+            _write_openspec_tasks(
+                tmp, "add-auth",
+                "## 1. Login\n\n- [ ] 1.1 Add login form\n",
+            )
+            res = csc.check(Path(tmp), root="openspec")
+            self.assertTrue(res["checked"])
+            self.assertEqual(res["task_candidates"], [])
+
+    def test_target_change_fully_checked_yields_no_task_level_match(self):
+        """No task-level match (every task already checked) leaves the rest
+        of `check()`'s output unmodified -- `checked`/`candidates` unaffected,
+        `task_candidates` simply empty."""
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_openspec_proposal(tmp, "add-auth", "Users can log in.")
+            _write_openspec_tasks(
+                tmp, "add-auth",
+                "## 1. Login\n\n- [x] 1.1 Add login form\n- [x] 1.2 Add logout button\n",
+            )
+            res = csc.check(Path(tmp), root="openspec", target="add-auth")
+            self.assertTrue(res["checked"])
+            self.assertEqual(len(res["candidates"]), 1)
+            self.assertEqual(res["task_candidates"], [])
+
+    def test_target_with_no_readable_tasks_md_yields_no_task_level_match(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_openspec_proposal(tmp, "add-auth", "Users can log in.")
+            res = csc.check(Path(tmp), root="openspec", target="add-auth")
+            self.assertTrue(res["checked"])
+            self.assertEqual(res["task_candidates"], [])
+
+    def test_devkit_shaped_root_with_target_yields_no_task_level_match(self):
+        """A devkit-shaped root has no per-task granularity -- `target` is
+        ignored and `task_candidates` stays empty, unchanged behavior."""
+        with tempfile.TemporaryDirectory() as tmp:
+            _make_spec(tmp, "007-example-feature")
+            res = csc.check(Path(tmp), target="add-auth")
+            self.assertTrue(res["checked"])
+            self.assertEqual(len(res["candidates"]), 1)
+            self.assertEqual(res["task_candidates"], [])
+
+
+class TestTaskLevelMatchNeverAutoCloses(unittest.TestCase):
+    """Requirement: Dispatch-Time Guard Distinguishes Task-Level Matches From
+    Whole-Spec Matches -- a task-level match (open, unchecked work) is never
+    grounds for the existing auto-close-on-Implemented behavior; only
+    `verify()`'s explicit `Implemented` + shipped-artifacts check can confirm
+    a collision (Route C/D auto-close semantics)."""
+
+    def test_task_level_match_alone_does_not_confirm_a_collision(self):
+        """A change with only open, unchecked tasks (a task-level match) has
+        no `docs/specs/<target>` entry for `verify()` to confirm against --
+        confirming it never happens off `task_candidates` data alone."""
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_openspec_proposal(tmp, "add-auth", "Users can log in.")
+            _write_openspec_tasks(
+                tmp, "add-auth",
+                "## 1. Login\n\n- [ ] 1.1 Add login form\n",
+            )
+            checked = csc.check(Path(tmp), root="openspec", target="add-auth")
+            self.assertEqual(len(checked["task_candidates"]), 1)
+
+            verified = csc.verify(Path(tmp), "add-auth")
+            self.assertFalse(verified["confirmed"])
+            self.assertIsNotNone(verified["warning"])
+
+    def test_task_candidates_present_alongside_a_separate_confirmed_whole_spec_match(self):
+        """A task-level match on `target` (open, unchecked work under
+        `openspec/`) and a confirmed whole-spec match on a different,
+        already-`Implemented` spec (under `docs/specs/`) coexist without
+        either contaminating the other's key or code path -- `verify()` is
+        only ever called against the whole-spec candidate, never against
+        anything from `task_candidates`."""
+        repo = _init_repo()
+        _write_openspec_proposal(repo, "add-auth", "Users can log in.")
+        _write_openspec_tasks(
+            repo, "add-auth",
+            "## 1. Login\n\n- [ ] 1.1 Add login form\n",
+        )
+        spec_dir = _make_spec(repo, "001-example", status="Implemented")
+        target_file = Path(repo) / "src" / "feature.py"
+        _write(target_file, "print('shipped')\n")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-q", "-m", "ship feature")
+        _make_task(spec_dir, "TASK-001", files=["src/feature.py"])
+
+        checked = csc.check(Path(repo), root="openspec", target="add-auth")
+        self.assertEqual(len(checked["task_candidates"]), 1)
+        self.assertEqual(checked["task_candidates"][0]["task_id"], "1.1")
+
+        # The whole-spec candidate lives under a different root entirely --
+        # `check()`'s `root` only governs whole-spec candidates/task
+        # candidates together, `verify()` takes its own independent `root`.
+        verified = csc.verify(Path(repo), "001-example", root="docs/specs")
+        self.assertTrue(verified["confirmed"])
+
+
 class TestCli(unittest.TestCase):
     def test_json_check_output_matches_check_result(self):
         import io
