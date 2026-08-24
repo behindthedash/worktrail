@@ -35,10 +35,10 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [e2e] Run `PYTHONPATH=src pytest -q` and confirm it stays green — no source files
+- [x] 2.1 [e2e] Run `PYTHONPATH=src pytest -q` and confirm it stays green — no source files
       changed by this doc-only change, so this confirms the edit introduced no accidental
       regression (e.g. a broken cross-reference `test_plugin_surface.py` checks).
-- [ ] 2.2 [e2e] Re-read the edited sections of
+- [x] 2.2 [e2e] Re-read the edited sections of
       `skills/worktrail-go/references/brief-staleness-check.md` end to end and confirm the
       three outcomes (`verifiably-absent`, `verifiably-present`, `inconclusive`) are each
       reachable, mutually exclusive, and that the `$AUTO_MODE` gate correctly reads only
