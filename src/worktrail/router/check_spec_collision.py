@@ -8,13 +8,23 @@ existing spec in `docs/specs/` already claim to cover this?" This module
 answers that in two separate, best-effort-only steps, mirroring
 `check_repo_freshness.py`'s shape:
 
-  1. `check(repo, root)` -- pure extraction. Delegates to `overlap_check.scan()`
-     for the candidate index (spec_id + title + feature_summary per spec) and
-     performs NO semantic judgment of its own: deciding whether a candidate is
-     a strong match (same actor + capability + primary domain, or a clear
-     sub-set/extension) is the calling agent's job, applying the same
-     comparison rule `overlap_check.py` already documents for the brainstorm
-     overlap gate.
+  1. `check(repo, root, target)` -- pure extraction. Delegates to
+     `overlap_check.scan()` for the whole-spec candidate index (spec_id +
+     title + feature_summary per spec) and performs NO semantic judgment of
+     its own: deciding whether a candidate is a strong match (same actor +
+     capability + primary domain, or a clear sub-set/extension) is the
+     calling agent's job, applying the same comparison rule `overlap_check.py`
+     already documents for the brainstorm overlap gate.
+
+     When the caller passes an explicit `target` OpenSpec change id, `check()`
+     additionally delegates to `overlap_check.task_candidates()` for that
+     change's open, unchecked tasks and surfaces them under the separate
+     `task_candidates` key -- never merged into `candidates` -- so a
+     task-level match (open, unchecked work) is structurally distinguishable
+     from a whole-spec match (only ever confirmed via `verify()`'s
+     `Implemented` + shipped-artifacts check below). A task-level match is
+     never grounds for the existing auto-close-on-Implemented behavior:
+     nothing in `task_candidates` is ever fed to `verify()`.
 
   2. `verify(repo, spec_id, root)` -- artifact verification for a single
      candidate the calling agent has already judged a semantic match
@@ -41,6 +51,7 @@ from typing import Any, Dict, List, Optional
 # overlap_check is a sibling module -- reused for the candidate index rather
 # than re-implementing its extraction logic.
 from .overlap_check import scan as _scan
+from .overlap_check import task_candidates as _task_candidates
 
 # dashboard.py is a sibling module -- its `_git_tracked`/
 # `_task_files_are_shipped` stale-bookkeeping helpers and `_load_tasks`
@@ -133,18 +144,37 @@ def _collect_task_files(spec_dir: Path) -> List[str]:
 
 # --- check(): pure extraction --------------------------------------------------
 
-def check(repo: Path, root: str = "docs/specs") -> Dict[str, object]:
+def check(
+    repo: Path, root: str = "docs/specs", target: Optional[str] = None
+) -> Dict[str, object]:
     """Enumerate `docs/specs/` candidates for the calling agent to judge.
 
     Returns `{"checked": bool, "candidates": [{"spec_id", "stage", "title",
-    "feature_summary"}], "warning": str|None}`. `checked=False` means the
-    index could not be built (no `docs/specs/` dir, or an internal failure)
-    -- callers must treat that as "no signal", never as "no collision".
-    Performs no semantic matching of its own; that judgment is the calling
-    agent's, applying `overlap_check.py`'s existing comparison rule.
+    "feature_summary"}], "task_candidates": [{"spec_id", "task_id",
+    "task_text", "checked"}], "warning": str|None}`. `checked=False` means
+    the whole-spec index could not be built (no `docs/specs/` dir, or an
+    internal failure) -- callers must treat that as "no signal", never as
+    "no collision". Performs no semantic matching of its own; that judgment
+    is the calling agent's, applying `overlap_check.py`'s existing comparison
+    rule.
+
+    When `target` names an explicit OpenSpec change id, `task_candidates` is
+    additionally populated with that change's open, unchecked tasks (via
+    `overlap_check.task_candidates()`) -- kept in its own key, never merged
+    into `candidates`, so a task-level match (open, unchecked) can never be
+    confused with a whole-spec match (only ever confirmed via `verify()`'s
+    `Implemented` + shipped-artifacts check). A devkit-shaped root, no
+    `target`, or a `target` with no readable `tasks.md` leaves
+    `task_candidates` empty -- `checked`/`candidates` are unaffected either
+    way.
     """
     repo = Path(repo)
-    result: Dict[str, object] = {"checked": False, "candidates": [], "warning": None}
+    result: Dict[str, object] = {
+        "checked": False,
+        "candidates": [],
+        "task_candidates": [],
+        "warning": None,
+    }
 
     if _scan is None:
         result["warning"] = "overlap_check import failed; cannot enumerate spec candidates"
@@ -174,7 +204,36 @@ def check(repo: Path, root: str = "docs/specs") -> Dict[str, object]:
 
     result["checked"] = True
     result["candidates"] = candidates
+
+    if target:
+        result["task_candidates"] = _task_level_candidates(specs_root, target)
+
     return result
+
+
+def _task_level_candidates(specs_root: Path, target: str) -> List[Dict[str, Any]]:
+    """Task-level candidates for `target`, tagged with `spec_id` -- empty
+    (never raising) unless `target` resolves to an OpenSpec change with a
+    readable `tasks.md` (`overlap_check.task_candidates()` falls back to
+    whole-spec/whole-change `scan()` shape otherwise, which this rejects by
+    checking for the `task_id` key rather than assuming the target
+    resolved)."""
+    if _task_candidates is None:
+        return []
+    try:
+        raw = _task_candidates(specs_root, target)
+    except Exception:  # noqa: BLE001 - best-effort, never raise to caller
+        return []
+    return [
+        {
+            "spec_id": target,
+            "task_id": e["task_id"],
+            "task_text": e["task_text"],
+            "checked": e["checked"],
+        }
+        for e in raw
+        if "task_id" in e
+    ]
 
 
 # --- verify(): artifact verification for a single judged candidate ------------
@@ -268,6 +327,11 @@ def main(argv=None) -> int:
         "--verify", metavar="SPEC_ID", default=None,
         help="verify a single already-judged candidate spec_id instead of scanning for candidates",
     )
+    p.add_argument(
+        "--target", metavar="CHANGE_ID", default=None,
+        help="explicit target OpenSpec change id; also populates task_candidates "
+             "with that change's open, unchecked tasks (ignored with --verify)",
+    )
     p.add_argument("--json", action="store_true")
     args = p.parse_args(argv)
 
@@ -275,7 +339,7 @@ def main(argv=None) -> int:
     if args.verify:
         res = verify(repo, args.verify, root=args.root)
     else:
-        res = check(repo, root=args.root)
+        res = check(repo, root=args.root, target=args.target)
 
     if args.json:
         print(json.dumps(res))
@@ -290,6 +354,11 @@ def main(argv=None) -> int:
             print(f"checked {len(candidates)} candidate spec(s) under {args.root}")
             for c in candidates:
                 print(f"  - {c['spec_id']}: {c['title']}")
+            task_candidates = res["task_candidates"]
+            if task_candidates:
+                print(f"  {len(task_candidates)} open task-level candidate(s) in {args.target}:")
+                for t in task_candidates:
+                    print(f"    - {t['task_id']}: {t['task_text']}")
         else:
             print(f"unknown: {res.get('warning') or 'no docs/specs/ directory found'}")
     return 0

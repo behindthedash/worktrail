@@ -21,6 +21,12 @@ calling agent's own semantic judgment — the same actor + capability + primary 
 that skip brainstorming's overlap gate entirely (claimed queue briefs, `route:C`/`route:D`/
 `route:F`/`route:G` overrides, handoff-recommended routes).
 
+When a claimed brief (or an explicit route override) names a known `target-spec:` OpenSpec
+change, this check also surfaces **task-level matches** — open, unchecked tasks in that change
+that overlap the request — kept structurally separate from the whole-spec match above so a
+task-level match (open work) is never confused with a whole-spec match (shipped work). See
+"Task-level matches: redirect, never auto-close" below.
+
 **Gate: Route C, D, F, or G.** This check runs only when Phase 5's resolved route (`$ROUTE`
 from classify.py's `route`, an explicit `route:C`/`route:D`/`route:F`/`route:G` override, or a
 handoff's `recommended-route`) is `C`, `D`, `F`, or `G`. Any other route (`A`, `B`, `E`, `H`–`J`,
@@ -36,15 +42,21 @@ same Route C/D/F/G dispatch.
 ```bash
 if [ "$ROUTE" = "C" ] || [ "$ROUTE" = "D" ] || [ "$ROUTE" = "F" ] || [ "$ROUTE" = "G" ]; then
   COMPARISON_TEXT="${BRIEF_FOCUS:-$ARG_INTENT}"
-  COLLISION_JSON=$(worktrail-check-spec-collision --repo "$REPO" --json 2>/dev/null)
+  # $TARGET_SPEC, when known (e.g. the claimed brief's `target-spec:` field), is passed through
+  # --target so task_candidates is populated below; omitted, task_candidates is always empty.
+  COLLISION_JSON=$(worktrail-check-spec-collision --repo "$REPO" ${TARGET_SPEC:+--target "$TARGET_SPEC"} --json 2>/dev/null)
   CHECKED=$(echo "$COLLISION_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin).get('checked', False))" 2>/dev/null)
   if [ "$CHECKED" = "True" ]; then
-    # Judge each candidate (spec_id/title/feature_summary) against $COMPARISON_TEXT using the
-    # same actor + capability + primary domain rule as references/subagent-prompts.md#overlap-check.
-    # Only when exactly one candidate is judged a strong match, verify it:
+    # Judge each whole-spec candidate (spec_id/title/feature_summary) against $COMPARISON_TEXT
+    # using the same actor + capability + primary domain rule as
+    # references/subagent-prompts.md#overlap-check. Only when exactly one candidate is judged a
+    # strong match, verify it:
     VERIFY_JSON=$(worktrail-check-spec-collision --repo "$REPO" --verify "$MATCHED_SPEC_ID" --json 2>/dev/null)
     CONFIRMED=$(echo "$VERIFY_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin).get('confirmed', False))" 2>/dev/null)
   fi
+  # Separately -- never merged into the whole-spec candidates or $CONFIRMED above -- inspect any
+  # task-level candidates $TARGET_SPEC produced. See "Task-level matches" below.
+  TASK_CANDIDATES=$(echo "$COLLISION_JSON" | python3 -c "import json,sys; print(json.dumps(json.load(sys.stdin).get('task_candidates', [])))" 2>/dev/null)
 fi
 ```
 
@@ -62,6 +74,40 @@ dispatch (no claimed brief, free-text typed straight at `/go`, no `handoff:ID` i
 brief to read `focus` from, so `$COMPARISON_TEXT` falls back to `$ARG_INTENT` (or classify.py's
 own derived summary of it, when `$ARG_INTENT` alone is too terse to compare against a
 `feature_summary`).
+
+## Task-level matches: redirect, never auto-close
+
+When `$TARGET_SPEC` is known, `task_candidates` holds one `{spec_id, task_id, task_text,
+checked}` entry per open, unchecked task in that change's `tasks.md` (`checked` is always
+`false` here — only unchecked tasks are candidates at all). Judge each `task_text` against
+`$COMPARISON_TEXT` using the same actor + capability + primary domain rule used for whole-spec
+candidates above.
+
+A task-level match is never routed through `verify()` and never sets `$CONFIRMED` — the matched
+task is by definition open, unshipped work, not a `Status: Implemented` spec with git-tracked
+artifacts, so it can never satisfy the auto-close precondition the Route C/D path below relies
+on. Auto-closing a brief because it overlaps *unfinished* work elsewhere would silently orphan
+work that hasn't shipped and may not even land as currently scoped — so a task-level match is
+**never** grounds for `work_queue.py done`, on any route, brief-sourced or brainstorm-sourced.
+
+Instead, a task-level match **redirects**: stop the fresh dispatch and steer the request at the
+already-open task/change rather than starting a second track of work against the same ground.
+
+- **Brief-sourced, any route**: do not call `work_queue.py done`. Ask the user whether to
+  redirect the brief — update its `target-spec:`/`target-task:` fields to point at the matched
+  open task and leave it queued for a future claim against that change, or continue the original
+  dispatch as a deliberate separate track. `$AUTO_MODE=true`: no ask — file a decision per
+  `decision-queue.md#file-a-decision` the same way the Route F/G auto-mode path above does
+  (question: redirect onto the matched open task, or proceed as a separate track?), and release
+  the brief pending the answer rather than closing or dispatching it.
+- **Brainstorm-sourced (no claimed brief)**: stop and ask the user with the same three-option
+  shape as the brainstorm-sourced Route C/D ask below ("Stop" / "Extend existing spec" /
+  "Continue anyway"), substituting the matched open task/change for the shipped spec. This path
+  has no `$AUTO_MODE=true` variant, same as the brainstorm-sourced asks below.
+
+Either way, a task-level match only ever redirects toward the existing open work or, on the
+user's/decision's explicit say-so, proceeds as a deliberate duplicate — it never closes a brief
+or blocks dispatch on its own judgment.
 
 ## Dispatch source 1: brief-sourced (claimed queue brief present)
 
@@ -199,12 +245,17 @@ spot-check that artifact by hand before fully trusting the collision.
 
 **What the check does.** `check_spec_collision.py --json` enumerates every spec under
 `docs/specs/` as a candidate (`spec_id`, `stage`, `title`, `feature_summary`) — pure extraction,
-no semantic judgment. The calling agent (this SKILL.md's own reasoning turn, not the script)
-judges whether any candidate is a strong match against `$COMPARISON_TEXT`, applying the exact
-actor + capability + primary domain rule `references/subagent-prompts.md#overlap-check` already
-documents. Only when the agent judges a match does `--verify <spec_id> --json` run, checking the
-matched spec's `**Status**:` header (must read `Implemented`) and whether every task `files:`
-entry is git-tracked at `$REPO`'s base branch — `confirmed: true` only when both hold.
+no semantic judgment. Passing `--target <change-id>` additionally populates `task_candidates`
+with that OpenSpec change's open, unchecked tasks — kept in its own key, never merged into
+`candidates`, so a task-level match can never be mistaken for a whole-spec one. The calling agent
+(this SKILL.md's own reasoning turn, not the script) judges whether any whole-spec candidate or
+task-level candidate is a strong match against `$COMPARISON_TEXT`, applying the exact actor +
+capability + primary domain rule `references/subagent-prompts.md#overlap-check` already
+documents. Only when the agent judges a whole-spec candidate a match does `--verify <spec_id>
+--json` run, checking the matched spec's `**Status**:` header (must read `Implemented`) and
+whether every task `files:` entry is git-tracked at `$REPO`'s base branch — `confirmed: true`
+only when both hold. A task-level match is never passed to `--verify`; see "Task-level matches:
+redirect, never auto-close" above.
 
 **Best-effort, never a hard dependency.** `checked: false` (no `docs/specs/` directory, an
 unreadable spec file, a sibling-module import failure) means "no signal" — proceed to Phase 6 as

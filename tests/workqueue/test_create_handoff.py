@@ -280,6 +280,39 @@ def test_create_handoff_leaves_existing_malformed_queue_brief_untouched_on_succe
     ]
 
 
+def test_create_handoff_persists_both_target_spec_and_target_task(tmp_path: Path):
+    result = create_handoff(
+        "Fix the thing",
+        queue_base=tmp_path,
+        target_spec="spec-task-work-queue-reconciliation",
+        target_task="4.2",
+    )
+
+    frontmatter = read_frontmatter(Path(result["path"]))
+    assert frontmatter["target-spec"] == "spec-task-work-queue-reconciliation"
+    assert frontmatter["target-task"] == "4.2"
+
+
+def test_create_handoff_with_only_target_spec_omits_target_task(tmp_path: Path):
+    result = create_handoff(
+        "Fix the thing",
+        queue_base=tmp_path,
+        target_spec="spec-task-work-queue-reconciliation",
+    )
+
+    frontmatter = read_frontmatter(Path(result["path"]))
+    assert frontmatter["target-spec"] == "spec-task-work-queue-reconciliation"
+    assert "target-task" not in frontmatter
+
+
+def test_create_handoff_rejects_blank_target_task_without_touching_queue(tmp_path: Path):
+    with pytest.raises(ValueError, match="target-task must be a non-empty task reference"):
+        create_handoff("Fix the thing", queue_base=tmp_path, target_task="   ")
+
+    assert not (tmp_path / "queue").exists()
+    assert not list(tmp_path.rglob("*.md"))
+
+
 def test_create_handoff_body_omits_duplicate_focus_section(tmp_path: Path):
     # handoff 20260820-073044: frontmatter `focus:` is the sole source now;
     # the body no longer repeats it under a `## Focus` heading.
