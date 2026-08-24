@@ -1,6 +1,6 @@
 ## 1. Task-Level Candidate Enumeration
 
-- [ ] 1.1 Investigate real `tasks.md` checkbox syntax across this repo's own active/archived
+- [x] 1.1 Investigate real `tasks.md` checkbox syntax across this repo's own active/archived
   OpenSpec changes (task id numbering shape, `[e2e]`/`[cleanup]` kind tags, `(Requirement: ...)`
   annotations, nested sub-bullets) to pin the parsing rule, then implement a per-task candidate
   function in `overlap_check.py` that, given an explicit target OpenSpec change id, returns one
@@ -9,7 +9,7 @@
   with no per-task scan. (Requirement: Task-Level Candidate Enumeration Scoped To A Known Target)
   (Requirement: Task Candidate Shape) (Requirement: OpenSpec Per-Task Candidate Enumeration)
   files: src/worktrail/router/overlap_check.py
-- [ ] 1.2 Add unit tests: target change with unchecked tasks, target change fully checked (empty
+- [x] 1.2 Add unit tests: target change with unchecked tasks, target change fully checked (empty
   per-task list, no error), no target supplied (unchanged behavior), devkit-shaped target
   (per-task list not populated).
   files: tests/router/test_overlap_check.py
@@ -50,7 +50,7 @@
 
 ## 4. `target-task` Frontmatter Field
 
-- [ ] 4.1 Add `--target-task` to `create_handoff.py`, validated the same way `_validate_blocked_by`
+- [x] 4.1 Add `--target-task` to `create_handoff.py`, validated the same way `_validate_blocked_by`
   validates `--blocked-by` (non-empty, no characters that would make it ambiguous across
   changes), persisted alongside the existing `target-spec` frontmatter field, with no effect on
   briefs that omit it. (Requirement: `target-task` Frontmatter Field)
