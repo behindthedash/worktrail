@@ -52,6 +52,21 @@ def _validate_blocked_by(values: Optional[Iterable[str]]) -> list[str]:
     return cleaned
 
 
+def _validate_target_task(value: Optional[str]) -> Optional[str]:
+    """Return a trimmed target-task reference, rejecting empty or comma-joined values."""
+    if not value:
+        return None
+    try:
+        return normalize_dependency_reference(value)
+    except ValueError as exc:
+        message = str(exc)
+        if "comma-joined" in message:
+            raise ValueError(
+                "target-task accepts exactly one task reference; it must not be comma-joined"
+            ) from exc
+        raise ValueError("target-task must be a non-empty task reference") from exc
+
+
 def _normalize_repo(repo: Optional[str]) -> Optional[str]:
     """Resolve a `--repo` value to an absolute path at capture time.
 
@@ -158,6 +173,7 @@ def create_handoff(
     implementation_intent: Optional[str] = None,
     change_kind: Optional[str] = None,
     target_spec: Optional[str] = None,
+    target_task: Optional[str] = None,
     triage: Optional[str] = None,
     blocked_by: Optional[Iterable[str]] = None,
     watch: Optional[Iterable[str]] = None,
@@ -174,6 +190,7 @@ def create_handoff(
     if triage and triage not in work_queue.VALID_TRIAGE:
         raise ValueError("triage must be blocker or deferred")
     blocked_by_refs = _validate_blocked_by(blocked_by)
+    target_task = _validate_target_task(target_task)
 
     base = Path(queue_base or work_queue.base_dir()).expanduser()
     queue = base / "queue"
@@ -205,6 +222,7 @@ def create_handoff(
         ("implementation-intent", implementation_intent),
         ("change-kind", change_kind),
         ("target-spec", target_spec),
+        ("target-task", target_task),
         ("triage", triage),
         ("seeded-from", seeded_from),
     ):
@@ -270,6 +288,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--implementation-intent", choices=("requested", "planning-only", "unknown"))
     parser.add_argument("--change-kind", choices=("new", "delta", "bugfix"))
     parser.add_argument("--target-spec")
+    parser.add_argument("--target-task")
     parser.add_argument(
         "--triage",
         choices=("blocker", "deferred"),
@@ -296,6 +315,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             implementation_intent=args.implementation_intent,
             change_kind=args.change_kind,
             target_spec=args.target_spec,
+            target_task=args.target_task,
             triage=args.triage,
             blocked_by=args.blocked_by,
             watch=args.watch,
