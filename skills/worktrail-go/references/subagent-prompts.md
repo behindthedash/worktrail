@@ -1494,7 +1494,8 @@ to `sdd-workflow`'s normal repo-resolution flow without surfacing an error.
 Do NOT invoke those skills.
 
 **Read error:** if `error` is non-null, surface it. The brief is already claimed in `picked/`;
-either `release` it back (`worktrail-work-queue release "<id>"`) or stop — do not start a pipeline.
+either `release` it back (`worktrail-work-queue release "<id>" --by "$GO_DISPATCH_ID"`) or stop —
+do not start a pipeline.
 
 ---
 
@@ -1546,7 +1547,7 @@ After the `new` pipeline completes (orchestrator PR work done + sync run — see
 `#sync-before-teardown`):
 
 ```bash
-worktrail-work-queue done "<id-or-filename>" --implementation-complete --json
+worktrail-work-queue done "<id-or-filename>" --implementation-complete --by "$GO_DISPATCH_ID" --json
 ```
 
 This stamps `status: done` in `picked/` (the file stays as a kept log). For

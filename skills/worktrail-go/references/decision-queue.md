@@ -97,7 +97,7 @@ When a claimed brief's frontmatter carries `awaiting-decision: <id>`:
 
 If the decision resolves to no record (deleted) or is already `resolved`, proceed normally —
 a stale link never blocks work. If it is somehow still `open` (the brief should have been
-`blocked`), release the brief back (`worktrail-work-queue release "$BRIEF_ID"`) and stop.
+`blocked`), release the brief back (`worktrail-work-queue release "$BRIEF_ID" --by "$INVOCATION_CONTEXT_DISPATCH_ID"`) and stop.
 
 ## Human surface
 

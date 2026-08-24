@@ -62,11 +62,13 @@ would ride the same route/worktree/PR; when in doubt, leave a candidate in the q
 4. Read every claimed brief, then treat their union as ONE request for the rest of the
    flow: one classification (Phase 5), one run record (list every brief id in
    `handoffs_consumed`), one worktree/PR — unless a companion genuinely classifies to a
-   different route or repo, in which case release it (`worktrail-work-queue release <id>`)
-   rather than forcing it in.
+   different route or repo, in which case release it
+   (`worktrail-work-queue release <id> --by "$INVOCATION_CONTEXT_DISPATCH_ID"`) rather than
+   forcing it in.
 
 5. On completion mark EACH brief done individually. Use
-   `worktrail-work-queue done <id> --implementation-complete` after implementation, or
-   `--planning-only` only when the run explicitly stopped at planning.
+   `worktrail-work-queue done <id> --implementation-complete --by "$INVOCATION_CONTEXT_DISPATCH_ID"`
+   after implementation, or `--planning-only` only when the run explicitly stopped at planning.
    — batch execution never blurs per-brief completion state. A companion whose scope did
-   NOT actually land must be released back to the queue, not marked done.
+   NOT actually land must be released back to the queue
+   (`worktrail-work-queue release <id> --by "$INVOCATION_CONTEXT_DISPATCH_ID"`), not marked done.
