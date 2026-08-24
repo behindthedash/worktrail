@@ -55,7 +55,7 @@
   changes), persisted alongside the existing `target-spec` frontmatter field, with no effect on
   briefs that omit it. (Requirement: `target-task` Frontmatter Field)
   files: src/worktrail/workqueue/create_handoff.py
-- [ ] 4.2 Add unit tests: brief created with both fields persists both; brief created with only
+- [x] 4.2 Add unit tests: brief created with both fields persists both; brief created with only
   `target-spec` is unchanged from before this change; empty/whitespace `target-task` is rejected
   before a brief is written.
   files: tests/workqueue/test_create_handoff.py
