@@ -11,12 +11,15 @@ import importlib
 import io
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from typing import Optional
 from unittest.mock import patch
 
+from worktrail.conductor import compile as runplan_compile
+from worktrail.conductor import runplan
 from worktrail.workqueue import work_queue as q
 
 
@@ -652,6 +655,123 @@ class TestDoneNote(QueueTestBase):
         # filenames differ but are not embedded in either file's content, so a
         # byte-for-byte compare is valid once the clock is pinned identically.
         self.assertEqual(cli_content, direct_content)
+
+
+class TestDoneCheckboxSync(QueueTestBase):
+    """Tests for the closure-time checkbox-sync check `done()` runs when the
+    closing brief carries both `target-spec:` and `target-task:` (5.1): a
+    best-effort, cache-only `RunPlan` lookup of that task's `tasks.md`
+    checkbox state, mirroring dashboard.py's `_pending_openspec_stale`."""
+
+    def setUp(self):
+        super().setUp()
+        self._repo_tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self._repo_tmp.name)
+        for cmd in (
+            ["init", "-q"],
+            ["config", "user.email", "t@t"],
+            ["config", "user.name", "t"],
+        ):
+            subprocess.run(["git", "-C", str(self.repo), *cmd], check=True)
+
+    def tearDown(self):
+        self._repo_tmp.cleanup()
+        super().tearDown()
+
+    def _change(self, tasks: str = "- [ ] 1.1 Implement exporter\n") -> Path:
+        change = self.repo / "openspec" / "changes" / "add-export"
+        change.mkdir(parents=True)
+        (change / "proposal.md").write_text("# Add exporter\n")
+        (change / "tasks.md").write_text(f"## 1. Export\n\n{tasks}")
+        return change
+
+    def _cache(self, change: Path) -> None:
+        spec_id, tasks = q._taskformats.load_spec(change)
+        fp = runplan.fingerprint(change, tasks)
+        plan = runplan.RunPlan(
+            spec_id=spec_id,
+            fingerprint=fp,
+            source=runplan.SOURCE_COMPILED,
+            tasks=tuple(
+                runplan.TaskPlan(id=str(t["id"]), files=("src/export.py",)) for t in tasks
+            ),
+        )
+        runplan.store(runplan_compile.default_cache_dir(self.repo), plan)
+
+    def _write_picked(self, name: str, target_task: str = "1.1") -> Path:
+        self.picked.mkdir(parents=True, exist_ok=True)
+        path = self.picked / name
+        fm = (
+            "focus: implement export\n"
+            "status: picked\n"
+            f"repo: {self.repo}\n"
+            "target-spec: add-export\n"
+            f"target-task: {target_task}\n"
+        )
+        path.write_text(f"---\n{fm}---\n\n## Focus\n\nimplement export\n", encoding="utf-8")
+        return path
+
+    def test_unticked_task_surfaces_warning_and_note_without_writing_tasks_md(self):
+        change = self._change()  # 1.1 left unticked
+        self._cache(change)
+        path = self._write_picked("20260801-000000-brief.md")
+        original_tasks_md = (change / "tasks.md").read_text(encoding="utf-8")
+
+        res = q.done("20260801-000000-brief", implementation_complete=True)
+
+        self.assertEqual(res["status"], "done")
+        self.assertTrue(res.get("checkbox_out_of_sync"))
+        body = path.read_text(encoding="utf-8")
+        self.assertIn("## Closure Note", body)
+        self.assertIn("checkbox-sync", body)
+        self.assertIn("1.1", body)
+        self.assertIn("add-export", body)
+        # the target spec's tasks.md is never written
+        self.assertEqual((change / "tasks.md").read_text(encoding="utf-8"), original_tasks_md)
+
+    def test_already_ticked_task_surfaces_no_warning(self):
+        change = self._change("- [x] 1.1 Implement exporter\n")
+        self._cache(change)
+        path = self._write_picked("20260801-000000-brief.md")
+
+        res = q.done("20260801-000000-brief", implementation_complete=True)
+
+        self.assertEqual(res["status"], "done")
+        self.assertNotIn("checkbox_out_of_sync", res)
+        body = path.read_text(encoding="utf-8")
+        self.assertNotIn("## Closure Note", body)
+
+    def test_no_target_task_field_is_unchanged(self):
+        self.write("20260531-141200-auth.md", focus="auth")
+        q.claim("20260531-141200-auth")
+        moved = self.picked / "20260531-141200-auth.md"
+
+        res = q.done("20260531-141200-auth", implementation_complete=True)
+
+        self.assertEqual(res["status"], "done")
+        self.assertNotIn("checkbox_out_of_sync", res)
+        body = moved.read_text(encoding="utf-8")
+        self.assertNotIn("## Closure Note", body)
+
+    def test_cache_miss_degrades_to_no_signal(self):
+        self._change()  # no RunPlan ever cached for this change
+        path = self._write_picked("20260801-000000-brief.md")
+
+        res = q.done("20260801-000000-brief", implementation_complete=True)
+
+        self.assertEqual(res["status"], "done")
+        self.assertNotIn("checkbox_out_of_sync", res)
+        self.assertNotIn("## Closure Note", path.read_text(encoding="utf-8"))
+
+    def test_missing_target_spec_directory_degrades_to_no_signal(self):
+        # No openspec/changes/add-export directory exists at all.
+        path = self._write_picked("20260801-000000-brief.md")
+
+        res = q.done("20260801-000000-brief", implementation_complete=True)
+
+        self.assertEqual(res["status"], "done")
+        self.assertNotIn("checkbox_out_of_sync", res)
+        self.assertNotIn("## Closure Note", path.read_text(encoding="utf-8"))
 
 
 class TestDoneClosureEvidenceGate(QueueTestBase):
