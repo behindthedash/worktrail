@@ -125,6 +125,14 @@ from ..shared.brief_frontmatter import (
     read_frontmatter,
     validate_brief,
 )
+from ..taskformats import resolve as _taskformats
+
+try:
+    from ..conductor import compile as _compile
+    from ..conductor import runplan as _runplan
+except ImportError:  # pragma: no cover - defensive degradation for partial installs
+    _compile = None
+    _runplan = None
 
 _FM_RE = re.compile(r"^---\r?\n(.*?)\n---\r?\n", re.DOTALL)
 
@@ -209,6 +217,52 @@ def _consolidation_closure_missing_evidence(body: str, note: Optional[str]) -> L
     if not note or not _EVIDENCE_MARKER_RE.search(note):
         return member_ids
     return [member_id for member_id in member_ids if member_id not in note]
+
+
+def _target_task_checkbox_out_of_sync(fm: Dict[str, Any]) -> bool:
+    """True only when a closing brief's `target-task:` is confirmed still
+    unticked in its `target-spec:` OpenSpec change's `tasks.md`.
+
+    Best-effort, mirroring dashboard.py's `_pending_openspec_stale` cached-
+    RunPlan lookup: the task list is loaded once via the shared `taskformats`
+    adapter (never a bespoke `tasks.md` parser), then gated on a RunPlan
+    already cached for the change's *current* content fingerprint
+    (`conductor.runplan.load_cached`) -- never `compile()`, so this can never
+    trigger a fresh model call. Every failure mode (missing fields, missing
+    repo/change dir, unreadable tasks.md, unknown task id, or a cache miss)
+    degrades to "no signal" (False) rather than blocking closure.
+    """
+    target_spec = str(fm.get("target-spec") or "").strip()
+    target_task = str(fm.get("target-task") or "").strip()
+    repo = str(fm.get("repo") or "").strip()
+    if not target_spec or not target_task or not repo:
+        return False
+    if _compile is None or _runplan is None or _taskformats is None:
+        return False
+
+    change_dir = Path(repo) / "openspec" / "changes" / target_spec
+    if not change_dir.is_dir():
+        return False
+
+    try:
+        spec_id, tasks = _taskformats.load_spec(change_dir)
+    except Exception:  # noqa: BLE001 -- an unreadable tasks.md is no signal, not an error
+        return False
+    if not tasks:
+        return False
+
+    try:
+        fp = _runplan.fingerprint(change_dir, tasks)
+        plan = _runplan.load_cached(_compile.default_cache_dir(Path(repo)), spec_id, fp)
+    except OSError:
+        return False
+    if plan is None:
+        return False
+
+    task = next((t for t in tasks if str(t.get("id")) == target_task), None)
+    if task is None:
+        return False
+    return task.get("status") != "completed"
 
 
 # --------------------------------------------------------------------------- #
@@ -1013,6 +1067,15 @@ def done(
     sub-item is likewise rejected outright (``status:
     unverified_consolidation_closure``, no mutation) -- see
     `_consolidation_closure_missing_evidence`.
+
+    When ``implementation_complete`` is set and the brief carries both
+    ``target-spec:`` and ``target-task:``, a best-effort, cache-only lookup
+    (`_target_task_checkbox_out_of_sync`) checks whether that task's checkbox
+    is still unticked in the target change's `tasks.md`. If so, the result
+    carries ``checkbox_out_of_sync: true`` and the mismatch is recorded in the
+    closure note -- the target spec's `tasks.md` is never written. The lookup
+    never blocks closure: a cache miss, unreadable `tasks.md`, or missing
+    target spec directory silently degrades to no signal.
     """
     if planning_only and implementation_complete:
         return {
@@ -1074,9 +1137,22 @@ def done(
                 "and retry."
             ),
         }
+    checkbox_out_of_sync = implementation_complete and _target_task_checkbox_out_of_sync(fm)
+    closure_note_parts = []
     if note:
+        closure_note_parts.append(note)
+    if checkbox_out_of_sync:
+        closure_note_parts.append(
+            f"checkbox-sync: target-task {fm.get('target-task')} in "
+            f"{fm.get('target-spec')} is not ticked in tasks.md as of closure "
+            "(tasks.md was not modified)."
+        )
+    if closure_note_parts:
         try:
-            path.write_text(original + f"\n## Closure Note\n\n{note}\n", encoding="utf-8")
+            path.write_text(
+                original + "\n## Closure Note\n\n" + "\n\n".join(closure_note_parts) + "\n",
+                encoding="utf-8",
+            )
         except OSError as exc:
             return {"status": "error", "path": str(path), "candidates": [], "error": str(exc)}
     try:
@@ -1096,7 +1172,10 @@ def done(
             pass
         return {"status": "write-verification-failed", "path": str(path), "candidates": [], "error": verr}
 
-    return {"status": "done", "path": str(path), "candidates": [], "error": None}
+    result = {"status": "done", "path": str(path), "candidates": [], "error": None}
+    if checkbox_out_of_sync:
+        result["checkbox_out_of_sync"] = True
+    return result
 
 
 def release(identifier: str, next_check_after: Optional[str] = None) -> Dict[str, Any]:
