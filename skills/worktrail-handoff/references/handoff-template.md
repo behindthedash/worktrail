@@ -40,6 +40,14 @@ Write each brief in the shape below. Rules:
 - `target-spec:` is optional. Use a `docs/specs/<spec-folder>` folder name when the brief
   likely changes an existing spec. It helps the deterministic handoff matcher find the
   current spec but does not force the final route if the repo has drifted.
+- `target-task:` is optional and pairs with `target-spec:` — set it when the brief targets one
+  specific open task within that spec, not the spec as a whole. Exactly one task reference,
+  non-empty and not comma-joined (`create_handoff.py --target-task` rejects both the same way
+  `--blocked-by` rejects malformed dependency references). Setting it alongside `target-spec:`
+  lets a brief-vs-task duplicate check skip the advisory when the brief already names the task
+  it's about, and lets closure with `--implementation-complete` cross-check the referenced
+  task's checkbox state. Has no effect when omitted, and `target-spec:` works unchanged without
+  it.
 - `next-check-after:` is optional. An ISO-8601 date (`YYYY-MM-DD`). Set it when a recheck
   finds the brief still legitimately blocked on an external, out-of-band event (an upstream
   package release, a third-party API change) and nothing about the situation will change
@@ -85,6 +93,7 @@ recommended-route: F   # optional; GO v2 route letter A-J, omit when unsure
 implementation-intent: requested  # optional: requested|planning-only|unknown
 change-kind: bugfix     # optional; one of new|delta|bugfix, omit when unsure
 target-spec: 003-auth   # optional; docs/specs folder slug, omit when unknown
+# target-task: 4.2      # optional; pairs with target-spec, omit when the brief isn't task-scoped
 # blocked-by:        # optional; omit when there are no prerequisites
 #   - 20260531-130000-some-prereq
 related:             # optional; omit when there are no related briefs
