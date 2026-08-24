@@ -246,6 +246,28 @@ commit(s) and 1 matched pull request(s) (abc1234 (path probe: src/widget.py), PR
 remains. Proceeded automatically without an operator prompt."
 ```
 
+**On `verifiably-present`** — the specific capability the brief describes is confirmed present, so
+the brief is already delivered and there is nothing left to dispatch: close it now, before Phase 6,
+exactly as the predicate re-check's `resolved` subsection does above (no operator prompt — the
+file-state verification itself is the evidence, not a human judgment call). The queue mutation
+goes through `work_queue.py`, the single owner of brief lifecycle, using the closure note
+`check_brief_staleness.format_verified_present_closure_note` builds from the matched evidence and
+the verification finding:
+
+```bash
+worktrail-work-queue done "$BRIEF_ID" --implementation-complete --note \
+  "Closed as already-delivered: file-state verification found the brief's described work \
+verifiably present, confirmed by 1 matched commit(s) and 1 matched pull request(s) (abc1234 \
+(path probe: src/widget.py), PR #42): the described capability is implemented as specified. \
+Surfaced by the file-state verification step; closed automatically without an operator prompt."
+```
+
+Then report the closure in the run's status output (e.g. `Brief $BRIEF_ID closed: file-state
+verification confirmed the described work present.`) and **stop** — do not continue to Phase 6's
+run-record start or Phase 7 dispatch. As with the predicate re-check's `resolved` branch, this runs
+*before* Phase 6, so there is no run record to open or finish. Do not open a worktree, and do not
+create a follow-up handoff — nothing was deferred.
+
 ## Reading the result
 
 ```json
