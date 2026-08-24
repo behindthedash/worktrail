@@ -2827,6 +2827,22 @@ def _staleness_warnings(named_paths: List[tuple]) -> List[Dict[str, Any]]:
     return warnings
 
 
+def _resolve_json_arg(inline: Optional[str], file_path: Optional[str]) -> Optional[str]:
+    """Resolve a `--foo-json`/`--foo-json-file` pair to the raw JSON string.
+
+    `file_path` wins when both are given -- it exists specifically to sidestep
+    the shell's per-argument size limit (Linux MAX_ARG_STRLEN, ~128KB) that
+    `inline` is subject to, so a caller that already switched to the file form
+    should never silently fall back to the capped one. `file_path == "-"` reads
+    from stdin. Returns None when neither is given.
+    """
+    if file_path:
+        if file_path == "-":
+            return sys.stdin.read()
+        return Path(file_path).read_text()
+    return inline
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="sdd-workflow conductor resume dashboard")
     p.add_argument("--root", default="docs/specs", help="specs root to scan (default: docs/specs)")
@@ -2871,13 +2887,28 @@ def main(argv=None) -> int:
         "--queue-json",
         default=None,
         help="JSON string from 'work_queue.py list --json'; fed into the "
-        "category picker so /go renders the list from data, not LLM judgment",
+        "category picker so /go renders the list from data, not LLM judgment. "
+        "Linux caps a single argv string at ~128KB (MAX_ARG_STRLEN) -- once the "
+        "queue grows past that, use --queue-json-file instead.",
+    )
+    p.add_argument(
+        "--queue-json-file",
+        default=None,
+        help="path to a file containing the same JSON as --queue-json (or '-' to "
+        "read it from stdin); avoids the shell's per-argument size limit for a "
+        "large queue. Takes precedence over --queue-json when both are given.",
     )
     p.add_argument(
         "--decisions-json",
         default=None,
         help="JSON string from 'worktrail-decision list --status open --json'; fed into the "
         "category picker so /go renders open decisions from data, not LLM judgment",
+    )
+    p.add_argument(
+        "--decisions-json-file",
+        default=None,
+        help="path to a file containing the same JSON as --decisions-json (or '-' to "
+        "read it from stdin). Takes precedence over --decisions-json when both are given.",
     )
     p.add_argument(
         "--capacity-cache",
@@ -2998,20 +3029,22 @@ def main(argv=None) -> int:
         except Exception:  # noqa: BLE001 — telemetry must never break the dashboard
             postmerge_check_failures = None
 
-    # Parse queue briefs from --queue-json if provided.
+    # Parse queue briefs from --queue-json/--queue-json-file if provided.
     queue_briefs: List[Dict[str, Any]] = []
-    if args.queue_json:
+    queue_json_raw = _resolve_json_arg(args.queue_json, args.queue_json_file)
+    if queue_json_raw:
         try:
-            parsed = json.loads(args.queue_json)
+            parsed = json.loads(queue_json_raw)
             queue_briefs = parsed.get("briefs", []) if isinstance(parsed, dict) else []
         except (json.JSONDecodeError, AttributeError):
             pass
 
-    # Parse open decisions from --decisions-json if provided.
+    # Parse open decisions from --decisions-json/--decisions-json-file if provided.
     open_decisions: List[Dict[str, Any]] = []
-    if args.decisions_json:
+    decisions_json_raw = _resolve_json_arg(args.decisions_json, args.decisions_json_file)
+    if decisions_json_raw:
         try:
-            parsed = json.loads(args.decisions_json)
+            parsed = json.loads(decisions_json_raw)
             open_decisions = parsed.get("decisions", []) if isinstance(parsed, dict) else []
         except (json.JSONDecodeError, AttributeError):
             pass
