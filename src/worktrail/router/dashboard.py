@@ -1588,6 +1588,42 @@ def _remote_spec_branch(repo: Any, target_spec: Any, repos_root: Optional[Any] =
     return refs[0] if refs else None
 
 
+def _dashboard_task_candidates(
+    repo: Any, target_spec: Any, *, repos_root: Optional[Any] = None
+) -> List[Dict[str, Any]]:
+    """`cluster_detect.compute_clusters()`'s `task_candidates_fn` adapter
+    (Dashboard Advisory Surfaces Brief-vs-Task Matches).
+
+    Resolves a brief's `repo` frontmatter to an on-disk directory via
+    `_resolve_repo_dir` (same basename-under-`repos_root` resolution
+    `auto_pick_brief`/`_remote_spec_branch` already use), picks that repo's
+    `openspec/` root when it looks OpenSpec-shaped -- the only format with
+    per-task granularity (`overlap_check._is_openspec_root`) -- else falls
+    back to its devkit `docs/specs/` root, and delegates to
+    `overlap_check.task_candidates()`.
+
+    `overlap_check` is imported here rather than at module scope: it imports
+    `find_spec_file`/`detect_stage` back from this module, so a top-level
+    import here would be circular. Deferring it to call time (after this
+    module has finished loading) avoids that without restructuring either
+    module.
+
+    Returns `[]` when `repo` doesn't resolve to a directory, matching this
+    module's fail-open posture elsewhere -- `cluster_detect` also wraps this
+    call in its own per-pair `try/except`, so any other failure here already
+    degrades to no task edges for that `(repo, target_spec)` pair.
+    """
+    repo_dir = _resolve_repo_dir(repo, repos_root)
+    if repo_dir is None:
+        return []
+    from . import overlap_check as _overlap_check
+
+    openspec_root = repo_dir / "openspec"
+    is_openspec = (openspec_root / "changes").is_dir() or (openspec_root / "specs").is_dir()
+    specs_root = openspec_root if is_openspec else repo_dir / "docs" / "specs"
+    return _overlap_check.task_candidates(specs_root, str(target_spec))
+
+
 def auto_pick_brief(
     queue_briefs: List[Dict[str, Any]],
     repo_filter: Optional[str] = None,
@@ -2904,7 +2940,21 @@ def main(argv=None) -> int:
     # a residual failure at this call site still degrades to [] rather than
     # crashing the whole render.
     try:
-        clusters = cluster_detect.compute_clusters(queue_dir, _parse_fm) if cluster_detect else []
+        clusters = (
+            cluster_detect.compute_clusters(
+                queue_dir,
+                _parse_fm,
+                # Dashboard Advisory Surfaces Brief-vs-Task Matches: lets a
+                # queued brief's target-spec: also match an open, unchecked
+                # task in that change (see _dashboard_task_candidates).
+                task_candidates_fn=functools.partial(
+                    _dashboard_task_candidates,
+                    repos_root=args.repos or str(Path.home() / "projects"),
+                ),
+            )
+            if cluster_detect
+            else []
+        )
     except Exception:  # noqa: BLE001 — degrade, never crash the dashboard render
         clusters = []
 
