@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "worktrail"
-version = "1.1.31"
+version = "1.1.32"
 description = "Spec-format-agnostic task orchestration: parallel worktree fan-out, a route classifier, and a work-queue handoff system"
 readme = "README.md"
 requires-python = ">=3.10"
