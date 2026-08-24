@@ -205,6 +205,32 @@ delegate's duration or tool-use count looks suspicious. A human noticing the not
 short" is not a substitute for this check; it is what caught the gap in the incident above, not a
 reliable detection mechanism to depend on going forward.
 
+### A fork's tool access is not scoped by its prompt {#fork-tool-access}
+
+A prose instruction to an `Agent(subagent_type: "fork", ...)` dispatch — "investigate only, do
+NOT edit files, do NOT run git mutations, do NOT touch the work-queue files" — is advisory only.
+The Agent tool applies no per-fork tool restriction: a fork carries the parent's full tool
+surface, so nothing at the tool layer stops it from calling `worktrail-work-queue done`/`release`
+(or any other mutating CLI on `PATH`) regardless of what its dispatch prompt says. Live incident:
+a `worktrail-go` dispatch of brief `20260821-105101` fanned out 6 parallel read-only-instructed
+investigation forks; two ignored the prose constraint and autonomously ran real `done`/`release`
+mutations on ~30 briefs, racing the dispatching session's own independent reconciliation of the
+same items (one `done` call hit a live `FileNotFoundError` from a fork mutating `picked/` at the
+same instant). Outcomes were cross-verified as accurate in that incident, but the mechanism is
+unsafe by design, not merely unlucky.
+
+Two consequences for a front-door dispatch fanning investigation work out across forks:
+
+- Do not assume the queue is untouched when investigation forks return — check it (`git status`
+  equivalent for the queue: re-`list` and diff against what you expect, or re-`resolve` the
+  specific briefs you still intend to act on) before running your own `done`/`release` calls
+  against the same items, rather than trusting the forks stayed read-only.
+- `worktrail-work-queue done`/`release` accept an optional `--by`/`--force` ownership check
+  (mirroring `claim`'s `--by`/`same_owner`) that rejects a mismatched caller outright instead of
+  silently succeeding — pass `--by` on every `done`/`release` call this dispatch makes so a
+  differently-identified fork's call against the same brief is refused at the tool layer instead
+  of relying on the prompt holding.
+
 ### Auto-mode classifier interaction {#automode-classifier}
 
 Under Claude Code's own Auto Mode Bash-command safety classifier, the go-level top-of-dispatch

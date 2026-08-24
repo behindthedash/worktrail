@@ -29,14 +29,18 @@ CLI (all subcommands accept --json):
                                         print picked path; nonzero on none/ambiguous/taken
   queue.py claim-batch PRIMARY [ID...]  claim a primary brief plus related companions
                                         in one batch (per-brief atomic; see below)
-  queue.py done     IDENTIFIER          stamp status: done in picked/ (file stays)
-                                        Route-C briefs require --planning-only or
+  queue.py done     IDENTIFIER [--by L] stamp status: done in picked/ (file stays)
+                    [--force]           Route-C briefs require --planning-only or
                                         --implementation-complete; a --note claiming
                                         re-verification with no shown re-run output
                                         is rejected, and closing a consolidation-batch
                                         brief with no per-sub-item evidence is rejected
-                                        (see "Closure evidence gate")
-  queue.py release  IDENTIFIER          move picked/ -> queue/ (abandoned claim)
+                                        (see "Closure evidence gate"). --by, when given,
+                                        is compared against the brief's claimed-by
+                                        (see "Ownership check on done/release" below);
+                                        --force overrides a mismatch.
+  queue.py release  IDENTIFIER [--by L] move picked/ -> queue/ (abandoned claim)
+                    [--force]           same --by/--force ownership check as done
 
 Exit codes for `claim`/`claim-batch`: 0 ok, 2 none, 3 ambiguous, 4 already-claimed,
 5 io-error, 6 write-verification-failed (keyed off the primary for `claim-batch`).
@@ -64,6 +68,21 @@ claim like "disproven -- corrected detector no longer flags this file" was
 accepted on prose alone; re-executing the cited detector later showed it still
 flagged the file (brief
 20260817-101013-datalena-release-notes-consolidate-yml-missing-docs-skip-gate).
+
+Ownership check on done/release
+--------------------------------
+`done()`/`release()` accept the same optional `by` identity `claim()` does. Unlike
+`claim()` (which only reports `same_owner` for the caller to interpret -- a redundant
+reclaim is harmless), `done`/`release` actively refuse to proceed
+(`{"status": "ownership-mismatch"}`) when `by` is supplied and differs from the
+brief's stamped `claimed-by` -- `--force` overrides. Omitting `--by` (today's every
+caller) is unaffected: the check only engages when an identity is actually given to
+compare, matching Route H's "no behavior change for unqualified callers" constraint.
+This closes the tool-layer gap where a prose "investigate only, don't mutate the
+queue" instruction to an Agent-tool fork was the *only* thing stopping that fork's
+Bash access from calling `done`/`release` on a brief someone else's dispatch still
+owns (see `../worktrail-go/references/subagent-prompts.md`'s fork-Bash-access
+warning).
 
 `done()` also rejects closing a *consolidation-batch* brief (one carrying a
 `## Consolidated from` section -- see `consolidate_cluster.py`) with a --note
@@ -836,6 +855,37 @@ def _same_owner(existing_path: Path, by: Optional[str]) -> Optional[bool]:
     return claimed_by is not None and claimed_by == by
 
 
+def _ownership_block(path: Path, by: Optional[str], force: bool) -> Optional[Dict[str, Any]]:
+    """Guard for done()/release(): refuse to mutate a brief stamped `claimed-by`
+    a different identity than `by`, unless `force` overrides.
+
+    Unlike `claim()` (a redundant reclaim by a different owner is a harmless
+    no-op, so `_same_owner` only reports the comparison for the caller to
+    interpret), `done`/`release` are destructive to another owner's in-flight
+    work -- closing or requeuing it out from under them -- so this actively
+    blocks instead of just reporting.
+
+    Returns None when the call may proceed (no `by` supplied -- unqualified,
+    matching today's behavior for every existing caller; no `claimed-by` on
+    the brief to compare against; `by` matches; or `force` is set). Returns a
+    `{"status": "ownership-mismatch", ...}` result when it must not.
+    """
+    if force or by is None:
+        return None
+    claimed_by = _read_frontmatter(path).get("claimed-by")
+    if claimed_by is None or claimed_by == by:
+        return None
+    return {
+        "status": "ownership-mismatch",
+        "path": str(path),
+        "candidates": [],
+        "error": (
+            f"brief is claimed by {claimed_by!r}, not {by!r} -- pass --force "
+            "to override"
+        ),
+    }
+
+
 def claim(identifier: str, by: Optional[str] = None) -> Dict[str, Any]:
     """Atomically move the matching queue brief into picked/ and stamp it.
 
@@ -1046,8 +1096,15 @@ def done(
     planning_only: bool = False,
     implementation_complete: bool = False,
     note: Optional[str] = None,
+    by: Optional[str] = None,
+    force: bool = False,
 ) -> Dict[str, Any]:
     """Stamp a picked brief as completed.
+
+    ``by``/``force``: see `_ownership_block` -- omitted `by` (every existing
+    caller today) is unaffected; a supplied `by` that mismatches the brief's
+    `claimed-by` is refused (`{"status": "ownership-mismatch"}`, no mutation)
+    unless `force` is set.
 
     Route-C briefs have an explicit C-to-D decision point after spec-to-tasks.
     Refuse an unqualified completion so a planning pass cannot silently hide
@@ -1093,6 +1150,9 @@ def done(
             "error": None,
         }
     path = Path(res["candidates"][0])
+    block = _ownership_block(path, by, force)
+    if block is not None:
+        return block
     fm = _read_frontmatter(path)
     route = str(fm.get("recommended-route") or "").strip().upper()
     if route == "C" and not (planning_only or implementation_complete):
@@ -1178,7 +1238,13 @@ def done(
     return result
 
 
-def release(identifier: str, next_check_after: Optional[str] = None) -> Dict[str, Any]:
+def release(
+    identifier: str,
+    next_check_after: Optional[str] = None,
+    *,
+    by: Optional[str] = None,
+    force: bool = False,
+) -> Dict[str, Any]:
     """Return an abandoned picked brief to the queue (status: queued).
 
     ``next_check_after``, when given, is written as the `next-check-after` frontmatter
@@ -1186,6 +1252,11 @@ def release(identifier: str, next_check_after: Optional[str] = None) -> Dict[str
     (see `_is_not_yet_due`). Omitting it leaves any existing field untouched. Always
     stamps `released-at` -- consumed by `_recently_released_info` to suppress an
     immediate re-pick of a brief another session just released moments ago.
+
+    ``by``/``force``: see `_ownership_block` -- omitted `by` (every existing
+    caller today) is unaffected; a supplied `by` that mismatches the brief's
+    `claimed-by` is refused (`{"status": "ownership-mismatch"}`, no mutation)
+    unless `force` is set.
     """
     res = resolve(identifier, picked_dir())
     if res["status"] != "match":
@@ -1196,6 +1267,9 @@ def release(identifier: str, next_check_after: Optional[str] = None) -> Dict[str
             "error": None,
         }
     src = Path(res["candidates"][0])
+    block = _ownership_block(src, by, force)
+    if block is not None:
+        return block
     dst = queue_dir() / src.name
     try:
         original = src.read_text(encoding="utf-8")
@@ -1465,6 +1539,16 @@ def main(argv=None) -> int:
         default=None,
         help="append a ## Closure Note section to the brief body before closing it",
     )
+    dp.add_argument(
+        "--by",
+        default=None,
+        help="caller identity; rejected if it mismatches the brief's claimed-by",
+    )
+    dp.add_argument(
+        "--force",
+        action="store_true",
+        help="override an ownership mismatch and close the brief anyway",
+    )
     sp = subs.add_parser("release", parents=[common], help="return a picked brief to the queue")
     sp.add_argument("identifier")
     sp.add_argument(
@@ -1472,6 +1556,16 @@ def main(argv=None) -> int:
         default=None,
         metavar="ISO-DATE",
         help="suppress auto-pick/picker eligibility until this date (still blocked upstream)",
+    )
+    sp.add_argument(
+        "--by",
+        default=None,
+        help="caller identity; rejected if it mismatches the brief's claimed-by",
+    )
+    sp.add_argument(
+        "--force",
+        action="store_true",
+        help="override an ownership mismatch and release the brief anyway",
     )
     lp = subs.add_parser(
         "link", parents=[common], help="link two briefs as related (symmetric, idempotent)"
@@ -1501,13 +1595,20 @@ def main(argv=None) -> int:
             planning_only=args.planning_only,
             implementation_complete=args.implementation_complete,
             note=args.note,
+            by=args.by,
+            force=args.force,
         )
     elif args.cmd == "link":
         result = link(args.id_a, args.id_b)
     elif args.cmd == "triage":
         result = set_triage(args.identifier, args.value)
     else:
-        result = release(args.identifier, next_check_after=args.next_check_after)
+        result = release(
+            args.identifier,
+            next_check_after=args.next_check_after,
+            by=args.by,
+            force=args.force,
+        )
 
     if args.json:
         print(json.dumps(result))
@@ -1528,6 +1629,7 @@ def main(argv=None) -> int:
         "awaiting_implementation_decision",
         "unverified_reverification_claim",
         "unverified_consolidation_closure",
+        "ownership-mismatch",
     ):
         return 1
     return 0

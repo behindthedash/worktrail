@@ -511,6 +511,98 @@ class TestDoneRelease(QueueTestBase):
         self.assertNotIn("next-check-after", fm)
 
 
+class TestDoneReleaseOwnership(QueueTestBase):
+    """`--by`/`--force` ownership enforcement on done/release (mirrors claim's
+    `_same_owner`, but blocks instead of just reporting -- see `_ownership_block`)."""
+
+    def test_done_without_by_unaffected(self):
+        """Omitted --by (every existing caller today) proceeds exactly as before."""
+        self.write("20260531-141200-auth.md", focus="auth")
+        q.claim("20260531-141200-auth", by="go-dispatch-1")
+        res = q.done("20260531-141200-auth")
+        self.assertEqual(res["status"], "done")
+
+    def test_release_without_by_unaffected(self):
+        self.write("20260531-141200-auth.md", focus="auth")
+        q.claim("20260531-141200-auth", by="go-dispatch-1")
+        res = q.release("20260531-141200-auth")
+        self.assertEqual(res["status"], "released")
+
+    def test_done_matching_by_proceeds(self):
+        self.write("20260531-141200-auth.md", focus="auth")
+        q.claim("20260531-141200-auth", by="go-dispatch-1")
+        res = q.done("20260531-141200-auth", by="go-dispatch-1")
+        self.assertEqual(res["status"], "done")
+
+    def test_release_matching_by_proceeds(self):
+        self.write("20260531-141200-auth.md", focus="auth")
+        q.claim("20260531-141200-auth", by="go-dispatch-1")
+        res = q.release("20260531-141200-auth", by="go-dispatch-1")
+        self.assertEqual(res["status"], "released")
+
+    def test_done_mismatched_by_is_rejected_without_mutation(self):
+        """A different fork's --by calling done on a brief it doesn't own is
+        blocked -- the tool-layer gap the brief describes."""
+        self.write("20260531-141200-auth.md", focus="auth")
+        q.claim("20260531-141200-auth", by="go-dispatch-1")
+        res = q.done("20260531-141200-auth", by="rogue-fork")
+        self.assertEqual(res["status"], "ownership-mismatch")
+        fm = q._read_frontmatter(self.picked / "20260531-141200-auth.md")
+        self.assertEqual(fm["status"], "picked")  # untouched
+
+    def test_release_mismatched_by_is_rejected_without_mutation(self):
+        self.write("20260531-141200-auth.md", focus="auth")
+        q.claim("20260531-141200-auth", by="go-dispatch-1")
+        res = q.release("20260531-141200-auth", by="rogue-fork")
+        self.assertEqual(res["status"], "ownership-mismatch")
+        self.assertFalse((self.queue / "20260531-141200-auth.md").exists())
+        fm = q._read_frontmatter(self.picked / "20260531-141200-auth.md")
+        self.assertEqual(fm["status"], "picked")  # untouched
+
+    def test_done_mismatched_by_with_force_proceeds(self):
+        self.write("20260531-141200-auth.md", focus="auth")
+        q.claim("20260531-141200-auth", by="go-dispatch-1")
+        res = q.done("20260531-141200-auth", by="rogue-fork", force=True)
+        self.assertEqual(res["status"], "done")
+
+    def test_release_mismatched_by_with_force_proceeds(self):
+        self.write("20260531-141200-auth.md", focus="auth")
+        q.claim("20260531-141200-auth", by="go-dispatch-1")
+        res = q.release("20260531-141200-auth", by="rogue-fork", force=True)
+        self.assertEqual(res["status"], "released")
+
+    def test_done_by_supplied_but_brief_has_no_claimed_by_proceeds(self):
+        """A brief claimed without --by (claimed-by absent or from a bare
+        claim() call) has nothing to compare against, so a supplied --by
+        never blocks it."""
+        self.write("20260531-141200-auth.md", focus="auth")
+        q.claim("20260531-141200-auth")  # no --by -> claimed-by is _agent_label()'s default
+        fm_path = self.picked / "20260531-141200-auth.md"
+        q._remove_fm_field(fm_path, "claimed-by")
+        res = q.done("20260531-141200-auth", by="any-dispatch")
+        self.assertEqual(res["status"], "done")
+
+    def test_done_cli_exit_code_is_one_on_ownership_mismatch(self):
+        self.write("20260531-141200-auth.md", focus="auth")
+        q.claim("20260531-141200-auth", by="go-dispatch-1")
+        rc = q.main(["done", "20260531-141200-auth", "--by", "rogue-fork", "--json"])
+        self.assertEqual(rc, 1)
+
+    def test_release_cli_exit_code_is_one_on_ownership_mismatch(self):
+        self.write("20260531-141200-auth.md", focus="auth")
+        q.claim("20260531-141200-auth", by="go-dispatch-1")
+        rc = q.main(["release", "20260531-141200-auth", "--by", "rogue-fork", "--json"])
+        self.assertEqual(rc, 1)
+
+    def test_done_cli_force_flag_overrides(self):
+        self.write("20260531-141200-auth.md", focus="auth")
+        q.claim("20260531-141200-auth", by="go-dispatch-1")
+        rc = q.main(
+            ["done", "20260531-141200-auth", "--by", "rogue-fork", "--force", "--json"]
+        )
+        self.assertEqual(rc, 0)
+
+
 class TestDoneNote(QueueTestBase):
     """Tests for the `--note` / `note=` closure-note flag added to `done()` (TASK-003)."""
 
