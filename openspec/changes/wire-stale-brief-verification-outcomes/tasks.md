@@ -21,7 +21,7 @@
       verification never ran because there was no evidence to verify) — not unconditionally on
       any non-empty evidence.
       files: skills/worktrail-go/references/brief-staleness-check.md
-- [ ] 1.5 Update the `$AUTO_MODE` "no ask" subsection so its decision-record-plus-release path
+- [x] 1.5 Update the `$AUTO_MODE` "no ask" subsection so its decision-record-plus-release path
       is reached only when the file-state verification outcome is `inconclusive` —
       `verifiably-absent`/`verifiably-present` resolve automatically in `AUTO_MODE` exactly as
       they do interactively, since the verification step is not a human-facing prompt.
