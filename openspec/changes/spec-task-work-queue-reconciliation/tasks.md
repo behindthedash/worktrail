@@ -65,7 +65,7 @@
 
 ## 5. Closure-Time Checkbox-Sync Check
 
-- [ ] 5.1 Extend `work_queue.py`'s `done()` so that, when the closing brief carries both
+- [x] 5.1 Extend `work_queue.py`'s `done()` so that, when the closing brief carries both
   `target-spec:` and `target-task:` and closes with `--implementation-complete`, it looks up the
   referenced task's current checkbox state via the same cached-`RunPlan` lookup pattern
   `openspec-stale-bookkeeping-detection` already uses (`conductor.runplan.load_cached`/
@@ -77,7 +77,7 @@
   (Requirement: Checkbox-Sync Warns And Never Modifies The Target Spec)
   (Requirement: Checkbox-Sync Lookup Is Best-Effort And Never A Fresh Model Call)
   files: src/worktrail/workqueue/work_queue.py
-- [ ] 5.2 Add unit tests: closing with both fields and an unticked task surfaces the warning and
+- [x] 5.2 Add unit tests: closing with both fields and an unticked task surfaces the warning and
   note without writing `tasks.md`; closing with both fields and an already-ticked task surfaces
   no warning; closing with no `target-task:` is unchanged; a cache miss/missing target spec
   degrades to no signal rather than blocking closure.
