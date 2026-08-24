@@ -117,7 +117,7 @@ On `CONFIRMED = True`, do **not** ask the user — close the brief immediately, 
 matching spec and the verification evidence, then stop (no fresh dispatch):
 
 ```bash
-worktrail-work-queue done "$BRIEF_ID" --implementation-complete --note \
+worktrail-work-queue done "$BRIEF_ID" --implementation-complete --by "$INVOCATION_CONTEXT_DISPATCH_ID" --note \
   "Closed as a pre-existing collision with $MATCHED_SPEC_ID ($MATCHED_TITLE) -- Status: Implemented, files: ${VERIFY_FILES} all git-tracked on $BASE."
 ```
 

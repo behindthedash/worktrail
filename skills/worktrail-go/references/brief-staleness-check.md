@@ -151,7 +151,7 @@ re-check itself is the evidence, not a human judgment call). The queue mutation 
 `check_brief_predicate.format_resolved_closure_note` builds from the recheck result:
 
 ```bash
-worktrail-work-queue done "$BRIEF_ID" --implementation-complete --note \
+worktrail-work-queue done "$BRIEF_ID" --implementation-complete --by "$INVOCATION_CONTEXT_DISPATCH_ID" --note \
   "Closed as already-delivered: predicate re-check (checkbox-drift-sweep) found the staleness \
 predicate resolved for 2 finding(s): docs/specs/x/tasks/TASK-001.md, \
 docs/specs/x/tasks/TASK-004.md. Surfaced by the Phase 5.5 predicate re-check; closed \
@@ -165,7 +165,7 @@ findings resolved (the deprecated reference no longer present, so both `grep -n`
 exit `1` with no matching lines and hence no output):
 
 ```bash
-worktrail-work-queue done "$BRIEF_ID" --implementation-complete --note \
+worktrail-work-queue done "$BRIEF_ID" --implementation-complete --by "$INVOCATION_CONTEXT_DISPATCH_ID" --note \
   "Closed as already-delivered: predicate re-check (external-deprecated-symbol-sweep) found the \
 staleness predicate resolved for 2 finding(s): src/pkg/handler.py, src/pkg/util.py. Surfaced by \
 the Phase 5.5 predicate re-check; closed automatically without an operator prompt.
@@ -258,7 +258,7 @@ goes through `work_queue.py`, the single owner of brief lifecycle, using the clo
 the verification finding:
 
 ```bash
-worktrail-work-queue done "$BRIEF_ID" --implementation-complete --note \
+worktrail-work-queue done "$BRIEF_ID" --implementation-complete --by "$INVOCATION_CONTEXT_DISPATCH_ID" --note \
   "Closed as already-delivered: file-state verification found the brief's described work \
 verifiably present, confirmed by 1 matched commit(s) and 1 matched pull request(s) (abc1234 \
 (path probe: src/widget.py), PR #42): the described capability is implemented as specified. \
@@ -384,7 +384,7 @@ action). Stop; do not continue to Phase 6/7 for this dispatch.
 owner of brief lifecycle, exactly as every other close does. Cite the evidence in the note:
 
 ```bash
-worktrail-work-queue done "$BRIEF_ID" --implementation-complete --note \
+worktrail-work-queue done "$BRIEF_ID" --implementation-complete --by "$INVOCATION_CONTEXT_DISPATCH_ID" --note \
   "Closed as already-delivered: <sha> \"<subject>\" / PR #<n> \"<title>\" merged <date>, after the brief's created: <created>. Surfaced by the Phase 5.5 staleness guard; confirmed by operator."
 ```
 
