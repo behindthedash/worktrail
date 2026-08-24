@@ -476,7 +476,7 @@ session into `$WT` to run it:
 ```bash
 worktrail-skill-dispatch \
   --agent "$INVOCATION_CONTEXT_AGENT" \
-  --skill "<host-namespaced openspec-propose>" \
+  --skill "opsx:propose" \
   --args "<the request, verbatim from the brief or the user>" \
   --cwd "$WT" \
   --write
@@ -516,14 +516,15 @@ parents then handle it per `#stage-result-handling`'s clarification path;
 `$AUTO_MODE=true` finishes `blocked_product_decision` per
 `#auto-mode-ask-fallbacks`.
 
-**Verify the artifacts — a zero exit code is not proof.** Two failure modes
-observed live on 2026-08-09 both **exit 0 and write nothing**: a claude spawn
-carrying the `--setting-sources project,local` default that
+**Verify the artifacts — a zero exit code is not proof.** Failure modes
+observed live both **exit 0 and write nothing**: a claude spawn carrying the
+`--setting-sources project,local` default that
 `spawnlib._with_default_setting_sources` injects never loads the worktrail
-plugin, and a non-namespaced command resolves to `Unknown command`. Pass the
-skill name in the form the target host actually resolves, and assert
-`openspec/changes/<change-id>/` exists before continuing — never infer success
-from the return code alone.
+plugin (2026-08-09), and — before `worktrail-skill-dispatch` namespaced
+`opsx:*` commands itself (2026-08-24) — a bare `/opsx:propose` resolving to
+`Unknown command` for claude/opencode. Always assert
+`openspec/changes/<change-id>/` exists before continuing — never infer
+success from the return code alone.
 
 **If the spawn is refused, fall back to running it inline** in the calling
 session (accepting the token cost) and say so, per SKILL.md Phase 7. A top-level
