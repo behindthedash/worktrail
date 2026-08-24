@@ -9,10 +9,12 @@ run with: python3 scripts/test_dashboard.py
 from __future__ import annotations
 
 import datetime
+import io
 import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -3619,6 +3621,192 @@ class DecisionsJsonCLI(unittest.TestCase):
             output = self._run_json(["--root", str(specs_dir), "--json"])
 
             self.assertEqual(output["open_decisions"], [])
+
+
+class QueueJsonFileCLI(unittest.TestCase):
+    """`--queue-json-file`/`--decisions-json-file`: a file-path (or '-' for
+    stdin) alternative to `--queue-json`/`--decisions-json` that avoids the
+    shell's ~128KB per-argument size limit (Linux MAX_ARG_STRLEN). Must parse
+    identically to the inline string form, degrade the same way on malformed
+    content, and take precedence when both forms are given."""
+
+    QUEUE_PAYLOAD = json.dumps(
+        {"briefs": [{"filename": "b1.md", "focus": "do the thing", "repo": "myrepo"}]}
+    )
+    DECISIONS_PAYLOAD = json.dumps(
+        {"decisions": [{"id": "dec-1", "question": "Approach A or B?", "repo": "myrepo"}]}
+    )
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        work_queue_dir = Path(self._tmp.name) / "work-queue"
+        (work_queue_dir / "queue").mkdir(parents=True)
+        self._env_patch = mock.patch.dict(os.environ, {"WORK_QUEUE_DIR": str(work_queue_dir)})
+        self._env_patch.start()
+
+    def tearDown(self):
+        self._env_patch.stop()
+        self._tmp.cleanup()
+
+    @staticmethod
+    def _run_json(argv):
+        import io
+        from contextlib import redirect_stdout
+
+        f = io.StringIO()
+        with redirect_stdout(f):
+            dashboard.main(argv)
+        return json.loads(f.getvalue())
+
+    def test_queue_json_file_matches_inline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            specs_dir = Path(tmp) / "myrepo" / "docs" / "specs"
+            specs_dir.mkdir(parents=True)
+            queue_file = Path(tmp) / "queue.json"
+            queue_file.write_text(self.QUEUE_PAYLOAD)
+
+            via_file = self._run_json([
+                "--root", str(specs_dir), "--queue-json-file", str(queue_file), "--json",
+            ])
+            via_inline = self._run_json([
+                "--root", str(specs_dir), "--queue-json", self.QUEUE_PAYLOAD, "--json",
+            ])
+
+            self.assertEqual(
+                via_file["category_items"]["workqueue"], via_inline["category_items"]["workqueue"]
+            )
+            self.assertEqual(via_file["category_items"]["workqueue"][0]["id"], "b1")
+
+    def test_decisions_json_file_matches_inline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            specs_dir = Path(tmp) / "myrepo" / "docs" / "specs"
+            specs_dir.mkdir(parents=True)
+            decisions_file = Path(tmp) / "decisions.json"
+            decisions_file.write_text(self.DECISIONS_PAYLOAD)
+
+            via_file = self._run_json([
+                "--root", str(specs_dir),
+                "--decisions-json-file", str(decisions_file), "--json",
+            ])
+
+            self.assertEqual(
+                via_file["open_decisions"],
+                [{"id": "dec-1", "question": "Approach A or B?", "repo": "myrepo"}],
+            )
+
+    def test_queue_json_file_reads_stdin_when_dash(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch("sys.stdin", io.StringIO(self.QUEUE_PAYLOAD)):
+            specs_dir = Path(tmp) / "myrepo" / "docs" / "specs"
+            specs_dir.mkdir(parents=True)
+
+            output = self._run_json([
+                "--root", str(specs_dir), "--queue-json-file", "-", "--json",
+            ])
+
+            self.assertEqual(output["category_items"]["workqueue"][0]["id"], "b1")
+
+    def test_queue_json_file_takes_precedence_over_inline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            specs_dir = Path(tmp) / "myrepo" / "docs" / "specs"
+            specs_dir.mkdir(parents=True)
+            queue_file = Path(tmp) / "queue.json"
+            queue_file.write_text(self.QUEUE_PAYLOAD)
+            stale_inline = json.dumps(
+                {"briefs": [{"filename": "stale.md", "focus": "stale", "repo": "myrepo"}]}
+            )
+
+            output = self._run_json([
+                "--root", str(specs_dir),
+                "--queue-json", stale_inline,
+                "--queue-json-file", str(queue_file),
+                "--json",
+            ])
+
+            self.assertEqual(output["category_items"]["workqueue"][0]["id"], "b1")
+
+    def test_malformed_queue_json_file_degrades_to_empty_list(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            specs_dir = Path(tmp) / "myrepo" / "docs" / "specs"
+            specs_dir.mkdir(parents=True)
+            queue_file = Path(tmp) / "queue.json"
+            queue_file.write_text("{not valid json")
+
+            output = self._run_json([
+                "--root", str(specs_dir), "--queue-json-file", str(queue_file), "--json",
+            ])
+
+            self.assertNotIn("queue", output["category_items"])
+
+
+class QueueJsonArgvLimitRegression(unittest.TestCase):
+    """Real subprocess reproduction of the bug this fix closes: a queue JSON
+    string past Linux's ~128KB single-argv-string cap (MAX_ARG_STRLEN,
+    131072 bytes) makes `--queue-json <string>` fail at exec() before Python
+    even starts. `--queue-json-file` sidesteps it entirely by reading the same
+    payload from disk instead of argv."""
+
+    MAX_ARG_STRLEN = 131072
+
+    def _oversized_queue_payload(self) -> str:
+        # Pad well past MAX_ARG_STRLEN so the JSON string itself -- not just
+        # the surrounding argv overhead -- exceeds the single-argument cap.
+        focus = "x" * (self.MAX_ARG_STRLEN + 4096)
+        return json.dumps({"briefs": [{"filename": "big.md", "focus": focus, "repo": "myrepo"}]})
+
+    def _isolated_env(self, tmp: Path) -> dict:
+        # Isolate from this machine's real ~/work-queue -- otherwise a stray
+        # inflight/picked brief there would outrank our fixture in
+        # `category_items["workqueue"]` and the id assertion below would pick
+        # up unrelated real data instead of this test's fixture.
+        work_queue_dir = tmp / "wq"
+        (work_queue_dir / "queue").mkdir(parents=True)
+        (work_queue_dir / "picked").mkdir()
+        env = dict(os.environ)
+        env["WORK_QUEUE_DIR"] = str(work_queue_dir)
+        return env
+
+    def test_inline_queue_json_over_argv_limit_fails(self):
+        payload = self._oversized_queue_payload()
+        self.assertGreater(len(payload), self.MAX_ARG_STRLEN)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            specs_dir = tmp_path / "myrepo" / "docs" / "specs"
+            specs_dir.mkdir(parents=True)
+
+            # The kernel rejects the oversized argv during exec() itself --
+            # subprocess.run raises OSError(E2BIG) rather than returning a
+            # completed process, matching the live "Argument list too long"
+            # failure this fix closes (never a Python traceback: Python hasn't
+            # started yet).
+            with self.assertRaises(OSError):
+                subprocess.run(
+                    [sys.executable, "-m", "worktrail.router.dashboard",
+                     "--root", str(specs_dir), "--queue-json", payload, "--json"],
+                    capture_output=True, text=True, env=self._isolated_env(tmp_path),
+                )
+
+    def test_queue_json_file_over_argv_limit_succeeds(self):
+        payload = self._oversized_queue_payload()
+        self.assertGreater(len(payload), self.MAX_ARG_STRLEN)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            specs_dir = tmp_path / "myrepo" / "docs" / "specs"
+            specs_dir.mkdir(parents=True)
+            queue_file = tmp_path / "queue.json"
+            queue_file.write_text(payload)
+
+            r = subprocess.run(
+                [sys.executable, "-m", "worktrail.router.dashboard",
+                 "--root", str(specs_dir), "--queue-json-file", str(queue_file), "--json"],
+                capture_output=True, text=True, env=self._isolated_env(tmp_path),
+            )
+
+            self.assertEqual(r.returncode, 0, msg=r.stderr)
+            output = json.loads(r.stdout)
+            self.assertEqual(output["category_items"]["workqueue"][0]["id"], "big")
 
 
 class EpicStageDetection(unittest.TestCase):

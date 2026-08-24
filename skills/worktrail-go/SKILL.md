@@ -157,11 +157,24 @@ The result always carries every field, so no existence checks are needed. Act on
 
 Then hold `$ARG_REPO` from `repo`, `$ARG_INTENT` from `intent` (or `free_text` when no intent keyword was given), and `$ARG_SPEC` from `spec`.
 
-**Now fetch the dashboard** (already skipped entirely above for `help`/`drain`). Detect mode via `resolve_repo.py --start "$PWD" --json`. Fetch queue JSON first and pass it to dashboard so the picker options are computed by the script, not by Claude — pass `--auto`/`--auto-repo` here when `$AUTO_MODE=true`, since that changes what the script itself computes:
+**Now fetch the dashboard** (already skipped entirely above for `help`/`drain`). Detect mode via `resolve_repo.py --start "$PWD" --json`. Fetch queue JSON first and pass it to dashboard so the picker options are computed by the script, not by Claude — pass `--auto`/`--auto-repo` here when `$AUTO_MODE=true`, since that changes what the script itself computes.
+
+**Pass the queue/decisions JSON via file, not inline argv.** Linux caps a single argv
+string at ~128KB (`MAX_ARG_STRLEN`); a personal queue with 100+ handoffs routinely
+exceeds that and `worktrail-dashboard --queue-json "$QUEUE_JSON"` fails at `exec()`
+before Python even starts (`Argument list too long`) — confirmed live 2026-08-24. Write
+both payloads to temp files and use `--queue-json-file`/`--decisions-json-file`
+instead, which have no such limit. Also drop the blanket `2>/dev/null` on the
+`worktrail-dashboard` call itself — swallowing stderr there is exactly what turned that
+exec failure into a silent empty `$DASHBOARD_JSON` instead of a visible error; check the
+exit status and surface stderr on failure instead:
 
 ```bash
-QUEUE_JSON=$(worktrail-work-queue list --json 2>/dev/null)
-DECISIONS_JSON=$(worktrail-decision list --status open --json 2>/dev/null)
+QUEUE_JSON_FILE=$(mktemp)
+DECISIONS_JSON_FILE=$(mktemp)
+trap 'rm -f "$QUEUE_JSON_FILE" "$DECISIONS_JSON_FILE"' EXIT
+worktrail-work-queue list --json 2>/dev/null > "$QUEUE_JSON_FILE"
+worktrail-decision list --status open --json 2>/dev/null > "$DECISIONS_JSON_FILE"
 AUTO_FLAGS=()
 if [ "$AUTO_MODE" = "true" ]; then
   AUTO_FLAGS=(--auto)
@@ -170,20 +183,24 @@ fi
 if [ "$RESOLVE_MODE" = "in-repo" ]; then
   DASHBOARD_JSON=$(worktrail-dashboard \
     --root "$REPO/docs/specs" --picked-dir "$BASE/picked" \
-    --queue-json "$QUEUE_JSON" --decisions-json "$DECISIONS_JSON" \
-    "${AUTO_FLAGS[@]}" --json 2>/dev/null)
+    --queue-json-file "$QUEUE_JSON_FILE" --decisions-json-file "$DECISIONS_JSON_FILE" \
+    "${AUTO_FLAGS[@]}" --json) || {
+    echo "worktrail-dashboard failed (exit $?) — see stderr above" >&2
+  }
 else
   REPOS_DIR="${HOME}/projects"; [ -d "$REPOS_DIR" ] || REPOS_DIR="$PWD"
   DASHBOARD_JSON=$(worktrail-dashboard \
     --repos "$REPOS_DIR" --picked-dir "$BASE/picked" \
-    --queue-json "$QUEUE_JSON" --decisions-json "$DECISIONS_JSON" \
-    "${AUTO_FLAGS[@]}" --json 2>/dev/null)
+    --queue-json-file "$QUEUE_JSON_FILE" --decisions-json-file "$DECISIONS_JSON_FILE" \
+    "${AUTO_FLAGS[@]}" --json) || {
+    echo "worktrail-dashboard failed (exit $?) — see stderr above" >&2
+  }
 fi
 ```
 
 `$DASHBOARD_JSON` carries three pre-computed, deterministic fields — hold it for Phases 1b/2: **`rendered`** (the dashboard text), **`category_actions`** (Level-1 picker options), and **`category_items`** (Level-2 items per category, each carrying the dispatch fields its `action` needs — `id` for queue items, `spec_id`/`repo`/`path` for specs). With `auto`, it also carries **`auto_pick`**. Field contract: `references/dashboard-render.md`.
 
-Handle a missing/empty dashboard gracefully (the `rendered` field already prints a "nothing active → brainstorm" line).
+Handle a missing/empty dashboard gracefully (the `rendered` field already prints a "nothing active → brainstorm" line) — this now means the queue/decisions calls themselves returned nothing, not a swallowed `worktrail-dashboard` failure.
 
 **Branch on the classification from above — this decides what gets printed, not the other way around:**
 
