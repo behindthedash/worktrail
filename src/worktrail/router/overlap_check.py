@@ -252,6 +252,74 @@ def _scan_openspec(specs_root: Path) -> List[Dict[str, Any]]:
     return results
 
 
+# --- per-task extraction (OpenSpec `tasks.md` only) ---------------------------
+
+# Task ids across this repo's own active/archived OpenSpec changes are always
+# `N.N` (phase.index), never nested `N.N.N`. A checkbox line's own text may be
+# followed on later lines by word-wrapped continuation, indented `(a)`/`-`
+# sub-bullets, `(Requirement: ...)` citations, and a trailing `files:` scope
+# annotation — all of that belongs to the task it follows, not to the next
+# `##` phase heading or the next `- [ ]`/`- [x]` line.
+_TASK_LINE_RE = re.compile(r"^-\s*\[([ xX])\]\s*(\d+\.\d+)\s+(.*)$")
+
+
+def _parse_openspec_tasks(tasks_text: str) -> List[Dict[str, Any]]:
+    """Parse a `tasks.md` checkbox list into one `{task_id, task_text, checked}`
+    entry per top-level task line, folding each task's wrapped/indented
+    continuation lines into `task_text`."""
+    entries: List[Dict[str, Any]] = []
+    lines = tasks_text.splitlines()
+    i, n = 0, len(lines)
+    while i < n:
+        m = _TASK_LINE_RE.match(lines[i])
+        if not m:
+            i += 1
+            continue
+        checked = m.group(1) in ("x", "X")
+        task_id = m.group(2)
+        text_parts = [m.group(3).strip()]
+        i += 1
+        while i < n:
+            line = lines[i]
+            if _TASK_LINE_RE.match(line) or line.startswith("#"):
+                break
+            stripped = line.strip()
+            if stripped:
+                text_parts.append(stripped)
+            i += 1
+        entries.append({
+            "task_id": task_id,
+            "task_text": " ".join(text_parts).strip(),
+            "checked": checked,
+        })
+    return entries
+
+
+def task_candidates(specs_root: Path, target: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Per-task candidate enumeration, scoped to a known OpenSpec target.
+
+    Given an explicit `target` OpenSpec change id whose `changes/<target>/tasks.md`
+    is readable, returns one `{task_id, task_text, checked}` entry per UNCHECKED
+    task in that change's `tasks.md` — no whole-spec/whole-change scan.
+
+    A devkit-shaped `specs_root` (no per-task granularity exists there), a target
+    that doesn't resolve to a readable OpenSpec `tasks.md`, or no target at all
+    returns exactly today's whole-spec/whole-change candidates via `scan()`,
+    unchanged.
+    """
+    specs_root = Path(specs_root)
+    if target and _is_openspec_root(specs_root):
+        tasks_file = specs_root / "changes" / target / "tasks.md"
+        if tasks_file.is_file():
+            try:
+                text = tasks_file.read_text(errors="ignore")
+            except OSError:
+                text = None
+            if text is not None:
+                return [e for e in _parse_openspec_tasks(text) if not e["checked"]]
+    return scan(specs_root)
+
+
 # --- scan all specs -----------------------------------------------------------
 
 _DATE_FOLDER_RE = re.compile(r"^\d{3,}-")
