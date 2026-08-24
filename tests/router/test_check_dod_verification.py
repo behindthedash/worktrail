@@ -223,6 +223,21 @@ class DeriveDodChecksTests(unittest.TestCase):
             ],
         )
 
+    def test_files_sync_exempt_path_skips_file_tracked_and_no_stub_markers(self) -> None:
+        checks = derive_dod_checks(
+            {"files": ["src/foo.py", "src/bar.py"], "files-sync-exempt": ["src/foo.py"]},
+            "some body",
+            "TASK-001.md",
+        )
+        self.assertEqual(
+            checks,
+            [
+                {"type": "ac_checkboxes_complete", "task_path": "TASK-001.md"},
+                {"type": "file_tracked", "path": "src/bar.py"},
+                {"type": "no_stub_markers", "path": "src/bar.py"},
+            ],
+        )
+
     def test_files_absent_derives_ac_checkboxes_complete_only(self) -> None:
         checks = derive_dod_checks({}, "some body", "TASK-001.md")
         self.assertEqual(
