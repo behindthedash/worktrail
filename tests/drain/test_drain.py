@@ -1823,6 +1823,40 @@ def test_archive_openspec_change_runs_archive_and_opens_pr(tmp_path, monkeypatch
     assert committed == "archived\n"
 
 
+def test_archive_openspec_change_refuses_when_tasks_unchecked(tmp_path, monkeypatch):
+    """Defense-in-depth: even if a finding somehow reaches this action with an
+    unchecked tasks.md (stage-detection race, hand-crafted finding, etc.), the
+    unattended sweep must refuse rather than let `openspec archive -y` silently
+    archive partial work -- that flag only downgrades OpenSpec's own
+    incomplete-task check to a warning, it does not block."""
+    repo = _init_repo_with_origin(tmp_path, "repo-a")
+    change = repo / "openspec" / "changes" / "add-export"
+    change.mkdir(parents=True)
+    (change / "tasks.md").write_text("## 1. Export\n\n- [ ] 1.1 Add exporter\n")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "add change"], check=True)
+    finding = {"repo": repo, "repo_name": "repo-a", "spec_id": "add-export"}
+    calls = []
+    real_run = subprocess.run
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(drain.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="unchecked task"):
+        archive_openspec_change(
+            finding, "claude", 30, lambda c, t: SpawnOutcome(0), lambda _l: None)
+
+    assert not any(c[:2] == ["openspec", "archive"] for c in calls)
+    assert not any(c[:2] == ["gh", "pr"] and c[2] == "create" for c in calls)
+    log = subprocess.run(
+        ["git", "-C", str(repo), "log", "--all", "--oneline"],
+        capture_output=True, text=True, check=True).stdout
+    assert "archive completed change" not in log
+
+
 def test_archive_openspec_change_existing_pr_skips_rearchiving(tmp_path, monkeypatch):
     repo = _init_repo_with_origin(tmp_path, "repo-a")
     finding = {"repo": repo, "repo_name": "repo-a", "spec_id": "add-export"}
