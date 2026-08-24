@@ -33,13 +33,13 @@
 
 ## 3. Dashboard Advisory Extension
 
-- [ ] 3.1 Extend `cluster_detect.py` so a queued brief carrying `target-spec:` can also match an
+- [x] 3.1 Extend `cluster_detect.py` so a queued brief carrying `target-spec:` can also match an
   open, unchecked task in that target change (via the 1.1 function), surfaced through the same
   cluster-reporting shape `duplicate-brief-detection` already uses for brief-vs-brief matches,
   and skipping the advisory when the brief already carries a matching `target-task:`.
   (Requirement: Dashboard Advisory Surfaces Brief-vs-Task Matches)
   files: src/worktrail/router/cluster_detect.py
-- [ ] 3.2 Wire the extended cluster output into `dashboard.py`'s existing render path where
+- [x] 3.2 Wire the extended cluster output into `dashboard.py`'s existing render path where
   `cluster_detect.compute_clusters` results are already merged into the rendered/JSON dashboard
   output.
   files: src/worktrail/router/dashboard.py
