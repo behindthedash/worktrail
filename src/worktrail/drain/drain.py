@@ -120,6 +120,7 @@ from ..shared.operator_config import (
     drain_config as operator_drain_config,
 )
 from ..taskformats.devkit.schema import set_status_completed
+from ..taskformats.openspec.schema import STATUS_COMPLETED, parse_tasks_md
 from ..workqueue import decisions as decisions_mod
 from ..workqueue import seed_backlog as seed_backlog_mod
 from ..workqueue.invocation import WORK_QUEUE_PY, build_work_queue_argv
@@ -1176,7 +1177,22 @@ def close_stale_bookkeeping(
 def _run_openspec_archive(wt: Path, spec_id: str, timeout: int) -> None:
     """`openspec archive -y <change-id>` in the worktree -- non-interactive
     (`-y`), so it never blocks on a confirmation prompt. Raises on failure
-    (per D2's per-finding isolation, caught by sweep_remediations)."""
+    (per D2's per-finding isolation, caught by sweep_remediations).
+
+    Refuses (raises, no subprocess invoked) if `tasks.md` still has an
+    unchecked task -- `openspec archive -y` itself only downgrades that case
+    to a stdout warning and archives anyway, so this pre-check is the only
+    thing standing between drain's unattended sweep and silently archiving
+    partial work."""
+    tasks_md = wt / "openspec" / "changes" / spec_id / "tasks.md"
+    if tasks_md.is_file():
+        pending = [t.id for t in parse_tasks_md(tasks_md.read_text()).tasks
+                   if t.status != STATUS_COMPLETED]
+        if pending:
+            raise RuntimeError(
+                f"refusing to archive {spec_id} (in {wt}): tasks.md has "
+                f"unchecked task(s) {pending} -- openspec archive -y would "
+                f"proceed anyway (it only warns), so this hard-refuses instead")
     result = subprocess.run(
         ["openspec", "archive", "-y", spec_id],
         capture_output=True, text=True, cwd=str(wt), timeout=timeout)
