@@ -59,7 +59,7 @@
   `target-spec` is unchanged from before this change; empty/whitespace `target-task` is rejected
   before a brief is written.
   files: tests/workqueue/test_create_handoff.py
-- [ ] 4.3 Document `target-task:` in the handoff frontmatter reference, paired with the existing
+- [x] 4.3 Document `target-task:` in the handoff frontmatter reference, paired with the existing
   `target-spec:` documentation.
   files: skills/worktrail-handoff/references/handoff-template.md
 
