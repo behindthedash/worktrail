@@ -231,6 +231,21 @@ work is not actually done (a false `verifiably-present`) — both worse than fal
 the human judgment call `inconclusive` reaches. The outcome of this classification decides the
 next step, documented below.
 
+**On `verifiably-absent`** — the specific capability the brief describes is confirmed absent, so
+there is nothing to prompt about and nothing to close: proceed straight to Phase 6/7 without an
+operator prompt, exactly as the predicate re-check's `still-true` subsection does above (no
+operator prompt, no early run-record open). Once Phase 6 has opened the run record, append the
+evidence line `check_brief_staleness.format_verified_absent_evidence` builds from the matched
+evidence and the verification finding, using the same post-Phase-6 `run-record append` pattern
+the predicate re-check's `still-true` subsection uses:
+
+```bash
+worktrail-run-record append "$RUN" decisions \
+  "File-state verification found the brief's described work verifiably absent despite 1 matched \
+commit(s) and 1 matched pull request(s) (abc1234 (path probe: src/widget.py), PR #42): no trace \
+remains. Proceeded automatically without an operator prompt."
+```
+
 ## Reading the result
 
 ```json
