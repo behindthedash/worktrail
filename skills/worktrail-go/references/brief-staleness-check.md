@@ -231,6 +231,48 @@ work is not actually done (a false `verifiably-present`) — both worse than fal
 the human judgment call `inconclusive` reaches. The outcome of this classification decides the
 next step, documented below.
 
+**On `verifiably-absent`** — the specific capability the brief describes is confirmed absent, so
+there is nothing to prompt about and nothing to close: proceed straight to Phase 6/7 without an
+operator prompt, exactly as the predicate re-check's `still-true` subsection does above (no
+operator prompt, no early run-record open). Once Phase 6 has opened the run record, append the
+evidence line `check_brief_staleness.format_verified_absent_evidence` builds from the matched
+evidence and the verification finding, using the same post-Phase-6 `run-record append` pattern
+the predicate re-check's `still-true` subsection uses:
+
+```bash
+worktrail-run-record append "$RUN" decisions \
+  "File-state verification found the brief's described work verifiably absent despite 1 matched \
+commit(s) and 1 matched pull request(s) (abc1234 (path probe: src/widget.py), PR #42): no trace \
+remains. Proceeded automatically without an operator prompt."
+```
+
+**On `verifiably-present`** — the specific capability the brief describes is confirmed present, so
+the brief is already delivered and there is nothing left to dispatch: close it now, before Phase 6,
+exactly as the predicate re-check's `resolved` subsection does above (no operator prompt — the
+file-state verification itself is the evidence, not a human judgment call). The queue mutation
+goes through `work_queue.py`, the single owner of brief lifecycle, using the closure note
+`check_brief_staleness.format_verified_present_closure_note` builds from the matched evidence and
+the verification finding:
+
+```bash
+worktrail-work-queue done "$BRIEF_ID" --implementation-complete --note \
+  "Closed as already-delivered: file-state verification found the brief's described work \
+verifiably present, confirmed by 1 matched commit(s) and 1 matched pull request(s) (abc1234 \
+(path probe: src/widget.py), PR #42): the described capability is implemented as specified. \
+Surfaced by the file-state verification step; closed automatically without an operator prompt."
+```
+
+Then report the closure in the run's status output (e.g. `Brief $BRIEF_ID closed: file-state
+verification confirmed the described work present.`) and **stop** — do not continue to Phase 6's
+run-record start or Phase 7 dispatch. As with the predicate re-check's `resolved` branch, this runs
+*before* Phase 6, so there is no run record to open or finish. Do not open a worktree, and do not
+create a follow-up handoff — nothing was deferred.
+
+**On `inconclusive`** — no confident absent/present call could be made, so this is a no-op
+fall-through: continue to "The operator prompt" section unchanged, exactly as if file-state
+verification had never run. Nothing is appended, closed, or reported here; the matched
+commits/PRs/research notes carry forward to that section's prompt as-is.
+
 ## Reading the result
 
 ```json
@@ -257,6 +299,15 @@ common case, and it is why the operator decides.
 
 ## The operator prompt
 
+**Reached only on `inconclusive`.** This section fires only when file-state verification (above)
+classified the matched evidence as `inconclusive` — not unconditionally on any non-empty
+`matches`/`pull_requests`/`research_notes`. A `verifiably-absent` or `verifiably-present`
+classification takes its own proceed/close action above and never falls through to a prompt. The
+other way this section goes unreached is pre-existing and unchanged by verification: when there
+was no evidence to verify in the first place (`checked: false`, or `checked: true` with all three
+empty — see "Reading the result" above), file-state verification never runs at all, and the
+dispatch proceeds without a prompt exactly as it always has.
+
 Show the matching commits, PRs, and research notes, then ask exactly one question. Two outcomes,
 both first-class:
 
@@ -280,7 +331,13 @@ AskUserQuestion(
 
 Never default-select, never auto-close, and never infer the answer from the match count.
 
-**`$AUTO_MODE=true`: no ask.** There is no human present to answer, and `AskUserQuestion` is not
+**`$AUTO_MODE=true`: no ask.** This subsection is reached only when file-state verification
+classified the evidence `inconclusive` (or never ran at all — the pre-existing no-evidence case),
+the same scope as the rest of "The operator prompt" above. A `verifiably-absent` or
+`verifiably-present` classification already resolved automatically — proceed or close,
+respectively — before this section, in `AUTO_MODE` exactly as it does interactively, since that
+step is a file-state check, not a human-facing prompt, and `AUTO_MODE` only changes how a
+human-facing prompt is handled. There is no human present to answer, and `AskUserQuestion` is not
 even a callable tool inside the headless one-shot `worktrail-go drain` spawns — do not attempt
 the call above. Phase 6 has not run yet for this dispatch, so open a minimal run record now
 (the same fields Phase 6 would use) purely to record the block. **Before** finishing it, file
