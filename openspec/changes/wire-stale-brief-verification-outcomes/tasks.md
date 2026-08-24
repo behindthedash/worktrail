@@ -1,22 +1,22 @@
 ## 1. Wire the verification classification to outcomes
 
-- [ ] 1.1 In `skills/worktrail-go/references/brief-staleness-check.md`, in the "File-state
+- [x] 1.1 In `skills/worktrail-go/references/brief-staleness-check.md`, in the "File-state
       verification" section, after the classification table, document the `verifiably-absent`
       outcome: proceed to Phase 6/7 without an operator prompt, then append the
       `format_verified_absent_evidence()` string via `worktrail-run-record append "$RUN"
       decisions "..."` once Phase 6 opens the run record — mirroring the predicate re-check's
       `still-true` subsection's post-Phase-6 pattern.
       files: skills/worktrail-go/references/brief-staleness-check.md
-- [ ] 1.2 In the same section, document the `verifiably-present` outcome: close the brief
+- [x] 1.2 In the same section, document the `verifiably-present` outcome: close the brief
       automatically via `worktrail-work-queue done "$BRIEF_ID" --implementation-complete --note
       "..."` using `format_verified_present_closure_note()`, before Phase 6 opens a run record,
       report the closure, and stop — mirroring the predicate re-check's `resolved` subsection's
       pre-Phase-6 pattern.
       files: skills/worktrail-go/references/brief-staleness-check.md
-- [ ] 1.3 In the same section, document the `inconclusive` outcome as a no-op fall-through:
+- [x] 1.3 In the same section, document the `inconclusive` outcome as a no-op fall-through:
       continue to "The operator prompt" section unchanged.
       files: skills/worktrail-go/references/brief-staleness-check.md
-- [ ] 1.4 Retitle/preface "The operator prompt" section so it states explicitly that it now
+- [x] 1.4 Retitle/preface "The operator prompt" section so it states explicitly that it now
       runs only for the `inconclusive` classification (and the pre-existing case where
       verification never ran because there was no evidence to verify) — not unconditionally on
       any non-empty evidence.
@@ -26,7 +26,7 @@
       `verifiably-absent`/`verifiably-present` resolve automatically in `AUTO_MODE` exactly as
       they do interactively, since the verification step is not a human-facing prompt.
       files: skills/worktrail-go/references/brief-staleness-check.md
-- [ ] 1.6 Update the doc's intro paragraphs (the module-level description of the probe-based
+- [x] 1.6 Update the doc's intro paragraphs (the module-level description of the probe-based
       flow) to reflect the resulting three-outcome shape (`verifiably-absent` /
       `verifiably-present` / `inconclusive`) instead of the prior two-way (prompt vs. no
       evidence) branch, consistent with the doc's existing style of documenting behavior up

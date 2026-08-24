@@ -199,9 +199,12 @@ subtly different parse of a brief in play. `--text` plus `--since` is the manual
 you already have the prose in hand. `--base` overrides the searched branch; omitted, it resolves
 the remote's default branch, so a stale local checkout does not blind the check to upstream work.
 
-The command **always exits 0**. It is a signal source for a human decision, not a gate — a
-non-zero exit would turn "could not determine" into a dispatch failure, which is exactly the
-fail-open contract it exists to honor. Never test its exit code; read `checked`.
+The command **always exits 0**. It is a signal source, not a gate — a non-zero exit would turn
+"could not determine" into a dispatch failure, which is exactly the fail-open contract it exists
+to honor. Never test its exit code; read `checked`. What that signal resolves to is not always a
+human decision: non-empty evidence is classified by file-state verification (below) into
+`verifiably-absent`, `verifiably-present`, or `inconclusive` — the first two resolve automatically,
+and only `inconclusive` reaches an operator prompt.
 
 ## File-state verification
 
@@ -295,7 +298,9 @@ it alongside the evidence when prompting; ignore it otherwise.
 
 Evidence is **not** proof. A probe like a widely-touched file, or a symbol name that appears in an
 adjacent refactor, will match commits that have nothing to do with the brief. That is the expected
-common case, and it is why the operator decides.
+common case, and it is why file-state verification (above) defaults to `inconclusive` whenever in
+doubt rather than guessing — and it is only once verification lands on `inconclusive` that the
+operator decides.
 
 ## The operator prompt
 
