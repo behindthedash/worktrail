@@ -938,6 +938,16 @@ def diagnose_stuck_group(g: dict, by_id: dict, terminal_statuses: set) -> str:
     return "; ".join(lines)
 
 
+def _quarantine_reason_with_diagnosis(base_reason: str, g: dict, by_id: dict, terminal_statuses: set) -> str:
+    """`base_reason`, with `diagnose_stuck_group()`'s diagnosis appended when non-empty.
+
+    Shared by every post-fanout quarantine branch (budget-exceeded, non-terminal) so
+    the diagnosis wiring lives in one place instead of being copy-pasted per branch.
+    """
+    diagnosis = diagnose_stuck_group(g, by_id, terminal_statuses)
+    return f"{base_reason} -- {diagnosis}" if diagnosis else base_reason
+
+
 def validate_task_metadata(tasks: list) -> None:
     """Refuse live fan-out when implementation tasks have no scope AND no serialization
     boundary. `conductor/compile.py`'s own prompt tells the model that an empty `files`
@@ -4791,10 +4801,9 @@ def _pipeline_scheduler(
         gname = g["name"]
         if gname not in dispatched_groups:
             if budget_exceeded:
-                diagnosis = diagnose_stuck_group(g, by_id, terminal_statuses)
-                reason = "fan-out incomplete (run budget exceeded)"
-                if diagnosis:
-                    reason = f"{reason} -- {diagnosis}"
+                reason = _quarantine_reason_with_diagnosis(
+                    "fan-out incomplete (run budget exceeded)", g, by_id, terminal_statuses
+                )
                 with iv_lock:
                     quarantined[gname] = reason
                     _group_phase_map.pop(gname, None)
@@ -4813,10 +4822,9 @@ def _pipeline_scheduler(
             else:
                 # Non-terminal: fan-out never completed their tasks. Quarantine and
                 # fire the event so any dependent IV threads don't deadlock.
-                diagnosis = diagnose_stuck_group(g, by_id, terminal_statuses)
-                reason = "fan-out incomplete (run budget or error)"
-                if diagnosis:
-                    reason = f"{reason} -- {diagnosis}"
+                reason = _quarantine_reason_with_diagnosis(
+                    "fan-out incomplete (run budget or error)", g, by_id, terminal_statuses
+                )
                 with iv_lock:
                     quarantined[gname] = reason
                     _group_phase_map.pop(gname, None)
