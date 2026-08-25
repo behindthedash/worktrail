@@ -367,12 +367,11 @@ def is_infra_failure(returncode: int, stdout: Optional[str]) -> bool:
 # discontinued-looking "gpt-5.4-mini" while the operator's actual codex CLI
 # listed "gpt-5.6-sol" as current), and Claude's own "sonnet"/"opus"/"haiku"
 # aliases are the only one of the three that don't go stale this way.
-# default_model_for_agent() resolves, in order: an explicit ORCH_*_MODEL env
-# var (an intentional per-invocation choice) > the operator-maintained
+# default_model_for_agent() resolves, in order: the operator-maintained
 # model-defaults.yaml under worktrail_home() (kept current without a code
 # change) > these
-# constants (only reached when neither is set -- e.g. a fresh machine with no
-# config file yet).
+# constants (only reached when the file has no entry for the agent -- e.g. a
+# fresh machine with no config file yet).
 DEFAULT_CLAUDE_MODEL = "sonnet"
 DEFAULT_CODEX_MODEL = "gpt-5.4-mini"
 # The bare "deepseek/" provider needs its own credential; the OpenCode Zen
