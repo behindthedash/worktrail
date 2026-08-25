@@ -4791,8 +4791,12 @@ def _pipeline_scheduler(
         gname = g["name"]
         if gname not in dispatched_groups:
             if budget_exceeded:
+                diagnosis = diagnose_stuck_group(g, by_id, terminal_statuses)
+                reason = "fan-out incomplete (run budget exceeded)"
+                if diagnosis:
+                    reason = f"{reason} -- {diagnosis}"
                 with iv_lock:
-                    quarantined[gname] = "fan-out incomplete (run budget exceeded)"
+                    quarantined[gname] = reason
                     _group_phase_map.pop(gname, None)
                 _record_group_fn(
                     gname, "", f"{run_id}/{gname}", "QUARANTINED",
