@@ -10,4 +10,4 @@
 
 ## 3. Verification
 
-- [ ] 3.1 [e2e] Run `PYTHONPATH=src pytest tests/orchestrator/test_spawnlib.py tests/orchestrator/test_agent_capacity.py -q` and then the full `PYTHONPATH=src pytest -q` plus `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`; confirm all green with no production-code diff (`git status` shows only test changes).
+- [x] 3.1 [e2e] Run `PYTHONPATH=src pytest tests/orchestrator/test_spawnlib.py tests/orchestrator/test_agent_capacity.py -q` and then the full `PYTHONPATH=src pytest -q` plus `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`; confirm all green with no production-code diff (`git status` shows only test changes).
