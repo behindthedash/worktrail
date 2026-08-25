@@ -10,6 +10,7 @@ from io import StringIO
 from pathlib import Path
 
 from worktrail.router import skill_dispatch
+from worktrail.workqueue import decisions as decisions_mod
 
 
 class SkillDispatchTests(unittest.TestCase):
@@ -564,5 +565,243 @@ class CodexHomePreflightTests(unittest.TestCase):
                 os.chmod(tmp, 0o755)
 
 
+class PendingDecisionBoundaryTests(unittest.TestCase):
+    """Attended presentation and exact decision-ID resume at the go/adapter
+    boundary: every host gets the same versioned envelope to present, and a
+    resume dispatch launches only through the exact answered record."""
+
+    DECISION_ID = "dec-boundary-test-0001"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.queue_base = Path(self.tmp.name) / "queue"
+        env = {"WORK_QUEUE_DIR": str(self.queue_base)}
+        patcher = patch.dict(os.environ, env, clear=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _ask(self, decision_id=DECISION_ID):
+        result = decisions_mod.ask(
+            "Which scope should this request take?",
+            background="The shipped spec already covers the requested scope.",
+            why="Scope direction is a product call.",
+            context="verify() confirmed Implemented status and git-tracked files.",
+            options=[
+                "extend: continue the existing spec",
+                "proceed-anyway: dispatch despite the collision",
+            ],
+            source="check_spec_collision",
+            repo="/tmp/some-repo",
+            subject="spec-a",
+            decision_id=decision_id,
+            queue_base=self.queue_base,
+        )
+        self.assertEqual(result["status"], "created")
+        return result
+
+    def _answer(self):
+        self._ask()
+        answered = decisions_mod.answer(
+            self.DECISION_ID, "extend: continue the existing spec",
+            queue_base=self.queue_base,
+        )
+        self.assertEqual(answered["status"], "answered")
+
+    def _dispatch_args(self, agent, extra=()):
+        arguments = [
+            "--agent", agent, "--skill", "worktrail-sdd-workflow",
+            "--args", "route:F spec:demo",
+            *extra,
+        ]
+        if agent == "codex":
+            arguments += ["--codex-home", os.path.join(self.tmp.name, "codex-home"),
+                          "--no-inherit-codex-auth"]
+        return arguments
+
+    def _run_main(self, agent, extra=(), run_mock=None):
+        stdout, stderr = StringIO(), StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            with patch.object(skill_dispatch, "bootstrap_codex_skills",
+                              return_value=True):
+                rc = skill_dispatch.main(self._dispatch_args(agent, extra))
+        if run_mock is not None:
+            return rc, stdout.getvalue(), stderr.getvalue(), run_mock
+        return rc, stdout.getvalue(), stderr.getvalue()
+
+    @patch("worktrail.router.skill_dispatch.subprocess.run")
+    def test_present_decision_prints_the_versioned_envelope_for_every_host(self, run):
+        self._ask()
+        for agent in skill_dispatch.SUPPORTED_AGENTS:
+            with self.subTest(agent=agent):
+                out = StringIO()
+                with redirect_stdout(out), redirect_stderr(StringIO()):
+                    rc = skill_dispatch.main([
+                        "--present-decision", self.DECISION_ID,
+                    ])
+                self.assertEqual(rc, 0)
+                envelope = json.loads(out.getvalue())
+                self.assertEqual(envelope["schema"], "worktrail.pending-decision")
+                self.assertEqual(envelope["version"], 1)
+                self.assertEqual(envelope["decision_id"], self.DECISION_ID)
+                self.assertEqual(envelope["status"], "open")
+                self.assertEqual(envelope["provenance"]["source"],
+                                 "check_spec_collision")
+        run.assert_not_called()
+
+    def test_present_decision_includes_the_answer_once_answered(self):
+        self._answer()
+        out = StringIO()
+        with redirect_stdout(out), redirect_stderr(StringIO()):
+            rc = skill_dispatch.main(["--present-decision", self.DECISION_ID])
+        self.assertEqual(rc, 0)
+        envelope = json.loads(out.getvalue())
+        self.assertEqual(envelope["status"], "answered")
+        self.assertIn("extend: continue the existing spec", envelope["answer"])
+
+    def test_present_decision_unknown_id_fails_closed_without_spawning(self):
+        stderr = StringIO()
+        with redirect_stdout(StringIO()), redirect_stderr(stderr):
+            rc = skill_dispatch.main(["--present-decision", "dec-nope"])
+        self.assertEqual(rc, 2)
+        self.assertIn("blocked_pending_decision", stderr.getvalue())
+        self.assertIn("dec-nope", stderr.getvalue())
+
+    def test_present_decision_stamps_one_idempotent_presented_hop(self):
+        self._ask()
+        run_path = Path(self.tmp.name) / "run.yaml"
+        run_path.write_text("run_id: boundary\nfinal_status: null\n")
+        for _ in range(2):
+            out = StringIO()
+            with redirect_stdout(out), redirect_stderr(StringIO()):
+                rc = skill_dispatch.main(
+                    ["--present-decision", self.DECISION_ID, "--run", str(run_path)]
+                )
+            self.assertEqual(rc, 0)
+        text = run_path.read_text()
+        self.assertEqual(text.count("[presented]"), 1)
+        self.assertIn(f"[presented] {self.DECISION_ID}", text)
+
+    @patch("worktrail.router.skill_dispatch.subprocess.run")
+    def test_resume_decision_on_open_record_is_refused_before_spawn(self, run):
+        self._ask()
+        rc, stdout, stderr, run = self._run_main(
+            "claude", ["--resume-decision", self.DECISION_ID], run)
+        self.assertEqual(rc, 2)
+        envelope = json.loads(stdout)
+        self.assertEqual(envelope["status"], "open")
+        self.assertEqual(envelope["decision_id"], self.DECISION_ID)
+        self.assertIn("blocked_pending_decision", stderr)
+        run.assert_not_called()
+
+    @patch("worktrail.router.skill_dispatch.subprocess.run")
+    def test_resume_decision_after_supersession_is_refused_before_spawn(self, run):
+        self._answer()
+        replacement = decisions_mod.ask(
+            "Replacement question?",
+            background="Facts changed after the original ask.",
+            why="Still a product call.",
+            context="The target moved between ask and answer.",
+            options=["option one", "option two"],
+            source="check_spec_collision",
+            repo="/tmp/some-repo",
+            subject="spec-a-moved",
+            decision_id="dec-replacement-0001",
+            queue_base=self.queue_base,
+        )
+        self.assertEqual(replacement["status"], "created")
+        superseded = decisions_mod.supersede(
+            self.DECISION_ID, "dec-replacement-0001",
+            queue_base=self.queue_base,
+        )
+        self.assertEqual(superseded["status"], "superseded")
+        rc, stdout, stderr, run = self._run_main(
+            "claude", ["--resume-decision", self.DECISION_ID], run)
+        self.assertEqual(rc, 2)
+        self.assertEqual(json.loads(stdout)["superseded_by"],
+                         "dec-replacement-0001")
+        self.assertIn("superseded", stderr)
+        run.assert_not_called()
+
+    @patch("worktrail.router.skill_dispatch.subprocess.run")
+    def test_resume_decision_refuses_a_prefix_match(self, run):
+        self._answer()
+        prefix = self.DECISION_ID[:-1]
+        stderr = StringIO()
+        with redirect_stdout(StringIO()), redirect_stderr(stderr):
+            rc = skill_dispatch.main(
+                self._dispatch_args("claude", ["--resume-decision", prefix]))
+        self.assertEqual(rc, 2)
+        self.assertIn("exactly", stderr.getvalue())
+        run.assert_not_called()
+
+    @patch("worktrail.router.skill_dispatch.subprocess.run")
+    def test_resume_decision_unknown_id_is_refused_before_spawn(self, run):
+        self._answer()
+        stderr = StringIO()
+        with redirect_stdout(StringIO()), redirect_stderr(stderr):
+            rc = skill_dispatch.main(
+                self._dispatch_args("claude", ["--resume-decision", "dec-unknown"]))
+        self.assertEqual(rc, 2)
+        self.assertIn("dec-unknown", stderr.getvalue())
+        run.assert_not_called()
+
+    @patch("worktrail.router.skill_dispatch.subprocess.run")
+    def test_resume_decision_threads_the_exact_id_into_every_provider(self, run):
+        run.return_value.returncode = 0
+        self._answer()
+        token = f"decision:{self.DECISION_ID}"
+        for agent in skill_dispatch.SUPPORTED_AGENTS:
+            with self.subTest(agent=agent):
+                rc, _stdout, _stderr = self._run_main(
+                    agent, ["--resume-decision", self.DECISION_ID])
+                self.assertEqual(rc, 0)
+                argv = run.call_args.args[0]
+                prompt = next(arg for arg in argv if "worktrail-sdd-workflow" in arg)
+                self.assertIn(token, prompt)
+                self.assertNotIn(token + "-", prompt)
+
+    def test_resume_decision_token_lands_at_the_end_of_native_invocations(self):
+        self.assertEqual(
+            skill_dispatch.append_decision_token("", self.DECISION_ID),
+            f"decision:{self.DECISION_ID}",
+        )
+        command = skill_dispatch.build_command(
+            "opencode", "worktrail-sdd-workflow",
+            skill_dispatch.append_decision_token("route:F", self.DECISION_ID),
+        )
+        self.assertTrue(command[-1].endswith(f"decision:{self.DECISION_ID}"))
+        self.assertIn("Invocation: /worktrail-sdd-workflow route:F "
+                      f"decision:{self.DECISION_ID}", command[-1])
+
+    @patch("worktrail.router.skill_dispatch.subprocess.run")
+    def test_dry_run_with_valid_resume_prints_command_and_spawns_nothing(self, run):
+        run.return_value.returncode = 0
+        self._answer()
+        out = StringIO()
+        with redirect_stdout(out), redirect_stderr(StringIO()):
+            with patch.object(skill_dispatch, "bootstrap_codex_skills",
+                              return_value=True):
+                rc = skill_dispatch.main(
+                    self._dispatch_args("codex", ["--resume-decision",
+                                                  self.DECISION_ID, "--dry-run"]))
+        self.assertEqual(rc, 0)
+        self.assertIn(f"decision:{self.DECISION_ID}", out.getvalue())
+        run.assert_not_called()
+
+    def test_missing_agent_or_skill_is_rejected_unless_presenting(self):
+        stderr = StringIO()
+        with redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as ctx:
+                skill_dispatch.main([])
+        self.assertEqual(ctx.exception.code, 2)
+        out = StringIO()
+        with redirect_stdout(out), redirect_stderr(StringIO()):
+            self._ask()
+            rc = skill_dispatch.main(["--present-decision", self.DECISION_ID])
+        self.assertEqual(rc, 0)
+
+
 if __name__ == "__main__":
     unittest.main()
+

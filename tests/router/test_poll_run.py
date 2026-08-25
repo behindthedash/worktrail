@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Tests for poll_run.py. Run: python3 test_poll_run.py"""
+import os
 import subprocess
 import sys
 import tempfile
@@ -9,7 +10,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 import worktrail.router.poll_run as poll_run
-from worktrail.router.poll_run import is_finished, read_run_record, main
+from worktrail.router.poll_run import (
+    is_finished,
+    read_run_record,
+    unresolved_decision_ids,
+    main,
+)
 
 
 class TestPollRun(unittest.TestCase):
@@ -239,6 +245,124 @@ class TestCLI(unittest.TestCase):
             text=True
         )
         self.assertEqual(result.returncode, 1)
+
+
+class PendingDecisionSurfacingTests(unittest.TestCase):
+    """`pending_user_decision` is a first-class completion result: the poller
+    surfaces each still-unanswered decision's exact id so an attended host can
+    present it and resume through that id -- never a generic failure."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def _write_record(self, filename: str, final_status=None,
+                      decisions=()) -> str:
+        path = Path(self.tmp) / filename
+        lines = [
+            "run_id: test-run",
+            "status: executing",
+            f"final_status: {final_status if final_status else 'null'}",
+        ]
+        if decisions:
+            lines.append("pending_decisions:")
+            lines.extend(f"  - {entry}" for entry in decisions)
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return str(path)
+
+    def test_read_run_record_collects_pending_decisions_entries(self):
+        path = self._write_record(
+            "blocked.yaml", final_status="blocked_product_decision",
+            decisions=[
+                "2026-08-25T10:00:00+0000 [asked] dec-alpha-000001",
+                "2026-08-25T11:00:00+0000 [presented] dec-alpha-000001",
+            ],
+        )
+        record = read_run_record(Path(path))
+        self.assertEqual(record.get("pending_decisions"), [
+            "2026-08-25T10:00:00+0000 [asked] dec-alpha-000001",
+            "2026-08-25T11:00:00+0000 [presented] dec-alpha-000001",
+        ])
+        self.assertEqual(record.get("final_status"), "blocked_product_decision")
+
+    def test_read_run_record_keeps_scalar_and_null_parsing(self):
+        path = Path(self.tmp) / "plain.yaml"
+        path.write_text(
+            'run_id: plain\n'
+            'pull_request: null\n'
+            'final_status: null\n'
+            'pull_request_quoted: "https://x"\n',
+            encoding="utf-8")
+        record = read_run_record(Path(path))
+        self.assertEqual(record.get("run_id"), "plain")
+        self.assertIsNone(record.get("pull_request"))
+        self.assertIsNone(record.get("final_status"))
+        self.assertEqual(record.get("pull_request_quoted"), "https://x")
+
+    def test_unresolved_ids_track_the_latest_event_per_decision(self):
+        record = {"pending_decisions": [
+            "t1 [asked] dec-one",
+            "t1 [asked] dec-two",
+            "t1 [answered] dec-two",
+            "t1 [consumed] dec-three",
+            "t1 [asked] dec-four",
+            "t1 [superseded] dec-four",
+        ]}
+        self.assertEqual(
+            unresolved_decision_ids(record), ["dec-one", "dec-two"])
+
+    def test_unresolved_ids_ignore_malformed_or_missing_entries(self):
+        self.assertEqual(unresolved_decision_ids({}), [])
+        self.assertEqual(unresolved_decision_ids({"pending_decisions": None}), [])
+        self.assertEqual(unresolved_decision_ids({"pending_decisions": [
+            "garbage without tokens", 42, None,
+            "t1 [consumed] dec-five",
+        ]}), [])
+
+    def test_completion_surfaces_open_decisions_with_exact_resume_token(self):
+        path = self._write_record(
+            "blocked.yaml", final_status="blocked_product_decision",
+            decisions=["2026-08-25T10:00:00+0000 [asked] dec-alpha-000001"],
+        )
+        out = StringIO()
+        with patch.object(poll_run, "ensure_pr_risk_label", return_value=None), \
+             patch("sys.stdout", out):
+            rc = main(["--run", path, "--interval", "0", "--max-iterations", "1"])
+        self.assertEqual(rc, 0)
+        output = out.getvalue()
+        self.assertIn("Run completed: blocked_product_decision", output)
+        self.assertIn("pending_user_decision: dec-alpha-000001", output)
+        self.assertIn("--resume-decision", output)
+
+    def test_consumed_and_superseded_decisions_are_not_surfaced(self):
+        path = self._write_record(
+            "done.yaml", final_status="failed_recoverable",
+            decisions=[
+                "t [asked] dec-old",
+                "t [superseded] dec-old",
+                "t [asked] dec-used",
+                "t [consumed] dec-used",
+            ],
+        )
+        out = StringIO()
+        with patch("sys.stdout", out):
+            rc = main(["--run", path, "--interval", "0", "--max-iterations", "1"])
+        self.assertEqual(rc, 0)
+        self.assertNotIn("pending_user_decision", out.getvalue())
+
+    def test_cli_subprocess_surfaces_the_exact_decision_id(self):
+        src = str(Path(poll_run.__file__).resolve().parents[2])
+        path = self._write_record(
+            "blocked.yaml", final_status="blocked_product_decision",
+            decisions=["2026-08-25T10:00:00+0000 [asked] dec-subproc-000001"],
+        )
+        env = {**os.environ, "PYTHONPATH": src}
+        result = subprocess.run(
+            [sys.executable, "-m", "worktrail.router.poll_run", "--run", path,
+             "--interval", "0", "--max-iterations", "1"],
+            capture_output=True, text=True, env=env,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("pending_user_decision: dec-subproc-000001", result.stdout)
 
 
 if __name__ == "__main__":
