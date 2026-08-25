@@ -12,12 +12,12 @@
 
 ## 2. Layer 2 — Stop hook mechanical dedup check
 
-- [ ] 2.1 Session-Touched Durable-Artifact Detection: extend `scan_transcript` in
+- [x] 2.1 Session-Touched Durable-Artifact Detection: extend `scan_transcript` in
       `hooks/suggest_next_step.py` to also collect touched
       `docs/specs/**` / `openspec/changes/**` paths from edit-tool `file_path`s and Bash
       write markers, in the same single pass (new regex collector alongside
       `RUN_RECORD_PATH_RE`); update `hooks/test_suggest_next_step.py`.
-- [ ] 2.2 Planned-Run-Record Detection and Merged Docs-Only Spec PR Detection Is
+- [x] 2.2 Planned-Run-Record Detection and Merged Docs-Only Spec PR Detection Is
       Transcript-Local: add `src/worktrail/router/check_durable_artifact_capture_gate.py`,
       a fail-open checker accepting repeated `--touched-path` and `--run-record`, returning
       JSON hits of three kinds (session-touched durable artifact; run record finishing
@@ -40,7 +40,7 @@
 
 ## 3. Layer 3 — capture-time overlap warning
 
-- [ ] 3.1 In `src/worktrail/workqueue/create_handoff.py`, before writing the brief: resolve the
+- [x] 3.1 In `src/worktrail/workqueue/create_handoff.py`, before writing the brief: resolve the
       repo path already computed for frontmatter; scan `<repo>/docs/specs/*/` slugs,
       `<repo>/openspec/changes/*/` names, and open PR titles (`gh pr list --repo <remote> --state
       open --json title,number`, short timeout, silently skipped when unavailable) against focus
