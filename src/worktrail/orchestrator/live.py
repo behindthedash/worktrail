@@ -861,6 +861,83 @@ def group_is_terminal(g: dict, by_id: dict, terminal_statuses: set) -> bool:
     return all(by_id[tid].get("status") in terminal_statuses for tid in g["tasks"])
 
 
+def diagnose_stuck_group(g: dict, by_id: dict, terminal_statuses: set) -> str:
+    """Explain WHY a non-terminal group's fan-out stalled, for the "fan-out
+    incomplete (run budget or error)" quarantine message.
+
+    The bare message gives no signal about which task/edge blocked the
+    frontier -- confirmed to cost long manual investigations (worktrail-go
+    brief 20260824-084313: a tail-kind (e2e/cleanup) predecessor blocking its
+    same-group dependent, since a tail task only runs in the separate tail
+    dispatch phase *after* the main fan-out has already given up on it).
+    Walk each stuck task's unmet-dependency chain to its root(s) and name
+    them, flagging tail-kind roots specifically since they are the deadlock
+    case a human can't fix by waiting.
+    """
+    missing = sorted(tid for tid in g["tasks"] if tid not in by_id)
+    stuck = sorted(
+        tid for tid in g["tasks"]
+        if tid in by_id and by_id[tid].get("status") not in terminal_statuses
+    )
+    if not missing and not stuck:
+        return ""
+
+    lines = []
+    if missing:
+        lines.append(
+            f"{len(missing)} member(s) missing from the run's task table "
+            f"({', '.join(missing)})"
+        )
+    if not stuck:
+        return "; ".join(lines)
+
+    def _unmet_deps(tid: str) -> list:
+        task = by_id.get(tid)
+        if task is None:
+            return []
+        return [
+            d for d in task.get("deps", [])
+            if by_id.get(d, {}).get("status") not in coordinator.DONE
+        ]
+
+    def _root_blockers(tid: str, seen: set) -> set:
+        if tid in seen:
+            return set()
+        seen.add(tid)
+        unmet = _unmet_deps(tid)
+        if not unmet:
+            return {tid}
+        roots: set = set()
+        for d in unmet:
+            roots |= _root_blockers(d, seen)
+        return roots
+
+    for tid in stuck:
+        unmet = _unmet_deps(tid)
+        if not unmet:
+            lines.append(
+                f"task {tid} blocked: no eligible frontier and no unmet deps "
+                f"recorded -- status stuck at '{by_id[tid].get('status')}'"
+            )
+            continue
+        roots: set = set()
+        for d in unmet:
+            roots |= _root_blockers(d, {tid})
+        tail_roots = sorted(r for r in roots if by_id.get(r, {}).get("kind") in coordinator.TAIL_KINDS)
+        other_roots = sorted(r for r in roots - set(tail_roots))
+        parts = []
+        if tail_roots:
+            parts.append(
+                f"depends on tail task(s) {', '.join(tail_roots)} which only "
+                f"run in the tail phase after fan-out"
+            )
+        if other_roots:
+            statuses = ", ".join(f"{r}={by_id.get(r, {}).get('status', '?')}" for r in other_roots)
+            parts.append(f"depends on {', '.join(other_roots)} which never reached done ({statuses})")
+        lines.append(f"task {tid} blocked: " + "; ".join(parts))
+    return "; ".join(lines)
+
+
 def validate_task_metadata(tasks: list) -> None:
     """Refuse live fan-out when implementation tasks have no scope AND no serialization
     boundary. `conductor/compile.py`'s own prompt tells the model that an empty `files`
@@ -4732,8 +4809,12 @@ def _pipeline_scheduler(
             else:
                 # Non-terminal: fan-out never completed their tasks. Quarantine and
                 # fire the event so any dependent IV threads don't deadlock.
+                diagnosis = diagnose_stuck_group(g, by_id, terminal_statuses)
+                reason = "fan-out incomplete (run budget or error)"
+                if diagnosis:
+                    reason = f"{reason} -- {diagnosis}"
                 with iv_lock:
-                    quarantined[gname] = "fan-out incomplete (run budget or error)"
+                    quarantined[gname] = reason
                     _group_phase_map.pop(gname, None)
                 _record_group_fn(
                     gname, "", f"{run_id}/{gname}", "QUARANTINED",
