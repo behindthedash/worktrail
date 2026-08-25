@@ -375,3 +375,38 @@ def test_multiple_kind_tags_warn_and_take_the_first(tmp_path):
     parsed = os_schema.parse_tasks_md(md)
     assert parsed.tasks[0].kind == "e2e"
     assert any("multiple kind tags" in w for w in parsed.warnings)
+
+
+TAIL_FIRST_IN_GROUP = textwrap.dedent(
+    """\
+    ## 1. Provider setup
+
+    - [ ] 1.1 [cleanup] Create Turnstile account (no repo files)
+    - [ ] 1.2 Wire up the Turnstile secret
+    - [ ] 1.3 Add the client-side widget
+    """
+)
+
+
+def test_impl_task_baseline_dep_skips_a_tail_kind_predecessor(tmp_path):
+    """A tail-kind (e2e/cleanup) task that happens to be first in its group must
+    not become the baseline `deps` anchor for the impl tasks that follow it.
+
+    `runnable_frontier()` never dispatches a tail-kind task during the main
+    fan-out (`coordinator.py`'s `tail_ids` skip) -- it only runs in the later,
+    strictly-serialized tail phase, once every non-tail task is already
+    terminal. If an impl task's own baseline dep still points at that tail
+    task, `deps` can never be satisfied during the fan-out: the impl task
+    waits on the tail task, and the tail task waits on the impl task (plus
+    every other non-tail task) to finish first -- a permanent deadlock that
+    quarantines the whole group. Repro: worktrail's own gracefully-giving-back
+    run full-1787585323, group "1. Provider setup".
+    """
+    _, tasks = OpenSpecTaskSource(_change(tmp_path, tasks=TAIL_FIRST_IN_GROUP)).load(
+        "add-export"
+    )
+    by_id = {t["id"]: t for t in tasks}
+    assert by_id["1.1"]["kind"] == "cleanup"
+    assert by_id["1.2"]["deps"] == []
+    # the next impl task still chains off the nearest non-tail sibling
+    assert by_id["1.3"]["deps"] == ["1.2"]
