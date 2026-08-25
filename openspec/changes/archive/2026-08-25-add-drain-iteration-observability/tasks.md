@@ -8,5 +8,5 @@
 
 ## 3. Verification
 
-- [ ] 3.1 [e2e] Run `PYTHONPATH=src pytest -q tests/drain/test_drain.py` and confirm the focused drain suite passes.
-- [ ] 3.2 [e2e] Run `PYTHONPATH=src pytest -q && PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` and confirm the repository regression gates pass.
+- [x] 3.1 [e2e] Run `PYTHONPATH=src pytest -q tests/drain/test_drain.py` and confirm the focused drain suite passes.
+- [x] 3.2 [e2e] Run `PYTHONPATH=src pytest -q && PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` and confirm the repository regression gates pass.
