@@ -14,6 +14,7 @@ import unittest
 from pathlib import Path
 
 from worktrail.router import check_spec_collision as csc
+from worktrail.workqueue import decisions
 
 
 def _git(repo: str, *args: str) -> subprocess.CompletedProcess:
@@ -380,6 +381,94 @@ class TestTaskLevelMatchNeverAutoCloses(unittest.TestCase):
         # candidates together, `verify()` takes its own independent `root`.
         verified = csc.verify(Path(repo), "001-example", root="docs/specs")
         self.assertTrue(verified["confirmed"])
+
+
+class TestPendingDecisionEnvelope(unittest.TestCase):
+    """Task 2.1 (pending-user-decision-dispatch-contract) -- a CONFIRMED
+    collision carries the provider-neutral, versioned pending-decision
+    envelope under `pending_decision`; every other outcome carries none."""
+
+    def _confirm_collision(self, repo: str) -> None:
+        spec_dir = _make_spec(repo, "001-example", status="Implemented")
+        target = Path(repo) / "src" / "feature.py"
+        _write(target, "print('shipped')\n")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-q", "-m", "ship feature")
+        _make_task(spec_dir, "TASK-001", files=["src/feature.py"])
+
+    def test_confirmed_collision_carries_valid_envelope(self):
+        repo = _init_repo()
+        self._confirm_collision(repo)
+        res = csc.verify(Path(repo), "001-example")
+        self.assertTrue(res["confirmed"])
+        envelope = res["pending_decision"]
+        self.assertIsNotNone(envelope)
+        parsed = decisions.parse_pending_decision_envelope(envelope)
+        self.assertEqual(parsed["schema"], decisions.DECISION_ENVELOPE_SCHEMA)
+        self.assertEqual(parsed["version"], decisions.DECISION_ENVELOPE_VERSION)
+        self.assertEqual(parsed["status"], "pending")
+        self.assertTrue(parsed["decision_id"].startswith("dec-"))
+        self.assertEqual(parsed["provenance"]["source"], csc.GUARD_SOURCE)
+        self.assertEqual(parsed["provenance"]["subject"], "001-example")
+        self.assertGreaterEqual(len(parsed["options"]), 2)
+        self.assertTrue(all(o.strip() for o in parsed["options"]))
+
+    def test_identity_is_deterministic_across_re_runs(self):
+        repo = _init_repo()
+        self._confirm_collision(repo)
+        first = csc.verify(Path(repo), "001-example")["pending_decision"]
+        second = csc.verify(Path(repo), "001-example")["pending_decision"]
+        self.assertEqual(first["decision_id"], second["decision_id"])
+        self.assertEqual(
+            first["decision_id"],
+            decisions.decision_identity(
+                csc.GUARD_SOURCE, str(Path(repo).resolve()), "001-example",
+                csc.DECISION_QUESTION),
+        )
+
+    def test_provenance_threads_run_id_and_dispatch_mode(self):
+        repo = _init_repo()
+        self._confirm_collision(repo)
+        res = csc.verify(Path(repo), "001-example",
+                         run_id="go-20260825-101010", dispatch_mode="adapter")
+        prov = res["pending_decision"]["provenance"]
+        self.assertEqual(prov["run_id"], "go-20260825-101010")
+        self.assertEqual(prov["dispatch_mode"], "adapter")
+
+    def test_unconfirmed_verify_leaves_pending_decision_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _make_spec(tmp, "001-example", status="Draft")
+            res = csc.verify(Path(tmp), "001-example")
+            self.assertFalse(res["confirmed"])
+            self.assertIsNone(res["pending_decision"])
+
+    def test_degraded_verify_leaves_pending_decision_none(self):
+        repo = _init_repo()
+        res = csc.verify(Path(repo), "999-does-not-exist")
+        self.assertFalse(res["confirmed"])
+        self.assertIsNone(res["pending_decision"])
+
+    def test_check_output_never_carries_a_pending_decision(self):
+        """check() is pure extraction -- it makes no semantic judgment, so it
+        never presumes a collision worth a decision."""
+        with tempfile.TemporaryDirectory() as tmp:
+            _make_spec(tmp, "001-example", status="Implemented")
+            res = csc.check(Path(tmp))
+            self.assertTrue(res["checked"])
+            self.assertTrue(res["candidates"])
+            self.assertIsNone(res["pending_decision"])
+
+    def test_unavailable_decision_primitives_degrade_to_none_without_raising(self):
+        repo = _init_repo()
+        self._confirm_collision(repo)
+        original = csc._decision_helpers
+        csc._decision_helpers = lambda: (None, None)
+        try:
+            res = csc.verify(Path(repo), "001-example")
+        finally:
+            csc._decision_helpers = original
+        self.assertTrue(res["confirmed"])
+        self.assertIsNone(res["pending_decision"])
 
 
 class TestCli(unittest.TestCase):

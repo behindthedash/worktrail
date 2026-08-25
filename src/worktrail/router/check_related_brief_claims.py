@@ -24,6 +24,15 @@ answer.
 
 Evidence surfaced here is for a human to judge, never auto-applied: this
 module never blocks dispatch or mutates any brief.
+
+When `check()` finds actively claimed related ids, its result additionally
+carries `pending_decision`: the provider-neutral, versioned pending-decision
+envelope (`worktrail.pending-decision`, built via `workqueue/decisions.py`'s
+`pending_decision_envelope()` under a deterministic `decision_identity()`
+keyed on the guard, queue-side repo, and claimed brief) for the
+coordinate/wait/proceed call. It is absent (`None`) whenever nothing is
+actively claimed and degrades to `None` when the decision primitives are
+unavailable; filing it via `ask(decision_id=...)` stays the caller's job.
 """
 from __future__ import annotations
 
@@ -44,6 +53,101 @@ from ..workqueue.work_queue import resolve as _wq_resolve
 FOCUS_SUMMARY_LIMIT = 200
 
 _FOCUS_BODY_RE = re.compile(r"^##\s+Focus\s*$\r?\n(.+)$", re.MULTILINE)
+
+
+# --- provider-neutral pending-decision envelope ---------------------------------
+
+# `source` provenance recorded on every envelope this guard builds; the same
+# string the decision queue's records carry in their frontmatter.
+GUARD_SOURCE = "check_related_brief_claims"
+
+# Static question/options: identity is derived from (source, repo, subject,
+# question), so a re-run against the same claimed brief converges on the same
+# decision id instead of filing duplicates. The active claims themselves
+# travel in `check()`'s own `active` list, never inside the question text.
+DECISION_QUESTION = (
+    "One or more related briefs of this brief are actively claimed by "
+    "another session right now. How should dispatch proceed?"
+)
+DECISION_OPTIONS = [
+    "coordinate: align with the owner(s) of the active claim(s) first",
+    "wait: hold this brief until the related claim(s) land",
+    "proceed-anyway: accept the overlap risk and dispatch, recording why",
+]
+
+
+def _decision_helpers():
+    """Best-effort import of the decision-envelope primitives. Returns
+    `(decision_identity, pending_decision_envelope)`, or `(None, None)` when
+    `workqueue.decisions` cannot be imported -- the envelope degrades to
+    `None`, never an exception."""
+    try:
+        from ..workqueue.decisions import (
+            decision_identity,
+            pending_decision_envelope,
+        )
+    except Exception:  # noqa: BLE001 - envelope is additive, never fatal
+        return None, None
+    return decision_identity, pending_decision_envelope
+
+
+def _claimed_subject(frontmatter: Dict[str, Any], path: Path) -> str:
+    """The claimed brief's stable subject for decision identity: its
+    frontmatter `id:` when present (the canonical work-queue id), else the
+    file stem -- both spellings name the same brief."""
+    subject = str(frontmatter.get("id") or "").strip()
+    return subject or path.stem
+
+
+def _claimed_repo(frontmatter: Dict[str, Any], active: List[Dict[str, Any]]) -> str:
+    """The repo-side anchor for decision identity: the claimed brief's own
+    `repo:` field when present, else the first active claim's repo, else the
+    literal ``unspecified`` -- `decision_identity()` refuses blank repos, and
+    a missing field must degrade to a stable placeholder, never to no
+    envelope at all."""
+    repo = str(frontmatter.get("repo") or "").strip()
+    if repo:
+        return repo
+    for entry in active:
+        repo = str(entry.get("repo") or "").strip()
+        if repo:
+            return repo
+    return "unspecified"
+
+
+def build_pending_decision(
+    subject: str,
+    repo: str,
+    *,
+    run_id: Optional[str] = None,
+    dispatch_mode: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Build the versioned pending-decision envelope for actively claimed
+    related briefs.
+
+    Deterministic identity via `decisions.decision_identity()` keyed on
+    (source, repo, subject=claimed brief id, question), so a re-run against
+    the same claimed brief converges on the same id. Provenance (`repo`,
+    `subject`, optional `run_id`/`dispatch_mode`) travels inside the envelope
+    so the resuming side can validate the answer it finds. Never raises: any
+    failure (missing primitives, blank subject/repo) returns `None`.
+    """
+    try:
+        subject = str(subject or "").strip()
+        repo = str(repo or "").strip()
+        if not subject or not repo:
+            return None
+        identity, envelope = _decision_helpers()
+        if identity is None:
+            return None
+        decision_id = identity(GUARD_SOURCE, repo, subject, DECISION_QUESTION)
+        return envelope(
+            decision_id=decision_id, question=DECISION_QUESTION,
+            options=list(DECISION_OPTIONS), source=GUARD_SOURCE,
+            repo=repo, subject=subject, brief=None,
+            run_id=run_id, dispatch_mode=dispatch_mode)
+    except Exception:  # noqa: BLE001 - envelope is additive, never fatal
+        return None
 
 
 def _focus_summary(path: Path, frontmatter: Dict[str, Any]) -> str:
@@ -156,18 +260,24 @@ def check(
     queue_dir: Path,
     agent_label: Optional[str] = None,
     runs_dir: Optional[Path] = None,
+    *,
+    run_id: Optional[str] = None,
+    dispatch_mode: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Do any of `claimed_brief_path`'s `related:` ids name a brief that is
     actively claimed (in `picked_dir`, `status: picked`) right now?
 
-    Returns `{"checked": bool, "active": [...], "warning": str|None}`.
+    Returns `{"checked": bool, "active": [...], "warning": str|None,
+    "pending_decision": envelope|None}`.
     `active` entries carry `id`, `path`, `claimed-by`, `claimed-at`, `repo`,
     `focus` (see `_resolve_active_match`), and -- when the match is claimed
     by this same machine and a local run record can be found -- `run_record`
-    (see `_enrich_with_run_record`). Never raises; `checked` is `false` only
-    when the claimed brief itself can't be read or parsed -- an individual
-    related id failing to resolve is skipped, not a reason to report
-    `checked: false` for the whole call.
+    (see `_enrich_with_run_record`). When `active` is non-empty,
+    `pending_decision` carries `build_pending_decision()`'s provider-neutral
+    envelope for the human's coordinate/wait/proceed call. Never raises;
+    `checked` is `false` only when the claimed brief itself can't be read or
+    parsed -- an individual related id failing to resolve is skipped, not a
+    reason to report `checked: false` for the whole call.
 
     `agent_label` defaults to this machine's own `work_queue._agent_label()`
     value, so a match claimed by *this* caller (as opposed to some other
@@ -176,7 +286,9 @@ def check(
     (`run_record.py`'s own default), joined per-match with the matched
     brief's `repo:` field to scan `runs_dir/<repo-name>/*.yaml`.
     """
-    result: Dict[str, Any] = {"checked": False, "active": [], "warning": None}
+    result: Dict[str, Any] = {
+        "checked": False, "active": [], "warning": None, "pending_decision": None,
+    }
 
     claimed_brief_path = Path(claimed_brief_path)
     # `read_frontmatter` itself swallows OSError and returns `{}`, which
@@ -230,6 +342,11 @@ def check(
     result["active"] = active
     if warnings:
         result["warning"] = "; ".join(warnings)
+    if active:
+        result["pending_decision"] = build_pending_decision(
+            _claimed_subject(frontmatter, claimed_brief_path),
+            _claimed_repo(frontmatter, active),
+            run_id=run_id, dispatch_mode=dispatch_mode)
     return result
 
 
@@ -255,6 +372,12 @@ def _format_human(res: Dict[str, Any]) -> str:
         if m.get("run_record"):
             lines.append(f"    run_record: {m['run_record']}")
     lines.append("  -> surface these to the operator; never block dispatch on this signal alone")
+    decision = res.get("pending_decision")
+    if decision:
+        lines.append(
+            f"  -> pending decision {decision['decision_id']}: "
+            "surface this envelope to the operator"
+        )
     if res.get("warning"):
         lines.append(f"  warning: {res['warning']}")
     return "\n".join(lines)
