@@ -1462,6 +1462,144 @@ class CrossHopArgvInvariant(unittest.TestCase):
                         f"{cmd[0]} argv at element {cmd.index(token)}: {cmd}"
                     )
 
+    # ---------------------------------------------------------------- #
+    # Cross-path scenario sweep: the FULL CLAUDE_ONLY_ARGV_TOKENS-derived
+    # payload rides on every scenario below; no codex/opencode argv may
+    # carry any of it, whichever mechanism selected the hop.
+    # ---------------------------------------------------------------- #
+
+    # The caller-passable slice of CLAUDE_ONLY_ARGV_TOKENS, shaped exactly as
+    # live.py emits it: _LEAN_WORKER_FLAGS plus the review-role
+    # --append-system-prompt pair. The remaining claude-only tokens reach an
+    # ungated claude argv through build_cmd()'s own structural additions
+    # (PERM_FLAGS, JSON_OUTPUT_FLAGS, the _with_default_setting_sources
+    # default) or the paired effort=/resume_session_id= kwargs -- the positive
+    # control pins every token, keeping the negative assertions honest.
+    SWEEP_EXTRA_ARGS = [
+        "--strict-mcp-config",
+        "--tools", "Read", "Edit", "Write", "Bash", "Grep", "Glob",
+        "--append-system-prompt", "lean worker system prompt",
+    ]
+    SWEEP_EFFORT = "high"
+    SWEEP_RESUME_SESSION_ID = "sess-sweep-0001"
+
+    # Short (<600 chars) genuine usage-cap notice: exit 0, non-empty stdout,
+    # no report-back -- the in-flight trigger for a fallback hop.
+    LIMIT_NOTICE = Proc(0, "You've hit your session limit. Your limit resets at 11:59pm.", "")
+
+    def _gate(self, agent):
+        """Persist a transport-class capacity gate for *agent* under its
+        pinned model, the mechanism FallbackChain exercises."""
+        spawnlib.agent_capacity.record(
+            agent,
+            spawnlib.default_model_for_agent(agent),
+            outcome="unavailable",
+            failure_class="transport",
+            retry_after=datetime.datetime.now(datetime.timezone.utc)
+            + datetime.timedelta(seconds=300),
+        )
+
+    def _sweep(self, outcomes, **kw):
+        """Script *outcomes* and run one claude-primary spawn_agent carrying
+        the full payload (extra_args + effort + resume_session_id). The codex
+        child-env prep is patched out (as in CodexSpawn) so scenarios reaching
+        a codex hop stay hermetic. Returns (out, captured argvs, slept)."""
+        kw.setdefault("extra_args", list(self.SWEEP_EXTRA_ARGS))
+        kw.setdefault("effort", self.SWEEP_EFFORT)
+        kw.setdefault("resume_session_id", self.SWEEP_RESUME_SESSION_ID)
+        kw.setdefault("retries", 0)
+        sleeps = []
+        kw.setdefault("sleep", lambda seconds: sleeps.append(seconds))
+        calls = self._script_run(list(outcomes))
+        with tempfile.TemporaryDirectory() as cwd, patch.object(
+            spawnlib,
+            "prepare_codex_child_environment",
+            return_value=(os.environ.copy(), "/tmp/worktrail-codex-child", False),
+        ):
+            out = spawnlib.spawn_agent("prompt", cwd, agent="claude", **kw)
+        return out, calls, sleeps
+
+    def test_capacity_gate_first_hop_claude_gated_selects_codex(self):
+        # Persisted gate consulted BEFORE the first command is built: claude
+        # is gated, so codex is hop zero and the claude-only payload must
+        # never reach the single argv this spawn builds.
+        self._gate("claude")
+        out, calls, _sleeps = self._sweep(
+            [Proc(0, "codex report", "")], fallback_agent="codex"
+        )
+        self.assertEqual(out.text, "codex report")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "codex")
+        self.assertIn(self.HOP_MODELS["codex"], calls[0])
+        self.assert_no_claude_only_flags(calls)
+
+    def test_capacity_gate_first_hop_claude_gated_selects_opencode(self):
+        self._gate("claude")
+        out, calls, _sleeps = self._sweep(
+            [Proc(0, "opencode report", "")], fallback_agent="opencode"
+        )
+        self.assertEqual(out.text, "opencode report")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "opencode")
+        self.assertIn(self.HOP_MODELS["opencode"], calls[0])
+        self.assert_no_claude_only_flags(calls)
+
+    def test_session_limit_hop_claude_to_codex(self):
+        out, calls, sleeps = self._sweep(
+            [self.LIMIT_NOTICE, Proc(0, "codex report", "")],
+            fallback_agent="codex",
+        )
+        self.assertEqual(out.text, "codex report")
+        self.assertEqual([c[0] for c in calls], ["claude", "codex"])
+        self.assertEqual(sleeps, [])  # the chain hop replaces sleep-until-reset
+        self.assertIn(self.HOP_MODELS["codex"], calls[1])
+        self.assert_no_claude_only_flags(calls)
+
+    def test_session_limit_hop_claude_to_opencode(self):
+        out, calls, sleeps = self._sweep(
+            [self.LIMIT_NOTICE, Proc(0, "opencode report", "")],
+            fallback_agent="opencode",
+        )
+        self.assertEqual(out.text, "opencode report")
+        self.assertEqual([c[0] for c in calls], ["claude", "opencode"])
+        self.assertEqual(sleeps, [])
+        self.assertIn(self.HOP_MODELS["opencode"], calls[1])
+        self.assert_no_claude_only_flags(calls)
+
+    def test_multi_hop_chain_hitting_limit_twice_sweeps_second_hop(self):
+        # claude -> (limit) -> codex -> (limit) -> opencode: the SECOND hop
+        # transition is itself swept -- the rebuilt codex command carried no
+        # payload, and the codex->opencode rebuild must not resurrect one.
+        out, calls, sleeps = self._sweep(
+            [self.LIMIT_NOTICE, self.LIMIT_NOTICE, Proc(0, "opencode report", "")],
+            fallback_agent=["codex", "opencode"],
+        )
+        self.assertEqual(out.text, "opencode report")
+        self.assertEqual([c[0] for c in calls], ["claude", "codex", "opencode"])
+        self.assertIn(self.HOP_MODELS["codex"], calls[1])
+        self.assertIn(self.HOP_MODELS["opencode"], calls[2])
+        self.assertEqual(sleeps, [])
+        self.assert_no_claude_only_flags(calls)
+
+    def test_positive_control_ungated_claude_receives_every_payload_token(self):
+        # Positive control: with no gate and no limit hit, the ungated claude
+        # primary receives EVERY CLAUDE_ONLY_ARGV_TOKENS element -- proving
+        # the sweep payload really spans the whole token set (values intact),
+        # i.e. the negative assertions above are testing something.
+        out, calls, _sleeps = self._sweep([Proc(0, "claude report", "")])
+        self.assertEqual(out.text, "claude report")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "claude")
+        for token in CLAUDE_ONLY_ARGV_TOKENS:
+            self.assertIn(token, calls[0], token)
+        idx = calls[0].index("--append-system-prompt")
+        self.assertEqual(calls[0][idx + 1], "lean worker system prompt")
+        self.assertEqual(
+            calls[0][calls[0].index("--tools") + 1: calls[0].index("--append-system-prompt")],
+            ["Read", "Edit", "Write", "Bash", "Grep", "Glob"],
+        )
+        self.assert_no_claude_only_flags(calls)
+
 
 class ParseStreamJsonSessionId(unittest.TestCase):
     """Tests for session_id extraction from _parse_stream_json (TASK-007)."""
