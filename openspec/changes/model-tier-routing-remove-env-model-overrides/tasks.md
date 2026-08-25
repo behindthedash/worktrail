@@ -12,6 +12,6 @@
 
 ## 3. Verification
 
-- [ ] 3.1 Repo-wide grep confirms no remaining readers of `ORCH_OPENCODE_MODEL`/`ORCH_CODEX_MODEL` outside historical fixture text (`tests/fixtures/classifier_corpus.json`) and this change's own artifacts
-- [ ] 3.2 `PYTHONPATH=src pytest -q` green
-- [ ] 3.3 `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` golden-record regression green
+- [ ] 3.1 [e2e] Repo-wide grep confirms no remaining readers of `ORCH_OPENCODE_MODEL`/`ORCH_CODEX_MODEL` outside historical fixture text (`tests/fixtures/classifier_corpus.json`) and this change's own artifacts
+- [ ] 3.2 [e2e] `PYTHONPATH=src pytest -q` green
+- [ ] 3.3 [e2e] `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` golden-record regression green
