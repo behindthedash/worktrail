@@ -7,11 +7,13 @@ import datetime as dt
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from ..router.classify import classify
+from ..router.cluster_detect import OVERLAP_THRESHOLD, _overlap_coefficient, _tokenize
 from ..shared.brief_frontmatter import is_canonical_style, serialize_frontmatter, validate_brief
 from . import score_candidates
 from . import work_queue
@@ -19,6 +21,11 @@ from .work_queue import normalize_dependency_reference
 
 
 _SLUG_MAX_CHARS = 60
+
+# Wall-clock budget for the capture-time overlap scan's `gh pr list` call.
+# A hang here must never delay (or fail) a brief capture, so the call is
+# bounded and every bad outcome degrades to "no PR titles".
+_OVERLAP_SCAN_GH_TIMEOUT_SECONDS = 5
 
 
 def _slugify(focus: str) -> str:
@@ -116,6 +123,107 @@ def _infer_repo_from_focus(focus: str) -> Optional[str]:
     return None
 
 
+def _subdirectory_names(base: Path) -> list[str]:
+    """Sorted subdirectory names under `base`; [] when absent or unreadable."""
+    try:
+        return sorted(entry.name for entry in base.iterdir() if entry.is_dir())
+    except OSError:
+        return []
+
+
+def _open_pr_titles(remote: Optional[str]) -> list[str]:
+    """Open PR titles for `remote`, via a short-timeout `gh pr list` call.
+
+    Silently skipped when unavailable -- a null/empty remote, missing gh
+    binary, nonzero exit, timeout, or unparseable JSON each degrade to an
+    empty list so the capture-time overlap scan never blocks on it.
+    """
+    if not remote:
+        return []
+    try:
+        result = subprocess.run(
+            [
+                "gh",
+                "pr",
+                "list",
+                "--repo",
+                str(remote),
+                "--state",
+                "open",
+                "--json",
+                "title,number",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=_OVERLAP_SCAN_GH_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if result.returncode != 0:
+        return []
+    try:
+        entries = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(entries, list):
+        return []
+    titles: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        title = str(entry.get("title") or "").strip()
+        if title:
+            titles.append(title)
+    return titles
+
+
+def _scan_durable_artifact_overlaps(
+    focus: str,
+    repo_path: Optional[str],
+    remote: Optional[str],
+) -> list[dict[str, Any]]:
+    """Durable artifacts overlapping the focus at/above OVERLAP_THRESHOLD.
+
+    Capture-time dedup advisory (layer 3 of add-durable-artifact-dedup-gate),
+    run before writing a new brief. Scans three durable-artifact surfaces for
+    candidates: `<repo>/docs/specs/*/` slugs, `<repo>/openspec/changes/*/`
+    change names, and open PR titles for `remote`. Focus and candidate text
+    are compared with router/cluster_detect's tokenization and overlap
+    coefficient at its OVERLAP_THRESHOLD -- imported, not duplicated, so the
+    capture-time warning and consume-time cluster detection agree on what
+    "overlapping" means.
+
+    Returns hits best-first (score descending, label ascending on ties) as
+    `{"kind": "spec-slug"|"openspec-change"|"open-pr", "label", "score"}`.
+    Purely advisory and fail-open: no repo path, an unresolvable/unreadable
+    path, or any `gh` failure simply yields fewer or zero hits -- never an
+    exception.
+    """
+    tokens = _tokenize(focus)
+    if not tokens:
+        return []
+    candidates: list[tuple[str, str]] = []
+    if repo_path:
+        root = Path(repo_path).expanduser()
+        if root.is_dir():
+            candidates.extend(
+                ("spec-slug", name)
+                for name in _subdirectory_names(root / "docs" / "specs")
+            )
+            candidates.extend(
+                ("openspec-change", name)
+                for name in _subdirectory_names(root / "openspec" / "changes")
+            )
+    for title in _open_pr_titles(remote):
+        candidates.append(("open-pr", title))
+    hits: list[dict[str, Any]] = []
+    for kind, label in candidates:
+        score = _overlap_coefficient(tokens, _tokenize(label))
+        if score >= OVERLAP_THRESHOLD:
+            hits.append({"kind": kind, "label": label, "score": score})
+    return sorted(hits, key=lambda hit: (-hit["score"], hit["label"]))
+
+
 def _section(title: str, value: Optional[str]) -> str:
     value = (value or "").strip()
     return f"\n## {title}\n\n{value}\n" if value else ""
@@ -204,11 +312,12 @@ def create_handoff(
         suffix += 1
 
     skills = _clean_lines(suggested_skills)
+    resolved_repo = _normalize_repo(repo) or _infer_repo_from_focus(focus) or None
     frontmatter: dict[str, Any] = {
         "id": path.stem,
         "created": now.isoformat(timespec="seconds"),
         "focus": focus,
-        "repo": _normalize_repo(repo) or _infer_repo_from_focus(focus) or None,
+        "repo": resolved_repo,
         "remote": remote or None,
         "base-branch": base_branch or None,
         "status": "queued",
@@ -232,6 +341,13 @@ def create_handoff(
         cleaned = _clean_lines(values)
         if cleaned:
             frontmatter[key] = cleaned
+
+    # Layer 3 capture-time dedup advisory (add-durable-artifact-dedup-gate):
+    # scan durable artifacts -- spec slugs, OpenSpec change names, open PR
+    # titles -- for focus overlap before the brief is written, using the same
+    # resolved repo path the frontmatter records. Purely advisory: every
+    # failure mode degrades to zero hits, never blocking capture.
+    overlap_hits = _scan_durable_artifact_overlaps(focus, resolved_repo, remote or None)
 
     content = (
         "---\n"
