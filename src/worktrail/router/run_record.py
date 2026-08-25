@@ -57,8 +57,13 @@ finish PATH --status completed_pr_open [--pr URL] [--merge-result ...]
             implementation-completion states, unconditional on route or PR
             presence -- a real block, not fail-open, since it reads only the
             local run record (`_enforce_scope_completeness_gate`).
-  scope-review PATH --item "..." --status complete|out-of-scope|blocked
-               (--evidence "..." | --reason "...")
+   scope-review PATH --item "..." --status complete|out-of-scope|blocked
+                (--evidence "..." | --reason "...")
+   decision PATH --event asked|presented|answered|consumed|superseded
+           --decision-id ID [--note "..."]
+          -> stamp one pending-user-decision lifecycle hop into the record's
+             `pending_decisions` list (idempotent per event+decision-id; see
+             DECISION_EVENTS / workqueue/decisions.py's envelope contract)
   active-conflicts --dir DIR --repo REPO --specification SPEC [--exclude PATH]
          -> read-only scan for other non-terminal runs on the same
             repo+specification; prints a JSON array (see contracts/active-conflicts-cli.md)
@@ -202,6 +207,17 @@ PHASES = (
     "intake", "classified", "state_restored", "policy_loaded", "route_selected",
     "executing", "validating", "pr_open", "merge_gate", "done",
 )
+
+# Pending-user-decision lifecycle events: the run-record side of the versioned
+# decision-envelope contract (workqueue/decisions.py). A guard files an
+# envelope, the attended host presents and answers it, and the resuming run
+# consumes it -- every hop stamps exactly one entry in the record's
+# `pending_decisions` list (via the `decision` subcommand) so a resumed run can
+# reconstruct what happened to a decision from the audit trail alone. Kept
+# separate from `decisions` (the free-text approval log feeding Route A's
+# no_implementation_without_approval gate): recording that a QUESTION was asked
+# must never satisfy a gate about recorded APPROVALS.
+DECISION_EVENTS = ("asked", "presented", "answered", "consumed", "superseded")
 
 SECRET_PAT = re.compile(
     r"(api[-_ ]?key|secret|token|password|authorization:\s*bearer)\s*[:=]\s*\S+",
@@ -402,6 +418,7 @@ def cmd_start(args: argparse.Namespace) -> int:
         "files_changed": [],
         "tests_run": [],
         "decisions": [],
+        "pending_decisions": [],
         "assumptions": [],
         "deferred_work": [],
         "scope_review": [],
@@ -531,6 +548,66 @@ def cmd_scope_review(args: argparse.Namespace) -> int:
     )
     _save(path, record)
     print(json.dumps({"status": args.status, "item": item}))
+    return 0
+
+
+_DECISION_ENTRY_RE = re.compile(r"\[(?P<event>[a-z_-]+)\]\s+(?P<id>\S+)")
+
+
+def _decision_entry_matches(entry: Any, event: str, decision_id: str) -> bool:
+    """Whether a `pending_decisions` entry is `<ts> [event] <id> ...` for this
+    exact (event, decision_id) pair -- token-compared, never substring-matched,
+    so `[asked] dec-x` cannot swallow the distinct id `dec-x-extra`."""
+    if not isinstance(entry, str):
+        return False
+    m = _DECISION_ENTRY_RE.search(entry)
+    return bool(m) and m.group("event") == event \
+        and m.group("id") == decision_id
+
+
+def record_decision_event(
+    run_path: str | Path, event: str, decision_id: str,
+    note: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Stamp one pending-decision lifecycle hop onto a run record.
+
+    Entries land in the record's `pending_decisions` list as
+    `<ts> [<event>] <decision-id>` (plus an optional ` — <note>`), the same
+    line format as `interventions`. Idempotent on the exact (event,
+    decision_id) pair: a retried dispatch re-stamps nothing, it gets
+    {"status": "already-recorded"} plus the original entry -- the audit trail
+    records that something happened once, not how many times a caller tried.
+    """
+    if event not in DECISION_EVENTS:
+        raise SystemExit(
+            f"'{event}' is not an allowed decision event.\nAllowed: "
+            + ", ".join(DECISION_EVENTS))
+    if not decision_id or not decision_id.strip():
+        raise SystemExit("--decision-id is required and must be non-empty")
+    decision_id = decision_id.strip()
+    path = Path(run_path)
+    record = _load(path)
+    entries = record.get("pending_decisions")
+    if entries is None:
+        entries = record["pending_decisions"] = []
+    elif not isinstance(entries, list):
+        raise SystemExit("field 'pending_decisions' is scalar; cannot append")
+    for entry in entries:
+        if _decision_entry_matches(entry, event, decision_id):
+            return {"status": "already-recorded", "event": event,
+                    "decision_id": decision_id, "entry": entry}
+    new_entry = (f"{_now()} [{event}] {decision_id}"
+                 + (f" — {note.strip()}" if note and note.strip() else ""))
+    entries.append(new_entry)
+    _save(path, record)
+    return {"status": "recorded", "event": event, "decision_id": decision_id,
+            "entry": new_entry}
+
+
+def cmd_decision(args: argparse.Namespace) -> int:
+    result = record_decision_event(args.path, args.event, args.decision_id,
+                                   args.note)
+    print(json.dumps(result))
     return 0
 
 
@@ -1595,6 +1672,20 @@ def main(argv=None) -> int:
     detail.add_argument("--evidence")
     detail.add_argument("--reason")
     s.set_defaults(func=cmd_scope_review)
+
+    s = sub.add_parser("decision")
+    s.add_argument("path")
+    s.add_argument("--event", required=True, choices=list(DECISION_EVENTS),
+                   help="lifecycle hop to stamp: asked (guard filed the "
+                        "envelope), presented (attended host showed it), "
+                        "answered (human replied), consumed (resuming run "
+                        "applied it), superseded (replaced by a newer decision)")
+    s.add_argument("--decision-id", required=True, dest="decision_id",
+                   help="the pending decision's id (workqueue/decisions.py)")
+    s.add_argument("--note", default=None,
+                   help="optional detail, e.g. the answer digest or the "
+                        "superseding decision id")
+    s.set_defaults(func=cmd_decision)
 
     s = sub.add_parser("finish")
     s.add_argument("path")
