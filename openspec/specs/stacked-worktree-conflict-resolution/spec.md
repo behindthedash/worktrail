@@ -90,11 +90,17 @@ content into the worktree by merging the freshest available base ref (remote bas
 a fetch, falling back to the local base ref) before dependency-file validation runs, then
 proceed only once the worktree's `HEAD` is confirmed to already contain that base ref
 (`git merge-base --is-ancestor`) -- a no-op when it already does. The merge SHALL NOT
-auto-resolve conflicts in favor of either side: a genuine content-level conflict between
-the stacked worktree and the base ref SHALL fail the merge loudly (aborting it) rather
-than being silently resolved, so dependency-file validation's fail-loud backstop remains
-the source of truth when the carried content genuinely diverges. (An earlier version of
-this requirement resolved conflicts in favor of the stacked worktree via `-X ours`,
+auto-resolve a genuine content-level conflict in favor of either side, EXCEPT for one
+narrow, deterministic case: when the merge conflict is confined entirely to the current
+OpenSpec change's own `openspec/changes/<change_id>/tasks.md` checklist file (no other
+file conflicts), the system SHALL resolve it deterministically by taking the union of
+checked (`- [x]`) task lines from both sides of the conflict, commit the resolution, and
+continue -- since each concurrently-merged group's integration independently checks off
+only its own tasks in that shared file and squash-merge history loses the common
+ancestor, making an add/add conflict there routine and always safely resolvable this way.
+Any conflict touching any other file, alone or together with tasks.md, SHALL still abort
+the merge and fail loud exactly as before this change. (An earlier version of this
+requirement resolved conflicts in favor of the stacked worktree via `-X ours`,
 "consistent with the existing group-branch squash reconciliation" -- that referenced
 mechanism was later found unsafe and removed; see
 `docs/specs/research/carry-squash-merged-dependencies-x-ours-risk.md`. A later version
@@ -139,8 +145,45 @@ proxy; see `docs/specs/research/tail-dispatch-worktree-stale-pre-existing-file.m
 #### Scenario: Base ref content genuinely conflicts with the stacked worktree
 - **WHEN** the carry merge encounters a real content-level conflict between the
   stacked worktree's pre-squash content and the base ref -- including on a file
-  the triggering dependency never declared
+  the triggering dependency never declared, or touching `tasks.md` together with any
+  other file
 - **THEN** the merge is aborted rather than auto-resolved in favor of either side,
   and dependency-file validation's fail-loud backstop is the mechanism that
   surfaces the missing content, instead of the conflict being silently discarded
+
+#### Scenario: Conflict confined to the change's own tasks.md checklist
+- **WHEN** the carry merge conflicts, and the conflict is confined entirely to
+  `openspec/changes/<change_id>/tasks.md` with no other file in conflict
+- **THEN** the system resolves the file by taking the union of checked task lines from
+  both sides, commits the merge, and dependency-file validation proceeds against the
+  resolved worktree instead of the merge aborting
+
+### Requirement: Repair a retained worktree missing dependency content on resume
+When `ensure_wt` (or its `_pipeline_scheduler` counterpart `_ensure_wt`) resumes into an
+already-existing task worktree (the `wt.exists()` branch) and the first
+`_require_dependency_files` check raises `WorktreeMissingDependencyFileError`, the system
+SHALL re-attempt `_carry_squash_merged_dependencies` once against the retained worktree
+(when `remote`/`base` are available) and re-run `_require_dependency_files` before
+re-raising. The retained worktree's branch and any uncommitted or committed in-progress
+work SHALL NOT be discarded or recreated as part of this repair.
+
+#### Scenario: Retained worktree missing content from a dependency that squash-merged after worktree creation
+- **WHEN** a task's worktree already exists on resume, a dependency squash-merged and
+  had its branch deleted after the worktree was created, and the first dependency-file
+  check raises `WorktreeMissingDependencyFileError`
+- **THEN** the system fetches and merges the freshest base ref into the retained
+  worktree via the same carry used at creation time, and if that carry brings in the
+  missing content, dependency-file validation passes on the re-check and the task
+  resumes normally with no raised error and no worktree recreation
+
+#### Scenario: Repair attempt does not resolve the drift
+- **WHEN** the repair attempt runs (carry re-attempted, dependency files re-checked) but
+  the retained worktree is still missing declared dependency content afterward
+- **THEN** the system raises `WorktreeMissingDependencyFileError` exactly as before this
+  change, so a genuinely unresolvable drift still fails loud
+
+#### Scenario: Retained worktree already healthy
+- **WHEN** a task's worktree already exists on resume and the first
+  `_require_dependency_files` check passes
+- **THEN** no repair is attempted and behavior is unchanged from before this change
 
