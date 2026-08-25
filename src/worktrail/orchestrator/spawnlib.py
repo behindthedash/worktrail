@@ -806,7 +806,11 @@ def spawn_agent(
         agent=agent,
         model=model,
         effort=effort,
-        extra_args=extra_args,
+        # Callers derive extra_args for the requested primary CLI. A persisted
+        # capacity gate can select a different CLI before this first command is
+        # built, so do not leak primary-only flags across that boundary. This
+        # matches the session-limit fallback hop below.
+        extra_args=extra_args if selected == 0 else None,
         resume_session_id=resume_session_id,
         output_last_message=output_file,
     )

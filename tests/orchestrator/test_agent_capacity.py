@@ -186,6 +186,53 @@ def test_preflight_uses_fallback_when_primary_is_gated(tmp_path, monkeypatch):
     assert result.text == "ok"
 
 
+def test_preflight_fallback_drops_primary_agent_extra_args(tmp_path, monkeypatch):
+    path = tmp_path / "capacity.json"
+    now = datetime.now(timezone.utc)
+    agent_capacity.record(
+        "claude", "sonnet", outcome="unavailable", failure_class="transport",
+        retry_after=now + timedelta(minutes=1), path=path, now=now,
+    )
+    monkeypatch.setenv("GO_AGENT_CAPACITY_CACHE", str(path))
+    monkeypatch.setattr(
+        spawnlib,
+        "prepare_codex_child_environment",
+        lambda: ({}, None, False),
+    )
+    calls = []
+    monkeypatch.setattr(
+        spawnlib.subprocess,
+        "run",
+        lambda cmd, **kwargs: calls.append(cmd) or type("Proc", (), {
+            "returncode": 0,
+            "stdout": '{"type":"result","result":"ok","usage":{}}\n',
+            "stderr": "",
+        })(),
+    )
+    claude_args = [
+        "--strict-mcp-config", "--tools", "Read", "Bash",
+        "--setting-sources", "project,local",
+    ]
+
+    for fallback in ("codex", "opencode"):
+        calls.clear()
+        result = spawnlib.spawn_agent(
+            "prompt", tmp_path, agent="claude", fallback_agent=fallback,
+            extra_args=claude_args,
+        )
+
+        assert result.text == "ok"
+        assert not set(claude_args).intersection(calls[0])
+
+    agent_capacity.record("claude", "sonnet", outcome="available", path=path)
+    calls.clear()
+    spawnlib.spawn_agent(
+        "prompt", tmp_path, agent="claude", fallback_agent="codex",
+        extra_args=claude_args,
+    )
+    assert set(claude_args).issubset(calls[0])
+
+
 def test_status_reads_empty_cache(tmp_path):
     path = tmp_path / "capacity.json"
     path.write_text('{"version":1,"providers":{},"configured_providers":[]}')
