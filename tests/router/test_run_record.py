@@ -17,6 +17,7 @@ from worktrail.router import run_record
 from worktrail.router.run_record import (
     ALLOWED_AGENTS,
     COMPLETION_STATES,
+    DECISION_EVENTS,
     IMPLEMENTATION_COMPLETION_STATES,
     RemoteClaimError,
     _active_conflicts as _active_conflicts_impl,
@@ -29,6 +30,7 @@ from worktrail.router.run_record import (
     _push_remote_claim,
     _run_liveness,
     main,
+    record_decision_event,
 )
 
 
@@ -233,6 +235,7 @@ class TestLifecycle(unittest.TestCase):
                 "route_reason", "risk_level", "agent", "status", "epic", "feature",
                 "specification", "handoffs_consumed", "handoffs_created", "skills_loaded",
                 "subagents_called", "files_changed", "tests_run", "decisions",
+                "pending_decisions",
                 "assumptions", "deferred_work", "scope_review", "validation_evidence",
                 "failure_recovery", "interventions", "capacity_gate", "pull_request",
                 "merge_decision", "merge_result", "final_status", "updated_at",
@@ -2145,6 +2148,114 @@ class TestFindByWorktree(unittest.TestCase):
 
         self.assertEqual(
             result, {"found": True, "path": newer["path"], "run_id": newer["run_id"]})
+
+
+class TestPendingDecisionEvents(unittest.TestCase):
+    """`decision` subcommand / `record_decision_event`: the run-record side of
+    the versioned pending-decision envelope contract (workqueue/decisions.py).
+    Every lifecycle hop a run participates in stamps one idempotent entry into
+    the record's `pending_decisions` list."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        res = _start(self.tmp)
+        self.path = res["path"]
+        self.run_id = res["run_id"]
+
+    def _record(self, event, decision_id, note=None):
+        return record_decision_event(self.path, event, decision_id, note)
+
+    def test_start_seeds_empty_pending_decisions_list(self):
+        rec = _load(Path(self.path))
+        self.assertEqual(rec["pending_decisions"], [])
+
+    def test_event_vocabulary_is_the_five_lifecycle_hops(self):
+        self.assertEqual(
+            DECISION_EVENTS,
+            ("asked", "presented", "answered", "consumed", "superseded"))
+
+    def test_recorded_entry_carries_timestamp_event_and_id(self):
+        result = self._record("asked", "dec-spec-collision-ab12cd34ef56")
+        self.assertEqual(result["status"], "recorded")
+        entry = result["entry"]
+        self.assertIn("[asked] dec-spec-collision-ab12cd34ef56", entry)
+        rec = _load(Path(self.path))
+        self.assertEqual(len(rec["pending_decisions"]), 1)
+        self.assertEqual(rec["pending_decisions"][0], entry)
+        # every _save() refreshes the heartbeat too -- the entry doubles as
+        # liveness evidence for the dispatch that recorded it
+        self.assertTrue(_run_liveness(rec, ttl_seconds=1200)["fresh"])
+
+    def test_note_is_appended_to_the_entry(self):
+        result = self._record("superseded", "dec-old", note="replaced by dec-new")
+        self.assertIn("[superseded] dec-old", result["entry"])
+        self.assertIn("replaced by dec-new", result["entry"])
+
+    def test_re_recording_same_event_and_id_is_already_recorded(self):
+        first = self._record("consumed", "dec-x")
+        second = self._record("consumed", "dec-x")
+        self.assertEqual(second["status"], "already-recorded")
+        self.assertEqual(second["entry"], first["entry"])
+        rec = _load(Path(self.path))
+        self.assertEqual(len(rec["pending_decisions"]), 1)
+        # a retry with a DIFFERENT note still converges on the original entry
+        third = self._record("consumed", "dec-x", note="retry")
+        self.assertEqual(third["status"], "already-recorded")
+
+    def test_same_id_different_events_are_distinct_entries(self):
+        self._record("asked", "dec-x")
+        presented = self._record("presented", "dec-x")
+        answered = self._record("answered", "dec-x")
+        consumed = self._record("consumed", "dec-x")
+        self.assertEqual(presented["status"], "recorded")
+        self.assertEqual(answered["status"], "recorded")
+        self.assertEqual(consumed["status"], "recorded")
+        rec = _load(Path(self.path))
+        self.assertEqual(len(rec["pending_decisions"]), 4)
+
+    def test_similar_ids_are_never_confused_by_prefix_match(self):
+        self._record("asked", "dec-x")
+        other = self._record("asked", "dec-x-extra")
+        self.assertEqual(other["status"], "recorded")
+        rec = _load(Path(self.path))
+        self.assertEqual(len(rec["pending_decisions"]), 2)
+
+    def test_unknown_event_and_blank_decision_id_are_rejected(self):
+        with pytest.raises(SystemExit, match="not an allowed decision event"):
+            self._record("filed", "dec-x")
+        with pytest.raises(SystemExit, match="--decision-id is required"):
+            self._record("asked", "   ")
+        rec = _load(Path(self.path))
+        self.assertEqual(rec["pending_decisions"], [])
+
+    def test_missing_pending_decisions_field_is_bootstrapped_for_legacy_records(self):
+        legacy = Path(self.tmp) / "go-legacy.yaml"
+        legacy.write_text(_legacy_record_text(), encoding="utf-8")
+        result = record_decision_event(str(legacy), "asked", "dec-legacy")
+        self.assertEqual(result["status"], "recorded")
+        rec = _load(legacy)
+        self.assertEqual(len(rec["pending_decisions"]), 1)
+
+    def test_cli_decision_subcommand_roundtrip(self):
+        out = StringIO()
+        with patch("sys.stdout", out):
+            rc = main(["decision", self.path, "--event", "presented",
+                       "--decision-id", "dec-cli-1",
+                       "--note", "shown at attended host"])
+        self.assertEqual(rc, 0)
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["status"], "recorded")
+        self.assertEqual(payload["decision_id"], "dec-cli-1")
+
+        out = StringIO()
+        with patch("sys.stdout", out):
+            rc = main(["decision", self.path, "--event", "presented",
+                       "--decision-id", "dec-cli-1"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(json.loads(out.getvalue())["status"],
+                         "already-recorded")
+        rec = _load(Path(self.path))
+        self.assertEqual(len(rec["pending_decisions"]), 1)
 
 
 if __name__ == "__main__":
