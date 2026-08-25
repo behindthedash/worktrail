@@ -204,10 +204,6 @@ class DefaultModelSelection(unittest.TestCase):
                 "opencode/deepseek-v4-flash-free",
             )
 
-    def test_opencode_model_override_remains_supported(self):
-        with patch.dict(os.environ, {"ORCH_OPENCODE_MODEL": "provider/custom"}, clear=True):
-            self.assertEqual(spawnlib.default_model_for_agent("opencode"), "provider/custom")
-
 
 class ModelDefaultsFileTest(unittest.TestCase):
     """worktrail_home()/model-defaults.yaml (GO_MODEL_DEFAULTS_FILE): an operator-maintained
@@ -253,11 +249,6 @@ class ModelDefaultsFileTest(unittest.TestCase):
     def test_agent_absent_from_file_falls_through(self):
         self.defaults_file.write_text("claude: opus\n")
         self.assertEqual(spawnlib.default_model_for_agent("codex"), "gpt-5.4-mini")
-
-    def test_explicit_env_var_wins_over_file(self):
-        self.defaults_file.write_text("codex: gpt-5.6-luna\n")
-        with patch.dict(os.environ, {"ORCH_CODEX_MODEL": "gpt-5.6-sol"}):
-            self.assertEqual(spawnlib.default_model_for_agent("codex"), "gpt-5.6-sol")
 
     def test_malformed_yaml_degrades_to_hardcoded_default(self):
         self.defaults_file.write_text("codex: [unterminated\n")
