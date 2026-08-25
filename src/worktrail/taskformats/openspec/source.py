@@ -62,6 +62,17 @@ class OpenSpecTaskSource:
         (what must be done first?)" -- and is the safe direction to be wrong in.
         Assuming independence instead would fan out tasks that share files, with
         no file scope available to stop them.
+
+        An impl task's own "strictly sequential" predecessor is its nearest
+        NON-tail sibling, not literally the immediately-preceding task -- a
+        tail-kind (e2e/cleanup) task never runs during the main fan-out
+        (`coordinator.runnable_frontier()` skips it unconditionally; it only
+        dispatches later, in the strictly-serialized tail phase, once every
+        non-tail task is already done). If a tail task happens to be first in
+        its group, anchoring the next impl task's baseline dep on it would make
+        that dep permanently unsatisfiable during the fan-out -- the impl task
+        waits on the tail task, which itself waits on every non-tail task
+        (including that impl task) to finish first.
         """
         tasks_md = self.task_file_path("", spec_ref)
         if not tasks_md.is_file():
@@ -72,19 +83,26 @@ class OpenSpecTaskSource:
 
         out: List[Dict[str, Any]] = []
         prev_in_group: Dict[str, str] = {}
+        prev_non_tail_in_group: Dict[str, str] = {}
         non_tail_ids: List[str] = []
         for t in parsed.tasks:
-            deps = [prev_in_group[t.group]] if t.group in prev_in_group else []
-            prev_in_group[t.group] = t.id
             if t.kind in TAIL_KINDS:
                 # A tail task verifies or tidies up after the implementation. Its
                 # section reads as independent like any other, so without this it
                 # would be fanned out ALONGSIDE the work it exists to check.
                 # Depending on every preceding non-tail task is what
                 # `coordinator.tail_held_out_task_ids()` needs to hold it back.
+                deps = [prev_in_group[t.group]] if t.group in prev_in_group else []
                 deps = sorted(set(deps) | set(non_tail_ids))
             else:
+                deps = (
+                    [prev_non_tail_in_group[t.group]]
+                    if t.group in prev_non_tail_in_group
+                    else []
+                )
                 non_tail_ids.append(t.id)
+                prev_non_tail_in_group[t.group] = t.id
+            prev_in_group[t.group] = t.id
             out.append(
                 {
                     "id": t.id,
