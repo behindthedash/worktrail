@@ -25,7 +25,7 @@
       spec PR = transcript merge marker + touched spec paths), plus
       `worktrail-check-durable-artifact-capture-gate` entry point in
       `pyproject.toml [project.scripts]`.
-- [ ] 2.3 Add pytest coverage for the checker (`tests/router/`) mirroring
+- [x] 2.3 Add pytest coverage for the checker (`tests/router/`) mirroring
       `tests/router/test_check_deferred_work_handoff.py`: hit kinds, miss cases, malformed/unreadable
       inputs degrading to zero hits.
 - [ ] 2.4 Downgrade-To-Suggestion On Dedup Hit and Fail-Open And Headless-Excluded: wire the
