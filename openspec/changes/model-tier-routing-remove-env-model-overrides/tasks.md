@@ -1,6 +1,6 @@
 ## 1. spawnlib resolution change
 
-- [ ] 1.1 In `src/worktrail/orchestrator/spawnlib.py`, rewrite `default_model_for_agent()` (line ~415) to drop both `os.environ.get("ORCH_*_MODEL")` lookups so codex/opencode resolve `defaults.get(agent) or DEFAULT_*_MODEL` uniformly with claude
+- [ ] 1.1 Implement the "Default model resolution is config-file driven only" requirement: in `src/worktrail/orchestrator/spawnlib.py`, rewrite `default_model_for_agent()` (line ~415) to drop both `os.environ.get("ORCH_*_MODEL")` lookups so codex/opencode resolve `defaults.get(agent) or DEFAULT_*_MODEL` uniformly with claude
 - [ ] 1.2 Update the rationale comment block above the `DEFAULT_*_MODEL` constants (lines ~364-375) to describe the two-layer precedence (`model-defaults.yaml` > hardcoded constant) without the env-var layer
 
 ## 2. Test updates
