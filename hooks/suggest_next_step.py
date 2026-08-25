@@ -24,11 +24,36 @@ DEFERRED_WORK_TIMEOUT_SECONDS = 5
 WORK_TOOLS = {"Edit", "MultiEdit", "Write", "NotebookEdit"}
 WORK_BASH_MARKERS = ("git commit", "gh pr create", "gh pr merge", "git push")
 
+# Bash commands that modify files. A command carrying one of these markers AND
+# naming a durable-artifact path counts as touching that artifact (a plain
+# `cat`/`grep` mention does not).
+BASH_WRITE_MARKERS = (
+    ">",
+    "tee ",
+    "cp ",
+    "mv ",
+    "rm ",
+    "touch ",
+    "sed -i",
+    "mkdir ",
+    "patch ",
+)
+
 # Matches an absolute or relative path literal shaped like the default GO v2
 # run-record layout (`worktrail_home()/runs/<repo>/<run-id>.yaml`, normally
 # `~/.worktrail/runs/**/*.yaml` -- see run_record.py), as it appears verbatim
 # inside a transcript line's JSON text (tool inputs/outputs, assistant text).
 RUN_RECORD_PATH_RE = re.compile(r'''(?:~|/)[^\s"'`<>*(),;:]*\.worktrail/runs/[^\s"'`<>*(),;:]*\.yaml''')
+
+# Matches path literals rooted at a durable follow-up artifact tree -- devkit
+# specs (`docs/specs/**`) and OpenSpec changes (`openspec/changes/**`) -- as
+# they appear verbatim in edit-tool path values or Bash command text, using
+# the same punctuation-stopping character classes as RUN_RECORD_PATH_RE (the
+# prefix additionally stops at `=` so `--flag=<path>` yields the bare path).
+DURABLE_ARTIFACT_PATH_RE = re.compile(
+    r'''(?:~|\.?/)?[^\s"'`<>*(),;:=]*?'''
+    r'''(?:docs/specs|openspec/changes)/[^\s"'`<>*(),;:]*'''
+)
 
 INSTRUCTION = (
     "SESSION WRAP-UP — proactive next-step suggestion (auto-triggered by the Worktrail Stop hook).\n\n"
@@ -74,18 +99,48 @@ def entry_has_work(entry: dict) -> bool:
     return False
 
 
-def scan_transcript(transcript_path: str) -> tuple[bool, list[str]]:
-    """One pass over the transcript: whether it shows substantive work, and the
-    unique run-record path literals (see `RUN_RECORD_PATH_RE`) it mentions.
+def durable_artifact_paths_from_entry(entry: dict) -> list[str]:
+    """Touched durable-artifact paths (`DURABLE_ARTIFACT_PATH_RE`) seen in one
+    transcript entry's tool calls: edit-tool `file_path`/`notebook_path`
+    values, and Bash commands that carry a write marker (`BASH_WRITE_MARKERS`).
+    """
+    message = entry.get("message") or {}
+    content = message.get("content")
+    if not isinstance(content, list):
+        return []
+    paths: list[str] = []
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") != "tool_use":
+            continue
+        name = block.get("name", "")
+        tool_input = block.get("input") or {}
+        if name in WORK_TOOLS:
+            candidate = str(tool_input.get("file_path") or tool_input.get("notebook_path") or "")
+            paths.extend(DURABLE_ARTIFACT_PATH_RE.findall(candidate))
+        elif name == "Bash":
+            command = str(tool_input.get("command", ""))
+            lowered = command.lower()
+            if any(marker in lowered for marker in BASH_WRITE_MARKERS):
+                paths.extend(DURABLE_ARTIFACT_PATH_RE.findall(command))
+    return paths
 
-    Both signals come out of the same line-by-line read so a caller that needs
-    either or both never opens the transcript file twice.
+
+def scan_transcript(transcript_path: str) -> tuple[bool, list[str], list[str]]:
+    """One pass over the transcript: whether it shows substantive work, the
+    unique run-record path literals (see `RUN_RECORD_PATH_RE`) it mentions,
+    and the unique touched durable-artifact paths (`docs/specs/**` /
+    `openspec/changes/**`, see `DURABLE_ARTIFACT_PATH_RE`) collected from its
+    edit-tool `file_path`s and Bash write-marker commands.
+
+    All three signals come out of the same line-by-line read so a caller that
+    needs any of them never opens the transcript file twice.
     """
     has_work = False
     run_record_paths: list[str] = []
+    durable_artifact_paths: list[str] = []
     seen_paths: set[str] = set()
     if not transcript_path or not os.path.exists(transcript_path):
-        return has_work, run_record_paths
+        return has_work, run_record_paths, durable_artifact_paths
     try:
         with open(transcript_path, "r", encoding="utf-8", errors="ignore") as handle:
             for line in handle:
@@ -96,21 +151,23 @@ def scan_transcript(transcript_path: str) -> tuple[bool, list[str]]:
                     if path not in seen_paths:
                         seen_paths.add(path)
                         run_record_paths.append(path)
-                if has_work:
-                    continue
                 try:
                     entry = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if entry_has_work(entry):
+                if not has_work and entry_has_work(entry):
                     has_work = True
+                for path in durable_artifact_paths_from_entry(entry):
+                    if path not in seen_paths:
+                        seen_paths.add(path)
+                        durable_artifact_paths.append(path)
     except OSError:
-        return False, []
-    return has_work, run_record_paths
+        return False, [], []
+    return has_work, run_record_paths, durable_artifact_paths
 
 
 def substantive_work(transcript_path: str) -> bool:
-    has_work, _ = scan_transcript(transcript_path)
+    has_work, _, _ = scan_transcript(transcript_path)
     return has_work
 
 
@@ -185,7 +242,7 @@ def main() -> int:
         transcript_path = data.get("transcript_path") or ""
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         sentinel = STATE_DIR / f"{session_id}.done"
-        has_work, run_record_paths = scan_transcript(transcript_path)
+        has_work, run_record_paths, _touched_durable_paths = scan_transcript(transcript_path)
         if sentinel.exists() or not has_work:
             return 0
 
