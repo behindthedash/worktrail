@@ -25,6 +25,52 @@ os.environ.setdefault("GO_AGENT_CAPACITY_CACHE", os.path.join(tempfile.mkdtemp()
 
 Proc = namedtuple("Proc", "returncode stdout stderr")
 
+# Claude-only argv tokens (spec spawnlib-cross-hop-argv-invariant): every
+# element here is legal ONLY on a `claude -p` command line; a codex or opencode
+# argv carrying any of them as an exact element means the primary's extra_args
+# leaked across a fallback hop (persisted capacity gate or session-limit
+# switch). Provenance of each token:
+#   --strict-mcp-config / --tools / Read / Edit / Write / Bash / Grep / Glob /
+#     --setting-sources / project,local
+#       -> live.py `_LEAN_WORKER_FLAGS`, the lean-worker extra_args live.py
+#          derives ONLY when the target agent is claude
+#   --append-system-prompt
+#       -> live.py's review-role system-prompt append, also claude-only there
+#   --permission-mode / bypassPermissions
+#       -> spawnlib PERM_FLAGS, emitted by build_cmd() only for agent="claude"
+#   --output-format / stream-json / --verbose
+#       -> spawnlib JSON_OUTPUT_FLAGS, same claude-only build_cmd() branch
+#   --setting-sources / project,local (repeated from _LEAN_WORKER_FLAGS above)
+#       -> also the structural default _with_default_setting_sources() puts on
+#          every claude spawn regardless of caller extra_args
+#   --effort
+#       -> build_cmd()'s claude branch; codex translates effort to
+#          `-c model_reasoning_effort=...` and opencode to `--variant`
+#   --resume / --fork-session
+#       -> build_cmd()'s claude branch; opencode uses `--session`/`--fork`
+#          instead and the codex branch ignores resume_session_id entirely
+CLAUDE_ONLY_ARGV_TOKENS = (
+    "--strict-mcp-config",
+    "--tools",
+    "Read",
+    "Edit",
+    "Write",
+    "Bash",
+    "Grep",
+    "Glob",
+    "--append-system-prompt",
+    "--permission-mode",
+    "bypassPermissions",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--setting-sources",
+    "project,local",
+    "--effort",
+    "--resume",
+    "--fork-session",
+)
+
 
 class FakeRun:
     """Returns scripted outcomes in order (last repeats); an Exception is raised."""
@@ -1342,6 +1388,79 @@ class FallbackChain(unittest.TestCase):
             spawnlib.spawn_agent(
                 "prompt", "/tmp", agent="claude", fallback_agent=["hopA", "bogus"],
             )
+
+
+class CrossHopArgvInvariant(unittest.TestCase):
+    """Hermetic harness for the cross-hop argv invariant (spec
+    spawnlib-cross-hop-argv-invariant): a spawn whose requested primary agent
+    is claude must never leak claude-only flags (CLAUDE_ONLY_ARGV_TOKENS) into
+    a codex/opencode hop's command line -- no matter which mechanism selected
+    the hop: a persisted capacity gate consulted before the first command is
+    built, or an in-flight session-limit switch. Mirrors FallbackChain's
+    isolation so each test owns its capacity cache and provider models."""
+
+    # Deterministic per-agent models so argv assertions can identify which hop
+    # ran by model; pinning default_model_for_agent also keeps the tests
+    # hermetic against a developer machine's ORCH_CODEX_MODEL /
+    # ORCH_OPENCODE_MODEL env overrides and model-defaults.yaml.
+    HOP_MODELS = {
+        "claude": "pin-claude-model",
+        "codex": "pin-codex-model",
+        "opencode": "pin-opencode-model",
+    }
+
+    def setUp(self):
+        self._cache = tempfile.TemporaryDirectory()
+        self._old_cache = os.environ.get("GO_AGENT_CAPACITY_CACHE")
+        os.environ["GO_AGENT_CAPACITY_CACHE"] = os.path.join(self._cache.name, "capacity.json")
+        self._orig_run = spawnlib.subprocess.run
+        self._orig_model_fn = spawnlib.default_model_for_agent
+        spawnlib.default_model_for_agent = lambda a: self.HOP_MODELS.get(a, "pin-claude-model")
+
+    def tearDown(self):
+        spawnlib.subprocess.run = self._orig_run
+        spawnlib.default_model_for_agent = self._orig_model_fn
+        if self._old_cache is None:
+            os.environ.pop("GO_AGENT_CAPACITY_CACHE", None)
+        else:
+            os.environ["GO_AGENT_CAPACITY_CACHE"] = self._old_cache
+        self._cache.cleanup()
+
+    def _script_run(self, outcomes):
+        """Replace spawnlib.subprocess.run with a scripted fake that records
+        every invoked argv and returns `outcomes` in invocation order (the
+        last outcome repeats for any further invocation, mirroring FakeRun; a
+        BaseException outcome is raised instead of returned). Returns the list
+        each invocation appends its command line to."""
+        calls = []
+        state = {"n": 0}
+
+        def runner(cmd, *args, **kwargs):
+            idx = min(state["n"], len(outcomes) - 1)
+            state["n"] += 1
+            calls.append(list(cmd))
+            o = outcomes[idx]
+            if isinstance(o, BaseException):
+                raise o
+            return o
+
+        spawnlib.subprocess.run = runner
+        return calls
+
+    def assert_no_claude_only_flags(self, cmds):
+        """Fail naming the offending element if any non-claude argv (i.e. a
+        codex/opencode hop) carries a CLAUDE_ONLY_ARGV_TOKENS member as an
+        exact element. Claude-headed argvs are skipped: they legitimately
+        carry these flags."""
+        for cmd in cmds:
+            if not cmd or cmd[0] == "claude":
+                continue
+            for token in CLAUDE_ONLY_ARGV_TOKENS:
+                if token in cmd:
+                    self.fail(
+                        f"claude-only flag {token!r} leaked into "
+                        f"{cmd[0]} argv at element {cmd.index(token)}: {cmd}"
+                    )
 
 
 class ParseStreamJsonSessionId(unittest.TestCase):
