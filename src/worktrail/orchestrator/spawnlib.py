@@ -415,10 +415,9 @@ def _load_model_defaults() -> Dict[str, str]:
 def default_model_for_agent(agent: str) -> str:
     defaults = _load_model_defaults()
     if agent == "codex":
-        return os.environ.get("ORCH_CODEX_MODEL") or defaults.get("codex") or DEFAULT_CODEX_MODEL
+        return defaults.get("codex") or DEFAULT_CODEX_MODEL
     if agent == "opencode":
-        return (os.environ.get("ORCH_OPENCODE_MODEL")
-                or defaults.get("opencode") or DEFAULT_OPENCODE_MODEL)
+        return defaults.get("opencode") or DEFAULT_OPENCODE_MODEL
     return defaults.get("claude") or DEFAULT_CLAUDE_MODEL
 
 
