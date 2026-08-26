@@ -361,14 +361,20 @@ def is_infra_failure(returncode: int, stdout: Optional[str]) -> bool:
 
 SUPPORTED_AGENTS = {"claude", "codex", "opencode"}
 
+# Retained only because live.py reads spawnlib.DEFAULT_CLAUDE_MODEL directly at
+# import time; task 3.2 reimplements default_model_for_agent() against
+# routing.agents.<agent>.default_model and removes these along with that read.
+DEFAULT_CLAUDE_MODEL = "sonnet"
+DEFAULT_CODEX_MODEL = "gpt-5.4-mini"
+DEFAULT_OPENCODE_MODEL = "opencode/deepseek-v4-flash-free"
+
 
 def default_model_for_agent(agent: str) -> str:
-    defaults = _load_model_defaults()
     if agent == "codex":
-        return defaults.get("codex") or DEFAULT_CODEX_MODEL
+        return DEFAULT_CODEX_MODEL
     if agent == "opencode":
-        return defaults.get("opencode") or DEFAULT_OPENCODE_MODEL
-    return defaults.get("claude") or DEFAULT_CLAUDE_MODEL
+        return DEFAULT_OPENCODE_MODEL
+    return DEFAULT_CLAUDE_MODEL
 
 
 def _with_default_setting_sources(
