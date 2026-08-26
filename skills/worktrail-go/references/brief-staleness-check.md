@@ -302,6 +302,39 @@ common case, and it is why file-state verification (above) defaults to `inconclu
 doubt rather than guessing — and it is only once verification lands on `inconclusive` that the
 operator decides.
 
+## The pending-decision envelope and its audit trail {#staleness-envelope}
+
+When the probe search finds evidence, `check()`'s result carries one more key
+alongside `matches`: **`pending_decision`** — the provider-neutral, versioned
+`worktrail.pending-decision` envelope built by `build_pending_decision()` from
+`workqueue/decisions.py`'s `pending_decision_envelope()`, under a deterministic
+`decision_identity()` keyed on (provenance source `check_brief_staleness`,
+repo, subject = the brief's file stem, question) — so `--brief <path>.md` and
+`--brief <id>` invocations of the same brief converge on one decision id, and
+a recheck files one record instead of a duplicate pile. Its static
+question/options are the close-stale / proceed / investigate call the operator
+prompt below resolves; the matched evidence stays in `check()`'s own output,
+never inside the question text. The envelope degrades to `null` when the
+decision primitives are unavailable; filing it via `worktrail-decision ask`
+stays the caller's job.
+
+Whatever the dispatch mode, the decision's hops land on the run record's
+`pending_decisions` audit list (`decision-queue.md#decision-envelope` and
+`decision-queue.md#decision-audit`), keeping the lifecycle auditable end to
+end:
+
+- **Auto mode** (the `$AUTO_MODE=true` branch of the operator prompt below):
+  file via `worktrail-decision ask`, then stamp the `[asked]` hop with
+  `worktrail-run-record decision "$RUN" --event asked --decision-id "$DECISION"`
+  before finishing `blocked_product_decision`.
+- **Attended**: present the exact record through the provider-neutral boundary
+  — `worktrail-skill-dispatch --present-decision "$DECISION" --run "$RUN"`
+  prints the same versioned JSON for every host and stamps `[presented]`
+  itself — then resume through the exact id with `--resume-decision "$DECISION"`
+  once it is answered.
+- **Unattended**: drain surfaces the unresolved id as a first-class
+  `pending_user_decision` stop and the next pass resumes through it.
+
 ## The operator prompt
 
 **Reached only on `inconclusive`.** This section fires only when file-state verification (above)
@@ -367,6 +400,8 @@ DECISION=$(worktrail-decision ask \
   --recommendation "Read the evidence: if it plainly matches the brief's own requested scope, close; if it is context/prior-work the brief cites rather than delivers, proceed." \
   --repo "$REPO" --brief "$BRIEF_ID" --release --json \
   | python3 -c "import sys, json; print(json.load(sys.stdin)['id'])")
+worktrail-run-record decision "$RUN" --event asked --decision-id "$DECISION" \
+  --note "staleness envelope filed; brief released awaiting the answer"
 worktrail-run-record finish "$RUN" --status blocked_product_decision --merge-result \
   "Auto-mode staleness guard: brief may already be delivered -- $N commit(s)/$M merged PR(s) touched what it names since it was captured ($created). Decision $DECISION filed; brief released awaiting the answer."
 ```

@@ -11,9 +11,17 @@ the prompt must carry every pointer it needs. This module:
       report-back instructions. The worker reads its task file / spec / review
       file from the worktree on disk; the prompt only points at them.
 
-  parse_report_back(text)
-      Extract + validate the JSON report-back from a worker's final message
-      (the tool result the coordinator sees).
+   parse_report_back(text)
+       Extract + validate the JSON report-back from a worker's final message
+       (the tool result the coordinator sees).
+
+   validate_resolved_decision_input(envelope, ...)
+       The pending-decision dispatch gate: dispatch refuses every unresolved
+       decision envelope (open/pending question, superseded record,
+       already-consumed answer, malformed input) and accepts only a
+       provenance-validated resolved answer (workqueue/decisions.py's
+       versioned envelope contract).
+
 
   transition(role, report, retry_count)
       The review/fix loop, at the state level: map a report-back to the task's
@@ -32,6 +40,7 @@ Pure logic -- no agents, no git, no FS. `python3 dispatch.py demo` shows it.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import re
 import sys
@@ -739,6 +748,90 @@ def build_stack_conflict_prompt(
             '   "notes": "<one line>"}',
         ]
     )
+
+
+# --------------------------------------------------------------------------- #
+# Pending-decision dispatch gate (pending-user-decision-dispatch-contract 3.1)
+#
+# Orchestrator dispatch sits one boundary downstream of skill_dispatch's
+# --resume-decision gate, and re-checks the same contract rather than trusting
+# the front door: a resume spawn may only be built on a decision a human
+# actually answered for THIS run. Every unresolved shape is refused --
+# open/pending question, superseded record, already-consumed answer,
+# malformed envelope -- and provenance/freshness are validated through
+# workqueue/decisions.py's own primitives, so both boundaries fail closed
+# identically on the same input.
+# --------------------------------------------------------------------------- #
+
+
+class DecisionDispatchError(ValueError):
+    """A pending-decision envelope offered to orchestrator dispatch is
+    unresolved or fails validation -- nothing may be dispatched on it."""
+
+
+def _decision_helpers():
+    """Best-effort import of the decision-envelope primitives. Returns
+    `(parse_pending_decision_envelope, validate_decision_answer)`, or
+    `(None, None)` when `workqueue.decisions` cannot be imported -- the gate
+    degrades to a fail-closed refusal, never an import error."""
+    try:
+        from ..workqueue.decisions import (
+            parse_pending_decision_envelope,
+            validate_decision_answer,
+        )
+    except Exception:  # noqa: BLE001 - gate is additive, never fatal on import
+        return None, None
+    return parse_pending_decision_envelope, validate_decision_answer
+
+
+def validate_resolved_decision_input(
+    envelope: Any,
+    *,
+    expected_source: Optional[str] = None,
+    expected_repo: Optional[str] = None,
+    expected_subject: Optional[str] = None,
+    max_age_seconds: Optional[float] = None,
+    now: Optional[dt.datetime] = None,
+) -> Dict[str, Any]:
+    """The dispatch-side gate: may this run act on this decision's answer?
+
+    Accepts ONLY a fully readable `worktrail.pending-decision` envelope in
+    'answered' status whose provenance matches every supplied expectation and
+    whose answer sits within `max_age_seconds` of `now` (when a window is
+    imposed) -- delegating those checks to `validate_decision_answer()` so
+    the adapter boundary and the orchestrator reject identically. Anything
+    else raises DecisionDispatchError naming every failed expectation at
+    once; dispatch never guesses around a refused decision. Returns the
+    parsed envelope.
+    """
+    parse, validate = _decision_helpers()
+    if parse is None or validate is None:
+        raise DecisionDispatchError(
+            "decision-envelope primitives are unavailable; refusing to "
+            "dispatch on a pending-decision envelope (fail-closed)")
+    if envelope is None:
+        raise DecisionDispatchError(
+            "no pending-decision envelope was supplied: dispatch requires a "
+            "resolved, provenance-validated decision to resume on")
+    try:
+        parsed = parse(envelope)
+    except Exception as exc:  # noqa: BLE001 - refuse anything not fully readable
+        raise DecisionDispatchError(
+            f"dispatch input is not a readable worktrail.pending-decision "
+            f"envelope: {exc}") from exc
+    verdict = validate(
+        parsed,
+        expected_source=expected_source,
+        expected_repo=expected_repo,
+        expected_subject=expected_subject,
+        max_age_seconds=max_age_seconds,
+        now=now,
+    )
+    if not verdict.get("valid"):
+        raise DecisionDispatchError(
+            f"refusing to dispatch on decision {parsed.get('decision_id')!r}: "
+            + "; ".join(verdict.get("reasons") or []))
+    return parsed
 
 
 # --------------------------------------------------------------------------- #

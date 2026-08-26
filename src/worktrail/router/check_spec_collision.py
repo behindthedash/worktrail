@@ -34,6 +34,16 @@ answers that in two separate, best-effort-only steps, mirroring
      helpers (`_git_tracked`, `_task_files_are_shipped`, `_load_tasks`)
      rather than reimplementing them.
 
+When `verify()` confirms a collision, its result additionally carries
+`pending_decision`: the provider-neutral, versioned pending-decision
+envelope (`worktrail.pending-decision`, built via
+`workqueue/decisions.py`'s `pending_decision_envelope()` under a
+deterministic `decision_identity()`) the attended host presents for a human
+to answer -- proceed despite the shipped collision, extend the existing
+spec, or redirect. It is absent (`None`) whenever nothing was confirmed and
+degrades to `None` when the decision primitives are unavailable; filing it
+via `ask(decision_id=...)` stays the caller's job.
+
 Both functions are best-effort and never raise to their caller: any internal
 failure (unreadable spec file, sibling-module import failure, malformed
 frontmatter, git failure) degrades to `checked: false` / `confirmed: false`
@@ -144,6 +154,75 @@ def _collect_task_files(spec_dir: Path) -> List[str]:
 
 # --- check(): pure extraction --------------------------------------------------
 
+# --- provider-neutral pending-decision envelope ---------------------------------
+
+# `source` provenance recorded on every envelope this guard builds; the same
+# string the decision queue's records carry in their frontmatter.
+GUARD_SOURCE = "check_spec_collision"
+
+# Static question/options: identity is derived from (source, repo, subject,
+# question), so a re-run on unchanged facts converges on the same decision id
+# instead of filing duplicates. The evidence itself travels in `verify()`'s
+# own output, never inside the question text.
+DECISION_QUESTION = (
+    "A shipped spec already covers this scope: its Status is Implemented and "
+    "its task files are verified git-tracked at the base branch. How should "
+    "this request proceed?"
+)
+DECISION_OPTIONS = [
+    "extend: continue the existing spec instead of starting overlapping work",
+    "proceed-anyway: dispatch despite the confirmed collision, recording why",
+    "redirect: choose a different scope for this request",
+]
+
+
+def _decision_helpers():
+    """Best-effort import of the decision-envelope primitives. Returns
+    `(decision_identity, pending_decision_envelope)`, or `(None, None)` when
+    `workqueue.decisions` cannot be imported -- the envelope degrades to
+    `None`, never an exception."""
+    try:
+        from ..workqueue.decisions import (
+            decision_identity,
+            pending_decision_envelope,
+        )
+    except Exception:  # noqa: BLE001 - envelope is additive, never fatal
+        return None, None
+    return decision_identity, pending_decision_envelope
+
+
+def build_pending_decision(
+    repo: Path,
+    spec_id: str,
+    *,
+    run_id: Optional[str] = None,
+    dispatch_mode: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Build the versioned pending-decision envelope for a confirmed collision.
+
+    Deterministic identity via `decisions.decision_identity()` keyed on
+    (source, repo, subject=spec_id, question), so a re-run against the same
+    shipped spec converges on the same id. Provenance (`repo`, `subject`,
+    optional `run_id`/`dispatch_mode`) travels inside the envelope so the
+    resuming side can validate the answer it finds. Never raises: any failure
+    (missing primitives, blank inputs) returns `None`.
+    """
+    try:
+        repo_str = str(Path(repo).resolve())
+        identity, envelope = _decision_helpers()
+        if identity is None or not spec_id or not str(spec_id).strip():
+            return None
+        decision_id = identity(GUARD_SOURCE, repo_str, str(spec_id).strip(),
+                               DECISION_QUESTION)
+        return envelope(
+            decision_id=decision_id, question=DECISION_QUESTION,
+            options=list(DECISION_OPTIONS), source=GUARD_SOURCE,
+            repo=repo_str, subject=str(spec_id).strip(), brief=None,
+            run_id=run_id, dispatch_mode=dispatch_mode)
+    except Exception:  # noqa: BLE001 - envelope is additive, never fatal
+        return None
+
+
 def check(
     repo: Path, root: str = "docs/specs", target: Optional[str] = None
 ) -> Dict[str, object]:
@@ -151,7 +230,11 @@ def check(
 
     Returns `{"checked": bool, "candidates": [{"spec_id", "stage", "title",
     "feature_summary"}], "task_candidates": [{"spec_id", "task_id",
-    "task_text", "checked"}], "warning": str|None}`. `checked=False` means
+    "task_text", "checked"}], "warning": str|None,
+    "pending_decision": None}`. `pending_decision` is always `None` here:
+    `check()` performs no semantic matching of its own, so it never presumes
+    a collision worth a decision -- only `verify()`'s confirmed collisions
+    carry an envelope. `checked=False` means
     the whole-spec index could not be built (no `docs/specs/` dir, or an
     internal failure) -- callers must treat that as "no signal", never as
     "no collision". Performs no semantic matching of its own; that judgment
@@ -174,6 +257,7 @@ def check(
         "candidates": [],
         "task_candidates": [],
         "warning": None,
+        "pending_decision": None,
     }
 
     if _scan is None:
@@ -238,16 +322,23 @@ def _task_level_candidates(specs_root: Path, target: str) -> List[Dict[str, Any]
 
 # --- verify(): artifact verification for a single judged candidate ------------
 
-def verify(repo: Path, spec_id: str, root: str = "docs/specs") -> Dict[str, object]:
+def verify(
+    repo: Path, spec_id: str, root: str = "docs/specs", *,
+    run_id: Optional[str] = None, dispatch_mode: Optional[str] = None,
+) -> Dict[str, object]:
     """Confirm (or refute) a candidate the calling agent has already judged
     a semantic match.
 
     Returns `{"spec_id", "confirmed": bool, "status": str|None,
-    "files": [str], "note": str|None, "warning": str|None}`.
+    "files": [str], "note": str|None, "warning": str|None,
+    "pending_decision": envelope|None}`.
     `confirmed=True` only when the candidate's `**Status**:` header reads
     `Implemented` AND every task `files:` entry is git-tracked at the repo's
-    base checkout. Any non-file artifact claim found in the spec's prose is
-    surfaced via `note` and never affects `confirmed`. Never raises --
+    base checkout. A confirmed collision additionally carries
+    `pending_decision`: `build_pending_decision()`'s provider-neutral
+    envelope for the human's proceed/extend/redirect call. Any non-file
+    artifact claim found in the spec's prose is surfaced via `note` and never
+    affects `confirmed`. Never raises --
     every failure path (missing spec dir, unreadable spec file, no files to
     verify, git failure) degrades to `confirmed: false` plus a `warning`.
     """
@@ -259,6 +350,7 @@ def verify(repo: Path, spec_id: str, root: str = "docs/specs") -> Dict[str, obje
         "files": [],
         "note": None,
         "warning": None,
+        "pending_decision": None,
     }
 
     spec_dir = repo / root / spec_id
@@ -312,7 +404,10 @@ def verify(repo: Path, spec_id: str, root: str = "docs/specs") -> Dict[str, obje
         return result
 
     result["confirmed"] = bool(shipped)
-    if not shipped:
+    if shipped:
+        result["pending_decision"] = build_pending_decision(
+            repo, spec_id, run_id=run_id, dispatch_mode=dispatch_mode)
+    else:
         result["warning"] = "not all listed task files are git-tracked at the base branch"
     return result
 
@@ -346,6 +441,10 @@ def main(argv=None) -> int:
     elif args.verify:
         if res["confirmed"]:
             print(f"CONFIRMED: {res['spec_id']} is a shipped collision")
+            decision = res.get("pending_decision")
+            if decision:
+                print(f"  -> pending decision {decision['decision_id']}: "
+                      "surface this envelope to the operator")
         else:
             print(f"not confirmed: {res.get('warning') or 'no evidence of a shipped collision'}")
     else:

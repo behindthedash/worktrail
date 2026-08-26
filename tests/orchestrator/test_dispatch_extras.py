@@ -2,13 +2,21 @@
 """Extra coverage for dispatch.py: group prompts, parse_report_back error paths,
 transition edge cases."""
 
+import datetime as dt
+import json
 import os
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from worktrail.workqueue import decisions as decisions_mod
 from worktrail.orchestrator import dispatch
+from worktrail.orchestrator.dispatch import (
+    DecisionDispatchError,
+    validate_resolved_decision_input,
+)
 
 
 def _ctx(**kw):
@@ -281,6 +289,83 @@ class TransitionTests(unittest.TestCase):
         status, retry = dispatch.transition(dispatch.ROLE_REVIEW, rep, retry_count=1, max_retries=3)
         self.assertEqual(status, "fixing")
         self.assertEqual(retry, 2)
+
+
+def _gate_envelope(**overrides):
+    """An 'answered' envelope in the fully validated shape, built without disk."""
+    envelope = decisions_mod.pending_decision_envelope(
+        decision_id="dec-extras-0001",
+        question="Ship behind the flag now or after the migration?",
+        options=["flag now", "after migration"],
+        source="check_brief_staleness",
+        repo="/tmp/extras-repo",
+        subject="brief-x",
+    )
+    created = dt.datetime.fromisoformat(envelope["created_at"])
+    envelope.update({
+        "status": "answered",
+        "answered_at": (created + dt.timedelta(seconds=10)).isoformat(),
+        "answer": "flag now",
+    })
+    envelope.update(overrides)
+    return envelope
+
+
+class DecisionGateFailClosedDegradationTests(unittest.TestCase):
+    """If workqueue.decisions cannot be imported, the gate refuses dispatch
+    instead of letting an unvalidated envelope through."""
+
+    def test_unavailable_primitives_refuse_fail_closed(self):
+        with mock.patch.object(dispatch, "_decision_helpers",
+                               return_value=(None, None)):
+            with self.assertRaises(DecisionDispatchError) as cm:
+                validate_resolved_decision_input(_gate_envelope())
+        self.assertIn("unavailable", str(cm.exception))
+        self.assertIn("fail-closed", str(cm.exception))
+
+
+class DecisionGateBoundaryInputTests(unittest.TestCase):
+    """Envelope-shape and timestamp edges of the orchestrator dispatch gate."""
+
+    def test_accepts_the_envelope_as_a_json_string(self):
+        accepted = validate_resolved_decision_input(json.dumps(_gate_envelope()))
+        self.assertEqual(accepted["decision_id"], "dec-extras-0001")
+        self.assertEqual(accepted["answer"], "flag now")
+
+    def test_none_envelope_is_refused(self):
+        with self.assertRaises(DecisionDispatchError) as cm:
+            validate_resolved_decision_input(None)
+        self.assertIn("no pending-decision envelope", str(cm.exception))
+
+    def test_naive_answered_at_is_refused(self):
+        envelope = _gate_envelope(answered_at="2026-08-25T12:00:00")
+        with self.assertRaises(DecisionDispatchError) as cm:
+            validate_resolved_decision_input(envelope)
+        self.assertIn("timezone-naive", str(cm.exception))
+
+    def test_unparsable_answered_at_is_refused(self):
+        envelope = _gate_envelope(answered_at="day-after-tomorrow")
+        with self.assertRaises(DecisionDispatchError) as cm:
+            validate_resolved_decision_input(envelope)
+        self.assertIn("answered_at", str(cm.exception))
+
+    def test_answered_before_created_is_refused_as_clock_skew(self):
+        envelope = _gate_envelope()
+        created = dt.datetime.fromisoformat(envelope["created_at"])
+        envelope["answered_at"] = (created - dt.timedelta(seconds=30)).isoformat()
+        with self.assertRaises(DecisionDispatchError) as cm:
+            validate_resolved_decision_input(envelope)
+        self.assertIn("precedes created_at", str(cm.exception))
+
+    def test_accepted_result_round_trips_the_envelope_parser(self):
+        accepted = validate_resolved_decision_input(_gate_envelope())
+        self.assertEqual(decisions_mod.parse_pending_decision_envelope(accepted), accepted)
+
+    def test_gate_is_deterministic_same_inputs_same_result(self):
+        envelope = _gate_envelope()
+        first = validate_resolved_decision_input(envelope)
+        for _ in range(3):
+            self.assertEqual(validate_resolved_decision_input(envelope), first)
 
 
 if __name__ == "__main__":

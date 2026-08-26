@@ -27,13 +27,27 @@ Stop conditions (each printed, never silent):
   no_pick                an iteration claimed nothing and produced no run record
   capacity_gated         every configured agent (primary + --fallback-agent
                          chain) is capacity-gated
-  circuit_breaker        N consecutive failed iterations (default 2)
-  max_items              iteration ceiling reached
-  budget_exhausted       wall-clock budget reached
-  lock_held              another drain already owns this queue
+   circuit_breaker        N consecutive failed iterations (default 2)
+   max_items              iteration ceiling reached
+   budget_exhausted       wall-clock budget reached
+   lock_held              another drain already owns this queue
+   pending_user_decision  an iteration yielded a structured pending-decision
+                          handoff (run-record final_status or unresolved
+                          `pending_decisions` audit entries)
 
 `completed_awaiting_human_approval` NOTES the pending PR and continues — that
 is a gate working, not a stall.
+
+A `pending_user_decision` iteration is a fail-closed, recoverable handoff,
+never a failure: the run asked a human a question it must not answer itself
+(neither guesses), so drain records the exact decision id(s) from the run
+record's `pending_decisions` audit trail and stops instead of re-spawning
+into the same unanswered guard (neither spins). The iteration does not count
+toward `circuit_breaker`. Recovery is attended: present/answer the decision
+(`worktrail-decision answer <id> --answer ...`), then resume through the
+exact id (`worktrail-skill-dispatch --resume-decision <id>`); only an
+explicit success state outranks leftover audit entries, so a completed run
+is never wedged by stale bookkeeping.
 
 An iteration killed by the iteration timeout (exit 124) whose run record
 already carries a PR is classified `timeout_after_pr`, not `failed`: the
@@ -112,6 +126,7 @@ from ..orchestrator.integrate import _refresh_pr_labels
 from ..router import branch_selfcheck, dashboard, quarantine_selfcheck
 from ..router.policy import load_policy
 from ..router.policy_selfcheck import discover_repo_names
+from ..router.poll_run import unresolved_decision_ids as _poll_unresolved_decision_ids
 from ..router.pr_labels import ensure_pr_risk_label
 from ..shared.homedir import worktrail_home
 from ..shared.operator_config import (
@@ -311,6 +326,46 @@ def parse_run_record(text: str) -> Dict[str, Optional[str]]:
         value = _yaml_scalar(raw)
         fields[key.strip()] = None if value in ("", "null", "~") else value
     return fields
+
+
+def pending_decision_entries(text: str) -> List[str]:
+    """The `- item` lines under a run record's top-level `pending_decisions:`
+    key -- the audit list `run_record.record_decision_event` appends to.
+
+    parse_run_record deliberately drops list items (it extracts scalars
+    only), so the pending-decision handoff gets its own line-oriented read:
+    the list starts at an unindented `pending_decisions:` key and ends at
+    the next unindented key. Malformed records yield whatever entries are
+    readable -- advisory context, never a parser crash.
+    """
+    entries: List[str] = []
+    in_list = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if not in_list:
+            if stripped == "pending_decisions:":
+                in_list = True
+            continue
+        if line[:1] in (" ", "\t") and stripped.startswith("- "):
+            entries.append(_yaml_scalar(stripped[2:]))
+        elif ":" in stripped and not line[:1].isspace():
+            break
+    return entries
+
+
+def unresolved_decision_ids(record_text: str) -> List[str]:
+    """Decision ids in `record_text`'s `pending_decisions` audit list whose
+    most recent lifecycle event is neither consumed nor superseded, in
+    first-seen order -- the exact same outstanding-answer semantics as the
+    poller surface (poll_run.unresolved_decision_ids), imported rather than
+    re-derived so drain and poll_run can never disagree about which
+    decisions still block an attended resume."""
+    if not record_text:
+        return []
+    return _poll_unresolved_decision_ids(
+        {"pending_decisions": pending_decision_entries(record_text)})
 
 
 def newest_run_record(
@@ -1487,9 +1542,11 @@ class Outcome:
     """Classified result of one iteration."""
     kind: str                 # "success" | "blocked" | "failed"
                                # | "timeout_after_pr" | "no_pick"
+                               # | "pending_user_decision"
     state: Optional[str] = None      # run-record completion state, if any
     brief_id: Optional[str] = None
     pr_url: Optional[str] = None
+    pending_decisions: Optional[List[str]] = None  # unresolved decision ids
 
 
 @dataclass
@@ -1514,6 +1571,11 @@ def decide(state: LoopState, now: float) -> Decision:
     """Decide whether to launch another iteration. Evaluated BEFORE each spawn."""
     last = state.last_outcome
     if last is not None:
+        if last.kind == "pending_user_decision":
+            ids = ", ".join(last.pending_decisions or []) or "(decision id not recorded)"
+            return Decision(False, "pending_user_decision: awaiting human answer(s): "
+                                   f"{ids} -- present/answer the decision, then resume "
+                                   "attended via `worktrail-skill-dispatch --resume-decision <id>`")
         if last.kind == "no_pick":
             return Decision(False, "no_pick: worktrail-go auto claimed nothing "
                                    "(null auto_pick or picks not eligible)")
@@ -1536,7 +1598,8 @@ def classify_outcome(record_fields: Optional[Dict[str, Optional[str]]],
                      claimed_delta: int,
                      exit_code: int,
                      claimed_briefs: Iterable[str] = (),
-                     failure_class: Optional[str] = None) -> Outcome:
+                     failure_class: Optional[str] = None,
+                     pending_decisions: Iterable[str] = ()) -> Outcome:
     """Classify one iteration from its newest run record + queue movement.
 
     record_fields  — parsed run record created/updated during the iteration,
@@ -1554,14 +1617,26 @@ def classify_outcome(record_fields: Optional[Dict[str, Optional[str]]],
                      circuit breaker (the agent itself is unavailable, not
                      misbehaving) and should stop the drain via the existing
                      capacity_gated path once the cache reflects it.
+    pending_decisions — decision ids from the record's `pending_decisions`
+                     audit trail that still await a human answer. They make
+                     the iteration a first-class pending_user_decision
+                     handoff rather than a generic blocked/failed state --
+                     the one-shot yielded ownership instead of guessing --
+                     except after an explicit success state, which outranks
+                     leftover audit entries so completed work is never wedged
+                     by stale bookkeeping.
     """
     claimed_briefs = list(claimed_briefs)
+    unresolved = list(pending_decisions)
     brief = claimed_briefs[0] if len(claimed_briefs) == 1 else None
     if record_fields is not None:
         state = record_fields.get("final_status") or record_fields.get("finish")
         pr = record_fields.get("pull_request") or record_fields.get("pr_url")
         if state in SUCCESS_STATES:
             return Outcome("success", state, brief, pr)
+        if state == "pending_user_decision" or unresolved:
+            return Outcome("pending_user_decision", "pending_user_decision",
+                           brief, pr, pending_decisions=unresolved)
         if state in BLOCKED_STATES:
             return Outcome("blocked", state, brief, pr)
         if state in FAILED_STATES:
@@ -1686,6 +1761,7 @@ def drain(config: DrainConfig,
     )
     iterations: List[Dict[str, object]] = []
     pending_approvals: List[str] = []
+    pending_user_decisions: List[str] = []
     resumed: Dict[str, List[Dict[str, Any]]] = {}
     stuck_remediations: List[Dict[str, Any]] = []
     # Candidates are evaluated in this fixed priority order every iteration
@@ -1773,9 +1849,11 @@ def drain(config: DrainConfig,
             record_path = newest_run_record(
                 config.runs_dir, known_records, repo_filter=repo_filter)
             fields = None
+            record_text = None
             if record_path is not None:
                 try:
-                    fields = parse_run_record(record_path.read_text(encoding="utf-8"))
+                    record_text = record_path.read_text(encoding="utf-8")
+                    fields = parse_run_record(record_text)
                 except OSError:
                     fields = None
             # classify_outcome only consults failure_class on its record-less
@@ -1785,8 +1863,10 @@ def drain(config: DrainConfig,
             failure_class = (agent_capacity.classify_failure(
                                  exit_code, spawned.stdout, spawned.stderr)
                              if fields is None else None)
+            unresolved_decisions = unresolved_decision_ids(record_text or "")
             outcome = classify_outcome(fields, claimed_delta, exit_code,
-                                       claimed_briefs, failure_class)
+                                       claimed_briefs, failure_class,
+                                       pending_decisions=unresolved_decisions)
             if outcome.pr_url and fields is not None:
                 applied = ensure_pr_risk_label(
                     fields.get("repository"), outcome.pr_url, fields.get("risk_level"))
@@ -1817,6 +1897,16 @@ def drain(config: DrainConfig,
             if decisions_filed:
                 log("decision filed for a human: "
                     f"{', '.join(decisions_filed)} (worktrail-decision list)")
+            if outcome.kind == "pending_user_decision":
+                # Fail-closed, recoverable handoff: record the exact ids for
+                # the summary, tell the operator how to resume, and let the
+                # decide() check at the top of the next pass stop the drain.
+                surfaced = list(outcome.pending_decisions or [])
+                pending_user_decisions.extend(surfaced)
+                log(f"pending user decision ({outcome.brief_id or 'no brief claimed'}): "
+                    f"{', '.join(surfaced) or '(decision id not recorded)'} -- "
+                    "present/answer the decision, then resume attended via "
+                    "`worktrail-skill-dispatch --resume-decision <id>`")
             if outcome.kind in ("failed", "blocked") and not decisions_filed:
                 state.consecutive_failures += 1
             elif outcome.kind == "success":
@@ -1882,6 +1972,7 @@ def drain(config: DrainConfig,
         "stopped": decision.reason if not decision.proceed else "dry_run",
         "iterations": iterations,
         "pending_approvals": pending_approvals,
+        "pending_user_decisions": pending_user_decisions,
         "resumed_quarantines": resumed.get("quarantined_budget_exhausted", []),
         "resumed_verify_pending": resumed.get("verify_pending", []),
         "resumed_stale_bookkeeping": resumed.get("stale_bookkeeping", []),
@@ -1894,6 +1985,11 @@ def drain(config: DrainConfig,
     }
     if pending_approvals:
         log(f"pending human approval: {', '.join(pending_approvals)}")
+    if pending_user_decisions:
+        log(f"pending user decision(s) blocking resume: "
+            f"{', '.join(pending_user_decisions)} -- answer with "
+            "`worktrail-decision answer <id> --answer ...`, then resume via "
+            "`worktrail-skill-dispatch --resume-decision <id>`")
     if summary["decisions_open"]:
         log(f"decisions awaiting a human: {summary['decisions_open']} "
             "-- review with `worktrail-decision list` and answer with "

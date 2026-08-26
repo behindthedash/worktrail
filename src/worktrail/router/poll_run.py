@@ -12,19 +12,37 @@ PreToolUse label-enforcement hook, so this is go's own Phase 7 poll-exit
 equivalent of drain.py's queue-drain correction -- see
 docs/specs/research/go-dispatch-one-shot-pr-label-gap.md.
 
+On completion, unresolved entries in the record's `pending_decisions` audit
+list are recognized as first-class pending-user-decision results (never a
+generic failure): each still-unanswered decision id is printed with its
+exact resume token so the attended host can present the decision, answer
+it, and resume through that exact id (`worktrail-skill-dispatch
+--resume-decision <id>`). Consumed or superseded decisions are not surfaced.
+
 Usage:
   poll_run.py --run /path/to/run.yaml [--interval 30] [--max-iterations 20]
 
 Exit codes:
-  0 = run finished; prints completion state and PR URL (if present)
+  0 = run finished; prints completion state and PR URL (if present), plus any
+      pending user decision awaiting a human answer
   1 = ceiling reached; prints "ceiling reached — subprocess still running"
 """
 import argparse
+import re
 import sys
 import time
 from pathlib import Path
 
 from .pr_labels import ensure_pr_risk_label
+
+# One `pending_decisions` audit entry as run_record.record_decision_event
+# writes it: `<ts> [<event>] <decision-id>` (plus an optional note). Token
+# comparison only -- `[asked] dec-x` must never match id `dec-x-extra`.
+_DECISION_ENTRY_RE = re.compile(r"\[(?P<event>[a-z_-]+)\]\s+(?P<id>\S+)")
+
+# Events that close a decision's lifecycle on the run record; anything else
+# (asked/presented/answered) means the human's input is still outstanding.
+_TERMINAL_DECISION_EVENTS = ("consumed", "superseded")
 
 
 def parse_yaml_value(value_str: str) -> str:
@@ -36,21 +54,38 @@ def parse_yaml_value(value_str: str) -> str:
 
 
 def read_run_record(path: Path) -> dict:
-    """Read YAML run record file and extract finish/final_status and pull_request fields."""
+    """Read YAML run record file and extract finish/final_status and pull_request fields.
+
+    Simple `- item` lines nested under a key are collected into a list for
+    that key (e.g. `pending_decisions:`); scalar keys keep their existing
+    string/None values.
+    """
     if not path.exists():
         raise FileNotFoundError(f"Run record not found: {path}")
 
-    record = {}
+    record: dict = {}
+    last_key = None
     content = path.read_text(encoding="utf-8")
 
     for line in content.splitlines():
-        if not line.strip() or line.startswith("  - "):
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        if stripped.startswith("- ") and last_key is not None:
+            current = record.get(last_key)
+            item = parse_yaml_value(stripped[2:])
+            if isinstance(current, list):
+                current.append(item)
+            elif current in ("", None):
+                record[last_key] = [item]
             continue
 
         if ":" in line:
             key, _, value = line.partition(":")
             key = key.strip()
             value = value.strip()
+            last_key = key
 
             if value == "null":
                 record[key] = None
@@ -60,6 +95,34 @@ def read_run_record(path: Path) -> dict:
                 record[key] = value
 
     return record
+
+
+def decision_lifecycle(record: dict) -> dict:
+    """Map each decision id in the record's `pending_decisions` audit list to
+    its ordered event names. Malformed entries are ignored -- the audit list
+    is advisory context, never a parser crash."""
+    lifecycle: dict = {}
+    entries = record.get("pending_decisions")
+    if not isinstance(entries, list):
+        return lifecycle
+    for entry in entries:
+        if not isinstance(entry, str):
+            continue
+        m = _DECISION_ENTRY_RE.search(entry)
+        if m:
+            lifecycle.setdefault(m.group("id"), []).append(m.group("event"))
+    return lifecycle
+
+
+def unresolved_decision_ids(record: dict) -> list:
+    """Decision ids whose most recent lifecycle event is neither consumed nor
+    superseded -- i.e. decisions still awaiting (or freshly carrying) a human
+    answer, in first-seen order."""
+    pending = []
+    for decision_id, events in decision_lifecycle(record).items():
+        if not events or events[-1] not in _TERMINAL_DECISION_EVENTS:
+            pending.append(decision_id)
+    return pending
 
 
 def is_finished(record: dict) -> bool:
@@ -98,6 +161,16 @@ def main(argv=None) -> int:
                     print(f"Run completed: {final_status} — PR: {pr_url}")
                 else:
                     print(f"Run completed: {final_status}")
+
+                pending = unresolved_decision_ids(record)
+                if pending:
+                    print(
+                        "pending_user_decision: a human must answer before "
+                        "this run resumes (present, answer, then resume via "
+                        "`worktrail-skill-dispatch --resume-decision <id>`)"
+                    )
+                    for decision_id in pending:
+                        print(f"pending_user_decision: {decision_id}")
                 return 0
 
         except FileNotFoundError:

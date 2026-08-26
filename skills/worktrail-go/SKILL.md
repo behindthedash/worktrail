@@ -393,6 +393,15 @@ in the queue?), is not route-gated at all: it runs on every brief-sourced dispat
 whichever of the other two also applies. A free-text dispatch with no claimed brief skips all
 brief-sourced branches; it may still run spec collision on Route C/D/F/G.
 
+Every branch reads its guard's structured result the same way, and every
+judgment call a guard hands to a human now arrives as the provider-neutral,
+versioned `worktrail.pending-decision` envelope (`pending_decision` key;
+deterministic decision id; provenance inside) with each lifecycle hop stamped
+onto the run record's `pending_decisions` audit list — so the same question is
+filed, presented, answered, and resumed identically across attended, adapter,
+and unattended dispatch modes. Contract and resume procedure:
+`references/decision-queue.md`.
+
 **Brief-staleness branch (every brief-sourced dispatch).**
 
 Gated on the dispatch being brief-sourced (a claimed brief is in play) — there is no route
@@ -764,6 +773,21 @@ worktrail-agent-capacity clear --all [--reason TEXT] [--cache PATH]
   Only clear after the external condition (auth, billing, sandbox, startup, or
   transport) has been corrected.
 
+**Pending-user-decision presentation and resume (go/adapter boundary).** A
+dispatch blocked on a guard's decision envelope is recoverable without
+guessing, in every dispatch mode. An attended host presents the exact record
+with `worktrail-skill-dispatch --present-decision "<decision-id>" --run "$RUN"`
+— the same versioned envelope JSON for every provider, the `[presented]` audit
+hop stamped automatically, nothing spawned. Once a human has answered it,
+resume through the exact id with `--resume-decision "<decision-id>"`, which
+threads a verbatim `decision:<decision-id>` token into the child invocation
+and launches nothing unless that exact record is answered and live (open,
+superseded, or unknown → exit 2, nothing spawned). Never re-present from the
+markdown by hand, and never resume through a prefix of an id — a partial id is
+a different record. Lifecycle contract: `references/decision-queue.md`;
+boundary mechanics and the poll-side `pending_user_decision` handoff:
+`references/subagent-prompts.md`.
+
 Route-specific spawn, poll, and fallback mechanics live in
 `references/subagent-prompts.md`; do not duplicate them here.
 
@@ -810,6 +834,12 @@ fresh `worktrail-run-record start` and permanently orphans the parent's record a
 which carries no such prompt of its own to thread it through otherwise. Never omit `run:`
 to mean "let the child open its own" — that recreates the orphaned-record bug this token
 exists to close.
+
+On a decision-resume dispatch, the adapter threads one more token: the exact
+answered decision's id, appended verbatim as `decision:<decision-id>` (via
+`--resume-decision`). The executor consumes that exact record once and applies
+the validated answer at the original block site; the id is never re-derived or
+normalized downstream.
 
 ## Related Briefs
 
@@ -870,3 +900,7 @@ When a brief is claimed, surface any related briefs from its `related` frontmatt
 - When resuming a picked brief, do not call `work_queue.py claim` again.
 - Auto mode (spec 017) removes the selection prompt ONLY: it never resumes in-flight briefs, never picks blocked/`no-repo`/busy-repo briefs, never retries a lost claim race more than 3 times, and never bypasses policy approval gates or risk tiers. When `auto_pick.pick` is null, report and stop — do not fall back to interactive selection or invent work.
 - The run record MUST be started for every dispatched invocation and closed with an explicit completion state.
+- Never guess around a pending user decision: present it
+  (`worktrail-skill-dispatch --present-decision`), let a human answer, and
+  resume through the exact id (`--resume-decision`) — every hop lands on the
+  run record's `pending_decisions` audit trail.

@@ -56,6 +56,33 @@ for the policy's run-record directory and `${REPO}-worktrees`, because
 `workspace-write` otherwise only covers the child `--cwd`. Keep those roots
 narrow; never add the whole home directory.
 
+**Pending-decision boundary (`--present-decision` / `--resume-decision`).**
+The same adapter is the go-side boundary of the versioned
+`worktrail.pending-decision` contract (`decision-queue.md#decision-envelope`),
+and it is deliberately one command surface for every provider, so a decision's
+lifecycle stays auditable across dispatch modes:
+
+```bash
+# Attended presentation: print the record's provider-neutral envelope JSON
+# (any status, including open), stamp [presented] onto $RUN, spawn nothing.
+worktrail-skill-dispatch --present-decision "$DECISION_ID" --run "$RUN"
+
+# Exact-ID resume: launch the child ONLY when this exact record is answered
+# and live; the id travels into the invocation verbatim as a
+# decision:<decision-id> token the executor consumes once.
+worktrail-skill-dispatch \
+  --agent "$INVOCATION_CONTEXT_AGENT" --skill worktrail-sdd-workflow \
+  --args "$SEED" --cwd "$REPO" --write \
+  --resume-decision "$DECISION_ID"
+```
+
+An open, superseded, or unknown id fails closed here — exit 2, nothing
+spawned; a known-but-unresumable record's envelope is printed on stdout so an
+unattended caller receives the structured pending result unchanged. Never
+re-derive, normalize, or prefix-match the id: a partial id names a different
+record and is refused instead of silently resumed. Lifecycle procedure:
+`decision-queue.md#decision-audit`.
+
 ### `go_seed.py` CLI contract
 
 The `go_seed.py` helper generates a seed prompt for subprocess dispatch. Located at
@@ -157,6 +184,14 @@ unbounded waits.
   `finish` entry with completion state and optional PR URL. Before printing a completion summary and
   exiting, run `#post-delegation-verification` against the run record's `worktree` — a `finish` entry
   is a self-report, not proof.
+- **Poll exit 0 with pending decisions:** On completion the poll also reads the record's
+  `pending_decisions` audit list; any decision id whose last lifecycle event is neither `consumed`
+  nor `superseded` is printed as its own `pending_user_decision: <id>` line. That is a first-class,
+  fail-closed, recoverable handoff — the subprocess yielded ownership instead of guessing — never a
+  generic failure: present the record (`worktrail-skill-dispatch --present-decision <id>`), have a
+  human answer it (`worktrail-decision answer <id> --answer "..."`), and resume through the exact id
+  (`worktrail-skill-dispatch --resume-decision <id>`). Full lifecycle:
+  `decision-queue.md#decision-audit`.
 - **Poll exit non-0 (ceiling reached):** No `finish` entry after 20 iterations. go prints
   "Subprocess still running — check run record at $RUN" and exits cleanly (non-error) so the user
   can check the run record later or re-invoke to resume polling.
