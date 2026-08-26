@@ -349,10 +349,100 @@ def _validate(
     return [seen[i] for i in sorted(seen)], [], warnings
 
 
-def _default_spawn(prompt: str, cwd: Path, timeout: int, log) -> str:
+def _resolve_spawn_policy(
+    repo: "str | Path",
+    *,
+    agent: Optional[str] = None,
+    model: Optional[str] = None,
+    fallback_agent: Optional["str | Sequence[str]"] = None,
+) -> tuple[str, str, List[str]]:
+    """Resolve the compile worker's agent/model/fallback chain from policy.
+
+    Explicit invocation values still win when provided. Missing values fall
+    back through repo policy, then the existing per-agent model defaults, and
+    the routing table's fallback chain.
+    """
+    from worktrail.orchestrator import spawnlib
+    from worktrail.router import invocation_context
+    from worktrail.router.policy import load_policy, resolve_routing
+
+    repo = Path(repo)
+    policy = load_policy(repo)
+
+    try:
+        resolved_agent = invocation_context.resolve(
+            agent=agent,
+            policy_agent=policy.get("agent_cli"),
+        ).agent_cli
+    except ValueError as exc:
+        print(f"warning: {exc}; falling back to 'claude'", file=sys.stderr)
+        resolved_agent = "claude"
+
+    resolved_routing = resolve_routing(policy, route="", risk="")
+    resolved_model = model or resolved_routing.get("agent_model")
+    resolved_model = resolved_model or spawnlib.default_model_for_agent(resolved_agent)
+
+    if fallback_agent is None:
+        fallback_chain = [
+            entry["agent_cli"]
+            for entry in resolved_routing["fallback"]
+            if entry.get("agent_cli")
+        ]
+    elif isinstance(fallback_agent, str):
+        fallback_chain = [fallback_agent]
+    else:
+        fallback_chain = [hop for hop in fallback_agent if hop]
+
+    return resolved_agent, resolved_model, fallback_chain
+
+
+def _parse_fallback_chain(value: Optional[str]) -> Optional[List[str]]:
+    """Parse a comma-separated fallback chain into ordered agent names."""
+    if value is None:
+        return None
+    chain = [hop.strip() for hop in value.split(",")]
+    return [hop for hop in chain if hop]
+
+
+def _default_spawn(
+    prompt: str,
+    cwd: Path,
+    timeout: int,
+    log,
+    *,
+    agent: Optional[str] = None,
+    model: Optional[str] = None,
+    fallback_agent: Optional["str | Sequence[str]"] = None,
+) -> str:
     from worktrail.orchestrator import spawnlib
 
-    return spawnlib.spawn_agent(prompt, cwd, timeout=timeout, log=log).text
+    if agent is None or model is None or fallback_agent is None:
+        resolved_agent, resolved_model, resolved_fallback = _resolve_spawn_policy(
+            cwd,
+            agent=agent,
+            model=model,
+            fallback_agent=fallback_agent,
+        )
+        agent = agent or resolved_agent
+        model = model or resolved_model
+        if fallback_agent is None:
+            fallback_agent = resolved_fallback
+
+    fallback_chain = spawnlib._normalize_fallback_chain(agent or "claude", fallback_agent)
+
+    log(
+        f"run plan: spawn policy resolved agent={agent or 'claude'} "
+        f"model={model} fallback_hops={len(fallback_chain)}"
+    )
+    return spawnlib.spawn_agent(
+        prompt,
+        cwd,
+        agent=agent or "claude",
+        model=model,
+        fallback_agent=fallback_chain,
+        timeout=timeout,
+        log=log,
+    ).text
 
 
 # --------------------------------------------------------------------------- #
@@ -501,6 +591,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         description="Compile a spec/change into a cached RunPlan (file scope + dependency edges)."
     )
     ap.add_argument("spec", help="path to the spec or OpenSpec change directory")
+    ap.add_argument("--agent", default=None, help="override the compile spawn agent")
+    ap.add_argument("--model", default=None, help="override the compile spawn model")
+    ap.add_argument(
+        "--fallback-chain",
+        default=None,
+        help="comma-separated fallback agent names, in order",
+    )
     ap.add_argument("--cache-dir", default=None, help="override the plan cache location")
     ap.add_argument("--force", action="store_true", help="recompile even on a cache hit")
     ap.add_argument(
@@ -532,6 +629,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"not inside a git repository: {spec_dir}", file=sys.stderr)
         return 1
 
+    fallback_chain = _parse_fallback_chain(a.fallback_chain)
+
     plan = compile_run_plan(
         spec_dir,
         tasks,
@@ -542,6 +641,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         force=a.force,
         allow_force_over_active_worktrees=a.allow_force_over_active_worktrees,
         timeout=a.timeout,
+        spawn=lambda prompt, cwd, timeout, log: _default_spawn(
+            prompt,
+            cwd,
+            timeout,
+            log,
+            agent=a.agent,
+            model=a.model,
+            fallback_agent=fallback_chain,
+        ),
         log=lambda m: print(m, file=sys.stderr),
     )
 
