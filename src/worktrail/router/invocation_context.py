@@ -53,6 +53,7 @@ class InvocationContext:
     dispatch_id: str
     blocked_reason: Optional[str] = None
     warning: Optional[str] = None
+    model: Optional[str] = None
 
 
 def _which(name: str) -> Optional[str]:
@@ -120,6 +121,7 @@ def _resolve_capability(
 def resolve(
     *,
     agent: Optional[str] = None,
+    model: Optional[str] = None,
     policy_agent: Optional[str] = None,
     native_skill: Optional[bool] = None,
     active_resume: bool = False,
@@ -160,12 +162,14 @@ def resolve(
         dispatch_id=resolved_dispatch_id,
         blocked_reason=blocked_reason,
         warning=warning,
+        model=model,
     )
 
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--agent", help="explicit provider override")
+    parser.add_argument("--model", help="explicit model inherited by subcalls")
     parser.add_argument("--policy-agent", help="agent_cli resolved from repository policy")
     capability = parser.add_mutually_exclusive_group()
     capability.add_argument(
@@ -197,6 +201,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     try:
         context = resolve(
             agent=parsed.agent,
+            model=parsed.model,
             policy_agent=parsed.policy_agent,
             native_skill=parsed.native_skill,
             active_resume=parsed.active_resume,
@@ -213,6 +218,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(json.dumps(asdict(context), sort_keys=True))
     else:
         print(f"agent_cli: {context.agent_cli}")
+        print(f"model: {context.model or ''}")
         print(f"native_skill_available: {context.native_skill_available}")
         print(f"dispatch_mode: {context.dispatch_mode}")
         print(f"dispatch_id: {context.dispatch_id}")
