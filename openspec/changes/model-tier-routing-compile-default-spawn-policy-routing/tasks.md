@@ -6,8 +6,8 @@
 
 ## 2. Tests (tests/conductor/test_compile.py + tests/orchestrator) — including the no-new-env-channel guards (requirement: No environment-variable channel is added for compile model selection)
 
-- [ ] 2.1 Pin the seam: existing `_default_spawn` patch sites still pass unchanged, and an injected `spawn=` callable is used verbatim with no policy load (assert the resolver never runs when `spawn` is provided).
-- [ ] 2.2 Unconfigured-repo parity: no policy/routing files, no flags → spawn called with claude, config-file default model, no fallback hops (byte-identical argv inputs to pre-change).
+- [x] 2.1 Pin the seam: existing `_default_spawn` patch sites still pass unchanged, and an injected `spawn=` callable is used verbatim with no policy load (assert the resolver never runs when `spawn` is provided).
+- [x] 2.2 Unconfigured-repo parity: no policy/routing files, no flags → spawn called with claude, config-file default model, no fallback hops (byte-identical argv inputs to pre-change).
 - [ ] 2.3 Policy primary: repo policy sets `agent_cli`/`agent_model` → those win over defaults; machine-wide routing file variant covered via `WORKTRAIL_ROUTING_FILE` fixture.
 - [ ] 2.4 Explicit invocation precedence: `--agent opencode --model openrouter/stealth/ox-alpha` beats configured policy values; partial overrides (flag without model) fall back per-layer.
 - [ ] 2.5 Fallback chain threading: `routing.fallback` (and flat `fallback_agent_cli`) reaches `spawn_agent(fallback_agent=[...])`; capacity-gated primary degrades to next hop (patch `agent_capacity.check`); all-hops-gated raises through to the give_up baseline plan with the reason in RunPlan notes.
