@@ -48,7 +48,7 @@
 - [ ] 3.2 Emit warnings without blocking: top-5 candidates into `"overlap_warnings"` in the JSON
       result and to stderr in human mode; every failure mode (no gh, null remote, unreadable repo)
       leaves capture succeeding with a zero exit status.
-- [ ] 3.3 Extend `tests/workqueue/test_create_handoff.py`: spec-slug overlap warns, open-PR
+- [x] 3.3 Extend `tests/workqueue/test_create_handoff.py`: spec-slug overlap warns, open-PR
       overlap warns (gh stubbed), below-threshold stays silent, failure modes stay silent, brief
       always written.
 
