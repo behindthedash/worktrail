@@ -25,6 +25,52 @@ os.environ.setdefault("GO_AGENT_CAPACITY_CACHE", os.path.join(tempfile.mkdtemp()
 
 Proc = namedtuple("Proc", "returncode stdout stderr")
 
+# Claude-only argv tokens (spec spawnlib-cross-hop-argv-invariant): every
+# element here is legal ONLY on a `claude -p` command line; a codex or opencode
+# argv carrying any of them as an exact element means the primary's extra_args
+# leaked across a fallback hop (persisted capacity gate or session-limit
+# switch). Provenance of each token:
+#   --strict-mcp-config / --tools / Read / Edit / Write / Bash / Grep / Glob /
+#     --setting-sources / project,local
+#       -> live.py `_LEAN_WORKER_FLAGS`, the lean-worker extra_args live.py
+#          derives ONLY when the target agent is claude
+#   --append-system-prompt
+#       -> live.py's review-role system-prompt append, also claude-only there
+#   --permission-mode / bypassPermissions
+#       -> spawnlib PERM_FLAGS, emitted by build_cmd() only for agent="claude"
+#   --output-format / stream-json / --verbose
+#       -> spawnlib JSON_OUTPUT_FLAGS, same claude-only build_cmd() branch
+#   --setting-sources / project,local (repeated from _LEAN_WORKER_FLAGS above)
+#       -> also the structural default _with_default_setting_sources() puts on
+#          every claude spawn regardless of caller extra_args
+#   --effort
+#       -> build_cmd()'s claude branch; codex translates effort to
+#          `-c model_reasoning_effort=...` and opencode to `--variant`
+#   --resume / --fork-session
+#       -> build_cmd()'s claude branch; opencode uses `--session`/`--fork`
+#          instead and the codex branch ignores resume_session_id entirely
+CLAUDE_ONLY_ARGV_TOKENS = (
+    "--strict-mcp-config",
+    "--tools",
+    "Read",
+    "Edit",
+    "Write",
+    "Bash",
+    "Grep",
+    "Glob",
+    "--append-system-prompt",
+    "--permission-mode",
+    "bypassPermissions",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--setting-sources",
+    "project,local",
+    "--effort",
+    "--resume",
+    "--fork-session",
+)
+
 
 class FakeRun:
     """Returns scripted outcomes in order (last repeats); an Exception is raised."""
@@ -1342,6 +1388,216 @@ class FallbackChain(unittest.TestCase):
             spawnlib.spawn_agent(
                 "prompt", "/tmp", agent="claude", fallback_agent=["hopA", "bogus"],
             )
+
+
+class CrossHopArgvInvariant(unittest.TestCase):
+    """Hermetic harness for the cross-hop argv invariant (spec
+    spawnlib-cross-hop-argv-invariant): a spawn whose requested primary agent
+    is claude must never leak claude-only flags (CLAUDE_ONLY_ARGV_TOKENS) into
+    a codex/opencode hop's command line -- no matter which mechanism selected
+    the hop: a persisted capacity gate consulted before the first command is
+    built, or an in-flight session-limit switch. Mirrors FallbackChain's
+    isolation so each test owns its capacity cache and provider models."""
+
+    # Deterministic per-agent models so argv assertions can identify which hop
+    # ran by model; pinning default_model_for_agent also keeps the tests
+    # hermetic against a developer machine's model-defaults.yaml.
+    HOP_MODELS = {
+        "claude": "pin-claude-model",
+        "codex": "pin-codex-model",
+        "opencode": "pin-opencode-model",
+    }
+
+    def setUp(self):
+        self._cache = tempfile.TemporaryDirectory()
+        self._old_cache = os.environ.get("GO_AGENT_CAPACITY_CACHE")
+        os.environ["GO_AGENT_CAPACITY_CACHE"] = os.path.join(self._cache.name, "capacity.json")
+        self._orig_run = spawnlib.subprocess.run
+        self._orig_model_fn = spawnlib.default_model_for_agent
+        spawnlib.default_model_for_agent = lambda a: self.HOP_MODELS.get(a, "pin-claude-model")
+
+    def tearDown(self):
+        spawnlib.subprocess.run = self._orig_run
+        spawnlib.default_model_for_agent = self._orig_model_fn
+        if self._old_cache is None:
+            os.environ.pop("GO_AGENT_CAPACITY_CACHE", None)
+        else:
+            os.environ["GO_AGENT_CAPACITY_CACHE"] = self._old_cache
+        self._cache.cleanup()
+
+    def _script_run(self, outcomes):
+        """Replace spawnlib.subprocess.run with a scripted fake that records
+        every invoked argv and returns `outcomes` in invocation order (the
+        last outcome repeats for any further invocation, mirroring FakeRun; a
+        BaseException outcome is raised instead of returned). Returns the list
+        each invocation appends its command line to."""
+        calls = []
+        state = {"n": 0}
+
+        def runner(cmd, *args, **kwargs):
+            idx = min(state["n"], len(outcomes) - 1)
+            state["n"] += 1
+            calls.append(list(cmd))
+            o = outcomes[idx]
+            if isinstance(o, BaseException):
+                raise o
+            return o
+
+        spawnlib.subprocess.run = runner
+        return calls
+
+    def assert_no_claude_only_flags(self, cmds):
+        """Fail naming the offending element if any non-claude argv (i.e. a
+        codex/opencode hop) carries a CLAUDE_ONLY_ARGV_TOKENS member as an
+        exact element. Claude-headed argvs are skipped: they legitimately
+        carry these flags."""
+        for cmd in cmds:
+            if not cmd or cmd[0] == "claude":
+                continue
+            for token in CLAUDE_ONLY_ARGV_TOKENS:
+                if token in cmd:
+                    self.fail(
+                        f"claude-only flag {token!r} leaked into "
+                        f"{cmd[0]} argv at element {cmd.index(token)}: {cmd}"
+                    )
+
+    # ---------------------------------------------------------------- #
+    # Cross-path scenario sweep: the FULL CLAUDE_ONLY_ARGV_TOKENS-derived
+    # payload rides on every scenario below; no codex/opencode argv may
+    # carry any of it, whichever mechanism selected the hop.
+    # ---------------------------------------------------------------- #
+
+    # The caller-passable slice of CLAUDE_ONLY_ARGV_TOKENS, shaped exactly as
+    # live.py emits it: _LEAN_WORKER_FLAGS plus the review-role
+    # --append-system-prompt pair. The remaining claude-only tokens reach an
+    # ungated claude argv through build_cmd()'s own structural additions
+    # (PERM_FLAGS, JSON_OUTPUT_FLAGS, the _with_default_setting_sources
+    # default) or the paired effort=/resume_session_id= kwargs -- the positive
+    # control pins every token, keeping the negative assertions honest.
+    SWEEP_EXTRA_ARGS = [
+        "--strict-mcp-config",
+        "--tools", "Read", "Edit", "Write", "Bash", "Grep", "Glob",
+        "--append-system-prompt", "lean worker system prompt",
+    ]
+    SWEEP_EFFORT = "high"
+    SWEEP_RESUME_SESSION_ID = "sess-sweep-0001"
+
+    # Short (<600 chars) genuine usage-cap notice: exit 0, non-empty stdout,
+    # no report-back -- the in-flight trigger for a fallback hop.
+    LIMIT_NOTICE = Proc(0, "You've hit your session limit. Your limit resets at 11:59pm.", "")
+
+    def _gate(self, agent):
+        """Persist a transport-class capacity gate for *agent* under its
+        pinned model, the mechanism FallbackChain exercises."""
+        spawnlib.agent_capacity.record(
+            agent,
+            spawnlib.default_model_for_agent(agent),
+            outcome="unavailable",
+            failure_class="transport",
+            retry_after=datetime.datetime.now(datetime.timezone.utc)
+            + datetime.timedelta(seconds=300),
+        )
+
+    def _sweep(self, outcomes, **kw):
+        """Script *outcomes* and run one claude-primary spawn_agent carrying
+        the full payload (extra_args + effort + resume_session_id). The codex
+        child-env prep is patched out (as in CodexSpawn) so scenarios reaching
+        a codex hop stay hermetic. Returns (out, captured argvs, slept)."""
+        kw.setdefault("extra_args", list(self.SWEEP_EXTRA_ARGS))
+        kw.setdefault("effort", self.SWEEP_EFFORT)
+        kw.setdefault("resume_session_id", self.SWEEP_RESUME_SESSION_ID)
+        kw.setdefault("retries", 0)
+        sleeps = []
+        kw.setdefault("sleep", lambda seconds: sleeps.append(seconds))
+        calls = self._script_run(list(outcomes))
+        with tempfile.TemporaryDirectory() as cwd, patch.object(
+            spawnlib,
+            "prepare_codex_child_environment",
+            return_value=(os.environ.copy(), "/tmp/worktrail-codex-child", False),
+        ):
+            out = spawnlib.spawn_agent("prompt", cwd, agent="claude", **kw)
+        return out, calls, sleeps
+
+    def test_capacity_gate_first_hop_claude_gated_selects_codex(self):
+        # Persisted gate consulted BEFORE the first command is built: claude
+        # is gated, so codex is hop zero and the claude-only payload must
+        # never reach the single argv this spawn builds.
+        self._gate("claude")
+        out, calls, _sleeps = self._sweep(
+            [Proc(0, "codex report", "")], fallback_agent="codex"
+        )
+        self.assertEqual(out.text, "codex report")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "codex")
+        self.assertIn(self.HOP_MODELS["codex"], calls[0])
+        self.assert_no_claude_only_flags(calls)
+
+    def test_capacity_gate_first_hop_claude_gated_selects_opencode(self):
+        self._gate("claude")
+        out, calls, _sleeps = self._sweep(
+            [Proc(0, "opencode report", "")], fallback_agent="opencode"
+        )
+        self.assertEqual(out.text, "opencode report")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "opencode")
+        self.assertIn(self.HOP_MODELS["opencode"], calls[0])
+        self.assert_no_claude_only_flags(calls)
+
+    def test_session_limit_hop_claude_to_codex(self):
+        out, calls, sleeps = self._sweep(
+            [self.LIMIT_NOTICE, Proc(0, "codex report", "")],
+            fallback_agent="codex",
+        )
+        self.assertEqual(out.text, "codex report")
+        self.assertEqual([c[0] for c in calls], ["claude", "codex"])
+        self.assertEqual(sleeps, [])  # the chain hop replaces sleep-until-reset
+        self.assertIn(self.HOP_MODELS["codex"], calls[1])
+        self.assert_no_claude_only_flags(calls)
+
+    def test_session_limit_hop_claude_to_opencode(self):
+        out, calls, sleeps = self._sweep(
+            [self.LIMIT_NOTICE, Proc(0, "opencode report", "")],
+            fallback_agent="opencode",
+        )
+        self.assertEqual(out.text, "opencode report")
+        self.assertEqual([c[0] for c in calls], ["claude", "opencode"])
+        self.assertEqual(sleeps, [])
+        self.assertIn(self.HOP_MODELS["opencode"], calls[1])
+        self.assert_no_claude_only_flags(calls)
+
+    def test_multi_hop_chain_hitting_limit_twice_sweeps_second_hop(self):
+        # claude -> (limit) -> codex -> (limit) -> opencode: the SECOND hop
+        # transition is itself swept -- the rebuilt codex command carried no
+        # payload, and the codex->opencode rebuild must not resurrect one.
+        out, calls, sleeps = self._sweep(
+            [self.LIMIT_NOTICE, self.LIMIT_NOTICE, Proc(0, "opencode report", "")],
+            fallback_agent=["codex", "opencode"],
+        )
+        self.assertEqual(out.text, "opencode report")
+        self.assertEqual([c[0] for c in calls], ["claude", "codex", "opencode"])
+        self.assertIn(self.HOP_MODELS["codex"], calls[1])
+        self.assertIn(self.HOP_MODELS["opencode"], calls[2])
+        self.assertEqual(sleeps, [])
+        self.assert_no_claude_only_flags(calls)
+
+    def test_positive_control_ungated_claude_receives_every_payload_token(self):
+        # Positive control: with no gate and no limit hit, the ungated claude
+        # primary receives EVERY CLAUDE_ONLY_ARGV_TOKENS element -- proving
+        # the sweep payload really spans the whole token set (values intact),
+        # i.e. the negative assertions above are testing something.
+        out, calls, _sleeps = self._sweep([Proc(0, "claude report", "")])
+        self.assertEqual(out.text, "claude report")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "claude")
+        for token in CLAUDE_ONLY_ARGV_TOKENS:
+            self.assertIn(token, calls[0], token)
+        idx = calls[0].index("--append-system-prompt")
+        self.assertEqual(calls[0][idx + 1], "lean worker system prompt")
+        self.assertEqual(
+            calls[0][calls[0].index("--tools") + 1: calls[0].index("--append-system-prompt")],
+            ["Read", "Edit", "Write", "Bash", "Grep", "Glob"],
+        )
+        self.assert_no_claude_only_flags(calls)
 
 
 class ParseStreamJsonSessionId(unittest.TestCase):

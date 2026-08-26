@@ -1314,6 +1314,90 @@ def test_drain_generic_failure_stays_plain_failed_with_no_cache_write(tmp_path, 
     assert not config.capacity_cache.exists()
 
 
+def test_drain_capacity_blocked_iteration_with_no_brief_records_empty_attribution(
+        tmp_path, monkeypatch):
+    # Regression (add-drain-iteration-observability 2.1): a capacity-blocked
+    # iteration claims nothing, so its summary entry and log line must carry
+    # the stable empty attribution values alongside the populated
+    # failure_class diagnostic that explains WHY the agent was blocked.
+    monkeypatch.setattr(agent_capacity, "_now",
+                        lambda: datetime(2026, 8, 25, tzinfo=timezone.utc))
+    fake = FakeQueue([3, 3])
+    install_fake_queue(monkeypatch, fake)
+    config = make_config(tmp_path)
+    logs = []
+
+    def spawner(cmd, timeout):
+        return SpawnOutcome(1, "ERROR: You've hit your usage limit.", "")
+
+    summary = drain.drain(config, spawner=spawner, log=logs.append)
+    assert len(summary["iterations"]) == 1
+    assert summary["stopped"].startswith("capacity_gated")
+    iteration = summary["iterations"][0]
+    assert iteration["kind"] == "blocked"
+    assert iteration["state"] == "blocked_capacity_billing"
+    # Stable empty values: nothing was claimed or produced.
+    assert iteration["brief"] is None
+    assert iteration["pr"] is None
+    assert iteration["claimed_delta"] == 0
+    assert iteration["claimed_brief_count"] == 0
+    assert iteration["transcript"] is None
+    # Diagnostic field: which account-level failure class blocked the agent.
+    assert iteration["failure_class"] == "billing"
+    matched = [line for line in logs if "outcome=blocked_capacity_billing" in line]
+    assert len(matched) == 1
+    assert ("brief=- pr=- failure_class=billing "
+            "claimed_delta=0 claimed_brief_count=0 exit=1") in matched[0]
+
+
+def test_drain_failed_iteration_attributes_single_claimed_brief_and_transcript(
+        tmp_path, monkeypatch):
+    # Regression (add-drain-iteration-observability 2.1): a failed iteration
+    # whose queue diff shows exactly one claimed brief must attribute it,
+    # expose the claim counts, keep the record-less-only failure_class empty
+    # (a run record exists, so no output classification ran), and persist a
+    # transcript -- all mirrored in the human-readable log line.
+    fake = FakeQueue([1, 0])
+    install_fake_queue(monkeypatch, fake)
+    transcript_dir = tmp_path / "transcripts"
+    config = make_config(tmp_path, transcript_dir=transcript_dir)
+    logs = []
+    calls = {"n": 0}
+
+    def spawner(cmd, timeout):
+        calls["n"] += 1
+        write_run_record(config.runs_dir, f"go-{calls['n']}", None)
+        return SpawnOutcome(1, "partial stdout before the crash\n", "")
+
+    summary = drain.drain(config, spawner=spawner, log=logs.append)
+    assert len(summary["iterations"]) == 1
+    assert summary["stopped"].startswith("queue_empty")
+    iteration = summary["iterations"][0]
+    assert iteration["kind"] == "failed"
+    # Stable empty values: the unfinished record leaves both the completion
+    # state and the (record-less-only) failure_class unpopulated.
+    assert iteration["state"] is None
+    assert iteration["failure_class"] is None
+    assert iteration["pr"] is None
+    # Diagnostic fields: attribution evidence for the one claimed brief.
+    assert iteration["brief"] == "b0"
+    assert iteration["claimed_delta"] == 1
+    assert iteration["claimed_brief_count"] == 1
+    assert iteration["exit_code"] == 1
+    # The transcript pointer survives in the summary and on disk.
+    transcript_ref = iteration["transcript"]
+    assert transcript_ref is not None
+    transcript_path = Path(transcript_ref)
+    assert transcript_path.is_file()
+    assert transcript_path.parent == transcript_dir
+    assert "partial stdout before the crash" in transcript_path.read_text()
+    matched = [line for line in logs if "outcome=failed" in line]
+    assert len(matched) == 1
+    assert ("brief=b0 pr=- failure_class=- "
+            "claimed_delta=1 claimed_brief_count=1 exit=1") in matched[0]
+    assert f"transcript={transcript_path}" in matched[0]
+
+
 def test_drain_falls_back_to_configured_agent_when_primary_gated(tmp_path, monkeypatch):
     fake = FakeQueue([1, 0])
     install_fake_queue(monkeypatch, fake)

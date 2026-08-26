@@ -1,6 +1,6 @@
 ## 1. Decision envelope and durable lifecycle
 
-- [ ] 1.1 Add the versioned pending-decision envelope, idempotent decision identity, provenance, answer-consumption, supersession, and run-record lifecycle helpers in `src/worktrail/workqueue/decisions.py` and `src/worktrail/router/run_record.py`; cover them in `tests/workqueue/test_decisions.py` and `tests/router/test_run_record.py`. (Requirement: Guards produce a stable decision envelope) (Requirement: Resume validates decision provenance and freshness)
+- [x] 1.1 Add the versioned pending-decision envelope, idempotent decision identity, provenance, answer-consumption, supersession, and run-record lifecycle helpers in `src/worktrail/workqueue/decisions.py` and `src/worktrail/router/run_record.py`; cover them in `tests/workqueue/test_decisions.py` and `tests/router/test_run_record.py`. (Requirement: Guards produce a stable decision envelope) (Requirement: Resume validates decision provenance and freshness)
   files: src/worktrail/workqueue/decisions.py, src/worktrail/router/run_record.py, tests/workqueue/test_decisions.py, tests/router/test_run_record.py
 
 ## 2. Guard and front-door boundary

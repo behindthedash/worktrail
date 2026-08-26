@@ -1925,6 +1925,9 @@ def drain(config: DrainConfig,
                     f"agent={active_agent} "
                     f"outcome={outcome.state or outcome.kind} "
                     f"brief={outcome.brief_id or '-'} pr={outcome.pr_url or '-'} "
+                    f"failure_class={failure_class or '-'} "
+                    f"claimed_delta={claimed_delta} "
+                    f"claimed_brief_count={len(claimed_briefs)} "
                     f"exit={exit_code} elapsed={elapsed}s"
                     f"{' transcript=' + str(transcript_path) if transcript_path else ''}")
             log(line)
@@ -1932,6 +1935,9 @@ def drain(config: DrainConfig,
                 "n": state.iteration, "agent": active_agent,
                 "kind": outcome.kind, "state": outcome.state,
                 "brief": outcome.brief_id, "pr": outcome.pr_url,
+                "failure_class": failure_class,
+                "claimed_delta": claimed_delta,
+                "claimed_brief_count": len(claimed_briefs),
                 "exit_code": exit_code, "elapsed_s": elapsed,
                 "decisions_filed": decisions_filed,
                 "transcript": str(transcript_path) if transcript_path else None,

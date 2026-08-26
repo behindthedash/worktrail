@@ -37,6 +37,97 @@ def test_substantive_work_ignores_read_only_tools(tmp_path):
     assert not hook.substantive_work(str(transcript))
 
 
+def _write_entries(path: Path, entries: list[dict]) -> None:
+    path.write_text("\n".join(json.dumps(e) for e in entries) + "\n", encoding="utf-8")
+
+
+def _tool_entry(tool_name: str, tool_input=None) -> dict:
+    return {
+        "message": {
+            "content": [{"type": "tool_use", "name": tool_name, "input": tool_input or {}}]
+        }
+    }
+
+
+def test_scan_transcript_collects_touched_durable_paths_from_edit_tools(tmp_path):
+    """Edit-tool `file_path`s under `docs/specs/**` or `openspec/changes/**`
+    are collected as touched durable artifacts; non-durable edit targets and
+    read-only mentions (Read tool) are not."""
+    transcript = tmp_path / "edits.jsonl"
+    spec_path = "/repo/docs/specs/001-task/design.md"
+    _write_entries(
+        transcript,
+        [
+            _tool_entry("Write", {"file_path": spec_path}),
+            _tool_entry("Edit", {"file_path": "/repo/openspec/changes/my-change/tasks.md"}),
+            _tool_entry("MultiEdit", {"file_path": "/repo/src/main.py"}),
+            _tool_entry("Read", {"file_path": spec_path}),
+            _tool_entry("NotebookEdit", {"notebook_path": "/repo/openspec/changes/my-change/nb.ipynb"}),
+        ],
+    )
+    has_work, run_records, durable_paths = hook.scan_transcript(str(transcript))
+    assert has_work
+    assert run_records == []
+    assert durable_paths == [
+        spec_path,
+        "/repo/openspec/changes/my-change/tasks.md",
+        "/repo/openspec/changes/my-change/nb.ipynb",
+    ]
+
+
+def test_scan_transcript_collects_touched_durable_paths_from_bash_write_markers(tmp_path):
+    """Bash commands carrying a write marker AND naming a durable-artifact
+    path contribute that path; the same mention in a command without a write
+    marker (plain `cat | grep`) does not."""
+    transcript = tmp_path / "bash.jsonl"
+    _write_entries(
+        transcript,
+        [
+            _tool_entry(
+                "Bash",
+                {"command": "mkdir -p openspec/changes/new-idea && cat > openspec/changes/new-idea/proposal.md <<'EOF'\nbody\nEOF"},
+            ),
+            _tool_entry("Bash", {"command": "sed -i 's/old/new/' docs/specs/001-task/design.md"}),
+            _tool_entry("Bash", {"command": "cat docs/specs/001-task/design.md | grep todo"}),
+            _tool_entry("Bash", {"command": "pytest -q > /tmp/out.txt"}),
+        ],
+    )
+    _, _, durable_paths = hook.scan_transcript(str(transcript))
+    assert durable_paths == [
+        "openspec/changes/new-idea",
+        "openspec/changes/new-idea/proposal.md",
+        "docs/specs/001-task/design.md",
+    ]
+
+
+def test_scan_transcript_collects_all_signals_in_one_pass_and_dedupes(tmp_path):
+    """Run-record literals and touched durable paths come out of the same
+    single line-by-line read -- including entries that appear AFTER the first
+    work signal -- and repeated identical paths are reported once."""
+    record = tmp_path / ".worktrail" / "runs" / "some-repo" / "run-x.yaml"
+    transcript = tmp_path / "mixed.jsonl"
+    _write_entries(
+        transcript,
+        [
+            _tool_entry("Bash", {"command": "git push origin HEAD"}),
+            {
+                "message": {
+                    "content": [{"type": "text", "text": f"See run record {record} for details."}]
+                }
+            },
+            _tool_entry("Edit", {"file_path": "/repo/docs/specs/late-entry.md"}),
+            _tool_entry("Edit", {"file_path": "/repo/docs/specs/late-entry.md"}),
+        ],
+    )
+    has_work, run_records, durable_paths = hook.scan_transcript(str(transcript))
+    assert has_work
+    assert run_records == [str(record)]
+    assert durable_paths == ["/repo/docs/specs/late-entry.md"]
+
+    missing = hook.scan_transcript(str(tmp_path / "nope.jsonl"))
+    assert missing == (False, [], [])
+
+
 def test_instruction_is_worktrail_native_and_value_gated():
     assert "worktrail-handoff" in hook.INSTRUCTION
     assert "complete the current work" in hook.INSTRUCTION
