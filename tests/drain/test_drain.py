@@ -48,6 +48,7 @@ from worktrail.drain.drain import (
     find_verify_pending_specs,
     newest_run_record,
     parse_run_record,
+    pending_decision_entries,
     prune_stale_branch,
     release_lock,
     release_lock_slot,
@@ -59,6 +60,7 @@ from worktrail.drain.drain import (
     select_available_agent,
     slot_lock_path,
     sweep_remediations,
+    unresolved_decision_ids,
     validate_agent_runtime,
     worker_scratch_dir,
     write_iteration_transcript,
@@ -664,6 +666,15 @@ def test_decide_stops_on_no_pick():
     assert d.proceed is False and d.reason.startswith("no_pick")
 
 
+def test_decide_stops_on_pending_user_decision():
+    d = decide(make_state(last_outcome=Outcome(
+        "pending_user_decision", "pending_user_decision",
+        pending_decisions=["dec-x"])), now=0)
+    assert d.proceed is False
+    assert d.reason.startswith("pending_user_decision")
+    assert "dec-x" in d.reason
+
+
 def test_decide_stops_on_circuit_breaker():
     d = decide(make_state(last_outcome=Outcome("failed"),
                           consecutive_failures=2), now=0)
@@ -845,12 +856,15 @@ def test_list_queue_plain_script_override_still_supported(tmp_path):
     assert [b["filename"] for b in payload.get("briefs", [])] == ["b2.md"]
 
 
-def write_run_record(runs_dir, name, final_status, pr=None):
+def write_run_record(runs_dir, name, final_status, pr=None, decisions=()):
     repo = runs_dir / "repo"
     repo.mkdir(parents=True, exist_ok=True)
     lines = [f"run_id: {name}", f"final_status: {final_status or 'null'}"]
     if pr:
         lines.append(f'pull_request: "{pr}"')
+    if decisions:
+        lines.append("pending_decisions:")
+        lines.extend(f"  - {entry}" for entry in decisions)
     (repo / f"{name}.yaml").write_text("\n".join(lines) + "\n")
 
 
@@ -2935,6 +2949,148 @@ def test_drain_decisionless_block_still_trips_breaker(tmp_path, monkeypatch):
     assert n["spawned"] == 2
     assert summary["stopped"].startswith("circuit_breaker")
     assert summary["decisions_open"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Pending-user-decision handoff (fail closed, recoverable, never a spin)
+
+
+def test_stop_semantics_flags_pending_user_decision_for_operator_alert():
+    assert stop_semantics(
+        "pending_user_decision: awaiting human answer(s): dec-x"
+    ) == {"kind": "pending_user_decision", "operator_alert": True}
+    assert stop_semantics("some_other_stop: not recognized") is None
+
+
+def test_classify_outcome_explicit_pending_state_is_first_class():
+    out = classify_outcome({"final_status": "pending_user_decision"},
+                           claimed_delta=1, exit_code=0, claimed_briefs=["b1"])
+    assert out.kind == "pending_user_decision"
+    assert out.state == "pending_user_decision"
+    assert out.brief_id == "b1"
+
+
+def test_classify_outcome_unresolved_audit_entries_are_never_a_generic_failure():
+    # An unfinished clean exit with a live decision must read as the
+    # recoverable pending_user_decision handoff, not failed_recoverable --
+    # the generic-failure classification would spin the circuit breaker
+    # against a question only a human can answer.
+    out = classify_outcome({"final_status": None}, claimed_delta=1, exit_code=0,
+                           claimed_briefs=["b1"],
+                           pending_decisions=["dec-alpha-000001"])
+    assert out.kind == "pending_user_decision"
+    assert out.pending_decisions == ["dec-alpha-000001"]
+
+
+def test_classify_outcome_pending_outranks_blocked_and_timeout_after_pr():
+    blocked = classify_outcome({"final_status": "blocked_external_dependency"},
+                               claimed_delta=1, exit_code=1,
+                               pending_decisions=["dec-a"])
+    assert blocked.kind == "pending_user_decision"
+    timed_out = classify_outcome(
+        {"final_status": None, "pull_request": "https://github.com/x/y/pull/9"},
+        claimed_delta=1, exit_code=124, claimed_briefs=["b1"],
+        pending_decisions=["dec-a"])
+    assert timed_out.kind == "pending_user_decision"
+    assert timed_out.pr_url == "https://github.com/x/y/pull/9"
+    assert timed_out.brief_id == "b1"
+
+
+def test_classify_outcome_success_outranks_leftover_audit_entries():
+    # A completed run must never be wedged by stale bookkeeping: an explicit
+    # success state wins over an unconsumed audit entry.
+    out = classify_outcome({"final_status": "completed_and_merged"}, 1, 0,
+                           pending_decisions=["dec-stale"])
+    assert out.kind == "success"
+
+
+def test_unresolved_decision_ids_share_poller_semantics():
+    text = ("run_id: r\n"
+            "pending_decisions:\n"
+            "  - t [asked] dec-one\n"
+            "  - t1 [answered] dec-two\n"
+            "  - t2 [consumed] dec-three\n"
+            "  - t [asked] dec-four\n"
+            "  - t [superseded] dec-four\n")
+    assert drain.unresolved_decision_ids(text) == ["dec-one", "dec-two"]
+    assert unresolved_decision_ids("") == []
+
+
+def test_pending_decision_entries_parse_indented_list_items():
+    text = ('run_id: r\n'
+            'pending_decisions:\n'
+            '  - 2026-08-25T10:00:00+0000 [asked] dec-one\n'
+            '  - t [presented] dec-two\n'
+            'final_status: null\n')
+    assert pending_decision_entries(text) == [
+        "2026-08-25T10:00:00+0000 [asked] dec-one",
+        "t [presented] dec-two",
+    ]
+
+
+def test_drain_pending_user_decision_stops_fail_closed_and_reports_ids(tmp_path, monkeypatch):
+    fake = FakeQueue([1, 0])
+    install_fake_queue(monkeypatch, fake)
+    config = make_config(tmp_path)
+
+    def spawner(cmd, timeout):
+        write_run_record(
+            config.runs_dir, "go-pending", None,
+            decisions=[
+                "2026-08-25T10:00:00+0000 [asked] dec-e2e-000001",
+                "2026-08-25T10:01:00+0000 [presented] dec-e2e-000001",
+            ])
+        return SpawnOutcome(0)
+
+    logs = []
+    summary = drain.drain(config, spawner=spawner, log=logs.append)
+    assert summary["stopped"].startswith("pending_user_decision")
+    assert summary["pending_user_decisions"] == ["dec-e2e-000001"]
+    assert len(summary["iterations"]) == 1
+    iteration = summary["iterations"][0]
+    assert iteration["kind"] == "pending_user_decision"
+    assert iteration["state"] == "pending_user_decision"
+    assert any("--resume-decision" in line for line in logs)
+
+
+def test_drain_resolved_audit_entries_do_not_wedge_the_drain(tmp_path, monkeypatch):
+    fake = FakeQueue([1, 0, 0])
+    install_fake_queue(monkeypatch, fake)
+    config = make_config(tmp_path)
+
+    def spawner(cmd, timeout):
+        write_run_record(
+            config.runs_dir, "go-consumed", "completed_pr_open",
+            pr="https://pr/1",
+            decisions=[
+                "t [asked] dec-done",
+                "t [answered] dec-done",
+                "t [consumed] dec-done",
+            ])
+        return SpawnOutcome(0)
+
+    summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
+    assert summary["stopped"].startswith("queue_empty")
+    assert summary["pending_user_decisions"] == []
+    assert [i["state"] for i in summary["iterations"]] == ["completed_pr_open"]
+
+
+def test_drain_explicit_pending_state_without_audit_ids_still_stops(tmp_path, monkeypatch):
+    fake = FakeQueue([1, 0])
+    install_fake_queue(monkeypatch, fake)
+    config = make_config(tmp_path)
+
+    def spawner(cmd, timeout):
+        write_run_record(config.runs_dir, "go-pending-bare",
+                         "pending_user_decision")
+        return SpawnOutcome(0)
+
+    logs = []
+    summary = drain.drain(config, spawner=spawner, log=logs.append)
+    assert summary["stopped"].startswith("pending_user_decision")
+    assert "(decision id not recorded)" in summary["stopped"]
+    assert summary["pending_user_decisions"] == []
+    assert any("pending user decision" in line for line in logs)
 
 
 # ---------------------------------------------------------------------------
