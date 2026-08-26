@@ -337,6 +337,40 @@ def _validate_agent_entry(value: Any, meta: Dict[str, Any], label: str) -> Optio
     return {"agent_cli": agent_cli, "agent_model": agent_model, "effort": effort}
 
 
+def _validate_routing_agents(raw: Any, meta: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """`routing.agents`: `{<agent>: {default_model: str}}` — the per-agent
+    default-model table `default_model_for_agent()` resolves against, replacing
+    the retired `model-defaults.yaml` (D2/D3). Unlike the other
+    `_validate_routing_*` tables, entries here are not `_validate_agent_entry`
+    shorthand — malformed entries are dropped via `meta["warnings"]`, never
+    raised, consistent with the sibling validators."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        meta["warnings"].append(f"routing.agents must be a mapping; got {raw!r} — ignored")
+        return {}
+    resolved: Dict[str, Dict[str, Any]] = {}
+    for agent, entry in raw.items():
+        if not isinstance(agent, str) or agent not in VALID_AGENT_CLIS:
+            meta["warnings"].append(
+                f"routing.agents: invalid agent literal {agent!r} "
+                f"(allowed: {VALID_AGENT_CLIS}); dropped")
+            continue
+        if not isinstance(entry, dict):
+            meta["warnings"].append(
+                f"routing.agents.{agent} must be a mapping ({{default_model: str}}); "
+                f"got {entry!r} — dropped")
+            continue
+        default_model = entry.get("default_model")
+        if not isinstance(default_model, str):
+            meta["warnings"].append(
+                f"routing.agents.{agent}.default_model must be a string; "
+                f"got {default_model!r} — dropped")
+            continue
+        resolved[agent] = {"default_model": default_model}
+    return resolved
+
+
 def _validate_routing_defaults(raw: Any, meta: Dict[str, Any]) -> Dict[str, Dict[str, Dict[str, Any]]]:
     """`routing.defaults`: `{route: {risk: agent-entry}}` — the `(route, risk)` table
     `resolve_routing()` consults for the primary agent/model."""
