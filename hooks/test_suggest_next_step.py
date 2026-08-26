@@ -156,17 +156,24 @@ def test_main_blocks_once_per_session(tmp_path, monkeypatch, capsys):
     assert capsys.readouterr().out == ""
 
 
-def _write_run_record(path: Path, deferred_work: list[str] | None = None) -> None:
+def _write_run_record(
+    path: Path,
+    deferred_work: list[str] | None = None,
+    final_status: str | None = None,
+) -> None:
     """A minimal, real run-record YAML in run_record.py's own on-disk format
     (`_load` in run_record.py: `key: value` lines plus `  - "item"` list
-    entries) -- just the one field `check_deferred_work_handoff.py` reads.
-    Written directly rather than via `worktrail-run-record start` since no
-    other field is read anywhere on this path.
+    entries) -- just the fields `check_deferred_work_handoff.py` and
+    `check_durable_artifact_capture_gate.py` read. Written directly rather
+    than via `worktrail-run-record start` since no other field is read
+    anywhere on this path.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = ["deferred_work:\n"]
     for text in deferred_work or []:
         lines.append(f"  - {json.dumps(text)}\n")
+    if final_status is not None:
+        lines.append(f"final_status: {final_status}\n")
     path.write_text("".join(lines), encoding="utf-8")
 
 
@@ -394,3 +401,213 @@ def test_main_skips_continuation_and_headless_worker(tmp_path, monkeypatch, caps
     monkeypatch.setattr(hook.sys, "stdin", io.StringIO("not json"))
     assert hook.main() == 0
     assert not (tmp_path / "state").exists()
+
+
+def _install_check_durable_artifact_capture_gate_shim(tmp_path: Path, monkeypatch) -> None:
+    """A real `worktrail-check-durable-artifact-capture-gate` on `PATH`, backed
+    by this worktree's own `src/` (never the machine's separately
+    `pip install -e`'d `worktrail`) -- the same subprocess-boundary pattern as
+    `_install_check_deferred_work_handoff_shim`, so `check_dedup_gate`
+    exercises the actual binary lookup, argv construction, JSON round-trip,
+    and `hits` extraction instead of a stub of the hook's own function.
+    """
+    repo_src = HOOK_PATH.parent.parent / "src"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    shim = bin_dir / "worktrail-check-durable-artifact-capture-gate"
+    shim.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        f"sys.path.insert(0, {str(repo_src)!r})\n"
+        "from worktrail.router.check_durable_artifact_capture_gate import main\n"
+        "sys.exit(main())\n",
+        encoding="utf-8",
+    )
+    shim.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+
+
+def test_main_no_hit_output_byte_identical_to_pre_gate_instruction(tmp_path, monkeypatch, capsys):
+    """A transcript that feeds the dedup gate a real input yielding zero hits
+    (a run-record literal whose record finished a non-planned status) must emit
+    byte-for-byte the pre-gate instruction -- identical stdout to a session
+    with nothing for the gate to look at (Requirement: Additive And
+    Non-Interfering / Silent When Nothing Unmatched). Both checkers run for
+    real against their shims; hit classification itself is covered by
+    test_check_durable_artifact_capture_gate.py (task 2.3).
+    """
+    monkeypatch.delenv("CC_HEADLESS", raising=False)
+    monkeypatch.setattr(hook, "STATE_DIR", tmp_path / "state")
+    _install_check_deferred_work_handoff_shim(tmp_path, monkeypatch)
+    _install_check_durable_artifact_capture_gate_shim(tmp_path, monkeypatch)
+    assert hook.shutil.which(hook.DEDUP_GATE_BINARY) is not None
+
+    baseline_transcript = tmp_path / "baseline.jsonl"
+    _write_transcript(baseline_transcript, "Write")
+    monkeypatch.setattr(
+        hook.sys,
+        "stdin",
+        io.StringIO(json.dumps({"session_id": "baseline", "transcript_path": str(baseline_transcript)})),
+    )
+    assert hook.main() == 0
+    baseline_output = capsys.readouterr().out
+    assert baseline_output == json.dumps({"decision": "block", "reason": hook.INSTRUCTION}) + "\n"
+
+    implemented_record = tmp_path / ".worktrail" / "runs" / "some-repo" / "run-implemented.yaml"
+    _write_run_record(implemented_record, deferred_work=[], final_status="implemented")
+
+    with_path_transcript = tmp_path / "with_path.jsonl"
+    entry = {
+        "message": {
+            "content": [
+                {"type": "tool_use", "name": "Write", "input": {}},
+                {
+                    "type": "text",
+                    "text": f"See run record {implemented_record} for details.",
+                },
+            ]
+        }
+    }
+    with_path_transcript.write_text(json.dumps(entry) + "\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        hook.sys,
+        "stdin",
+        io.StringIO(json.dumps({"session_id": "no-hit", "transcript_path": str(with_path_transcript)})),
+    )
+    assert hook.main() == 0
+    assert capsys.readouterr().out == baseline_output
+
+
+def test_main_hit_appends_dedup_gate_block_naming_artifact(tmp_path, monkeypatch, capsys):
+    """An Edit touching a `docs/specs/**` path must produce output that starts
+    with the unmodified pre-gate instruction and appends exactly the DEDUP GATE
+    block naming the touched artifact -- forbidding auto-capture, requiring a
+    suggestion-only line with the resume command, and stating the explicit-
+    justification escape hatch (Requirement: Downgrade-To-Suggestion On Dedup
+    Hit). The gate runs for real against the shim installed by
+    `_install_check_durable_artifact_capture_gate_shim`, not a stub.
+    """
+    monkeypatch.delenv("CC_HEADLESS", raising=False)
+    monkeypatch.setattr(hook, "STATE_DIR", tmp_path / "state")
+    _install_check_durable_artifact_capture_gate_shim(tmp_path, monkeypatch)
+
+    spec_path = "/repo/docs/specs/001-task/design.md"
+    transcript = tmp_path / "dedup_hit.jsonl"
+    _write_entries(
+        transcript,
+        [
+            _tool_entry("Write", {"file_path": "/repo/src/main.py"}),
+            _tool_entry("Edit", {"file_path": spec_path}),
+        ],
+    )
+
+    expected_hits = hook.check_dedup_gate([spec_path], [])
+    assert expected_hits == [{"kind": "session_touched_durable_artifact", "path": spec_path}]
+
+    monkeypatch.setattr(
+        hook.sys,
+        "stdin",
+        io.StringIO(json.dumps({"session_id": "dedup-hit", "transcript_path": str(transcript)})),
+    )
+    assert hook.main() == 0
+    reason = json.loads(capsys.readouterr().out)["reason"]
+
+    assert reason.startswith(hook.INSTRUCTION)
+    assert reason == hook.INSTRUCTION + hook.build_dedup_gate_block(expected_hits)
+    assert "DEDUP GATE" in reason
+    assert f"- durable artifact touched this session: {spec_path}" in reason
+    assert "Do NOT auto-capture" in reason
+    assert "suggestion-only line naming the resume command" in reason
+    assert "`worktrail-go <brief-id>`" in reason
+    assert "## Dedup justification" in reason
+
+
+def test_build_dedup_gate_block_renders_every_hit_kind():
+    """Each checker hit kind renders its own artifact-naming line inside the
+    gate block, including an unrecognized shape degrading to a visible dump
+    rather than vanishing."""
+    block = hook.build_dedup_gate_block(
+        [
+            {"kind": "session_touched_durable_artifact", "path": "/repo/docs/specs/x/spec.md"},
+            {
+                "kind": "planned_run_record",
+                "run_record": "/repo/run.yaml",
+                "final_status": "planned_ready_for_implementation",
+            },
+            {
+                "kind": "merged_docs_only_spec_pr",
+                "spec_paths": ["/repo/docs/specs/y.md"],
+                "merge_markers": ["gh pr merge"],
+            },
+            {"unexpected": "shape"},
+        ]
+    )
+    assert "- durable artifact touched this session: /repo/docs/specs/x/spec.md" in block
+    assert "- run record finished planned_ready_for_implementation: /repo/run.yaml" in block
+    assert (
+        "- merged docs-only spec PR (merge marker(s): gh pr merge): /repo/docs/specs/y.md" in block
+    )
+    assert "- unrecognized dedup hit:" in block
+
+
+def test_main_fail_open_when_dedup_gate_binary_missing(tmp_path, monkeypatch, capsys):
+    """A transcript that would otherwise hit the gate, but with
+    `worktrail-check-durable-artifact-capture-gate` missing from `PATH`, must
+    fail open: byte-for-byte the same output as the pre-gate instruction,
+    never an error or a downgraded block (Requirement: Fail-Open And
+    Headless-Excluded). Distinct `session_id`s so the once-per-session
+    sentinel never masks the comparison.
+    """
+    monkeypatch.delenv("CC_HEADLESS", raising=False)
+    monkeypatch.setattr(hook, "STATE_DIR", tmp_path / "state")
+
+    baseline_transcript = tmp_path / "baseline.jsonl"
+    _write_transcript(baseline_transcript, "Write")
+    monkeypatch.setattr(
+        hook.sys,
+        "stdin",
+        io.StringIO(json.dumps({"session_id": "baseline", "transcript_path": str(baseline_transcript)})),
+    )
+    assert hook.main() == 0
+    baseline_output = capsys.readouterr().out
+    assert baseline_output == json.dumps({"decision": "block", "reason": hook.INSTRUCTION}) + "\n"
+
+    monkeypatch.setenv("PATH", "")
+    assert hook.shutil.which(hook.DEDUP_GATE_BINARY) is None
+
+    would_hit_transcript = tmp_path / "would_hit.jsonl"
+    _write_entries(
+        would_hit_transcript,
+        [_tool_entry("Edit", {"file_path": "/repo/openspec/changes/my-change/tasks.md"})],
+    )
+    monkeypatch.setattr(
+        hook.sys,
+        "stdin",
+        io.StringIO(
+            json.dumps(
+                {"session_id": "missing-dedup-binary", "transcript_path": str(would_hit_transcript)}
+            )
+        ),
+    )
+    assert hook.main() == 0
+    assert capsys.readouterr().out == baseline_output
+
+
+def test_main_headless_skips_even_when_dedup_gate_would_hit(tmp_path, monkeypatch, capsys):
+    """`CC_HEADLESS=1` skips the hook entirely, even when the transcript would
+    otherwise produce a dedup-gate hit -- headless workers stay unaffected,
+    same as before the gate existed (Requirement: Fail-Open And
+    Headless-Excluded)."""
+    monkeypatch.setenv("CC_HEADLESS", "1")
+    monkeypatch.setattr(hook, "STATE_DIR", tmp_path / "state")
+
+    transcript = tmp_path / "would_hit.jsonl"
+    _write_entries(transcript, [_tool_entry("Edit", {"file_path": "/repo/docs/specs/x/spec.md"})])
+    monkeypatch.setattr(
+        hook.sys,
+        "stdin",
+        io.StringIO(json.dumps({"session_id": "headless-hit", "transcript_path": str(transcript)})),
+    )
+    assert hook.main() == 0
+    assert capsys.readouterr().out == ""
