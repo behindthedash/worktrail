@@ -15,7 +15,8 @@
 
 ## 2. Nested tier table (D6)
 
-- [ ] 2.1 Extend `_validate_routing_tiers()` to accept `tiers.<tier>.<agent>: {model, effort}`
+- [ ] 2.1 Implements **The tier table supports a nested per-agent form**: extend
+      `_validate_routing_tiers()` to accept `tiers.<tier>.<agent>: {model, effort}`
       alongside today's flat `<tier>-<agent>` keys.
 - [ ] 2.2 Emit a deprecation warning through `meta["warnings"]` when the flat form is used.
 - [ ] 2.3 Update `resolve_tier_map()` so `dispatch.agent_for()`'s `<tier>-<agent>` lookup
@@ -25,16 +26,18 @@
 
 ## 3. Default model resolution from routing (D2, D3)
 
-- [ ] 3.1 Delete `DEFAULT_CLAUDE_MODEL`, `DEFAULT_CODEX_MODEL`, `DEFAULT_OPENCODE_MODEL`,
+- [ ] 3.1 Narrows **Default model resolution is config-file driven only** to a single
+      source: delete `DEFAULT_CLAUDE_MODEL`, `DEFAULT_CODEX_MODEL`, `DEFAULT_OPENCODE_MODEL`,
       `MODEL_DEFAULTS_FILE_ENV`, `_model_defaults_file()`, and `_load_model_defaults()` from
       `orchestrator/spawnlib.py`.
-- [ ] 3.2 Reimplement `default_model_for_agent(agent)` against `routing.agents.<agent>.default_model`.
+- [ ] 3.2 Implements **Per-agent default models resolve from routing only**: reimplement
+      `default_model_for_agent(agent)` against `routing.agents.<agent>.default_model`.
 - [ ] 3.3 Raise a named, actionable error (naming the routing file path, the missing
       `agents.<agent>.default_model` key, and `worktrail-routing --init`) when routing declares
       no default for the requested agent. No silent fallback.
 - [ ] 3.4 Update `tests/orchestrator/test_spawnlib.py` and `tests/conftest.py` fixtures that
       currently seed `model-defaults.yaml`.
-- [ ] 3.5 Grep-verify no model string remains hardcoded in `src/` outside test fixtures:
+- [ ] 3.5 [cleanup] Grep-verify no model string remains hardcoded in `src/` outside test fixtures:
       `rg -n "gpt-5\.|sonnet|opus|haiku|deepseek|x-preview" src/` reviewed hit by hit.
 
 ## 4. Drain reads routing (D1) and selects real models (D4)
@@ -45,7 +48,8 @@
 - [ ] 4.2 Add `routing_candidates(routing)` (in `runtime/selection.py` or a new
       `runtime/routing_source.py`) yielding `{provider, model, tiers, purposes}` from
       `routing.agents` + `routing.tiers`.
-- [ ] 4.3 Replace drain.py:472-475's synthetic `"configured-default"` sentinel catalog with
+- [ ] 4.3 Implements **Provider/model intent has exactly one machine-wide file**: replace
+      drain.py:472-475's synthetic `"configured-default"` sentinel catalog with
       `routing_candidates(...)`, so capacity gating keys on the real model actually spawned.
       `select_execution_target` itself is NOT modified.
 - [ ] 4.4 Delete `src/worktrail/shared/operator_config.py` and `tests/shared/test_operator_config.py`.
@@ -72,7 +76,7 @@
 - [ ] 6.2 Update the in-flight `model-tier-routing-compile-default-spawn-policy-routing`
       change's proposal/spec references from `model-defaults.yaml` to
       `routing.agents.<agent>.default_model`.
-- [ ] 6.3 `rg -n "provider-model-catalog|ModelCatalog|default_catalog|runtime.catalog" .`
+- [ ] 6.3 [cleanup] `rg -n "provider-model-catalog|ModelCatalog|default_catalog|runtime.catalog" .`
       from the repo root, no path or file-type filter -- reconcile every hit including
       `.github/`, `scripts/`, `skills/`, and docs.
 
@@ -88,12 +92,12 @@
 
 ## 8. Operator migration (this machine)
 
-- [ ] 8.1 Rewrite `~/.worktrail/routing.yaml`: add `agents:` (declaring each provider's default
+- [ ] 8.1 [cleanup] Rewrite `~/.worktrail/routing.yaml`: add `agents:` (declaring each provider's default
       model once), nest `tiers`, fold in `drain:` with **claude-first** order per the
       2026-08-26 decision, and keep the existing pricing/free-tier commentary.
-- [ ] 8.2 Delete `~/.worktrail/config.json` and `~/.worktrail/provider-model-catalog.yaml`.
-- [ ] 8.3 Remove the stale `configured_providers` key from `~/.worktrail/agent-capacity.json`.
-- [ ] 8.4 Investigate and remove the stray `~/.worktrail/runs/agent-capacity.json` -- confirm
+- [ ] 8.2 [cleanup] Delete `~/.worktrail/config.json` and `~/.worktrail/provider-model-catalog.yaml`.
+- [ ] 8.3 [cleanup] Remove the stale `configured_providers` key from `~/.worktrail/agent-capacity.json`.
+- [ ] 8.4 [cleanup] Investigate and remove the stray `~/.worktrail/runs/agent-capacity.json` -- confirm
       what wrote it (suspected relative `WORKTRAIL_HOME` or cache override) before deleting,
       and fix that path resolution if the cause is in worktrail.
 
