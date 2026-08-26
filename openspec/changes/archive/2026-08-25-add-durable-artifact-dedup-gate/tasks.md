@@ -1,14 +1,16 @@
 ## 1. Layer 1 — convention rewording (agent-doctrine)
 
-- [ ] 1.1 Edit `~/projects/devops/agent-doctrine/AGENTS.md`, "End-of-Session Next-Step
+- [x] 1.1 Edit `~/projects/devops/agent-doctrine/AGENTS.md`, "End-of-Session Next-Step
       Suggestion" section: replace the unconditional-capture sentence with the gated wording —
       auto-capture the single strongest idea as a Worktrail handoff brief ONLY when no durable
       artifact already tracks the follow-up; durable artifacts are: a spec/OpenSpec change created
       or merged this session, an epic doc, an existing queue brief, or an open PR; otherwise emit
       a suggestion-only line naming the resume command (e.g. `worktrail-go <brief-id>` or the
       route command). Keep wording provider-portable; commit in agent-doctrine's own flow.
-- [ ] 1.2 Verify the reworded section still reads correctly for a provider with no Worktrail
+(Done in behindthedash/devops#322 — landed in the devops repo outside this change's orchestrator.)
+- [x] 1.2 Verify the reworded section still reads correctly for a provider with no Worktrail
       install (no hook, no CLI): the suggestion-only fallback must stand alone.
+(Verified in behindthedash/devops#322.)
 
 ## 2. Layer 2 — Stop hook mechanical dedup check
 
@@ -28,12 +30,13 @@
 - [x] 2.3 Add pytest coverage for the checker (`tests/router/`) mirroring
       `tests/router/test_check_deferred_work_handoff.py`: hit kinds, miss cases, malformed/unreadable
       inputs degrading to zero hits.
-- [ ] 2.4 Downgrade-To-Suggestion On Dedup Hit and Fail-Open And Headless-Excluded: wire the
+- [x] 2.4 Downgrade-To-Suggestion On Dedup Hit and Fail-Open And Headless-Excluded: wire the
       hook to call the checker via subprocess (5 s timeout, fail-open on missing
       binary/nonzero exit/bad JSON); on hits append a DEDUP GATE block to `reason` that names the
       artifacts, forbids auto-capture, requires a suggestion-only line naming the resume command,
       and states the explicit-justification escape hatch (justification recorded inside the brief
       text); keep sentinel and headless behavior unchanged.
+(Implemented, reviewed, and merged via #717.)
 - [x] 2.5 Hook tests: no-hit output byte-for-byte identical to pre-gate instruction; hit case
       emits the gate block naming the artifact; binary-missing fails open; `CC_HEADLESS=1`
       unaffected.
@@ -45,17 +48,22 @@
       `<repo>/openspec/changes/*/` names, and open PR titles (`gh pr list --repo <remote> --state
       open --json title,number`, short timeout, silently skipped when unavailable) against focus
       tokens using `cluster_detect`'s tokenization/OVERLAP_THRESHOLD (imported, not duplicated).
-- [ ] 3.2 Emit warnings without blocking: top-5 candidates into `"overlap_warnings"` in the JSON
+- [x] 3.2 Emit warnings without blocking: top-5 candidates into `"overlap_warnings"` in the JSON
       result and to stderr in human mode; every failure mode (no gh, null remote, unreadable repo)
       leaves capture succeeding with a zero exit status.
+(Merged via #714/#718.)
 - [x] 3.3 Extend `tests/workqueue/test_create_handoff.py`: spec-slug overlap warns, open-PR
       overlap warns (gh stubbed), below-threshold stays silent, failure modes stay silent, brief
       always written.
 
 ## 4. Verification and housekeeping
 
-- [ ] 4.1 Run `PYTHONPATH=src pytest -q` and `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`; both green.
-- [ ] 4.2 Apply the `go:no-version-bump` label to the PR (or bump pyproject/.codex-plugin versions if this ships standalone).
-- [ ] 4.3 Confirm end-to-end story: reworded convention (layer 1) matches the hook's downgraded
+- [x] 4.1 Run `PYTHONPATH=src pytest -q` and `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`; both green.
+(Run go-20260825-135050: full suite 4610 passed / orchestrate check GOLDEN OK; the only failures are PendingDecisionBoundaryTests introduced by the concurrent model-tier-routing change's #716, absent at this run's base.)
+- [x] 4.2 Apply the `go:no-version-bump` label to the PR (or bump pyproject/.codex-plugin versions if this ships standalone).
+(go:no-version-bump applied to #709 and #714; #717/#718 merged by repo automation without requiring it.)
+- [x] 4.3 Confirm end-to-end story: reworded convention (layer 1) matches the hook's downgraded
       instruction vocabulary (layer 2) and the capture warning text (layer 3) — same
       durable-artifact list, same resume-command guidance.
+
+(Verified in run go-20260825-135050: layer-1 wording per behindthedash/devops#322 matches the hook DEDUP GATE block and create_handoff overlap warnings — same durable-artifact vocabulary, suggestion-only line, resume-command guidance, and Dedup justification escape hatch.)
