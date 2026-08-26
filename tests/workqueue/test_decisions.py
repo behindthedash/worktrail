@@ -355,6 +355,12 @@ def test_decision_identity_refuses_blank_provenance():
         decisions.decision_identity("", "repo-a", "change-x")
 
 
+def test_decision_slugify_matches_handoff_normalization():
+    assert decisions._slugify("ci-watch-loop.md's review-thread gate is unreachable") == (
+        "ci-watch-loop-md-review"
+    )
+
+
 def test_pending_decision_envelope_requires_core_fields():
     with pytest.raises(ValueError, match="decision_id is required"):
         decisions.pending_decision_envelope(

@@ -86,6 +86,20 @@ def test_create_handoff_auto_links_high_confidence_candidate(tmp_path: Path):
     assert "20260101-000001-auth" in read_frontmatter(new_path)["related"]
 
 
+def test_create_handoff_uses_semantic_summary_when_available(
+    tmp_path: Path, monkeypatch
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setattr(
+        "worktrail.workqueue.create_handoff._semantic_slug_summary",
+        lambda focus, repo: "semantic issue summary",
+    )
+
+    result = create_handoff("Fix the thing", queue_base=tmp_path / "queue", repo=str(repo))
+    assert Path(result["path"]).stem.split("-", 2)[2] == "semantic-issue-summary"
+
+
 def test_create_handoff_normalizes_bare_repo_name_against_projects_home(
     tmp_path: Path, monkeypatch
 ):
