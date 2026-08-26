@@ -1,17 +1,24 @@
 #!/usr/bin/env python3
 """Unit tests for dispatch.py prompt building."""
 
+import datetime as dt
+import json
 import re
 import sys
 import os
+import tempfile
 import unittest
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(__file__))
 
+from worktrail.workqueue import decisions as decisions_mod
 from worktrail.orchestrator.dispatch import (
     agent_for,
     build_worker_prompt,
     transition,
+    validate_resolved_decision_input,
+    DecisionDispatchError,
     ROLE_CLEANUP,
     ROLE_REVIEW,
     ROLE_FIX,
@@ -1015,6 +1022,148 @@ class TestAgentForPurposeTierPrecedence(unittest.TestCase):
         self.assertEqual(result_without_purpose_kw, expected)
         self.assertEqual(result_with_none_purpose_map, expected)
         self.assertEqual(result_with_empty_purpose_map, expected)
+
+
+class ResolvedDecisionDispatchGateTests(unittest.TestCase):
+    """Spec pending-user-decision-dispatch-contract 3.1: orchestrator dispatch
+    rejects unresolved decision envelopes and accepts only provenance-validated
+    resolved input."""
+
+    DECISION_ID = "dec-dispatch-gate-0001"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.queue_base = Path(self.tmp.name) / "queue"
+
+    def _ask(self, decision_id=DECISION_ID, **kw):
+        params = dict(
+            question="Which scope should this request take?",
+            background="The shipped spec already covers the requested scope.",
+            why="Scope direction is a product call.",
+            context="verify() confirmed Implemented status and git-tracked files.",
+            options=[
+                "extend: continue the existing spec",
+                "proceed-anyway: dispatch despite the collision",
+            ],
+            source="check_spec_collision",
+            repo="/tmp/some-repo",
+            subject="spec-a",
+            decision_id=decision_id,
+            queue_base=self.queue_base,
+        )
+        params.update(kw)
+        result = decisions_mod.ask(**params)
+        self.assertEqual(result["status"], "created")
+        return result
+
+    def _answer(self, decision_id=DECISION_ID):
+        answered = decisions_mod.answer(
+            decision_id, "extend: continue the existing spec",
+            queue_base=self.queue_base,
+        )
+        self.assertEqual(answered["status"], "answered")
+
+    def _load(self, decision_id=DECISION_ID):
+        envelope = decisions_mod.load_decision_envelope(decision_id, self.queue_base)
+        self.assertIsNotNone(envelope)
+        return envelope
+
+    def test_open_envelope_is_rejected_as_unresolved(self):
+        self._ask()
+        with self.assertRaises(DecisionDispatchError) as cm:
+            validate_resolved_decision_input(self._load())
+        message = str(cm.exception)
+        self.assertIn(self.DECISION_ID, message)
+        self.assertIn("not 'answered'", message)
+
+    def test_never_filed_pending_envelope_is_rejected(self):
+        envelope = decisions_mod.pending_decision_envelope(
+            decision_id=self.DECISION_ID,
+            question="Which scope should this request take?",
+            options=["extend", "proceed-anyway"],
+            source="check_spec_collision",
+        )
+        with self.assertRaises(DecisionDispatchError) as cm:
+            validate_resolved_decision_input(envelope)
+        self.assertIn("'pending'", str(cm.exception))
+
+    def test_superseded_record_is_rejected_and_names_the_replacement(self):
+        self._ask()
+        replacement = "dec-dispatch-replacement-0002"
+        self._ask(decision_id=replacement, subject="spec-a-moved")
+        superseded = decisions_mod.supersede(
+            self.DECISION_ID, replacement, queue_base=self.queue_base)
+        self.assertEqual(superseded["status"], "superseded")
+        with self.assertRaises(DecisionDispatchError) as cm:
+            validate_resolved_decision_input(self._load())
+        self.assertIn(replacement, str(cm.exception))
+
+    def test_already_consumed_answer_is_never_replayed_into_dispatch(self):
+        self._ask()
+        self._answer()
+        consumed = decisions_mod.consume_answer(
+            self.DECISION_ID, consumed_by="run-go-1", queue_base=self.queue_base)
+        self.assertEqual(consumed["status"], "consumed")
+        with self.assertRaises(DecisionDispatchError) as cm:
+            validate_resolved_decision_input(self._load())
+        self.assertIn("not 'answered'", str(cm.exception))
+
+    def test_malformed_dispatch_input_is_rejected(self):
+        for bad in ({}, None, "not-json", ["nope"], 42):
+            with self.subTest(bad=bad):
+                with self.assertRaises(DecisionDispatchError):
+                    validate_resolved_decision_input(bad)
+
+    def test_wrong_schema_or_version_is_rejected(self):
+        envelope = self._answered_envelope()
+        for key, value in (("schema", "other.schema"), ("version", 99)):
+            mutated = dict(envelope)
+            mutated[key] = value
+            with self.subTest(key=key, value=value):
+                with self.assertRaises(DecisionDispatchError) as cm:
+                    validate_resolved_decision_input(mutated)
+                self.assertIn(key, str(cm.exception))
+
+    def test_provenance_mismatch_is_rejected(self):
+        envelope = self._answered_envelope()
+        with self.assertRaises(DecisionDispatchError) as cm:
+            validate_resolved_decision_input(envelope, expected_subject="spec-b")
+        self.assertIn("provenance subject mismatch", str(cm.exception))
+
+    def test_provenance_validated_answered_input_is_accepted(self):
+        envelope = self._answered_envelope()
+        accepted = validate_resolved_decision_input(
+            envelope,
+            expected_source="check_spec_collision",
+            expected_repo="/tmp/some-repo",
+            expected_subject="spec-a",
+        )
+        self.assertEqual(accepted["decision_id"], self.DECISION_ID)
+        self.assertEqual(accepted["status"], "answered")
+        self.assertEqual(accepted["answer"], "extend: continue the existing spec")
+
+    def test_stale_answer_beyond_freshness_window_is_rejected(self):
+        envelope = self._answered_envelope()
+        answered_at = dt.datetime.fromisoformat(envelope["answered_at"])
+        late_now = answered_at + dt.timedelta(seconds=120)
+        with self.assertRaises(DecisionDispatchError) as cm:
+            validate_resolved_decision_input(
+                envelope, max_age_seconds=60, now=late_now)
+        self.assertIn("stale", str(cm.exception))
+
+    def test_all_failed_expectations_are_reported_together(self):
+        self._ask()  # still open, and the run expects a different subject
+        with self.assertRaises(DecisionDispatchError) as cm:
+            validate_resolved_decision_input(self._load(), expected_subject="spec-b")
+        message = str(cm.exception)
+        self.assertIn("not 'answered'", message)
+        self.assertIn("provenance subject mismatch", message)
+
+    def _answered_envelope(self):
+        self._ask()
+        self._answer()
+        return self._load()
 
 
 if __name__ == "__main__":
