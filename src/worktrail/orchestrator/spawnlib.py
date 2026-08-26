@@ -70,11 +70,9 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence
 
-import yaml
-
 from . import agent_capacity
 from ..router.skill_dispatch import prepare_codex_child_environment
-from ..shared.homedir import env_setting, worktrail_home
+from ..shared.homedir import env_setting
 
 
 class SpawnResult(NamedTuple):
@@ -361,54 +359,7 @@ def is_infra_failure(returncode: int, stdout: Optional[str]) -> bool:
     return _opencode_error_event(stdout) is not None
 
 
-# Last-resort fallbacks only -- never the sole source of truth. Codex and
-# opencode ship new model generations under new names on their own schedule
-# (confirmed live 2026-08-03: DEFAULT_CODEX_MODEL had drifted to a
-# discontinued-looking "gpt-5.4-mini" while the operator's actual codex CLI
-# listed "gpt-5.6-sol" as current), and Claude's own "sonnet"/"opus"/"haiku"
-# aliases are the only one of the three that don't go stale this way.
-# default_model_for_agent() resolves, in order: the operator-maintained
-# model-defaults.yaml under worktrail_home() (kept current without a code
-# change) > these
-# constants (only reached when the file has no entry for the agent -- e.g. a
-# fresh machine with no config file yet).
-DEFAULT_CLAUDE_MODEL = "sonnet"
-DEFAULT_CODEX_MODEL = "gpt-5.4-mini"
-# The bare "deepseek/" provider needs its own credential; the OpenCode Zen
-# gateway serves the same family under "opencode/" against the standard Zen
-# login (verified live 2026-08-13: bare-prefix spawns fail with an opencode
-# "Unexpected server error" at zero tokens on a machine with only Zen auth).
-DEFAULT_OPENCODE_MODEL = "opencode/deepseek-v4-flash-free"
-
 SUPPORTED_AGENTS = {"claude", "codex", "opencode"}
-
-MODEL_DEFAULTS_FILE_ENV = "WORKTRAIL_MODEL_DEFAULTS_FILE"
-
-
-def _model_defaults_file() -> Path:
-    """`$WORKTRAIL_MODEL_DEFAULTS_FILE` if set, else `worktrail_home()/model-defaults.yaml`."""
-    override = env_setting(MODEL_DEFAULTS_FILE_ENV)
-    if override:
-        return Path(override).expanduser()
-    return worktrail_home() / "model-defaults.yaml"
-
-
-def _load_model_defaults() -> Dict[str, str]:
-    """`{agent: model}` from the operator-maintained model-defaults file, or
-    `{}` on anything short of a valid mapping -- malformed/missing/unreadable
-    all degrade the same way agent_capacity.py's own cache loads do: never
-    raise, never block a spawn over a config-file problem.
-    """
-    path = _model_defaults_file()
-    if not path.is_file():
-        return {}
-    try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError):
-        return {}
-    if not isinstance(data, dict):
-        return {}
-    return {k: v for k, v in data.items() if isinstance(k, str) and isinstance(v, str) and v}
 
 
 def default_model_for_agent(agent: str) -> str:
