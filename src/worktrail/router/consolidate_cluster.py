@@ -74,6 +74,14 @@ _SUGGESTED_APPROACH_RE = re.compile(r"^##\s+Suggested approach\s*$", re.MULTILIN
 _HEADING_RE = re.compile(r"^##\s+", re.MULTILINE)
 _BULLET_RE = re.compile(r"^(?:[-*]|\d+[.)])\s+(.*)$")
 
+# Mirrors work_queue.py's own `_CONSOLIDATED_FROM_RE`/`_consolidated_member_ids`
+# (same regex, same section this module's own `_build_consolidated_brief_content`
+# writes) -- no cross-skill import, same rationale as `_local_resolve` mirroring
+# `resolve()`.
+_CONSOLIDATED_FROM_RE = re.compile(
+    r"^##\s+Consolidated from\s*$\r?\n+((?:^-\s+.+$\r?\n?)+)", re.MULTILINE
+)
+
 
 # --------------------------------------------------------------------------- #
 # Minimal stdlib-only frontmatter reading (scalar fields only -- this module
@@ -193,8 +201,21 @@ def _nest_headings(body: str) -> str:
     return re.sub(r"(?m)^## ", "### ", body)
 
 
+_SLUG_MAX_LEN = 60
+
+
 def _slugify(text: str) -> str:
+    """Slugify `text`, capped to `_SLUG_MAX_LEN` characters.
+
+    An auto-generated title (``"Consolidated: " + first-member-focus``) has
+    no inherent length bound -- a long focus sentence produced a filename
+    over 255 bytes, aborting `write_text()` with `OSError: [Errno 36] File
+    name too long` after the member claim/done loop had already run
+    (observed live 2026-08-26, cluster 3 of the personal work-queue).
+    """
     slug = re.sub(r"[^a-zA-Z0-9]+", "-", text.strip().lower()).strip("-")
+    if len(slug) > _SLUG_MAX_LEN:
+        slug = slug[:_SLUG_MAX_LEN].rstrip("-")
     return slug or "consolidated"
 
 
@@ -509,23 +530,81 @@ def _claim_member(
     return Path(data["path"])
 
 
-def _mark_member_done(member_id: str, work_queue_script: Path, work_queue_base_dir: Path) -> bool:
-    """Mark one already-claimed member done via `work_queue.py done`."""
-    data = _run_work_queue_cli(
-        ["done", member_id, "--planning-only", "--json"],
-        work_queue_script,
-        work_queue_base_dir,
-    )
+def _consolidated_member_ids(body: str) -> List[str]:
+    """Member ids listed under a `## Consolidated from` section in `body`, or
+    `[]` when `body` carries no such section -- i.e. it is not itself a
+    consolidation-batch brief."""
+    m = _CONSOLIDATED_FROM_RE.search(body)
+    if not m:
+        return []
+    return [line[2:].strip() for line in m.group(1).splitlines() if line.startswith("- ")]
+
+
+def _build_nested_consolidation_note(member_text: str) -> Optional[str]:
+    """Closure note for `_mark_member_done` when the member being closed is
+    itself a consolidation-batch brief (carries its own `## Consolidated
+    from` section, e.g. cluster A was consolidated into member X, and X is
+    now itself being re-consolidated into a larger cluster).
+
+    `work_queue.py done()`'s consolidation-closure evidence gate
+    (`_consolidation_closure_missing_evidence`) rejects a plain
+    `--planning-only` close of such a member with no mutation
+    (`unverified_consolidation_closure`), because it cannot tell the member's
+    own sub-items were already shipped. They were: `execute_consolidation()`
+    stamps every sub-item `done` + `## Superseded` at the moment the member
+    itself was authored, so that evidence already exists on disk -- this just
+    cites it. Returns None when `member_text` is not itself a consolidation
+    batch (the common case), so `_mark_member_done` passes no `--note`.
+    """
+    sub_ids = _consolidated_member_ids(member_text)
+    if not sub_ids:
+        return None
+    lines = [
+        "Re-consolidating a nested consolidation-batch brief. Each sub-item below "
+        "was already marked done and stamped `## Superseded` when this brief was "
+        "authored by consolidate_cluster.py:",
+        "```",
+    ]
+    lines.extend(f"- {sub_id}: status done, superseded at authoring time" for sub_id in sub_ids)
+    lines.append("```")
+    return "\n".join(lines)
+
+
+def _mark_member_done(
+    member_id: str,
+    work_queue_script: Path,
+    work_queue_base_dir: Path,
+    note: Optional[str] = None,
+) -> bool:
+    """Mark one already-claimed member done via `work_queue.py done`.
+
+    `note`, when given, is passed through as `--note` -- required when the
+    member being closed is itself a nested consolidation-batch brief (see
+    `_build_nested_consolidation_note`), otherwise `work_queue.py done`'s own
+    consolidation-closure evidence gate rejects the plain `--planning-only`
+    call.
+    """
+    args = ["done", member_id, "--planning-only", "--json"]
+    if note:
+        args += ["--note", note]
+    data = _run_work_queue_cli(args, work_queue_script, work_queue_base_dir)
     return bool(data and data.get("status") == "done")
 
 
-def _stamp_superseded(path: Path, new_brief_id: str) -> None:
-    """Append a `## Superseded` note referencing the new brief's id."""
+def _stamp_superseded(path: Path, new_brief_id: str) -> str:
+    """Append a `## Superseded` note referencing the new brief's id.
+
+    Returns the member's original text (before the note is appended), so a
+    caller needing to inspect the pre-stamp body (e.g. detecting a nested
+    consolidation batch via `_build_nested_consolidation_note`) doesn't need
+    a second read.
+    """
     text = path.read_text(encoding="utf-8")
     if not text.endswith("\n"):
         text += "\n"
     note = f"\n## Superseded\n\nConsolidated into `{new_brief_id}`.\n"
     path.write_text(text + note, encoding="utf-8")
+    return text
 
 
 def execute_consolidation(
@@ -610,8 +689,9 @@ def execute_consolidation(
             members_skipped.append(member_id)
             continue
         try:
-            _stamp_superseded(picked_path, new_brief_id)
-            if not _mark_member_done(member_id, wq_script, wq_base_dir):
+            member_text = _stamp_superseded(picked_path, new_brief_id)
+            nested_note = _build_nested_consolidation_note(member_text)
+            if not _mark_member_done(member_id, wq_script, wq_base_dir, nested_note):
                 members_skipped.append(member_id)
                 continue
         except OSError:
@@ -690,10 +770,20 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     execute_p = subs.add_parser("execute", parents=[common], help="confirm/decline the consolidation write step")
     execute_p.add_argument("member_ids", nargs="+", help="resolvable member ids from the preview step")
-    execute_p.add_argument(
+    draft_grp = execute_p.add_mutually_exclusive_group(required=True)
+    draft_grp.add_argument(
         "--draft",
-        required=True,
         help="preview --json's full stdout, or its bare inner draft dict, as a JSON string",
+    )
+    draft_grp.add_argument(
+        "--draft-file",
+        help=(
+            "path to a file containing preview --json's full stdout (or its bare inner "
+            "draft dict), as an alternative to --draft -- a cluster whose combined "
+            "member bodies exceed the kernel's MAX_ARG_STRLEN (~128KB) fails --draft "
+            "with 'Argument list too long' at exec() before Python even starts; write "
+            "preview's stdout to a file and pass it here instead"
+        ),
     )
     confirm_grp = execute_p.add_mutually_exclusive_group(required=True)
     confirm_grp.add_argument("--confirm", action="store_true", help="write the consolidation")
@@ -708,7 +798,24 @@ def main(argv: Optional[List[str]] = None) -> int:
         result = build_preview(args.member_ids, queue_dir)
     else:
         try:
-            draft = _resolve_draft_payload(args.draft)
+            if args.draft_file:
+                raw = Path(args.draft_file).read_text(encoding="utf-8")
+            else:
+                raw = args.draft
+            draft = _resolve_draft_payload(raw)
+        except OSError as exc:
+            result = {
+                "status": "invalid-draft",
+                "new_brief_path": None,
+                "members_completed": [],
+                "members_skipped": [],
+                "error": f"--draft-file could not be read: {exc}",
+            }
+            if args.json:
+                print(json.dumps(result))
+            else:
+                print(json.dumps(result, indent=2))
+            return 1
         except ValueError as exc:
             result = {
                 "status": "invalid-draft",
