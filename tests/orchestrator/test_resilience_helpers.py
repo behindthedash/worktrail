@@ -241,16 +241,8 @@ class ModelDefaultsFileTest(unittest.TestCase):
             os.environ, {"GO_MODEL_DEFAULTS_FILE": str(self.defaults_file)}, clear=False
         )
         self._env_patch.start()
-        # Saved and restored explicitly (not just popped) so a real
-        # ORCH_CODEX_MODEL/ORCH_OPENCODE_MODEL in the ambient environment
-        # survives this test class rather than being silently dropped.
-        self._removed_env = {}
-        for var in ("ORCH_CODEX_MODEL", "ORCH_OPENCODE_MODEL"):
-            if var in os.environ:
-                self._removed_env[var] = os.environ.pop(var)
 
     def tearDown(self):
-        os.environ.update(self._removed_env)
         self._env_patch.stop()
         self._tmp.cleanup()
 
