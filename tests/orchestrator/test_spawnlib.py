@@ -463,6 +463,64 @@ class DefaultSettingSourcesStructural(unittest.TestCase):
         self.assertEqual(cmd[idx + 1], "project,local")
 
 
+class ResolvedExecutionTarget(unittest.TestCase):
+    def setUp(self):
+        self._cache = tempfile.TemporaryDirectory()
+        self._old_cache = os.environ.get("GO_AGENT_CAPACITY_CACHE")
+        os.environ["GO_AGENT_CAPACITY_CACHE"] = os.path.join(
+            self._cache.name, "capacity.json"
+        )
+
+    def tearDown(self):
+        if self._old_cache is None:
+            os.environ.pop("GO_AGENT_CAPACITY_CACHE", None)
+        else:
+            os.environ["GO_AGENT_CAPACITY_CACHE"] = self._old_cache
+        self._cache.cleanup()
+
+    def test_resolved_target_drives_existing_provider_adapter(self):
+        target = namedtuple("ExecutionTarget", "provider model rationale capacity_evidence")(
+            "claude", "opus", "inherited provider", {}
+        )
+        context = namedtuple("InvocationContext", "agent_cli")("codex")
+        captured = {}
+        logs = []
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            return Proc(0, "ok", "")
+
+        with patch.object(spawnlib.subprocess, "run", side_effect=fake_run):
+            result = spawnlib.spawn_agent(
+                "prompt",
+                "/tmp",
+                target=target,
+                invocation_context=context,
+                retries=0,
+                log=logs.append,
+            )
+
+        self.assertEqual(result.text, "ok")
+        self.assertEqual(captured["cmd"][0:3], ["claude", "-p", "prompt"])
+        self.assertEqual(captured["cmd"][captured["cmd"].index("--model") + 1], "opus")
+        self.assertTrue(
+            any("provider=codex target=claude:opus" in entry for entry in logs)
+        )
+
+    def test_target_rejects_conflicting_legacy_arguments(self):
+        target = namedtuple("ExecutionTarget", "provider model")("codex", "gpt-x")
+        with self.assertRaisesRegex(ValueError, "conflicts with agent"):
+            spawnlib.spawn_agent("prompt", "/tmp", target=target, agent="claude")
+        with self.assertRaisesRegex(ValueError, "conflicts with model"):
+            spawnlib.spawn_agent("prompt", "/tmp", target=target, model="gpt-y")
+        with self.assertRaisesRegex(ValueError, "fallback_agent"):
+            spawnlib.spawn_agent("prompt", "/tmp", target=target, fallback_agent="claude")
+
+    def test_target_requires_launcher_fields(self):
+        with self.assertRaisesRegex(TypeError, "target.provider"):
+            spawnlib.spawn_agent("prompt", "/tmp", target=object())
+
+
 class ParseStreamJson(unittest.TestCase):
     def _stream(self, events):
         return "\n".join(json.dumps(e) for e in events)

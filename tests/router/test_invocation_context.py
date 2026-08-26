@@ -16,6 +16,10 @@ def _resolve(**kwargs):
 class ProviderResolutionTests(unittest.TestCase):
     """Provider identity is resolved on its own axis, unchanged from go_seed."""
 
+    def test_explicit_model_is_carried_for_subcall_inheritance(self):
+        resolved = _resolve(agent="codex", model="gpt-5")
+        self.assertEqual(resolved.model, "gpt-5")
+
     def test_explicit_agent_wins_over_every_environment_marker(self):
         resolved = _resolve(
             agent="opencode",

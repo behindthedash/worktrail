@@ -122,6 +122,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from . import stuck_remediation
 from ..orchestrator import agent_capacity
+from ..runtime.selection import NoExecutionTarget, select_execution_target
 from ..orchestrator.integrate import _refresh_pr_labels
 from ..router import branch_selfcheck, dashboard, quarantine_selfcheck
 from ..router.policy import load_policy
@@ -462,10 +463,27 @@ def select_available_agent(cache: dict, candidates: List[str],
     higher-priority agent is picked back up automatically once its persisted
     gate's retry_after passes -- no restart or config edit needed.
     """
-    for candidate in candidates:
-        if not capacity_gated(cache, candidate, now=now):
-            return candidate
-    return None
+    # Drain has historically selected providers without naming a model. Feed
+    # those ordered provider intents through the shared selector using an
+    # explicit sentinel model; the eventual provider adapter still resolves
+    # its configured/default model exactly as before. This preserves the old
+    # CLI contract while making nightly/originating calls use the same target
+    # ordering and TTL-aware capacity routine as subagent dispatch.
+    catalog = [
+        {"provider": candidate, "model": "configured-default"}
+        for candidate in candidates
+    ]
+
+    def available(provider: str, _model: str, **_kwargs: object) -> dict:
+        return {
+            "available": not capacity_gated(cache, provider, now=now),
+            "source": "agent-capacity.json",
+        }
+
+    try:
+        return select_execution_target(catalog, capacity=available, now=now).provider
+    except NoExecutionTarget:
+        return None
 
 
 MAX_TRANSCRIPT_FILES = 50  # bounded like agent_capacity.py's audit log / dashboard.py's miss log

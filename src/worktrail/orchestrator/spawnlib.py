@@ -68,7 +68,7 @@ import sys
 import time
 import tempfile
 from pathlib import Path
-from typing import Callable, Dict, List, NamedTuple, Optional, Sequence
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence
 
 import yaml
 
@@ -707,11 +707,32 @@ def _normalize_fallback_chain(
     return chain
 
 
+def _execution_target_values(target: Any) -> "tuple[str, str]":
+    """Read the launcher-facing fields from a resolved execution target.
+
+    This deliberately uses a structural contract instead of importing the
+    selection subsystem's ``ExecutionTarget`` type.  Keeping the adapter seam
+    dependency-free lets selection evolve independently and, importantly,
+    avoids making the provider-specific process launchers responsible for
+    policy resolution.  A target is already resolved; spawnlib only needs its
+    provider and model.
+    """
+    provider = getattr(target, "provider", None)
+    model = getattr(target, "model", None)
+    if not isinstance(provider, str) or not provider:
+        raise TypeError("target.provider must be a non-empty string")
+    if not isinstance(model, str) or not model:
+        raise TypeError("target.model must be a non-empty string")
+    if provider not in SUPPORTED_AGENTS:
+        raise ValueError(f"unsupported target provider: {provider}")
+    return provider, model
+
+
 def spawn_agent(
     prompt: str,
     cwd: "str | Path",
     *,
-    agent: str = "claude",
+    agent: Optional[str] = None,
     model: Optional[str] = None,
     effort: Optional[str] = None,
     fallback_agent: "Optional[str | Sequence[str]]" = None,
@@ -720,6 +741,8 @@ def spawn_agent(
     session_limit_waits: int = SESSION_LIMIT_WAITS_DEFAULT,
     extra_args: Optional[Sequence[str]] = None,
     resume_session_id: Optional[str] = None,
+    target: Optional[Any] = None,
+    invocation_context: Optional[Any] = None,
     log: Callable[[str], None] = lambda *_: None,
     sleep: Callable[[float], None] = time.sleep,
 ) -> SpawnResult:
@@ -730,6 +753,16 @@ def spawn_agent(
     input_tokens, output_tokens, cache_*_tokens, and total_cost_usd from the API,
     plus the diagnostic fields documented on `_parse_stream_json` (subtype,
     is_error, stop_reason, num_turns, permission_denials).
+
+    ``target`` is the preferred integration seam for the selection subsystem:
+    it is an already-resolved object exposing non-empty ``provider`` and
+    ``model`` attributes.  Spawnlib intentionally does not import or invoke
+    selection policy; it remains the provider-launch adapter.  For migration,
+    the legacy ``agent``/``model``/``fallback_agent`` arguments remain fully
+    supported.  Mixing a target with a conflicting explicit legacy value is
+    rejected rather than silently launching something other than the resolved
+    target.  ``invocation_context`` is accepted and logged for auditability but
+    does not influence launch policy.
 
     `fallback_agent` accepts either the legacy single-agent shape (`str` or
     `None`) or an ordered sequence of agent names -- a fallback chain. Each
@@ -753,9 +786,35 @@ def spawn_agent(
 
     Raises `subprocess.TimeoutExpired` on a wall-clock timeout.
     """
+    if target is not None:
+        target_agent, target_model = _execution_target_values(target)
+        if agent is not None and agent != target_agent:
+            raise ValueError(
+                f"target provider {target_agent!r} conflicts with agent {agent!r}"
+            )
+        if model is not None and model != target_model:
+            raise ValueError(
+                f"target model {target_model!r} conflicts with model {model!r}"
+            )
+        if fallback_agent is not None:
+            raise ValueError("fallback_agent cannot be combined with a resolved target")
+        agent, model = target_agent, target_model
+    else:
+        agent = agent or "claude"
+
     if agent not in SUPPORTED_AGENTS:
         raise ValueError(f"unsupported agent: {agent}")
     model = model or default_model_for_agent(agent)
+    if invocation_context is not None:
+        context_provider = getattr(
+            invocation_context,
+            "provider",
+            getattr(invocation_context, "agent_cli", None),
+        )
+        log(
+            "    invocation context: "
+            f"provider={context_provider or 'unknown'} target={agent}:{model}"
+        )
     fallback_chain = _normalize_fallback_chain(agent, fallback_agent)
 
     configured = [(agent, model)] + [
