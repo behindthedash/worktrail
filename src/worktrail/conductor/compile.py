@@ -366,7 +366,7 @@ def _resolve_spawn_policy(
     from worktrail.router import invocation_context
     from worktrail.router.policy import load_policy, resolve_routing
 
-    repo = Path(repo).resolve()
+    repo = Path(repo)
     policy = load_policy(repo)
 
     try:
@@ -396,10 +396,39 @@ def _resolve_spawn_policy(
     return resolved_agent, resolved_model, fallback_chain
 
 
-def _default_spawn(prompt: str, cwd: Path, timeout: int, log) -> str:
+def _default_spawn(
+    prompt: str,
+    cwd: Path,
+    timeout: int,
+    log,
+    *,
+    agent: Optional[str] = None,
+    model: Optional[str] = None,
+    fallback_agent: Optional["str | Sequence[str]"] = None,
+) -> str:
     from worktrail.orchestrator import spawnlib
 
-    return spawnlib.spawn_agent(prompt, cwd, timeout=timeout, log=log).text
+    if agent is None or model is None or fallback_agent is None:
+        resolved_agent, resolved_model, resolved_fallback = _resolve_spawn_policy(
+            cwd,
+            agent=agent,
+            model=model,
+            fallback_agent=fallback_agent,
+        )
+        agent = agent or resolved_agent
+        model = model or resolved_model
+        if fallback_agent is None:
+            fallback_agent = resolved_fallback
+
+    return spawnlib.spawn_agent(
+        prompt,
+        cwd,
+        agent=agent or "claude",
+        model=model,
+        fallback_agent=fallback_agent,
+        timeout=timeout,
+        log=log,
+    ).text
 
 
 # --------------------------------------------------------------------------- #
