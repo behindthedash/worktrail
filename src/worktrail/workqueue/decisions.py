@@ -68,6 +68,7 @@ import yaml
 
 from ..shared.brief_frontmatter import split_frontmatter
 from . import work_queue
+from .slug import fallback_slugify
 
 STATUSES = ("open", "answered", "resolved")
 
@@ -225,8 +226,7 @@ def decisions_dir(queue_base: Optional[Path] = None) -> Path:
 
 
 def _slugify(text: str) -> str:
-    words = re.findall(r"[a-z0-9]+", text.lower())[:5]
-    return "-".join(words) or "decision"
+    return fallback_slugify(text, default="decision")
 
 
 def _now_iso() -> str:

@@ -13,14 +13,14 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from ..router.classify import classify
+from ..router.policy import load_policy
+from ..orchestrator.spawnlib import spawn_agent
 from ..router.cluster_detect import OVERLAP_THRESHOLD, _overlap_coefficient, _tokenize
 from ..shared.brief_frontmatter import is_canonical_style, serialize_frontmatter, validate_brief
 from . import score_candidates
 from . import work_queue
 from .work_queue import normalize_dependency_reference
-
-
-_SLUG_MAX_CHARS = 60
+from .slug import fallback_slugify
 
 # Wall-clock budget for the capture-time overlap scan's `gh pr list` call.
 # A hang here must never delay (or fail) a brief capture, so the call is
@@ -32,14 +32,60 @@ _OVERLAP_SCAN_GH_TIMEOUT_SECONDS = 5
 _OVERLAP_WARNING_LIMIT = 5
 
 
-def _slugify(focus: str) -> str:
-    # Strip a trailing possessive "'s" from each word before tokenizing, so
-    # "md's" yields the single word "md" instead of splitting into "md" and
-    # a stray "s" that burns a slot in the word-count budget below.
-    text = re.sub(r"(?<=[a-z0-9])'s(?=\s|$)", "", focus.lower())
-    words = [w for w in re.findall(r"[a-z0-9]+", text) if len(w) > 1][:5]
-    slug = "-".join(words) or "handoff"
-    return slug[:_SLUG_MAX_CHARS].rstrip("-") or "handoff"
+def _slugify(text: str) -> str:
+    return fallback_slugify(text, default="handoff")
+
+
+def _semantic_slug_summary(focus: str, repo: Optional[str]) -> Optional[str]:
+    """Best-effort concise summary from a provider-backed backend.
+
+    Returns None when no usable backend is configured or when the spawn fails
+    for any reason, letting capture fall back to the deterministic slug.
+    """
+    if not repo:
+        return None
+    repo_path = Path(repo).expanduser()
+    if not repo_path.is_dir():
+        return None
+    try:
+        policy = load_policy(repo_path)
+    except Exception:
+        return None
+    agent = policy.get("agent_cli") or policy.get("fallback_agent_cli")
+    fallback_chain: list[str] = []
+    routing = policy.get("routing") or {}
+    if isinstance(routing, dict):
+        routed_fallback = routing.get("fallback") or []
+        fallback_chain = [
+            str(entry.get("agent_cli"))
+            for entry in routed_fallback
+            if isinstance(entry, dict) and entry.get("agent_cli")
+        ]
+        if not agent:
+            agent = next((name for name in fallback_chain if name), None)
+    if not agent:
+        return None
+    prompt = (
+        "Summarize the underlying issue in 3 to 5 lowercase words for a "
+        "filename slug. Return only the phrase, with no punctuation, code "
+        "fences, labels, or explanation.\n\n"
+        f"Issue:\n{focus}\n"
+    )
+    try:
+        result = spawn_agent(
+            prompt,
+            cwd=repo_path,
+            agent=agent,
+            model=policy.get("agent_model"),
+            fallback_agent=fallback_chain or None,
+            timeout=20,
+            retries=0,
+            session_limit_waits=0,
+        )
+    except Exception:
+        return None
+    summary = result.text.strip()
+    return summary or None
 
 
 def _clean_lines(values: Optional[Iterable[str]]) -> list[str]:
@@ -316,15 +362,15 @@ def create_handoff(
     queue = base / "queue"
     queue.mkdir(parents=True, exist_ok=True)
     now = dt.datetime.now().astimezone()
-    stem = f"{now:%Y%m%d-%H%M%S}-{_slugify(focus)}"
+    skills = _clean_lines(suggested_skills)
+    resolved_repo = _normalize_repo(repo) or _infer_repo_from_focus(focus) or None
+    summary = _semantic_slug_summary(focus, resolved_repo)
+    stem = f"{now:%Y%m%d-%H%M%S}-{_slugify(summary or focus)}"
     path = queue / f"{stem}.md"
     suffix = 2
     while path.exists():
         path = queue / f"{stem}-{suffix}.md"
         suffix += 1
-
-    skills = _clean_lines(suggested_skills)
-    resolved_repo = _normalize_repo(repo) or _infer_repo_from_focus(focus) or None
     frontmatter: dict[str, Any] = {
         "id": path.stem,
         "created": now.isoformat(timespec="seconds"),
