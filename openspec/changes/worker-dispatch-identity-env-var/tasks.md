@@ -6,7 +6,8 @@
       `None`, set `env["WORKTRAIL_DISPATCH_ID"] = dispatch_id` on the built child
       env dict (same conditional-passthrough shape as the existing
       `WORKTRAIL_SKILL_DISPATCH_DEPTH` handling immediately below it). Leave the key
-      absent when `dispatch_id` is `None`.
+      absent when `dispatch_id` is `None`. (Requirement: Worker environment carries
+      the run's dispatch identity)
 - [ ] 1.3 Add a matching optional `dispatch_id: Optional[str] = None` parameter to
       `spawnlib.spawn_claude_p()` and pass it straight through to its `spawn_agent()`
       call.
@@ -30,11 +31,10 @@
       `spawn_agent(..., dispatch_id="go-abc123")` (with the subprocess launch mocked,
       following this file's existing pattern for asserting on the child `env=`
       passed to the process launcher) results in `WORKTRAIL_DISPATCH_ID=go-abc123` in
-      that env.
+      that env. (Requirement: Worker environment carries the run's dispatch identity)
 - [ ] 3.2 In the same file, add a test that omitting `dispatch_id` (or passing
-      `None`) results in `WORKTRAIL_DISPATCH_ID` being absent from the child env —
-      covering the spec's "no identity is invented when none is supplied"
-      requirement.
+      `None`) results in `WORKTRAIL_DISPATCH_ID` being absent from the child env.
+      (Requirement: No dispatch identity is invented when none is supplied)
 - [ ] 3.3 In `tests/orchestrator/test_live_extras.py` (or wherever `LiveSpawn`
       construction is already covered), add a test that constructing `LiveSpawn`
       with `dispatch_id="go-abc123"` and invoking `__call__` reaches `spawn_agent`
@@ -46,6 +46,6 @@
 
 ## 4. Verification
 
-- [ ] 4.1 Run `PYTHONPATH=src pytest -q` and confirm the full suite is green.
-- [ ] 4.2 Run `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`
+- [ ] 4.1 [e2e] Run `PYTHONPATH=src pytest -q` and confirm the full suite is green.
+- [ ] 4.2 [e2e] Run `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`
       (golden record/replay regression) and confirm it is unaffected.
