@@ -211,6 +211,102 @@ def test_force_still_recompiles_when_no_task_worktrees_exist(change, tmp_path):
     assert second.by_id()[tasks[0]["id"]].files == ("b.py",)
 
 
+def test_the_default_spawn_patch_site_still_receives_the_same_call_shape(change, tmp_path):
+    """`_default_spawn` remains the fallback seam for callers that patch it
+    directly, so the positional call contract must stay intact."""
+    from unittest.mock import patch
+
+    spec_id, tasks = _load(change)
+    reply = _reply(**{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks})
+    kwargs = dict(spec_id=spec_id, repo=change.parents[2], cache_dir=tmp_path / "plans")
+
+    with patch("worktrail.conductor.compile._default_spawn", return_value=reply) as default_spawn:
+        plan = conductor_compile.compile_run_plan(change, tasks, **kwargs)
+
+    assert plan.source == runplan.SOURCE_COMPILED
+    assert default_spawn.call_count == 1
+    prompt, cwd, timeout, log = default_spawn.call_args.args
+    assert cwd == change.parents[2]
+    assert timeout == conductor_compile.COMPILE_TIMEOUT_DEFAULT
+    assert isinstance(prompt, str) and prompt
+    assert callable(log)
+
+
+def test_the_default_spawn_policy_for_an_unconfigured_repo_keeps_pre_change_argv_inputs(
+    change, tmp_path
+):
+    """An empty repo-local policy/routing setup must still resolve to the
+    pre-change spawn argv: `claude`, the config-file default model, and no
+    fallback hops."""
+    from unittest.mock import patch
+
+    from worktrail.orchestrator import spawnlib
+
+    spec_id, tasks = _load(change)
+    reply = _reply(**{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks})
+    model_defaults = tmp_path / "model-defaults.yaml"
+    model_defaults.write_text("claude: opus\n", encoding="utf-8")
+    expected_model = None
+
+    with patch.dict(
+        "os.environ",
+        {
+            "WORKTRAIL_MODEL_DEFAULTS_FILE": str(model_defaults),
+            "GO_AGENT_CLI": "",
+            "ORCH_AGENT": "",
+            "OPENCODE_PARENT": "",
+            "CODEX_CI": "",
+            "CODEX_THREAD_ID": "",
+        },
+        clear=False,
+    ):
+        expected_model = spawnlib.default_model_for_agent("claude")
+        with patch("worktrail.orchestrator.spawnlib.spawn_agent") as spawn_agent:
+            spawn_agent.return_value = type("SpawnResult", (), {"text": reply})()
+            plan = conductor_compile.compile_run_plan(
+                change,
+                tasks,
+                spec_id=spec_id,
+                repo=change.parents[2],
+                cache_dir=tmp_path / "plans",
+            )
+
+    assert plan.source == runplan.SOURCE_COMPILED
+    assert spawn_agent.call_count == 1
+
+    prompt, cwd = spawn_agent.call_args.args
+    kwargs = spawn_agent.call_args.kwargs
+    assert cwd == change.parents[2]
+    assert kwargs["agent"] == "claude"
+    assert kwargs["model"] == expected_model
+    assert kwargs["fallback_agent"] == []
+    assert isinstance(prompt, str) and prompt
+
+
+def test_an_injected_spawn_callable_bypasses_the_policy_resolver(change, tmp_path):
+    """A caller-provided `spawn=` callable must be used verbatim, without
+    consulting the default policy resolver first."""
+    from unittest.mock import patch
+
+    spec_id, tasks = _load(change)
+    reply = _reply(**{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks})
+    spawn = RecordingSpawn(reply)
+
+    with patch("worktrail.router.invocation_context.resolve", side_effect=AssertionError):
+        plan = conductor_compile.compile_run_plan(
+            change,
+            tasks,
+            spec_id=spec_id,
+            repo=change.parents[2],
+            cache_dir=tmp_path / "plans",
+            spawn=spawn,
+        )
+
+    assert spawn.calls == 1
+    assert plan.source == runplan.SOURCE_COMPILED
+    assert plan.by_id()[tasks[0]["id"]].files == (f"src/{tasks[0]['id']}.py",)
+
+
 # --------------------------------------------------------------------------- #
 # Paths that never reach a model
 # --------------------------------------------------------------------------- #
