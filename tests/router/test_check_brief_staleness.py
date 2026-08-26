@@ -16,6 +16,7 @@ import unittest
 from pathlib import Path
 
 from worktrail.router import check_brief_staleness as cbs
+from worktrail.workqueue import decisions
 
 
 def _git(repo: str, *args: str, env: dict = None) -> subprocess.CompletedProcess:
@@ -509,6 +510,146 @@ class TestCheckFailsOpen(unittest.TestCase):
             with self.subTest(text=text, since=since):
                 res = cbs.check(repo_arg, text, since)
                 self.assertIn("checked", res)
+
+
+class TestPendingDecisionEnvelope(unittest.TestCase):
+    """Task 2.1 (pending-user-decision-dispatch-contract) -- a searched-and-
+    found staleness outcome carries the provider-neutral, versioned
+    pending-decision envelope under `pending_decision`; clean negatives,
+    unanswerable outcomes, and calls with no brief subject carry none."""
+
+    def _repo_with_landing(self) -> str:
+        repo = _init_repo()
+        _write(repo, "src/widget.py", "print('v2')\n")
+        _commit(repo, "Add widget support", "2026-06-01T00:00:00")
+        return repo
+
+    def test_evidence_carries_valid_envelope(self):
+        repo = self._repo_with_landing()
+        res = cbs.check(Path(repo), "Touches src/widget.py.",
+                        "2026-01-01T00:00:00", brief="20260801-000000-widget")
+        self.assertTrue(res["checked"])
+        self.assertTrue(res["matches"])
+        envelope = res["pending_decision"]
+        self.assertIsNotNone(envelope)
+        parsed = decisions.parse_pending_decision_envelope(envelope)
+        self.assertEqual(parsed["schema"], decisions.DECISION_ENVELOPE_SCHEMA)
+        self.assertEqual(parsed["version"], decisions.DECISION_ENVELOPE_VERSION)
+        self.assertEqual(parsed["status"], "pending")
+        self.assertEqual(parsed["provenance"]["source"], cbs.GUARD_SOURCE)
+        self.assertEqual(parsed["provenance"]["subject"], "20260801-000000-widget")
+        self.assertGreaterEqual(len(parsed["options"]), 2)
+
+    def test_identity_is_deterministic_across_rechecks(self):
+        repo = self._repo_with_landing()
+        first = cbs.check(Path(repo), "Touches src/widget.py.",
+                          "2026-01-01T00:00:00", brief="b-1")["pending_decision"]
+        second = cbs.check(Path(repo), "Touches `src/widget.py`.",
+                           "2026-01-01T00:00:00", brief="b-1")["pending_decision"]
+        self.assertEqual(first["decision_id"], second["decision_id"])
+        self.assertEqual(
+            first["decision_id"],
+            decisions.decision_identity(
+                cbs.GUARD_SOURCE, str(Path(repo).resolve()), "b-1",
+                cbs.DECISION_QUESTION),
+        )
+
+    def test_brief_path_and_bare_id_converge_on_one_subject(self):
+        repo = self._repo_with_landing()
+        as_path = cbs.check(Path(repo), "Touches src/widget.py.",
+                            "2026-01-01T00:00:00",
+                            brief="/home/x/queue/20260801-000000-widget.md")
+        as_id = cbs.check(Path(repo), "Touches src/widget.py.",
+                          "2026-01-01T00:00:00", brief="20260801-000000-widget")
+        self.assertEqual(
+            as_path["pending_decision"]["decision_id"],
+            as_id["pending_decision"]["decision_id"])
+        # provenance keeps the brief exactly as passed, while the identity
+        # subject is the normalized stem
+        self.assertEqual(
+            as_path["pending_decision"]["provenance"]["brief"],
+            "/home/x/queue/20260801-000000-widget.md")
+
+    def test_provenance_threads_run_id_and_dispatch_mode(self):
+        repo = self._repo_with_landing()
+        res = cbs.check(Path(repo), "Touches src/widget.py.",
+                        "2026-01-01T00:00:00", brief="b-1",
+                        run_id="go-20260825-101010", dispatch_mode="native")
+        prov = res["pending_decision"]["provenance"]
+        self.assertEqual(prov["run_id"], "go-20260825-101010")
+        self.assertEqual(prov["dispatch_mode"], "native")
+
+    def test_clean_negative_leaves_pending_decision_none(self):
+        repo = _init_repo()
+        _write(repo, "src/widget.py", "print('v1')\n")
+        _commit(repo, "Add widget support", "2026-01-01T00:00:00")
+        res = cbs.check(Path(repo), "Touches src/widget.py.",
+                        "2026-06-01T00:00:00", brief="b-1")
+        self.assertTrue(res["checked"])
+        self.assertEqual(res["matches"], [])
+        self.assertIsNone(res["pending_decision"])
+
+    def test_no_brief_subject_leaves_pending_decision_none_despite_evidence(self):
+        repo = self._repo_with_landing()
+        res = cbs.check(Path(repo), "Touches src/widget.py.", "2026-01-01T00:00:00")
+        self.assertTrue(res["checked"])
+        self.assertTrue(res["matches"])
+        self.assertIsNone(res["pending_decision"])
+
+    def test_unchecked_outcomes_leave_pending_decision_none(self):
+        repo = self._repo_with_landing()
+        cases = [
+            (Path("/nonexistent/path/xyz"), "text", "2026-01-01T00:00:00"),
+            (Path(repo), None, None),
+            (Path(repo), "Plain prose, nothing searchable.", "2026-01-01T00:00:00"),
+        ]
+        for repo_arg, text, since in cases:
+            with self.subTest(text=text, since=since):
+                res = cbs.check(repo_arg, text, since, brief="b-1")
+                self.assertFalse(res["checked"])
+                self.assertIsNone(res["pending_decision"])
+
+    def test_unavailable_decision_primitives_degrade_to_none_without_raising(self):
+        repo = self._repo_with_landing()
+        original = cbs._decision_helpers
+        cbs._decision_helpers = lambda: (None, None)
+        try:
+            res = cbs.check(Path(repo), "Touches src/widget.py.",
+                            "2026-01-01T00:00:00", brief="b-1")
+        finally:
+            cbs._decision_helpers = original
+        self.assertTrue(res["checked"])
+        self.assertTrue(res["matches"])
+        self.assertIsNone(res["pending_decision"])
+
+    def test_cli_brief_json_carries_the_envelope(self):
+        repo = self._repo_with_landing()
+        brief_path = Path(tempfile.mkdtemp(prefix="cbs-env-cli-")) / "20260801-000000-widget.md"
+        brief_path.write_text(
+            "---\nid: 20260801-000000-widget\ncreated: '2026-01-01T00:00:00'\n"
+            "focus: |-\n  Touches src/widget.py.\nstatus: queued\n---\n\n"
+            "## Focus\n\nTouches src/widget.py.\n",
+            encoding="utf-8")
+        import contextlib
+        import io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = cbs.main(["--repo", repo, "--brief", str(brief_path), "--json"])
+        self.assertEqual(code, 0)
+        data = json.loads(buf.getvalue())
+        direct = cbs.check(Path(repo), "Touches src/widget.py.",
+                           "2026-01-01T00:00:00", brief=str(brief_path))
+        # created_at is wall-clock; identity and every other field must agree
+        data["pending_decision"].pop("created_at")
+        direct["pending_decision"].pop("created_at")
+        self.assertEqual(data, direct)
+
+    def test_format_human_names_the_decision_id_when_present(self):
+        repo = self._repo_with_landing()
+        res = cbs.check(Path(repo), "Touches src/widget.py.",
+                        "2026-01-01T00:00:00", brief="b-1")
+        human = cbs._format_human(res)
+        self.assertIn(res["pending_decision"]["decision_id"], human)
 
 
 class TestReadBrief(unittest.TestCase):

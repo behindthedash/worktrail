@@ -9,6 +9,7 @@ them from this repo removes the distance; these tests keep it removed.
 
 from __future__ import annotations
 
+import importlib
 import json
 import re
 import shutil
@@ -620,3 +621,137 @@ def test_phase55_auto_mode_blocks_actually_file_a_decision():
                 f"{path.name}: `worktrail-decision ask` call is missing --release")
             assert block.index("worktrail-decision ask") < block.index("run-record finish"), (
                 f"{path.name}: `worktrail-decision ask` must run before `run-record finish`")
+
+
+# --- pending-user-decision cross-surface contract ----------------------------
+#
+# The decision lifecycle — guard emits an envelope, the run record carries the
+# audit trail, an attended host presents/resumes it through the adapter
+# boundary, and unattended drain stops fail-closed on it — spans code and docs
+# on four surfaces. These tests pin them together so a rename on any side
+# fails the build instead of drifting into an unauditable lifecycle.
+
+_GUARD_DOC_PAIRS = (
+    ("check_spec_collision", "spec-collision-check.md"),
+    ("check_brief_staleness", "brief-staleness-check.md"),
+    ("check_related_brief_claims", "related-brief-collision-check.md"),
+)
+
+
+def _go_reference(name: str) -> Path:
+    return SKILLS_DIR / "worktrail-go" / "references" / name
+
+
+def test_guard_docs_carry_their_guard_s_envelope_provenance():
+    """Each Phase 5.5 guard reference must document the provider-neutral
+    pending-decision envelope its module actually emits: the real
+    `GUARD_SOURCE` provenance string, the versioned schema name, and the
+    `pending_decision` result key. A doc describing a source string the guard
+    never writes would make every filed record unauditable — provenance would
+    mismatch at resume validation time."""
+    for module_name, doc_name in _GUARD_DOC_PAIRS:
+        module = importlib.import_module(f"worktrail.router.{module_name}")
+        text = _go_reference(doc_name).read_text()
+        assert module.GUARD_SOURCE in text, (
+            f"{doc_name} never names its guard's provenance source "
+            f"{module.GUARD_SOURCE!r}")
+        assert "worktrail.pending-decision" in text, (
+            f"{doc_name} does not name the worktrail.pending-decision envelope")
+        assert "pending_decision" in text, (
+            f"{doc_name} does not name the pending_decision result key")
+
+
+def test_auto_mode_filing_blocks_stamp_the_asked_audit_hop():
+    """Filing a decision must be auditable on the originating run record in
+    every unattended fallback: each `blocked_product_decision` bash block in
+    the three guard docs and decision-queue.md's own filing procedure must run
+    `worktrail-decision ask`, then stamp the `[asked]` hop via
+    `worktrail-run-record decision --event asked`, then finish — in that
+    order. An unstamped ask leaves a blocked run whose own audit trail never
+    shows why a human was asked."""
+    block_re = re.compile(r"```bash\n(.*?)```", re.DOTALL)
+    targets = [doc for _m, doc in _GUARD_DOC_PAIRS] + ["decision-queue.md"]
+    for doc_name in targets:
+        text = _go_reference(doc_name).read_text()
+        blocks = [
+            b for b in block_re.findall(text) if "blocked_product_decision" in b
+        ]
+        assert blocks, f"{doc_name}: no auto-mode blocked_product_decision block found"
+        for block in blocks:
+            assert "--event asked" in block, (
+                f"{doc_name}: blocked_product_decision block never stamps the "
+                "[asked] hop onto the run record's pending_decisions audit list")
+            assert block.index("worktrail-decision ask") < block.index("--event asked"), (
+                f"{doc_name}: the [asked] stamp must follow `worktrail-decision ask`")
+            assert block.index("--event asked") < block.index("run-record finish"), (
+                f"{doc_name}: the [asked] stamp must precede `run-record finish`")
+
+
+def test_decision_queue_doc_matches_the_envelope_and_event_contract():
+    """decision-queue.md is the canonical lifecycle doc. It must name the exact
+    schema/version constants `workqueue/decisions.py` emits, and its audit-
+    trail event table must list exactly `run_record.DECISION_EVENTS`, in order
+    — a doc teaching an event the run record refuses (or omitting one it
+    accepts) breaks auditability across dispatch modes."""
+    from worktrail.router.run_record import DECISION_EVENTS
+    from worktrail.workqueue.decisions import (
+        DECISION_ENVELOPE_SCHEMA,
+        DECISION_ENVELOPE_VERSION,
+    )
+
+    text = _go_reference("decision-queue.md").read_text()
+    assert f"`{DECISION_ENVELOPE_SCHEMA}`" in text, (
+        "decision-queue.md does not name the versioned envelope schema constant")
+    assert f"`{DECISION_ENVELOPE_VERSION}`" in text, (
+        "decision-queue.md does not name the envelope version")
+
+    audit = text[text.index("{#decision-audit}"):]
+    listed = re.findall(r"\| `([a-z]+)` \|", audit)
+    assert tuple(listed) == tuple(DECISION_EVENTS), (
+        "decision-queue.md's audit-event table drifted from "
+        f"run_record.DECISION_EVENTS: doc={listed} code={list(DECISION_EVENTS)}"
+    )
+
+
+def test_attended_presentation_and_exact_id_resume_pinned_across_surfaces():
+    """The presentation/exact-id-resume pair is one contract with three
+    procedure surfaces: SKILL.md (front door), subagent-prompts.md (adapter
+    boundary mechanics), and decision-queue.md (lifecycle). All three must
+    carry both flags, and the threaded resume token must be spelled exactly as
+    the adapter builds it (`append_decision_token`)."""
+    from worktrail.router.skill_dispatch import append_decision_token
+
+    assert append_decision_token("seed args", "d1") == "seed args decision:d1"
+
+    surfaces = (
+        SKILLS_DIR / "worktrail-go" / "SKILL.md",
+        _go_reference("subagent-prompts.md"),
+        _go_reference("decision-queue.md"),
+    )
+    for path in surfaces:
+        text = path.read_text()
+        assert "--present-decision" in text, (
+            f"{path.name} lacks the attended --present-decision flag")
+        assert "--resume-decision" in text, (
+            f"{path.name} lacks the exact-id --resume-decision flag")
+        assert "decision:<decision-id>" in text, (
+            f"{path.name} does not spell the verbatim decision:<decision-id> token")
+
+
+def test_unattended_handoff_names_the_drain_stop_kind_and_recovery_pair():
+    """The unattended side of the contract: subagent-prompts.md's bounded poll
+    and decision-queue.md must describe unresolved decisions as drain's
+    first-class `pending_user_decision` stop (the literal drain's summary
+    contract recognizes), never a generic failure — and must carry drain's own
+    recovery pair: answer the record, then resume through the exact id."""
+    from worktrail.drain.summary_contract import PENDING_USER_DECISION
+
+    for path in (_go_reference("subagent-prompts.md"),
+                 _go_reference("decision-queue.md")):
+        text = path.read_text()
+        assert PENDING_USER_DECISION in text, (
+            f"{path.name} never names the {PENDING_USER_DECISION} stop kind")
+        assert "worktrail-decision answer" in text, (
+            f"{path.name} lacks the answer half of the recovery pair")
+        assert "worktrail-skill-dispatch --resume-decision" in text, (
+            f"{path.name} lacks the exact-id-resume half of the recovery pair")

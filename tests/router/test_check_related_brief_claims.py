@@ -8,6 +8,7 @@ from typing import Optional
 import pytest
 
 from worktrail.router import check_related_brief_claims as crbc
+from worktrail.workqueue import decisions
 
 
 def _write_brief(
@@ -312,6 +313,141 @@ class TestFailsOpen:
             res = crbc.check(claimed, picked_dir, queue_dir)
             assert "checked" in res
             assert res["checked"] is False
+
+
+# --------------------------------------------------------------------------- #
+# Provider-neutral pending-decision envelope (pending-user-decision-dispatch-contract 2.1)
+# --------------------------------------------------------------------------- #
+class TestPendingDecisionEnvelope:
+    def _active_claim(self, tmp_path: Path, queue_dirs, brief_id="20260101-000000-other"):
+        picked_dir, queue_dir = queue_dirs
+        _write_brief(
+            picked_dir / f"{brief_id}.md",
+            status="picked",
+            claimed_by="somehost:123",
+            claimed_at="2026-01-01T00:00:00",
+            repo="some/repo",
+        )
+        return _write_brief(
+            tmp_path / "claimed.md",
+            related=["other"],
+            brief_id="20260202-000000-claimed",
+            repo="target/repo",
+        )
+
+    def test_active_claims_carry_valid_envelope(self, tmp_path, queue_dirs):
+        claimed = self._active_claim(tmp_path, queue_dirs)
+        picked_dir, queue_dir = queue_dirs
+
+        res = crbc.check(claimed, picked_dir, queue_dir)
+
+        assert res["checked"] is True
+        assert res["active"]
+        envelope = res["pending_decision"]
+        assert envelope is not None
+        parsed = decisions.parse_pending_decision_envelope(envelope)
+        assert parsed["schema"] == decisions.DECISION_ENVELOPE_SCHEMA
+        assert parsed["version"] == decisions.DECISION_ENVELOPE_VERSION
+        assert parsed["status"] == "pending"
+        assert parsed["decision_id"].startswith("dec-")
+        assert parsed["provenance"]["source"] == crbc.GUARD_SOURCE
+        assert parsed["provenance"]["subject"] == "20260202-000000-claimed"
+        assert parsed["provenance"]["repo"] == "target/repo"
+        assert len(parsed["options"]) >= 2
+
+    def test_identity_is_deterministic_across_re_runs(self, tmp_path, queue_dirs):
+        claimed = self._active_claim(tmp_path, queue_dirs)
+        picked_dir, queue_dir = queue_dirs
+
+        first = crbc.check(claimed, picked_dir, queue_dir)["pending_decision"]
+        second = crbc.check(claimed, picked_dir, queue_dir)["pending_decision"]
+        assert first["decision_id"] == second["decision_id"]
+        assert first["decision_id"] == decisions.decision_identity(
+            crbc.GUARD_SOURCE, "target/repo", "20260202-000000-claimed",
+            crbc.DECISION_QUESTION)
+
+    def test_subject_falls_back_to_stem_without_frontmatter_id(
+        self, tmp_path, queue_dirs
+    ):
+        picked_dir, queue_dir = queue_dirs
+        _write_brief(picked_dir / "20260101-000000-other.md", status="picked")
+        claimed = _write_brief(tmp_path / "20260202-000000-claimed.md", related=["other"])
+
+        res = crbc.check(claimed, picked_dir, queue_dir)
+
+        assert res["pending_decision"]["provenance"]["subject"] == \
+            "20260202-000000-claimed"
+
+    def test_repo_provenance_falls_back_then_to_unspecified(
+        self, tmp_path, queue_dirs
+    ):
+        picked_dir, queue_dir = queue_dirs
+        # no repo anywhere -> the stable placeholder, never a dropped envelope
+        _write_brief(picked_dir / "20260101-000000-other.md", status="picked")
+        claimed = _write_brief(tmp_path / "claimed.md", related=["other"])
+        res = crbc.check(claimed, picked_dir, queue_dir)
+        assert res["pending_decision"]["provenance"]["repo"] == "unspecified"
+
+        # claimed brief lacks repo, but the active claim carries one
+        _write_brief(
+            picked_dir / "20260103-000000-other3.md",
+            status="picked", claimed_by="h:1", repo="active/repo",
+        )
+        claimed2 = _write_brief(tmp_path / "claimed2.md", related=["other3"])
+        res2 = crbc.check(claimed2, picked_dir, queue_dir)
+        assert res2["pending_decision"]["provenance"]["repo"] == "active/repo"
+
+    def test_provenance_threads_run_id_and_dispatch_mode(self, tmp_path, queue_dirs):
+        claimed = self._active_claim(tmp_path, queue_dirs)
+        picked_dir, queue_dir = queue_dirs
+
+        res = crbc.check(claimed, picked_dir, queue_dir,
+                         run_id="go-20260825-101010", dispatch_mode="adapter")
+
+        prov = res["pending_decision"]["provenance"]
+        assert prov["run_id"] == "go-20260825-101010"
+        assert prov["dispatch_mode"] == "adapter"
+
+    def test_no_active_claims_leaves_pending_decision_none(self, tmp_path, queue_dirs):
+        picked_dir, queue_dir = queue_dirs
+        claimed = _write_brief(tmp_path / "claimed.md", related=["missing-brief"])
+
+        res = crbc.check(claimed, picked_dir, queue_dir)
+
+        assert res["checked"] is True
+        assert res["active"] == []
+        assert res["pending_decision"] is None
+
+    def test_checked_false_leaves_pending_decision_none(self, tmp_path, queue_dirs):
+        picked_dir, queue_dir = queue_dirs
+
+        res = crbc.check(tmp_path / "does-not-exist.md", picked_dir, queue_dir)
+
+        assert res["checked"] is False
+        assert res["pending_decision"] is None
+
+    def test_unavailable_decision_primitives_degrade_without_raising(
+        self, tmp_path, queue_dirs, monkeypatch
+    ):
+        claimed = self._active_claim(tmp_path, queue_dirs)
+        picked_dir, queue_dir = queue_dirs
+        monkeypatch.setattr(crbc, "_decision_helpers", lambda: (None, None))
+
+        res = crbc.check(claimed, picked_dir, queue_dir)
+
+        assert res["checked"] is True
+        assert res["active"]
+        assert res["pending_decision"] is None
+
+    def test_format_human_names_the_decision_id_when_present(
+        self, tmp_path, queue_dirs
+    ):
+        claimed = self._active_claim(tmp_path, queue_dirs)
+        picked_dir, queue_dir = queue_dirs
+
+        res = crbc.check(claimed, picked_dir, queue_dir)
+
+        assert res["pending_decision"]["decision_id"] in crbc._format_human(res)
 
 
 if __name__ == "__main__":

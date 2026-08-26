@@ -16,6 +16,7 @@ from pathlib import Path
 from unittest import mock
 
 from worktrail.router import skill_dispatch
+from worktrail.workqueue import decisions as decisions_mod
 
 
 _FAKE_AGENT = Path(__file__).with_name("fake_internal_dispatch_agent.py")
@@ -292,6 +293,136 @@ class InternalDispatchLifecycleTests(unittest.TestCase):
                     )
                     self.assertEqual(unseeded.returncode, 6)
                     self.assertEqual(proof.read_text(), f"unseeded:{agent}\n")
+
+
+class DecisionResumeLifecycleTests(unittest.TestCase):
+    """The decision boundary survives the real adapter/subprocess process
+    boundary: an answered record lets every provider's child receive the
+    exact `decision:<id>` token; an open one fails closed before any spawn,
+    and presentation prints the same envelope JSON regardless of host."""
+
+    DECISION_ID = "dec-lifecycle-0001"
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.queue_base = self.root / "queue"
+        bin_dir = self.root / "bin"
+        bin_dir.mkdir()
+        recorder = self.root / "recorder.py"
+        recorder.write_text(
+            "import json, os, sys\n"
+            "proof = os.environ['DECISION_RECORDER_PROOF']\n"
+            "with open(proof, 'w') as fh:\n"
+            "    json.dump({'argv': sys.argv[1:], 'cwd': os.getcwd()}, fh)\n"
+        )
+        for agent in skill_dispatch.SUPPORTED_AGENTS:
+            shim = bin_dir / agent
+            shim.write_text(
+                f"#!/bin/sh\nexec {sys.executable} {recorder} {agent} \"$@\"\n"
+            )
+            shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
+        skills = self.root / "skills" / "openspec-propose"
+        skills.mkdir(parents=True)
+        (skills / "SKILL.md").write_text(
+            "---\nname: openspec-propose\n---\n")
+        self.environment = {
+            **os.environ,
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "PYTHONPATH": str(Path(skill_dispatch.__file__).resolve().parents[2]),
+            "WORK_QUEUE_DIR": str(self.queue_base),
+            "WORKTRAIL_SKILL_ROOT": str(self.root / "skills"),
+            "WORKTRAIL_CODEX_HOME": str(self.root / "codex-home"),
+        }
+
+    def _seed(self, *, answer_it: bool):
+        result = decisions_mod.ask(
+            "Which scope should this request take?",
+            background="The shipped spec already covers the requested scope.",
+            why="Scope direction is a product call.",
+            context="verify() confirmed Implemented status and tracked files.",
+            options=["extend: continue the existing spec",
+                     "redirect: choose different scope"],
+            source="check_spec_collision",
+            repo=str(self.root),
+            subject="spec-a",
+            decision_id=self.DECISION_ID,
+            queue_base=self.queue_base,
+        )
+        assert result["status"] == "created", result
+        if answer_it:
+            answered = decisions_mod.answer(
+                self.DECISION_ID, "extend: continue the existing spec",
+                queue_base=self.queue_base)
+            assert answered["status"] == "answered", answered
+
+    def _dispatch_command(self, agent, extra=()):
+        command = [
+            sys.executable, "-m", "worktrail.router.skill_dispatch",
+            "--agent", agent, "--skill", "openspec-propose",
+            "--args", "route:C spec:demo",
+            "--cwd", str(self.root),
+            *extra,
+        ]
+        if agent == "codex":
+            command.append("--no-inherit-codex-auth")
+        return command
+
+    def test_answered_decision_resumes_each_provider_with_the_exact_id(self):
+        self._seed(answer_it=True)
+        token = f"decision:{self.DECISION_ID}"
+        for agent in skill_dispatch.SUPPORTED_AGENTS:
+            with self.subTest(agent=agent):
+                proof = self.root / f"{agent}.resume-proof.json"
+                env = {**self.environment, "DECISION_RECORDER_PROOF": str(proof)}
+                result = subprocess.run(
+                    self._dispatch_command(
+                        agent, ["--resume-decision", self.DECISION_ID]),
+                    env=env, capture_output=True, text=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                recorded = json.loads(proof.read_text())
+                prompts = [a for a in recorded["argv"] if token in a]
+                self.assertEqual(len(prompts), 1)
+                self.assertTrue(prompts[0].endswith(token))
+                self.assertNotIn(token + "-", prompts[0])
+
+    def test_open_decision_fails_closed_before_any_child_spawns(self):
+        self._seed(answer_it=False)
+        for agent in skill_dispatch.SUPPORTED_AGENTS:
+            with self.subTest(agent=agent):
+                proof = self.root / f"{agent}.blocked-proof.json"
+                env = {**self.environment, "DECISION_RECORDER_PROOF": str(proof)}
+                result = subprocess.run(
+                    self._dispatch_command(
+                        agent, ["--resume-decision", self.DECISION_ID]),
+                    env=env, capture_output=True, text=True,
+                )
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("blocked_pending_decision", result.stderr)
+                envelope = json.loads(result.stdout)
+                self.assertEqual(envelope["schema"], "worktrail.pending-decision")
+                self.assertEqual(envelope["status"], "open")
+                self.assertEqual(envelope["decision_id"], self.DECISION_ID)
+                self.assertFalse(proof.exists(), "child spawned despite open decision")
+
+    def test_presentation_prints_one_envelope_for_every_host(self):
+        self._seed(answer_it=True)
+        for agent in skill_dispatch.SUPPORTED_AGENTS:
+            with self.subTest(agent=agent):
+                result = subprocess.run(
+                    [sys.executable, "-m", "worktrail.router.skill_dispatch",
+                     "--agent", agent, "--skill", "openspec-propose",
+                     "--present-decision", self.DECISION_ID],
+                    env=self.environment, capture_output=True, text=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                envelope = json.loads(result.stdout)
+                self.assertEqual(envelope["decision_id"], self.DECISION_ID)
+                self.assertEqual(envelope["status"], "answered")
+                self.assertIn("extend: continue the existing spec",
+                              envelope["answer"])
 
 
 if __name__ == "__main__":

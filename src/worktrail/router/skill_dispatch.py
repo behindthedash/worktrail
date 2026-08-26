@@ -1,5 +1,18 @@
 #!/usr/bin/env python3
-"""Build provider-preserving commands for dispatching an installed skill."""
+"""Build provider-preserving commands for dispatching an installed skill.
+
+This module is the go/adapter boundary for the pending-user-decision
+contract (`worktrail.pending-decision`, `workqueue/decisions.py`): an
+attended host presents a guard's decision envelope through
+`--present-decision` (the same versioned JSON regardless of provider), and
+a resume dispatch is gated on the *exact* decision id via
+`--resume-decision` — the child launches only when that exact record is
+answered and live, and the id travels into the invocation verbatim as a
+`decision:<id>` token. A decision that is open, superseded, or unknown
+fails closed here (exit 2, nothing spawned) instead of letting a child
+guess; an unresumable-but-known record's envelope is printed on stdout so
+an unattended caller receives the structured pending result unchanged.
+"""
 
 from __future__ import annotations
 
@@ -52,6 +65,100 @@ def _namespaced_invocation_skill(agent: str, skill: str) -> str:
             and not skill.startswith(_OPSX_NAMESPACE)):
         return f"{_OPSX_NAMESPACE}{skill}"
     return skill
+
+
+# --- pending-decision boundary (presentation + exact-id resume) ---------------
+
+_DECISION_TOKEN_PREFIX = "decision:"
+
+
+def _decision_helpers():
+    """Best-effort import of the decision-envelope primitives. Returns
+    `(load_decision_envelope, validate_decision_answer,
+    parse_pending_decision_envelope)`, or `(None, None, None)` when
+    `workqueue.decisions` cannot be imported -- decision handling degrades to
+    a fail-closed refusal, never an exception."""
+    try:
+        from ..workqueue.decisions import (
+            load_decision_envelope,
+            parse_pending_decision_envelope,
+            validate_decision_answer,
+        )
+    except Exception:  # noqa: BLE001 - boundary is additive, never fatal on import
+        return None, None, None
+    return load_decision_envelope, validate_decision_answer, parse_pending_decision_envelope
+
+
+def append_decision_token(args: str, decision_id: str) -> str:
+    """Thread one exact decision id into an invocation's arguments.
+
+    The token is the resume contract every provider sees identically: the
+    executor consumes exactly this record via its own consume path. The id
+    is appended verbatim -- never re-derived, never normalized.
+    """
+    token = f"{_DECISION_TOKEN_PREFIX}{decision_id}"
+    return f"{args} {token}".strip() if args and args.strip() else token
+
+
+def load_decision_for_boundary(decision_id: str) -> tuple[dict | None, str | None]:
+    """Load one decision envelope for presentation or resume.
+
+    Returns `(envelope, None)` or `(None|envelope, error)`. The requested id
+    must match the record's stem exactly: a prefix or partial match is a
+    different record, so it is refused instead of silently resumed.
+    """
+    did = (decision_id or "").strip()
+    if not did:
+        return None, "a decision id is required"
+    load, _validate, parse = _decision_helpers()
+    if load is None:
+        return None, "decision-envelope primitives are unavailable"
+    envelope = load(did)
+    if envelope is None:
+        return None, f"no decision record resolves exactly to {did!r}"
+    if str(envelope.get("decision_id") or "") != did:
+        return envelope, (
+            f"requested decision id {did!r} does not exactly match record "
+            f"{envelope.get('decision_id')!r}; refusing a prefix or partial match"
+        )
+    try:
+        parse(envelope)
+    except Exception as exc:  # noqa: BLE001 - refuse anything not fully readable
+        return envelope, (
+            f"record {did!r} is not a readable {envelope.get('schema', '')} "
+            f"envelope: {exc}"
+        )
+    return envelope, None
+
+
+def present_decision(decision_id: str) -> tuple[dict | None, str | None]:
+    """Return the provider-neutral envelope an attended host presents.
+
+    Works for any decision status -- presenting an *open* question is the
+    attended use case. The printed value always round-trips
+    `parse_pending_decision_envelope`, so every host renders the same
+    structured contract rather than provider-specific prose.
+    """
+    envelope, error = load_decision_for_boundary(decision_id)
+    if error:
+        return None, error
+    return envelope, None
+
+
+def _stamp_presented(run_path: str | None, decision_id: str) -> None:
+    """Best-effort `[presented]` hop on the run record's audit trail."""
+    if not run_path:
+        return
+    try:
+        from .run_record import record_decision_event
+
+        record_decision_event(run_path, "presented", decision_id)
+    except Exception as exc:  # noqa: BLE001 - audit stamp failure must not lose the envelope
+        print(
+            f"warning: could not stamp [presented] {decision_id} onto "
+            f"run record {run_path}: {exc}",
+            file=sys.stderr,
+        )
 
 
 def _prompt(agent: str, skill: str, args: str) -> str:
@@ -424,8 +531,8 @@ def _run_command_with_sigterm_forwarding(command: list[str], run_kwargs: dict[st
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--agent", required=True, choices=SUPPORTED_AGENTS)
-    parser.add_argument("--skill", required=True)
+    parser.add_argument("--agent", choices=SUPPORTED_AGENTS)
+    parser.add_argument("--skill")
     parser.add_argument("--args", default="")
     parser.add_argument("--model")
     parser.add_argument(
@@ -454,11 +561,46 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="keep the Codex child isolated instead of inheriting the parent's verified ChatGPT session",
     )
+    parser.add_argument(
+        "--present-decision",
+        metavar="DECISION_ID",
+        default=None,
+        help="attended presentation: print this decision's provider-neutral "
+             "envelope JSON (any status, including open) and exit without "
+             "spawning a child; exit 2 when the id does not resolve exactly",
+    )
+    parser.add_argument(
+        "--resume-decision",
+        metavar="DECISION_ID",
+        default=None,
+        help="exact decision-ID resume: launch the child only when this exact "
+             "record is answered and live, threading `decision:<id>` into the "
+             "invocation; an open/superseded/unknown id fails closed with exit "
+             "2 and nothing spawned (a known-but-unresumable record's envelope "
+             "is printed on stdout for propagation)",
+    )
+    parser.add_argument(
+        "--run",
+        help="run record whose pending_decisions audit trail receives the "
+             "[presented] hop (with --present-decision)",
+    )
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parsed = parser.parse_args(argv)
+    if parsed.present_decision is None and (not parsed.agent or not parsed.skill):
+        parser.error(
+            "--agent and --skill are required unless --present-decision is used"
+        )
     if parsed.no_inherit_codex_auth and parsed.agent != "codex":
         parser.error("--no-inherit-codex-auth is only valid with --agent codex")
+    if parsed.present_decision is not None:
+        envelope, error = present_decision(parsed.present_decision)
+        if error:
+            print(f"blocked_pending_decision: {error}", file=sys.stderr)
+            return 2
+        _stamp_presented(parsed.run, envelope["decision_id"])
+        print(json.dumps(envelope))
+        return 0
     try:
         dispatch_depth = int(os.environ.get(_DISPATCH_DEPTH_ENV, "0"))
     except ValueError:
@@ -473,8 +615,26 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+    resume_args = parsed.args
+    if parsed.resume_decision is not None:
+        envelope, error = load_decision_for_boundary(parsed.resume_decision)
+        if error is None:
+            _load, validate, _parse = _decision_helpers()
+            reasons = validate(envelope)["reasons"]
+            if reasons:
+                error = (
+                    "decision is not resumable: " + "; ".join(reasons)
+                )
+        if error:
+            if envelope is not None:
+                # Propagate the structured pending result unchanged so an
+                # unattended caller receives it verbatim.
+                print(json.dumps(envelope))
+            print(f"blocked_pending_decision: {error}", file=sys.stderr)
+            return 2
+        resume_args = append_decision_token(resume_args, envelope["decision_id"])
     command = build_command(
-        parsed.agent, parsed.skill, parsed.args, model=parsed.model,
+        parsed.agent, parsed.skill, resume_args, model=parsed.model,
         cwd=parsed.cwd, write=parsed.write, add_dirs=parsed.add_dir,
     )
     if parsed.dry_run:

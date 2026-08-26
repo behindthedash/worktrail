@@ -39,6 +39,16 @@ is for a human to judge, never auto-applied: this module never closes,
 stamps, or otherwise mutates a brief -- see
 `openspec/changes/stale-brief-precheck/design.md` and
 `openspec/changes/stale-brief-precheck-staleness-grace-window/design.md`.
+
+When `check()` ran clean (checked=true) AND found evidence -- matches,
+merged pull requests, or research notes -- its result additionally carries
+`pending_decision`: the provider-neutral, versioned pending-decision
+envelope (`worktrail.pending-decision`, built via `workqueue/decisions.py`'s
+`pending_decision_envelope()` under a deterministic `decision_identity()`
+keyed on the guard, repo, and brief) for the close-stale/proceed/investigate
+call. It is absent (`None`) on every other outcome and degrades to `None`
+when the decision primitives are unavailable; filing it via
+`ask(decision_id=...)` stays the caller's job.
 """
 from __future__ import annotations
 
@@ -833,14 +843,102 @@ def _lookup_pull_requests(
     return found, ("; ".join(warnings) if warnings else None)
 
 
+# --- provider-neutral pending-decision envelope ---------------------------------
+
+# `source` provenance recorded on every envelope this guard builds; the same
+# string the decision queue's records carry in their frontmatter.
+GUARD_SOURCE = "check_brief_staleness"
+
+# Static question/options: identity is derived from (source, repo, subject,
+# question), so a recheck of the same brief converges on the same decision id
+# instead of filing duplicates as history grows. The matched evidence itself
+# travels in `check()`'s own output, never inside the question text.
+DECISION_QUESTION = (
+    "This brief's described work appears to have already landed on the base "
+    "branch since it was captured. How should dispatch proceed?"
+)
+DECISION_OPTIONS = [
+    "close-stale: archive the brief as already-delivered once the evidence "
+    "is verified against the files on disk",
+    "proceed-anyway: dispatch despite the evidence, recording why",
+    "investigate: gather more evidence before deciding",
+]
+
+
+def _decision_helpers():
+    """Best-effort import of the decision-envelope primitives. Returns
+    `(decision_identity, pending_decision_envelope)`, or `(None, None)` when
+    `workqueue.decisions` cannot be imported -- the envelope degrades to
+    `None`, never an exception."""
+    try:
+        from ..workqueue.decisions import (
+            decision_identity,
+            pending_decision_envelope,
+        )
+    except Exception:  # noqa: BLE001 - envelope is additive, never fatal
+        return None, None
+    return decision_identity, pending_decision_envelope
+
+
+def _brief_subject(brief: Any) -> str:
+    """Normalize a brief id-or-path into the stable subject used for both the
+    deterministic decision id and the envelope provenance: the file stem. A
+    bare work-queue id stems to itself, so `--brief <path>.md` and
+    `--brief <id>` invocations of the same brief converge on one decision."""
+    text = str(brief or "").strip()
+    return Path(text).stem if text else ""
+
+
+def build_pending_decision(
+    repo: Path,
+    brief: Any,
+    *,
+    run_id: Optional[str] = None,
+    dispatch_mode: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Build the versioned pending-decision envelope for found staleness
+    evidence.
+
+    Deterministic identity via `decisions.decision_identity()` keyed on
+    (source, repo, subject=brief stem, question), so a recheck of the same
+    brief converges on the same id. Provenance (`repo`, `subject`, `brief`
+    exactly as passed, optional `run_id`/`dispatch_mode`) travels inside the
+    envelope so the resuming side can validate the answer it finds. Never
+    raises: any failure (missing primitives, no usable brief subject) returns
+    `None`.
+    """
+    try:
+        subject = _brief_subject(brief)
+        if not subject:
+            return None
+        repo_str = str(Path(repo).resolve())
+        identity, envelope = _decision_helpers()
+        if identity is None:
+            return None
+        decision_id = identity(GUARD_SOURCE, repo_str, subject,
+                               DECISION_QUESTION)
+        return envelope(
+            decision_id=decision_id, question=DECISION_QUESTION,
+            options=list(DECISION_OPTIONS), source=GUARD_SOURCE,
+            repo=repo_str, subject=subject, brief=str(brief).strip(),
+            run_id=run_id, dispatch_mode=dispatch_mode)
+    except Exception:  # noqa: BLE001 - envelope is additive, never fatal
+        return None
+
+
 # --- check(): extraction + bounded history search --------------------------------
 
-def check(repo: Path, text: str, since: Any, base: Optional[str] = None) -> Dict[str, object]:
+def check(
+    repo: Path, text: str, since: Any, base: Optional[str] = None, *,
+    brief: Any = None, run_id: Optional[str] = None,
+    dispatch_mode: Optional[str] = None,
+) -> Dict[str, object]:
     """Did the work `text` (a brief's focus prose) describes already land on
     `repo`'s base branch, at or after `since`?
 
     Returns `{"checked": bool, "probes": {...}, "matches": [...],
-    "pull_requests": [...], "research_notes": [...], "warning": str|None}`.
+    "pull_requests": [...], "research_notes": [...], "warning": str|None,
+    "pending_decision": envelope|None}`.
     `probes` is
     `extract_probes()`'s output. `matches` is a list of
     `{"sha", "date", "subject", "probe", "kind"}` per matching commit,
@@ -862,6 +960,13 @@ def check(repo: Path, text: str, since: Any, base: Optional[str] = None) -> Dict
     `gh` phase is -- its own warning merges into `result["warning"]` without
     touching `checked`, `matches`, or `pull_requests` on failure.
 
+    When the search ran clean and found evidence (`matches`,
+    `pull_requests`, or `research_notes` non-empty), `pending_decision`
+    carries `build_pending_decision()`'s provider-neutral envelope for the
+    human's close-stale/proceed/investigate call; `brief` (id or path)
+    supplies the decision's subject, so a call without it reports the
+    evidence but no envelope.
+
     Never raises. `checked` is `false` when the question could not be
     answered at all: `repo` is not a git repository, `since` is missing or
     unparseable, or extraction yielded no probes to search (nothing landing
@@ -878,6 +983,7 @@ def check(repo: Path, text: str, since: Any, base: Optional[str] = None) -> Dict
         "pull_requests": [],
         "research_notes": [],
         "warning": None,
+        "pending_decision": None,
     }
 
     if not (repo / ".git").exists():
@@ -970,6 +1076,21 @@ def check(repo: Path, text: str, since: Any, base: Optional[str] = None) -> Dict
             result["warning"] = (
                 f"{result['warning']}; {research_warning}" if result["warning"] else research_warning
             )
+
+    # A searched-and-found outcome is exactly the human-decision point this
+    # guard exists for: attach the provider-neutral envelope (best-effort --
+    # a missing brief subject or unavailable decision primitives leave it
+    # None without touching the evidence above).
+    raw_matches = result["matches"]
+    raw_prs = result["pull_requests"]
+    raw_notes = result["research_notes"]
+    found_evidence = (
+        bool(raw_matches) or bool(raw_prs)
+        or (isinstance(raw_notes, list) and bool(raw_notes))
+    )
+    if found_evidence:
+        result["pending_decision"] = build_pending_decision(
+            repo, brief, run_id=run_id, dispatch_mode=dispatch_mode)
 
     return result
 
@@ -1149,6 +1270,12 @@ def _format_human(res: Dict[str, object]) -> str:
     for n in notes:
         lines.append(f"  {n['path']}  {n.get('date') or '?'}   [{n['kind']} probe: {n['probe']}]")
     lines.append("  -> surface these to the operator; never close the brief on this signal alone")
+    decision = res.get("pending_decision")
+    if decision:
+        lines.append(
+            f"  -> pending decision {decision['decision_id']}: "
+            "surface this envelope to the operator"
+        )
     if res.get("warning"):
         lines.append(f"  warning: {res['warning']}")
     return "\n".join(lines)
@@ -1190,9 +1317,11 @@ def main(argv=None) -> int:
             "pull_requests": [],
             "research_notes": [],
             "warning": read_error,
+            "pending_decision": None,
         }
     else:
-        res = check(Path(args.repo), text or "", since, base=args.base)
+        res = check(Path(args.repo), text or "", since, base=args.base,
+                    brief=args.brief)
         if read_error:
             res["warning"] = f"{res['warning']}; {read_error}" if res.get("warning") else read_error
 
