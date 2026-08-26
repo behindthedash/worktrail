@@ -371,6 +371,47 @@ def _validate_routing_agents(raw: Any, meta: Dict[str, Any]) -> Dict[str, Dict[s
     return resolved
 
 
+def _validate_routing_drain(raw: Any, meta: Dict[str, Any]) -> Dict[str, Any]:
+    """`routing.drain`: `{agent: str, fallback_agents: [str], max_workers: int>=1}` —
+    the machine-wide drain defaults formerly read from `config.json` by
+    `shared/operator_config.py::drain_config()`, consolidated into
+    `routing.yaml`. Ports that function's field-level shape checks and
+    messages, but drops-and-warns via `meta["warnings"]` instead of raising
+    `OperatorConfigError`, consistent with the sibling `_validate_routing_*`
+    validators — a malformed `routing.yaml` section must never crash
+    `load_policy()`. Agent literal validity (is it a supported agent?) stays
+    the drain CLI's own check, same as `drain_config()`."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        meta["warnings"].append(f"routing.drain must be a mapping; got {raw!r} — ignored")
+        return {}
+    agent = raw.get("agent")
+    if agent is not None and not isinstance(agent, str):
+        meta["warnings"].append(f"routing.drain.agent must be a string; got {agent!r} — dropped")
+        agent = None
+    fallback_agents = raw.get("fallback_agents", [])
+    if not isinstance(fallback_agents, list) or any(
+            not isinstance(f, str) for f in fallback_agents):
+        meta["warnings"].append(
+            f"routing.drain.fallback_agents must be a list of strings; "
+            f"got {fallback_agents!r} — dropped")
+        fallback_agents = []
+    max_workers = raw.get("max_workers")
+    if max_workers is None:
+        max_workers = 2
+    elif not isinstance(max_workers, int) or isinstance(max_workers, bool) or max_workers < 1:
+        meta["warnings"].append(
+            f"routing.drain.max_workers must be a positive integer; "
+            f"got {max_workers!r} — using default (2)")
+        max_workers = 2
+    return {
+        "agent": agent,
+        "fallback_agents": list(fallback_agents),
+        "max_workers": max_workers,
+    }
+
+
 def _validate_routing_defaults(raw: Any, meta: Dict[str, Any]) -> Dict[str, Dict[str, Dict[str, Any]]]:
     """`routing.defaults`: `{route: {risk: agent-entry}}` — the `(route, risk)` table
     `resolve_routing()` consults for the primary agent/model."""
