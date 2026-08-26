@@ -34,7 +34,7 @@
       artifacts, forbids auto-capture, requires a suggestion-only line naming the resume command,
       and states the explicit-justification escape hatch (justification recorded inside the brief
       text); keep sentinel and headless behavior unchanged.
-- [ ] 2.5 Hook tests: no-hit output byte-for-byte identical to pre-gate instruction; hit case
+- [x] 2.5 Hook tests: no-hit output byte-for-byte identical to pre-gate instruction; hit case
       emits the gate block naming the artifact; binary-missing fails open; `CC_HEADLESS=1`
       unaffected.
 
