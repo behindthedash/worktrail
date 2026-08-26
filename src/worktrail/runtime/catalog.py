@@ -15,6 +15,8 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 import yaml
 
+from ..shared.homedir import env_setting, worktrail_home
+
 
 class CatalogError(ValueError):
     """The catalog is unsafe or structurally invalid."""
@@ -182,12 +184,17 @@ def catalog_from_dict(document: Mapping[str, Any]) -> ModelCatalog:
 
 
 def load_catalog(path: str | Path, *, missing_ok: bool = False) -> ModelCatalog:
-    """Safely load YAML. Missing config can explicitly opt into documented defaults."""
+    """Safely load an operator-owned YAML catalog.
+
+    ``missing_ok`` is retained for callers that intentionally want an empty
+    catalog, but it never manufactures provider/model configuration. A normal
+    runtime load must fail closed when the operator catalog is absent.
+    """
 
     catalog_path = Path(path)
     if not catalog_path.exists():
         if missing_ok:
-            return default_catalog()
+            return ModelCatalog(())
         raise CatalogError(f"catalog does not exist: {catalog_path}")
     try:
         loaded = yaml.safe_load(catalog_path.read_text(encoding="utf-8"))
@@ -278,42 +285,22 @@ def discover_catalog(
     return updated, errors
 
 
+CATALOG_FILE_ENV = "WORKTRAIL_PROVIDER_MODEL_CATALOG_FILE"
+
+
+def catalog_path() -> Path:
+    """Resolve the operator-owned provider/model catalog path."""
+
+    override = env_setting(CATALOG_FILE_ENV)
+    if override:
+        return Path(override).expanduser()
+    return worktrail_home() / "provider-model-catalog.yaml"
+
+
 def default_catalog() -> ModelCatalog:
-    """Conservative, readable sample defaults; list order is preference order."""
+    """Load the operator catalog; never synthesize provider/model entries."""
 
-    return catalog_from_dict(yaml.safe_load(DEFAULT_CATALOG_YAML))
-
-
-DEFAULT_CATALOG_YAML = """\
-version: 1
-# Providers and models are tried top-to-bottom. Reorder list items; do not use maps.
-providers:
-  - name: claude
-    source: cli
-    models:
-      - name: sonnet
-        cost: paid
-        capabilities: [tools, coding, long-context]
-        purposes: [implement, review]
-      - name: haiku
-        cost: paid-low
-        capabilities: [tools, coding]
-        purposes: [classify, cleanup]
-  - name: codex
-    source: cli
-    models:
-      - name: gpt-5.4-mini
-        cost: paid-low
-        capabilities: [tools, coding]
-        purposes: [implement, classify]
-  - name: opencode
-    source: cli
-    models:
-      - name: opencode/deepseek-v4-flash-free
-        cost: free
-        capabilities: [tools, low-context]
-        purposes: [classify, trivia]
-"""
+    return load_catalog(catalog_path())
 
 
 def catalog_to_dict(catalog: ModelCatalog) -> dict[str, Any]:

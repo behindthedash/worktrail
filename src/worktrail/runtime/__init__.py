@@ -1,6 +1,6 @@
 """Provider-neutral runtime configuration and selection primitives."""
 
-from .catalog import ModelCatalog, ModelCandidate, ProviderCatalog
+from .catalog import ModelCatalog, ModelCandidate, ProviderCatalog, catalog_path
 from .selection import ExecutionTarget, select_execution_target
 
 __all__ = [
@@ -8,5 +8,6 @@ __all__ = [
     "ModelCandidate",
     "ModelCatalog",
     "ProviderCatalog",
+    "catalog_path",
     "select_execution_target",
 ]
