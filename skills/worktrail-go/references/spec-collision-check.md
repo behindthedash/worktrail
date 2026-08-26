@@ -109,6 +109,39 @@ Either way, a task-level match only ever redirects toward the existing open work
 user's/decision's explicit say-so, proceeds as a deliberate duplicate — it never closes a brief
 or blocks dispatch on its own judgment.
 
+## The pending-decision envelope and its audit trail {#spec-collision-envelope}
+
+On a confirmed collision, `verify()`'s result carries one more key alongside
+`confirmed`: **`pending_decision`** — the provider-neutral, versioned
+`worktrail.pending-decision` envelope built by `build_pending_decision()` from
+`workqueue/decisions.py`'s `pending_decision_envelope()`, under a deterministic
+`decision_identity()` keyed on (provenance source `check_spec_collision`,
+repo, subject = the matched spec's id, question). Its static question/options
+are exactly the proceed / extend / redirect call the dispatch-source sections
+below resolve; the match evidence itself stays in `verify()`'s own output,
+never inside the question text. Re-running the check against the same shipped
+spec converges on the same decision id, so a retry files one record — never a
+duplicate pile. The envelope degrades to `null` when the decision primitives
+are unavailable; filing it via `worktrail-decision ask` stays the caller's
+job.
+
+Whatever the dispatch mode, the decision's hops land on the run record's
+`pending_decisions` audit list (`decision-queue.md#decision-envelope` and
+`decision-queue.md#decision-audit`), keeping the lifecycle auditable end to
+end:
+
+- **Auto mode** (the `$AUTO_MODE=true` branch below): file via
+  `worktrail-decision ask`, then stamp the `[asked]` hop with
+  `worktrail-run-record decision "$RUN" --event asked --decision-id "$DECISION"`
+  before finishing `blocked_product_decision`.
+- **Attended**: present the exact record through the provider-neutral boundary
+  — `worktrail-skill-dispatch --present-decision "$DECISION" --run "$RUN"`
+  prints the same versioned JSON for every host and stamps `[presented]`
+  itself — then resume through the exact id with `--resume-decision "$DECISION"`
+  once it is answered.
+- **Unattended**: drain surfaces the unresolved id as a first-class
+  `pending_user_decision` stop and the next pass resumes through it.
+
 ## Dispatch source 1: brief-sourced (claimed queue brief present)
 
 ### Route C/D — auto-close
@@ -182,6 +215,8 @@ DECISION=$(worktrail-decision ask \
   --recommendation "Read the match: if it plainly is the request's own scope, proceed against it; if it is a distinct pre-existing feature, close/redirect." \
   --repo "$REPO" --brief "$BRIEF_ID" --release --json \
   | python3 -c "import sys, json; print(json.load(sys.stdin)['id'])")
+worktrail-run-record decision "$RUN" --event asked --decision-id "$DECISION" \
+  --note "spec-collision envelope filed; brief released awaiting the answer"
 worktrail-run-record finish "$RUN" --status blocked_product_decision --merge-result \
   "Auto-mode spec collision: matches $MATCHED_SPEC_ID ($MATCHED_TITLE, Status: Implemented, files: $VERIFY_FILES all git-tracked on $BASE). Decision $DECISION filed; brief released awaiting the answer."
 ```
