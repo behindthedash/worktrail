@@ -8,6 +8,7 @@ from worktrail.runtime.catalog import (
     catalog_from_dict,
     catalog_to_dict,
     default_catalog,
+    catalog_path,
     discover_catalog,
     load_catalog,
     reconcile_discovery,
@@ -119,7 +120,21 @@ def test_missing_file_requires_explicit_default_opt_in(tmp_path):
     missing = tmp_path / "missing.yaml"
     with pytest.raises(CatalogError, match="does not exist"):
         load_catalog(missing)
-    assert load_catalog(missing, missing_ok=True) == default_catalog()
+    assert load_catalog(missing, missing_ok=True).providers == ()
+
+
+def test_default_catalog_loads_operator_file_and_env_override(tmp_path, monkeypatch):
+    path = tmp_path / "provider-model-catalog.yaml"
+    path.write_text("version: 1\nproviders: []\n")
+    monkeypatch.setenv("WORKTRAIL_PROVIDER_MODEL_CATALOG_FILE", str(path))
+    assert default_catalog().providers == ()
+    assert catalog_path() == path
+
+
+def test_default_catalog_fails_closed_when_operator_file_is_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("WORKTRAIL_PROVIDER_MODEL_CATALOG_FILE", str(tmp_path / "missing.yaml"))
+    with pytest.raises(CatalogError, match="does not exist"):
+        default_catalog()
 
 
 def test_duplicate_candidates_and_mapping_models_fail_closed():
