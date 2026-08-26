@@ -211,6 +211,51 @@ def test_force_still_recompiles_when_no_task_worktrees_exist(change, tmp_path):
     assert second.by_id()[tasks[0]["id"]].files == ("b.py",)
 
 
+def test_the_default_spawn_patch_site_still_receives_the_same_call_shape(change, tmp_path):
+    """`_default_spawn` remains the fallback seam for callers that patch it
+    directly, so the positional call contract must stay intact."""
+    from unittest.mock import patch
+
+    spec_id, tasks = _load(change)
+    reply = _reply(**{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks})
+    kwargs = dict(spec_id=spec_id, repo=change.parents[2], cache_dir=tmp_path / "plans")
+
+    with patch("worktrail.conductor.compile._default_spawn", return_value=reply) as default_spawn:
+        plan = conductor_compile.compile_run_plan(change, tasks, **kwargs)
+
+    assert plan.source == runplan.SOURCE_COMPILED
+    assert default_spawn.call_count == 1
+    prompt, cwd, timeout, log = default_spawn.call_args.args
+    assert cwd == change.parents[2]
+    assert timeout == conductor_compile.COMPILE_TIMEOUT_DEFAULT
+    assert isinstance(prompt, str) and prompt
+    assert callable(log)
+
+
+def test_an_injected_spawn_callable_bypasses_the_policy_resolver(change, tmp_path):
+    """A caller-provided `spawn=` callable must be used verbatim, without
+    consulting the default policy resolver first."""
+    from unittest.mock import patch
+
+    spec_id, tasks = _load(change)
+    reply = _reply(**{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks})
+    spawn = RecordingSpawn(reply)
+
+    with patch("worktrail.router.invocation_context.resolve", side_effect=AssertionError):
+        plan = conductor_compile.compile_run_plan(
+            change,
+            tasks,
+            spec_id=spec_id,
+            repo=change.parents[2],
+            cache_dir=tmp_path / "plans",
+            spawn=spawn,
+        )
+
+    assert spawn.calls == 1
+    assert plan.source == runplan.SOURCE_COMPILED
+    assert plan.by_id()[tasks[0]["id"]].files == (f"src/{tasks[0]['id']}.py",)
+
+
 # --------------------------------------------------------------------------- #
 # Paths that never reach a model
 # --------------------------------------------------------------------------- #
