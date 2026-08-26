@@ -385,7 +385,7 @@ def _resolve_spawn_policy(
     if fallback_agent is None:
         fallback_chain = [
             entry["agent_cli"]
-            for entry in resolved_routing.get("fallback") or []
+            for entry in resolved_routing["fallback"]
             if entry.get("agent_cli")
         ]
     elif isinstance(fallback_agent, str):
