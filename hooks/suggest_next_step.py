@@ -14,6 +14,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 STATE_DIR = Path(os.path.expanduser("~/.claude/state/worktrail-suggest-next"))
@@ -23,6 +24,8 @@ DEFERRED_WORK_TIMEOUT_SECONDS = 5
 
 DEDUP_GATE_BINARY = "worktrail-check-durable-artifact-capture-gate"
 DEDUP_GATE_TIMEOUT_SECONDS = 5
+
+TIMING_ENV_VAR = "WORKTRAIL_STOP_HOOK_TIMING"
 
 WORK_TOOLS = {"Edit", "MultiEdit", "Write", "NotebookEdit"}
 WORK_BASH_MARKERS = ("git commit", "gh pr create", "gh pr merge", "git push")
@@ -84,6 +87,21 @@ INSTRUCTION = (
 )
 
 
+def timing_enabled() -> bool:
+    value = os.environ.get(TIMING_ENV_VAR, "")
+    return value not in {"", "0", "false", "False", "no", "NO"}
+
+
+def log_timing(label: str, started_at: float, **details: object) -> None:
+    if not timing_enabled():
+        return
+    elapsed = time.perf_counter() - started_at
+    parts = [f"elapsed={elapsed:.3f}s"]
+    for key, value in details.items():
+        parts.append(f"{key}={value}")
+    print(f"[stop-hook-timing] {label} " + " ".join(parts), file=sys.stderr, flush=True)
+
+
 def entry_has_work(entry: dict) -> bool:
     message = entry.get("message") or {}
     content = message.get("content")
@@ -138,15 +156,19 @@ def scan_transcript(transcript_path: str) -> tuple[bool, list[str], list[str]]:
     All three signals come out of the same line-by-line read so a caller that
     needs any of them never opens the transcript file twice.
     """
+    started_at = time.perf_counter()
     has_work = False
     run_record_paths: list[str] = []
     durable_artifact_paths: list[str] = []
     seen_paths: set[str] = set()
     if not transcript_path or not os.path.exists(transcript_path):
+        log_timing("scan_transcript_skip", started_at, transcript_path=transcript_path or "", reason="missing")
         return has_work, run_record_paths, durable_artifact_paths
     try:
+        line_count = 0
         with open(transcript_path, "r", encoding="utf-8", errors="ignore") as handle:
             for line in handle:
+                line_count += 1
                 line = line.strip()
                 if not line:
                     continue
@@ -165,7 +187,17 @@ def scan_transcript(transcript_path: str) -> tuple[bool, list[str], list[str]]:
                         seen_paths.add(path)
                         durable_artifact_paths.append(path)
     except OSError:
+        log_timing("scan_transcript_error", started_at, transcript_path=transcript_path, reason="oserror")
         return False, [], []
+    log_timing(
+        "scan_transcript_done",
+        started_at,
+        transcript_path=transcript_path,
+        lines=line_count,
+        has_work=has_work,
+        run_records=len(run_record_paths),
+        durable_paths=len(durable_artifact_paths),
+    )
     return has_work, run_record_paths, durable_artifact_paths
 
 
@@ -182,10 +214,13 @@ def check_deferred_work(run_record_paths: list[str]) -> list[dict]:
     exit, timeout, or unparseable JSON -- per Requirement: Fail-Open And
     Headless-Excluded. Never raises.
     """
+    started_at = time.perf_counter()
     if not run_record_paths:
+        log_timing("deferred_work_skip", started_at, run_records=0, reason="no-run-records")
         return []
     binary = shutil.which(DEFERRED_WORK_HANDOFF_BINARY)
     if not binary:
+        log_timing("deferred_work_skip", started_at, run_records=len(run_record_paths), reason="binary-missing")
         return []
     args = [binary, "--json"]
     for path in run_record_paths:
@@ -197,16 +232,39 @@ def check_deferred_work(run_record_paths: list[str]) -> list[dict]:
             text=True,
             timeout=DEFERRED_WORK_TIMEOUT_SECONDS,
         )
-    except (OSError, subprocess.TimeoutExpired, subprocess.SubprocessError):
+    except subprocess.TimeoutExpired:
+        log_timing(
+            "deferred_work_timeout",
+            started_at,
+            run_records=len(run_record_paths),
+            timeout_seconds=DEFERRED_WORK_TIMEOUT_SECONDS,
+        )
+        return []
+    except (OSError, subprocess.SubprocessError):
+        log_timing("deferred_work_error", started_at, run_records=len(run_record_paths), reason="subprocess")
         return []
     if result.returncode != 0:
+        log_timing(
+            "deferred_work_nonzero",
+            started_at,
+            run_records=len(run_record_paths),
+            returncode=result.returncode,
+        )
         return []
     try:
         data = json.loads(result.stdout)
     except json.JSONDecodeError:
+        log_timing("deferred_work_error", started_at, run_records=len(run_record_paths), reason="bad-json")
         return []
     flagged = data.get("flagged") if isinstance(data, dict) else None
-    return flagged if isinstance(flagged, list) else []
+    result_flagged = flagged if isinstance(flagged, list) else []
+    log_timing(
+        "deferred_work_done",
+        started_at,
+        run_records=len(run_record_paths),
+        flagged=len(result_flagged),
+    )
+    return result_flagged
 
 
 def check_dedup_gate(touched_paths: list[str], run_record_paths: list[str]) -> list[dict]:
@@ -219,10 +277,19 @@ def check_dedup_gate(touched_paths: list[str], run_record_paths: list[str]) -> l
     exit, timeout, or unparseable JSON -- the same failure boundary as
     `check_deferred_work`. Never raises.
     """
+    started_at = time.perf_counter()
     if not touched_paths and not run_record_paths:
+        log_timing("dedup_gate_skip", started_at, touched_paths=0, run_records=0, reason="no-input")
         return []
     binary = shutil.which(DEDUP_GATE_BINARY)
     if not binary:
+        log_timing(
+            "dedup_gate_skip",
+            started_at,
+            touched_paths=len(touched_paths),
+            run_records=len(run_record_paths),
+            reason="binary-missing",
+        )
         return []
     args = [binary, "--json"]
     for path in touched_paths:
@@ -236,16 +303,54 @@ def check_dedup_gate(touched_paths: list[str], run_record_paths: list[str]) -> l
             text=True,
             timeout=DEDUP_GATE_TIMEOUT_SECONDS,
         )
-    except (OSError, subprocess.TimeoutExpired, subprocess.SubprocessError):
+    except subprocess.TimeoutExpired:
+        log_timing(
+            "dedup_gate_timeout",
+            started_at,
+            touched_paths=len(touched_paths),
+            run_records=len(run_record_paths),
+            timeout_seconds=DEDUP_GATE_TIMEOUT_SECONDS,
+        )
+        return []
+    except (OSError, subprocess.SubprocessError):
+        log_timing(
+            "dedup_gate_error",
+            started_at,
+            touched_paths=len(touched_paths),
+            run_records=len(run_record_paths),
+            reason="subprocess",
+        )
         return []
     if result.returncode != 0:
+        log_timing(
+            "dedup_gate_nonzero",
+            started_at,
+            touched_paths=len(touched_paths),
+            run_records=len(run_record_paths),
+            returncode=result.returncode,
+        )
         return []
     try:
         data = json.loads(result.stdout)
     except json.JSONDecodeError:
+        log_timing(
+            "dedup_gate_error",
+            started_at,
+            touched_paths=len(touched_paths),
+            run_records=len(run_record_paths),
+            reason="bad-json",
+        )
         return []
     hits = data.get("hits") if isinstance(data, dict) else None
-    return hits if isinstance(hits, list) else []
+    result_hits = hits if isinstance(hits, list) else []
+    log_timing(
+        "dedup_gate_done",
+        started_at,
+        touched_paths=len(touched_paths),
+        run_records=len(run_record_paths),
+        hits=len(result_hits),
+    )
+    return result_hits
 
 
 def build_deferred_work_block(flagged: list[dict]) -> str:
@@ -313,6 +418,7 @@ def main() -> int:
         return 0
 
     try:
+        started_at = time.perf_counter()
         raw = sys.stdin.read()
         data = json.loads(raw) if raw.strip() else {}
         if data.get("stop_hook_active"):
@@ -324,6 +430,13 @@ def main() -> int:
         sentinel = STATE_DIR / f"{session_id}.done"
         has_work, run_record_paths, touched_durable_paths = scan_transcript(transcript_path)
         if sentinel.exists() or not has_work:
+            log_timing(
+                "main_skip",
+                started_at,
+                session_id=session_id,
+                reason="already-seen-or-no-work",
+                has_work=has_work,
+            )
             return 0
 
         sentinel.write_text("1", encoding="utf-8")
@@ -334,6 +447,17 @@ def main() -> int:
         hits = check_dedup_gate(touched_durable_paths, run_record_paths)
         if hits:
             reason += build_dedup_gate_block(hits)
+        log_timing(
+            "main_emit",
+            started_at,
+            session_id=session_id,
+            has_work=has_work,
+            run_records=len(run_record_paths),
+            touched_paths=len(touched_durable_paths),
+            flagged=len(flagged),
+            hits=len(hits),
+            reason_chars=len(reason),
+        )
         print(json.dumps({"decision": "block", "reason": reason}))
     except Exception:
         # Hooks must never break a session.
