@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import textwrap
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -230,6 +231,47 @@ def test_the_default_spawn_patch_site_still_receives_the_same_call_shape(change,
     assert timeout == conductor_compile.COMPILE_TIMEOUT_DEFAULT
     assert isinstance(prompt, str) and prompt
     assert callable(log)
+
+
+def test_the_default_spawn_policy_for_an_unconfigured_repo_keeps_pre_change_argv_inputs(
+    change, tmp_path
+):
+    """An empty repo-local policy/routing setup must still resolve to the
+    pre-change spawn argv: `claude`, the config-file default model, and no
+    fallback hops."""
+    from unittest.mock import patch
+
+    spec_id, tasks = _load(change)
+    reply = _reply(**{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks})
+
+    with (
+        patch(
+            "worktrail.conductor.compile._resolve_spawn_policy",
+            return_value=("claude", "config-file-model", []),
+        ) as resolve_policy,
+        patch("worktrail.orchestrator.spawnlib.spawn_agent") as spawn_agent,
+    ):
+        spawn_agent.return_value = SimpleNamespace(text=reply)
+        plan = conductor_compile.compile_run_plan(
+            change,
+            tasks,
+            spec_id=spec_id,
+            repo=change.parents[2],
+            cache_dir=tmp_path / "plans",
+        )
+
+    assert plan.source == runplan.SOURCE_COMPILED
+    resolve_policy.assert_called_once_with(
+        change.parents[2], agent=None, model=None, fallback_agent=None
+    )
+
+    prompt, cwd = spawn_agent.call_args.args
+    kwargs = spawn_agent.call_args.kwargs
+    assert cwd == change.parents[2]
+    assert kwargs["agent"] == "claude"
+    assert kwargs["model"] == "config-file-model"
+    assert kwargs["fallback_agent"] == []
+    assert isinstance(prompt, str) and prompt
 
 
 def test_an_injected_spawn_callable_bypasses_the_policy_resolver(change, tmp_path):
