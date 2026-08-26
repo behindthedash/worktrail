@@ -109,6 +109,8 @@ DECISION=$(worktrail-decision ask \
   --recommendation "Read what each in-flight brief touches: if the file/module surface is disjoint from this dispatch, proceed; if it overlaps, wait." \
   --repo "$REPO" --brief "$BRIEF_ID" --release --json \
   | python3 -c "import sys, json; print(json.load(sys.stdin)['id'])")
+worktrail-run-record decision "$RUN" --event asked --decision-id "$DECISION" \
+  --note "related-brief collision envelope filed; brief released awaiting the answer"
 worktrail-run-record finish "$RUN" --status blocked_product_decision --merge-result \
   "Auto-mode related-brief collision: <id list> actively claimed right now. Decision $DECISION filed; brief released awaiting the answer."
 ```
@@ -135,6 +137,39 @@ dispatch. Report the pause in the run's status output (e.g. `Dispatch paused: br
 lists related id(s) <id list> claimed by <claimed-by>, still in flight.`) and stop; the brief
 stays claimed by the current session (this branch never touches queue state), so it can simply be
 re-attempted later once the related work lands.
+
+## The pending-decision envelope and its audit trail {#related-collision-envelope}
+
+When `check()` finds active claims, its result carries one more key alongside
+`active`: **`pending_decision`** — the provider-neutral, versioned
+`worktrail.pending-decision` envelope built by `build_pending_decision()` from
+`workqueue/decisions.py`'s `pending_decision_envelope()`, under a deterministic
+`decision_identity()` keyed on (provenance source
+`check_related_brief_claims`, repo, subject = the claimed brief's id,
+question) — so a re-run against the same claimed brief converges on one
+decision id instead of filing duplicates. Its static question/options are the
+coordinate / wait / proceed-anyway call the operator prompt below resolves;
+the actively claimed ids themselves stay in `check()`'s own `active` list,
+never inside the question text. The envelope degrades to `null` when the
+decision primitives are unavailable; filing it via `worktrail-decision ask`
+stays the caller's job.
+
+Whatever the dispatch mode, the decision's hops land on the run record's
+`pending_decisions` audit list (`decision-queue.md#decision-envelope` and
+`decision-queue.md#decision-audit`), keeping the lifecycle auditable end to
+end:
+
+- **Auto mode** (the `$AUTO_MODE=true` branch of the operator prompt below):
+  file via `worktrail-decision ask`, then stamp the `[asked]` hop with
+  `worktrail-run-record decision "$RUN" --event asked --decision-id "$DECISION"`
+  before finishing `blocked_product_decision`.
+- **Attended**: present the exact record through the provider-neutral boundary
+  — `worktrail-skill-dispatch --present-decision "$DECISION" --run "$RUN"`
+  prints the same versioned JSON for every host and stamps `[presented]`
+  itself — then resume through the exact id with `--resume-decision "$DECISION"`
+  once it is answered.
+- **Unattended**: drain surfaces the unresolved id as a first-class
+  `pending_user_decision` stop and the next pass resumes through it.
 
 ## Relationship to the sibling branches
 
