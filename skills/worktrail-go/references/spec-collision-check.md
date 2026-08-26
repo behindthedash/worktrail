@@ -33,9 +33,10 @@ handoff's `recommended-route`) is `C`, `D`, `F`, or `G`. Any other route (`A`, `
 or a low-confidence classification still awaiting clarification) skips it.
 
 A brief-sourced Route C/D/F/G dispatch is not covered by this check alone, though: Phase 5.5's
-sibling **brief-staleness** branch also runs for it (it runs for every brief-sourced dispatch,
+sibling **already-implemented** branch also runs for it (it runs for every brief-sourced dispatch,
 regardless of route), asking a different question — did the work this brief describes already
-land while it sat in the queue? See `brief-staleness-check.md`. The two branches share no state
+land while it sat in the queue? See `subagent-prompts.md#already-implemented-check`. The two
+branches share no state
 and run independently; neither suppresses, gates, or alters the other, and both MAY run for the
 same Route C/D/F/G dispatch.
 
