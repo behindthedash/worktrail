@@ -8,6 +8,17 @@ from typing import Any
 
 CONTRACT_RESOURCE = ".fixtures/contracts/nightly-drain-summary-v1.json"
 
+# First-class stop kind for the pending-user-decision handoff (the drain
+# surface of the provider-neutral `worktrail.pending-decision` contract).
+# Recognized in code because the packaged v1 contract predates it: a
+# pending decision means a human must answer before the work can resume,
+# which is exactly the condition a sleeping operator must be alerted to.
+PENDING_USER_DECISION = "pending_user_decision"
+PENDING_USER_DECISION_SEMANTICS: dict[str, object] = {
+    "kind": PENDING_USER_DECISION,
+    "operator_alert": True,
+}
+
 
 def load_nightly_drain_summary_contract() -> dict[str, Any]:
     """Load the packaged v1 contract shared with drain-summary consumers."""
@@ -19,6 +30,8 @@ def stop_semantics(stopped: object) -> dict[str, object] | None:
     """Return the contract semantics for a recognized ``stopped`` reason."""
     if not isinstance(stopped, str):
         return None
+    if stopped.startswith(PENDING_USER_DECISION):
+        return dict(PENDING_USER_DECISION_SEMANTICS)
     contract = load_nightly_drain_summary_contract()
     for kind, semantics in contract["stop_reasons"].items():
         if stopped.startswith(kind):
