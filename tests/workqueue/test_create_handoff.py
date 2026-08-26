@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
 
+from worktrail.router.cluster_detect import OVERLAP_THRESHOLD
 from worktrail.shared.brief_frontmatter import read_frontmatter, validate_brief
 from worktrail.workqueue.create_handoff import _slugify, create_handoff, main
 
@@ -346,3 +348,200 @@ def test_slugify_filters_single_character_tokens():
     slug = _slugify("a fix for the x y bug")
     words = slug.split("-")
     assert all(len(w) > 1 for w in words)
+
+
+# --- capture-time overlap warning (add-durable-artifact-dedup-gate 3.3) ---
+#
+# The scan is purely advisory: a hit surfaces in `overlap_warnings` (JSON) or
+# on stderr (human mode) but must never block, fail, or skip the brief.
+
+
+def _stub_gh_pr_list(monkeypatch, *, stdout="", returncode=0, raise_exc=None):
+    """Stub create_handoff's `gh pr list` subprocess and record invocations.
+
+    Non-`gh pr list` commands pass through to the real subprocess.run so the
+    rest of capture (scoring, linking) keeps its normal behavior.
+    """
+    real_run = subprocess.run
+    calls: list[list[str]] = []
+
+    def fake_run(*args, **kwargs):
+        cmd = list(args[0])
+        if cmd[:3] == ["gh", "pr", "list"]:
+            calls.append(cmd)
+            if raise_exc is not None:
+                raise raise_exc
+            return subprocess.CompletedProcess(args[0], returncode, stdout=stdout, stderr="")
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr("worktrail.workqueue.create_handoff.subprocess.run", fake_run)
+    return calls
+
+
+def test_create_handoff_warns_on_spec_slug_overlap(tmp_path: Path):
+    repo = tmp_path / "repo"
+    (repo / "docs" / "specs" / "add-durable-artifact-dedup-gate").mkdir(parents=True)
+
+    result = create_handoff(
+        "Add durable artifact dedup gate handling",
+        queue_base=tmp_path / "queue-base",
+        repo=str(repo),
+    )
+
+    warnings = result["overlap_warnings"]
+    assert len(warnings) == 1
+    assert warnings[0]["kind"] == "spec-slug"
+    assert warnings[0]["label"] == "add-durable-artifact-dedup-gate"
+    assert warnings[0]["score"] >= OVERLAP_THRESHOLD
+    # Advisory only: the brief itself is still written and valid.
+    path = Path(result["path"])
+    assert path.is_file()
+    assert validate_brief(path)[0]
+    assert read_frontmatter(path)["repo"] == str(repo.resolve())
+
+
+def test_create_handoff_warns_on_open_pr_overlap_with_stubbed_gh(tmp_path: Path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    calls = _stub_gh_pr_list(
+        monkeypatch,
+        stdout=json.dumps([{"number": 42, "title": "Fix broken auth dashboard access"}]),
+    )
+
+    result = create_handoff(
+        "Fix broken auth dashboard access",
+        queue_base=tmp_path,
+        repo=str(repo),
+        remote="acme/widgets",
+    )
+
+    assert calls == [
+        [
+            "gh",
+            "pr",
+            "list",
+            "--repo",
+            "acme/widgets",
+            "--state",
+            "open",
+            "--json",
+            "title,number",
+        ]
+    ]
+    warnings = result["overlap_warnings"]
+    assert len(warnings) == 1
+    assert warnings[0]["kind"] == "open-pr"
+    assert warnings[0]["label"] == "Fix broken auth dashboard access"
+    assert warnings[0]["score"] >= OVERLAP_THRESHOLD
+    assert Path(result["path"]).is_file()
+
+
+def test_create_handoff_below_threshold_overlap_stays_silent(tmp_path: Path, monkeypatch):
+    """Candidates that tokenize below OVERLAP_THRESHOLD against the focus must
+    not appear as warnings -- from any of the three durable-artifact surfaces."""
+    repo = tmp_path / "repo"
+    (repo / "docs" / "specs" / "auth-session-refresh").mkdir(parents=True)
+    (repo / "openspec" / "changes" / "telemetry-export-config").mkdir(parents=True)
+    _stub_gh_pr_list(
+        monkeypatch,
+        stdout=json.dumps([{"number": 7, "title": "Refactor telemetry exporter settings"}]),
+    )
+
+    result = create_handoff(
+        "Fix the broken handoff dashboard pagination",
+        queue_base=tmp_path,
+        repo=str(repo),
+        remote="acme/widgets",
+    )
+
+    assert result["overlap_warnings"] == []
+    assert Path(result["path"]).is_file()
+    assert validate_brief(Path(result["path"]))[0]
+
+
+@pytest.mark.parametrize(
+    "stub_kwargs",
+    [
+        {"raise_exc": FileNotFoundError("gh")},
+        {"returncode": 1},
+        {"stdout": "not json"},
+    ],
+    ids=["gh-binary-missing", "gh-nonzero-exit", "gh-unparseable-json"],
+)
+def test_create_handoff_gh_failure_modes_stay_silent_and_write_brief(
+    tmp_path: Path, monkeypatch, stub_kwargs
+):
+    """Every `gh` failure mode degrades to zero PR candidates -- never an
+    error, never a blocked capture."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _stub_gh_pr_list(monkeypatch, **stub_kwargs)
+
+    result = create_handoff(
+        "Fix broken auth dashboard access",
+        queue_base=tmp_path,
+        repo=str(repo),
+        remote="acme/widgets",
+    )
+
+    assert result["overlap_warnings"] == []
+    path = Path(result["path"])
+    assert path.is_file()
+    assert validate_brief(path)[0]
+
+
+def test_create_handoff_null_remote_skips_open_pr_scan_entirely(tmp_path: Path, monkeypatch):
+    calls = _stub_gh_pr_list(monkeypatch)
+
+    result = create_handoff("Fix the thing", queue_base=tmp_path, repo=str(tmp_path / "repo"))
+
+    assert calls == []
+    assert result["overlap_warnings"] == []
+    assert Path(result["path"]).is_file()
+
+
+def test_create_handoff_unreadable_repo_degrades_to_silent_capture(tmp_path: Path, monkeypatch):
+    """A repo path that resolves to nothing contributes no spec/openspec
+    candidates; combined with an unavailable gh the whole scan is silent --
+    and the capture still succeeds."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    _stub_gh_pr_list(monkeypatch, raise_exc=FileNotFoundError("gh"))
+
+    result = create_handoff(
+        "Add durable artifact dedup gate handling",
+        queue_base=tmp_path,
+        repo=str(tmp_path / "no-such-repo"),
+        remote="acme/widgets",
+    )
+
+    assert result["overlap_warnings"] == []
+    path = Path(result["path"])
+    assert path.is_file()
+    assert validate_brief(path)[0]
+
+
+def test_cli_human_mode_reports_overlap_warning_to_stderr_without_blocking(tmp_path, capsys):
+    repo = tmp_path / "repo"
+    (repo / "docs" / "specs" / "add-durable-artifact-dedup-gate").mkdir(parents=True)
+
+    exit_code = main(
+        [
+            "--focus",
+            "Add durable artifact dedup gate support",
+            "--queue-dir",
+            str(tmp_path / "queue-base"),
+            "--repo",
+            str(repo),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    warning_lines = [line for line in captured.err.splitlines() if line.strip()]
+    assert len(warning_lines) == 1
+    assert warning_lines[0].startswith("overlap warning: [spec-slug] ")
+    assert "add-durable-artifact-dedup-gate" in warning_lines[0]
+    # stdout carries only the brief path -- no blocking, no failure output.
+    brief_path = Path(captured.out.strip())
+    assert brief_path.is_file()
+    assert validate_brief(brief_path)[0]
