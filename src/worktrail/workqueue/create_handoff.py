@@ -27,6 +27,10 @@ _SLUG_MAX_CHARS = 60
 # bounded and every bad outcome degrades to "no PR titles".
 _OVERLAP_SCAN_GH_TIMEOUT_SECONDS = 5
 
+# Cap on overlap candidates surfaced per capture -- enough to name every
+# plausible duplicate without burying the capturer in near-misses.
+_OVERLAP_WARNING_LIMIT = 5
+
 
 def _slugify(focus: str) -> str:
     # Strip a trailing possessive "'s" from each word before tokenizing, so
@@ -224,6 +228,14 @@ def _scan_durable_artifact_overlaps(
     return sorted(hits, key=lambda hit: (-hit["score"], hit["label"]))
 
 
+def _format_overlap_warning(warning: dict[str, Any]) -> str:
+    """One human-readable stderr line for an overlap candidate."""
+    return (
+        f"overlap warning: [{warning['kind']}] {warning['label']} "
+        f"(score {warning['score']:.2f})"
+    )
+
+
 def _section(title: str, value: Optional[str]) -> str:
     value = (value or "").strip()
     return f"\n## {title}\n\n{value}\n" if value else ""
@@ -345,9 +357,14 @@ def create_handoff(
     # Layer 3 capture-time dedup advisory (add-durable-artifact-dedup-gate):
     # scan durable artifacts -- spec slugs, OpenSpec change names, open PR
     # titles -- for focus overlap before the brief is written, using the same
-    # resolved repo path the frontmatter records. Purely advisory: every
-    # failure mode degrades to zero hits, never blocking capture.
-    overlap_hits = _scan_durable_artifact_overlaps(focus, resolved_repo, remote or None)
+    # resolved repo path the frontmatter records. Purely advisory: the scan
+    # itself fails open, and any unexpected error is swallowed here too --
+    # warnings are reported but never block or fail the capture.
+    try:
+        overlap_hits = _scan_durable_artifact_overlaps(focus, resolved_repo, remote or None)
+    except Exception:
+        overlap_hits = []
+    overlap_warnings = overlap_hits[:_OVERLAP_WARNING_LIMIT]
 
     content = (
         "---\n"
@@ -380,6 +397,7 @@ def create_handoff(
             "recommended_route": route,
             "auto_linked": linked,
             "confirm": scored.get("confirm", []),
+            "overlap_warnings": overlap_warnings,
         }
     finally:
         if previous_env is None:
@@ -439,6 +457,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    if not args.json:
+        # Human mode: surface overlap candidates on stderr without blocking --
+        # the capture itself still succeeds and exits zero. JSON consumers get
+        # the same candidates in-band as "overlap_warnings".
+        for warning in result.get("overlap_warnings", []):
+            print(_format_overlap_warning(warning), file=sys.stderr)
     print(json.dumps(result) if args.json else result["path"])
     return 0
 
