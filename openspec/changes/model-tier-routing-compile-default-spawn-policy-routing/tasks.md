@@ -2,7 +2,7 @@
 
 - [ ] 1.1 In `src/worktrail/conductor/compile.py`, add a policy-routing resolver helper that takes (repo, explicit agent/model/chain or Nones) and returns `(agent, model, fallback_chain)`: agent via `invocation_context.resolve(agent=..., policy_agent=policy.get("agent_cli")).agent_cli` with the warn-and-claude fallback on `ValueError`; model from the resolved routing entry's `agent_model` else `spawnlib.default_model_for_agent(agent)`; chain from `resolve_routing(policy, route="", risk="")["fallback"]` mapped to a name list. No `os.environ` reads anywhere in the new code.
 - [ ] 1.2 Extend `_default_spawn` with keyword-only `agent=None, model=None, fallback_agent=None` (positional signature and `cwd` semantics unchanged), resolve via 1.1 against `load_policy(cwd)` when any layer is unset, and pass `agent=`/`model=`/`fallback_agent=` through to `spawnlib.spawn_agent`.
-- [ ] 1.3 Add `--agent`, `--model`, `--fallback-chain` flags to compile.py's `main()` (default None; chain parsed as an ordered comma-separated name list, names only per design D4) and thread them into `_default_spawn`; log one line recording the resolved agent/model/hop count before spawning.
+- [x] 1.3 Add `--agent`, `--model`, `--fallback-chain` flags to compile.py's `main()` (default None; chain parsed as an ordered comma-separated name list, names only per design D4) and thread them into `_default_spawn`; log one line recording the resolved agent/model/hop count before spawning.
 
 ## 2. Tests (tests/conductor/test_compile.py + tests/orchestrator) — including the no-new-env-channel guards (requirement: No environment-variable channel is added for compile model selection)
 
