@@ -428,10 +428,7 @@ def _default_spawn(
         if fallback_agent is None:
             fallback_agent = resolved_fallback
 
-    if isinstance(fallback_agent, str):
-        fallback_chain = [hop for hop in (hop.strip() for hop in fallback_agent.split(",")) if hop]
-    else:
-        fallback_chain = [hop for hop in (fallback_agent or []) if hop]
+    fallback_chain = spawnlib._normalize_fallback_chain(agent or "claude", fallback_agent)
 
     log(
         f"run plan: spawn policy resolved agent={agent or 'claude'} "
