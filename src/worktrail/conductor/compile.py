@@ -349,6 +349,53 @@ def _validate(
     return [seen[i] for i in sorted(seen)], [], warnings
 
 
+def _resolve_spawn_policy(
+    repo: "str | Path",
+    *,
+    agent: Optional[str] = None,
+    model: Optional[str] = None,
+    fallback_agent: Optional["str | Sequence[str]"] = None,
+) -> tuple[str, str, List[str]]:
+    """Resolve the compile worker's agent/model/fallback chain from policy.
+
+    Explicit invocation values still win when provided. Missing values fall
+    back through repo policy, then the existing per-agent model defaults, and
+    the routing table's fallback chain.
+    """
+    from worktrail.orchestrator import spawnlib
+    from worktrail.router import invocation_context
+    from worktrail.router.policy import load_policy, resolve_routing
+
+    repo = Path(repo).resolve()
+    policy = load_policy(repo)
+
+    try:
+        resolved_agent = invocation_context.resolve(
+            agent=agent,
+            policy_agent=policy.get("agent_cli"),
+        ).agent_cli
+    except ValueError as exc:
+        print(f"warning: {exc}; falling back to 'claude'", file=sys.stderr)
+        resolved_agent = "claude"
+
+    resolved_routing = resolve_routing(policy, route="", risk="")
+    resolved_model = model or resolved_routing.get("agent_model")
+    resolved_model = resolved_model or spawnlib.default_model_for_agent(resolved_agent)
+
+    if fallback_agent is None:
+        fallback_chain = [
+            entry["agent_cli"]
+            for entry in resolved_routing.get("fallback") or []
+            if entry.get("agent_cli")
+        ]
+    elif isinstance(fallback_agent, str):
+        fallback_chain = [fallback_agent]
+    else:
+        fallback_chain = [hop for hop in fallback_agent if hop]
+
+    return resolved_agent, resolved_model, fallback_chain
+
+
 def _default_spawn(prompt: str, cwd: Path, timeout: int, log) -> str:
     from worktrail.orchestrator import spawnlib
 
