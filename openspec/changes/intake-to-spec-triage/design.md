@@ -5,7 +5,7 @@ See proposal.md — Why. Relevant current state, verified 2026-08-26:
 - `queue_triage.py` already runs an evaluate/apply loop with `--confirm`-gated verdicts (`keep`, `stale-close`, `needs-update`, `duplicate-of`), repo-grouped evaluator agents, and a `## Triage <date>` dedup window. It clusters nothing itself; `consolidate_cluster.py` clusters brief→brief and emits multi-purpose batch briefs.
 - `seed_backlog.py` already converts backlog into execution briefs (`seeded-from:` key, idempotent per key) including Route D `ready-to-implement` seeding behind the repo policy key `allow_seeded_implementation` (default false). `dashboard.py` computes `ready-to-implement` for OpenSpec changes as well as devkit specs.
 - `dashboard.py::auto_pick_brief` is the single unattended selection point, with an ordered gate list and a miss log; `drain.py` shells to `worktrail-go auto` per iteration and already runs pre/post sweeps (quarantine resume).
-- `spec_overlap.scan()` already extracts `{spec_id, stage, feature_summary}` from an OpenSpec root; `duplicate_brief_detection` already defines the token-overlap coefficient (`OVERLAP_THRESHOLD` 0.45).
+- `router/overlap_check.py`'s `scan()` already extracts `{spec_id, stage, feature_summary}` from an OpenSpec root; `duplicate_brief_detection` already defines the token-overlap coefficient (`OVERLAP_THRESHOLD` 0.45).
 - `decisions.pending_decision_envelope()` is the human-decision-queue filing API.
 - Neither the seeder nor triage is on cron; the nightly script (`devops` repo) runs `worktrail-drain` only.
 - Workspace rules: never commit to a base branch; PRs only. Docs-only PRs are auto-merge eligible under the fleet's docs-only risk cap.
