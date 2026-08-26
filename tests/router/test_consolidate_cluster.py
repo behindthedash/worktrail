@@ -583,6 +583,182 @@ class MainCliDraftContract(ConsolidateClusterTestCase):
 
 
 # --------------------------------------------------------------------------- #
+# Cluster-3 recovery bugs (brief 20260826-144144-consolidate-cluster-brief-
+# filename-and): unbounded slug length, argv MAX_ARG_STRLEN on --draft, and
+# the nested-consolidation-batch closure evidence gate.
+# --------------------------------------------------------------------------- #
+
+
+class SlugLengthCap(unittest.TestCase):
+    def test_long_title_produces_filesystem_safe_filename(self):
+        """A cluster whose first member's title is a long focus sentence
+        must not produce a filename over the 255-byte filesystem limit --
+        `write_text()` previously raised `OSError: [Errno 36] File name too
+        long` after the member claim/done loop had already run."""
+        long_title = "Consolidated: " + ("word " * 60)
+        draft = {
+            "title": long_title,
+            "focus": "x",
+            "suggested_approach": [],
+            "member_ids": ["m1", "m2"],
+        }
+        new_id, _content = cc._build_consolidated_brief_content(draft)
+        self.assertLessEqual(len((new_id + ".md").encode("utf-8")), 255)
+
+    def test_slug_never_ends_in_a_hyphen_after_truncation(self):
+        long_title = "a-" * 200  # truncation boundary lands mid-hyphen-run
+        self.assertFalse(cc._slugify(long_title).endswith("-"))
+
+
+class ExecuteDraftFileAlternative(ConsolidateClusterTestCase):
+    def test_draft_file_produces_same_result_as_draft_argv(self):
+        """`--draft-file` is a drop-in alternative to `--draft`: reading the
+        identical payload from a file writes the same consolidated brief."""
+        m1 = _write_brief(self.queue_dir, "20260701-100000-alpha.md", focus="Alpha work")
+        m2 = _write_brief(self.queue_dir, "20260701-100100-beta.md", focus="Beta work")
+        preview = cc.build_preview([m1, m2], self.queue_dir)
+        draft_file = self.tmp_path / "draft.json"
+        draft_file.write_text(json.dumps(preview), encoding="utf-8")
+
+        code = cc.main(
+            [
+                "execute",
+                m1,
+                m2,
+                "--draft-file",
+                str(draft_file),
+                "--confirm",
+                "--json",
+                "--queue-dir",
+                str(self.queue_dir),
+                "--picked-dir",
+                str(self.picked_dir),
+            ]
+        )
+
+        self.assertEqual(code, 0)
+        new_brief_files = [f for f in self.queue_dir.glob("*.md") if f.stem not in (m1, m2)]
+        self.assertEqual(len(new_brief_files), 1)
+
+    def test_oversized_draft_would_overflow_argv_but_draft_file_succeeds(self):
+        """Regression for the exact failure mode: a draft payload larger
+        than the kernel's MAX_ARG_STRLEN (~128KB) fails `--draft` at
+        exec() with `OSError: Argument list too long`; `--draft-file`
+        reads the same payload from disk instead."""
+        big_focus = "x" * 140_000
+        big_draft = {
+            "draft": {
+                "title": "Consolidated: big",
+                "focus": big_focus,
+                "suggested_approach": [],
+                "member_ids": ["m1"],
+            }
+        }
+        payload = json.dumps(big_draft)
+        self.assertGreater(len(payload.encode("utf-8")), 128_000)
+
+        draft_file = self.tmp_path / "big_draft.json"
+        draft_file.write_text(payload, encoding="utf-8")
+
+        code = cc.main(
+            [
+                "execute",
+                "m1",
+                "--draft-file",
+                str(draft_file),
+                "--decline",
+                "--json",
+                "--queue-dir",
+                str(self.queue_dir),
+                "--picked-dir",
+                str(self.picked_dir),
+            ]
+        )
+        self.assertEqual(code, 0)
+
+    def test_draft_file_missing_reports_invalid_draft(self):
+        code = cc.main(
+            [
+                "execute",
+                "m1",
+                "--draft-file",
+                str(self.tmp_path / "does-not-exist.json"),
+                "--decline",
+                "--json",
+                "--queue-dir",
+                str(self.queue_dir),
+                "--picked-dir",
+                str(self.picked_dir),
+            ]
+        )
+        self.assertEqual(code, 1)
+
+    def test_draft_and_draft_file_are_mutually_exclusive(self):
+        with self.assertRaises(SystemExit):
+            cc.main(
+                [
+                    "execute",
+                    "m1",
+                    "--draft",
+                    "{}",
+                    "--draft-file",
+                    str(self.tmp_path / "x.json"),
+                    "--decline",
+                ]
+            )
+
+
+class NestedConsolidationClosureEvidence(ConsolidateClusterTestCase):
+    def _write_nested_batch_member(self, filename: str, *, focus: str, sub_ids: List[str]) -> str:
+        """Write a member brief that is itself a consolidation-batch brief
+        (carries its own '## Consolidated from' section), simulating a
+        cluster re-consolidating an already-consolidated brief."""
+        lines = ["---", f"id: {filename[:-3]}", f'focus: "{focus}"', "status: queued", "---", ""]
+        lines.append("## Focus")
+        lines.append("")
+        lines.append(focus)
+        lines.append("")
+        lines.append("## Consolidated from")
+        lines.append("")
+        lines.extend(f"- {sub_id}" for sub_id in sub_ids)
+        lines.append("")
+        path = self.queue_dir / filename
+        path.write_text("\n".join(lines), encoding="utf-8")
+        return path.stem
+
+    def test_nested_consolidation_member_closes_instead_of_sticking_at_picked(self):
+        """A member that is itself a nested consolidation-batch brief must
+        close (status: done) like its siblings, not get stuck at
+        status: picked on work_queue.py's unverified_consolidation_closure
+        gate."""
+        nested = self._write_nested_batch_member(
+            "20260801-000000-nested.md",
+            focus="nested batch",
+            sub_ids=["20260701-100000-sub-a", "20260701-100100-sub-b"],
+        )
+        plain = _write_brief(self.queue_dir, "20260801-000100-plain.md", focus="plain")
+        draft = cc.draft_consolidated_brief([nested, plain], self.queue_dir)
+
+        result = cc.execute_consolidation(True, [nested, plain], draft, self.queue_dir, self.picked_dir)
+
+        self.assertEqual(result["status"], "written")
+        self.assertEqual(sorted(result["members_completed"]), sorted([nested, plain]))
+        self.assertEqual(result["members_skipped"], [])
+
+        nested_fm = self._frontmatter(self.picked_dir / f"{nested}.md")
+        self.assertEqual(nested_fm.get("status"), "done")
+
+    def test_ordinary_member_gets_no_closure_note(self):
+        """An ordinary (non-nested-batch) member is marked done with no
+        `--note` at all -- `_build_nested_consolidation_note` must not
+        fire for the common case."""
+        plain = _write_brief(self.queue_dir, "20260801-000200-plain.md", focus="plain")
+        self.assertIsNone(cc._build_nested_consolidation_note(
+            (self.queue_dir / f"{plain}.md").read_text(encoding="utf-8")
+        ))
+
+
+# --------------------------------------------------------------------------- #
 # original_created propagation (stale-brief-precheck-consolidation-original-
 # created): the consolidated draft's original_created tracks the earliest
 # resolvable member's created:/original-created: timestamp, and that value
