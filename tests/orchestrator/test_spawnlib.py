@@ -1401,8 +1401,7 @@ class CrossHopArgvInvariant(unittest.TestCase):
 
     # Deterministic per-agent models so argv assertions can identify which hop
     # ran by model; pinning default_model_for_agent also keeps the tests
-    # hermetic against a developer machine's ORCH_CODEX_MODEL /
-    # ORCH_OPENCODE_MODEL env overrides and model-defaults.yaml.
+    # hermetic against a developer machine's model-defaults.yaml.
     HOP_MODELS = {
         "claude": "pin-claude-model",
         "codex": "pin-codex-model",
