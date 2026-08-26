@@ -21,6 +21,9 @@ STATE_DIR = Path(os.path.expanduser("~/.claude/state/worktrail-suggest-next"))
 DEFERRED_WORK_HANDOFF_BINARY = "worktrail-check-deferred-work-handoff"
 DEFERRED_WORK_TIMEOUT_SECONDS = 5
 
+DEDUP_GATE_BINARY = "worktrail-check-durable-artifact-capture-gate"
+DEDUP_GATE_TIMEOUT_SECONDS = 5
+
 WORK_TOOLS = {"Edit", "MultiEdit", "Write", "NotebookEdit"}
 WORK_BASH_MARKERS = ("git commit", "gh pr create", "gh pr merge", "git push")
 
@@ -206,6 +209,45 @@ def check_deferred_work(run_record_paths: list[str]) -> list[dict]:
     return flagged if isinstance(flagged, list) else []
 
 
+def check_dedup_gate(touched_paths: list[str], run_record_paths: list[str]) -> list[dict]:
+    """Dedup-gate hits for the session's touched durable-artifact paths and
+    run-record path literals, via the `worktrail-check-durable-artifact-
+    capture-gate` CLI (Requirement: Downgrade-To-Suggestion On Dedup Hit and
+    Fail-Open And Headless-Excluded).
+
+    Fails open to `[]` on every non-happy path -- missing binary, non-zero
+    exit, timeout, or unparseable JSON -- the same failure boundary as
+    `check_deferred_work`. Never raises.
+    """
+    if not touched_paths and not run_record_paths:
+        return []
+    binary = shutil.which(DEDUP_GATE_BINARY)
+    if not binary:
+        return []
+    args = [binary, "--json"]
+    for path in touched_paths:
+        args.extend(["--touched-path", os.path.expanduser(path)])
+    for path in run_record_paths:
+        args.extend(["--run-record", os.path.expanduser(path)])
+    try:
+        result = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            timeout=DEDUP_GATE_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired, subprocess.SubprocessError):
+        return []
+    if result.returncode != 0:
+        return []
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return []
+    hits = data.get("hits") if isinstance(data, dict) else None
+    return hits if isinstance(hits, list) else []
+
+
 def build_deferred_work_block(flagged: list[dict]) -> str:
     """A second, separate instruction block flagging deferred-work entries that
     don't appear covered by an existing handoff brief.
@@ -228,6 +270,44 @@ def build_deferred_work_block(flagged: list[dict]) -> str:
     )
 
 
+def _dedup_hit_line(hit: dict) -> str:
+    kind = hit.get("kind")
+    if kind == "session_touched_durable_artifact":
+        return f"- durable artifact touched this session: {hit.get('path')}"
+    if kind == "planned_run_record":
+        return f"- run record finished {hit.get('final_status')}: {hit.get('run_record')}"
+    if kind == "merged_docs_only_spec_pr":
+        markers = ", ".join(hit.get("merge_markers") or [])
+        spec_paths = ", ".join(hit.get("spec_paths") or [])
+        return f"- merged docs-only spec PR (merge marker(s): {markers}): {spec_paths}"
+    return f"- unrecognized dedup hit: {json.dumps(hit)}"
+
+
+def build_dedup_gate_block(hits: list[dict]) -> str:
+    """A third, additive instruction block downgrading auto-capture to a
+    suggestion-only line because the session already tracks its follow-up in
+    a durable artifact (Requirement: Downgrade-To-Suggestion On Dedup Hit
+    and Fail-Open And Headless-Excluded).
+
+    Appended to `INSTRUCTION`'s text in `reason`, never merged into it, the
+    same additive pattern as `build_deferred_work_block`, so the
+    EXCEPTIONAL-VALUE gate's own trigger conditions stay untouched.
+    """
+    lines = "\n".join(_dedup_hit_line(item) for item in hits if isinstance(item, dict))
+    return (
+        "\n\n---\n\n"
+        "DEDUP GATE — this session already tracks its follow-up work in durable artifact(s), "
+        "so auto-capturing a new handoff brief for the same idea would duplicate them:\n\n"
+        f"{lines}\n\n"
+        "Do NOT auto-capture a handoff brief here. Instead, emit a suggestion-only line naming "
+        "the resume command for the tracked work (e.g. `worktrail-go <brief-id>` or the matching "
+        "route command) and finish. Only with an explicit justification may you still create a "
+        "brief, and that justification must be recorded inside the brief text itself as a "
+        "`## Dedup justification` section naming the tracked artifact above and why a separate "
+        "brief is still warranted."
+    )
+
+
 def main() -> int:
     if os.environ.get("CC_HEADLESS") == "1":
         return 0
@@ -242,7 +322,7 @@ def main() -> int:
         transcript_path = data.get("transcript_path") or ""
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         sentinel = STATE_DIR / f"{session_id}.done"
-        has_work, run_record_paths, _touched_durable_paths = scan_transcript(transcript_path)
+        has_work, run_record_paths, touched_durable_paths = scan_transcript(transcript_path)
         if sentinel.exists() or not has_work:
             return 0
 
@@ -251,6 +331,9 @@ def main() -> int:
         reason = INSTRUCTION
         if flagged:
             reason += build_deferred_work_block(flagged)
+        hits = check_dedup_gate(touched_durable_paths, run_record_paths)
+        if hits:
+            reason += build_dedup_gate_block(hits)
         print(json.dumps({"decision": "block", "reason": reason}))
     except Exception:
         # Hooks must never break a session.
