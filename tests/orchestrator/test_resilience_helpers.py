@@ -204,6 +204,29 @@ class DefaultModelSelection(unittest.TestCase):
                 "opencode/deepseek-v4-flash-free",
             )
 
+    def test_env_var_overrides_are_ignored_returns_hardcoded_constant(self):
+        # ORCH_*_MODEL used to be an explicit per-invocation override layer on
+        # top of the file; resolution is config-file driven only now, so even
+        # with both vars patched into the environment the answer is the
+        # hardcoded constant.
+        # clear=True wipes the conftest-level GO_MODEL_DEFAULTS_FILE isolation
+        # too, so it must be re-supplied here -- see
+        # test_opencode_defaults_to_sonnet_family.
+        with patch.dict(
+            os.environ,
+            {
+                "GO_MODEL_DEFAULTS_FILE": "/nonexistent-model-defaults.yaml",
+                "ORCH_CODEX_MODEL": "env/codex-model",
+                "ORCH_OPENCODE_MODEL": "env/opencode-model",
+            },
+            clear=True,
+        ):
+            self.assertEqual(spawnlib.default_model_for_agent("codex"), "gpt-5.4-mini")
+            self.assertEqual(
+                spawnlib.default_model_for_agent("opencode"),
+                "opencode/deepseek-v4-flash-free",
+            )
+
 
 class ModelDefaultsFileTest(unittest.TestCase):
     """worktrail_home()/model-defaults.yaml (GO_MODEL_DEFAULTS_FILE): an operator-maintained
@@ -218,16 +241,8 @@ class ModelDefaultsFileTest(unittest.TestCase):
             os.environ, {"GO_MODEL_DEFAULTS_FILE": str(self.defaults_file)}, clear=False
         )
         self._env_patch.start()
-        # Saved and restored explicitly (not just popped) so a real
-        # ORCH_CODEX_MODEL/ORCH_OPENCODE_MODEL in the ambient environment
-        # survives this test class rather than being silently dropped.
-        self._removed_env = {}
-        for var in ("ORCH_CODEX_MODEL", "ORCH_OPENCODE_MODEL"):
-            if var in os.environ:
-                self._removed_env[var] = os.environ.pop(var)
 
     def tearDown(self):
-        os.environ.update(self._removed_env)
         self._env_patch.stop()
         self._tmp.cleanup()
 
@@ -249,6 +264,22 @@ class ModelDefaultsFileTest(unittest.TestCase):
     def test_agent_absent_from_file_falls_through(self):
         self.defaults_file.write_text("claude: opus\n")
         self.assertEqual(spawnlib.default_model_for_agent("codex"), "gpt-5.4-mini")
+
+    def test_file_value_wins_despite_ambient_env_vars(self):
+        # The old precedence put ORCH_*_MODEL above the file; that env layer is
+        # gone, so the file entry wins even with both vars set.
+        self.defaults_file.write_text("codex: gpt-5.6-luna\nopencode: opencode/gpt-5.6-luna\n")
+        with patch.dict(
+            os.environ,
+            {
+                "ORCH_CODEX_MODEL": "env/codex-model",
+                "ORCH_OPENCODE_MODEL": "env/opencode-model",
+            },
+        ):
+            self.assertEqual(spawnlib.default_model_for_agent("codex"), "gpt-5.6-luna")
+            self.assertEqual(
+                spawnlib.default_model_for_agent("opencode"), "opencode/gpt-5.6-luna"
+            )
 
     def test_malformed_yaml_degrades_to_hardcoded_default(self):
         self.defaults_file.write_text("codex: [unterminated\n")
