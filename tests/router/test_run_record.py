@@ -2150,6 +2150,100 @@ class TestFindByWorktree(unittest.TestCase):
             result, {"found": True, "path": newer["path"], "run_id": newer["run_id"]})
 
 
+def _worktree_conflict(tmp, **over):
+    argv = ["worktree-conflict",
+            "--dir", tmp,
+            "--repo", over.get("repo", "/tmp/fake-repo"),
+            "--worktree", over["worktree"]]
+    if over.get("dispatch_id") is not None:
+        argv += ["--dispatch-id", over["dispatch_id"]]
+    if over.get("ttl_seconds") is not None:
+        argv += ["--ttl-seconds", str(over["ttl_seconds"])]
+    out = StringIO()
+    with patch("sys.stdout", out):
+        rc = main(argv)
+    assert rc == 0
+    return json.loads(out.getvalue())
+
+
+class TestWorktreeConflict(unittest.TestCase):
+    """`worktree-conflict`: the single-call find-by-worktree + liveness
+    combination a real-time enforcement point (e.g. a PreToolUse hook) calls
+    before mutating a worktree a concurrent dispatch may also be
+    committing/pushing to -- the near-miss this exists to catch
+    (worktrail PR #86: an orchestrator dispatch committed+pushed to a
+    worktree while an interactive session was mid-edit in the same one)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def _backdate_updated_at(self, path, seconds_ago):
+        record = _load(Path(path))
+        then = datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)
+        record["updated_at"] = then.strftime("%Y-%m-%dT%H:%M:%S%z")
+        Path(path).write_text(run_record._render(record), encoding="utf-8")
+
+    def test_untracked_worktree_is_never_a_conflict(self):
+        result = _worktree_conflict(self.tmp, worktree="/home/user/worktrees/nobody-home")
+        self.assertEqual(result, {
+            "conflict": False, "found": False, "run_id": None, "path": None,
+            "fresh": None, "same_dispatch": None, "age_seconds": None,
+            "reason": "not_tracked",
+        })
+
+    def test_fresh_other_dispatch_is_a_conflict(self):
+        wt = "/home/user/worktrees/contested"
+        owner = _start(self.tmp, dispatch_id="go-owner111")
+        main(["set", owner["path"], "worktree", wt])
+        self._backdate_updated_at(owner["path"], seconds_ago=60)
+
+        result = _worktree_conflict(self.tmp, worktree=wt, dispatch_id="go-caller222")
+
+        self.assertTrue(result["conflict"])
+        self.assertTrue(result["found"])
+        self.assertEqual(result["run_id"], owner["run_id"])
+        self.assertTrue(result["fresh"])
+        self.assertFalse(result["same_dispatch"])
+        self.assertIsNone(result["reason"])
+
+    def test_own_dispatch_is_never_a_conflict_even_if_fresh(self):
+        wt = "/home/user/worktrees/mine"
+        owner = _start(self.tmp, dispatch_id="go-same999")
+        main(["set", owner["path"], "worktree", wt])
+        self._backdate_updated_at(owner["path"], seconds_ago=60)
+
+        result = _worktree_conflict(self.tmp, worktree=wt, dispatch_id="go-same999")
+
+        self.assertFalse(result["conflict"])
+        self.assertTrue(result["found"])
+        self.assertTrue(result["same_dispatch"])
+        self.assertEqual(result["reason"], "same_dispatch")
+
+    def test_stale_owner_is_not_a_conflict(self):
+        wt = "/home/user/worktrees/abandoned"
+        owner = _start(self.tmp, dispatch_id="go-crashed333")
+        main(["set", owner["path"], "worktree", wt])
+        self._backdate_updated_at(owner["path"], seconds_ago=99999)
+
+        result = _worktree_conflict(self.tmp, worktree=wt, dispatch_id="go-caller444")
+
+        self.assertFalse(result["conflict"])
+        self.assertTrue(result["found"])
+        self.assertFalse(result["fresh"])
+        self.assertEqual(result["reason"], "stale")
+
+    def test_no_dispatch_id_supplied_still_reports_a_fresh_conflict(self):
+        wt = "/home/user/worktrees/no-caller-identity"
+        owner = _start(self.tmp, dispatch_id="go-owner555")
+        main(["set", owner["path"], "worktree", wt])
+        self._backdate_updated_at(owner["path"], seconds_ago=60)
+
+        result = _worktree_conflict(self.tmp, worktree=wt)
+
+        self.assertTrue(result["conflict"])
+        self.assertFalse(result["same_dispatch"])
+
+
 class TestPendingDecisionEvents(unittest.TestCase):
     """`decision` subcommand / `record_decision_event`: the run-record side of
     the versioned pending-decision envelope contract (workqueue/decisions.py).

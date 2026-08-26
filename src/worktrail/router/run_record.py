@@ -148,6 +148,28 @@ finish PATH --status completed_pr_open [--pr URL] [--merge-result ...]
             `liveness` for the deletion liveness guard: resolve a worktree
             path to its owning run record here, then ask `liveness` whether
             that record is still actively being worked.
+  worktree-conflict --dir DIR --repo REPO --worktree PATH
+          [--dispatch-id ID] [--ttl-seconds N]
+         -> read-only, single-call combination of `find-by-worktree` +
+            `liveness`: is a DIFFERENT, still-actively-worked dispatch
+            claiming this exact worktree path right now? The two-step
+            manual version already existed and is individually documented
+            above; this exists for an external, cross-repo caller (e.g. a
+            PreToolUse hook enforcing worktree safety before an interactive
+            edit or git-mutating command, mirroring the existing rename-guard
+            hook pattern) that wants one subprocess call and a plain boolean
+            rather than reimplementing the same_dispatch/fresh interpretation
+            itself. Prints {"conflict": bool, "found": bool, "run_id":
+            str|null, "path": str|null, "fresh": bool|null, "same_dispatch":
+            bool|null, "age_seconds": float|null, "reason": str|null}.
+            `found: false` (nothing tracks this worktree) always means
+            `conflict: false`, `reason: "not_tracked"`. When found, `conflict`
+            is true only when the owning record is fresh (recently
+            heartbeated) AND not the caller's own dispatch (per --dispatch-id,
+            same semantics as `liveness`) -- the caller's own worktree, or an
+            abandoned/crashed one, is never a conflict. `reason` explains a
+            `false` conflict when found: "same_dispatch", "stale", or
+            `liveness`'s own no_heartbeat/unparsable_updated_at reason.
 """
 from __future__ import annotations
 
@@ -1091,15 +1113,16 @@ def cmd_liveness(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_find_by_worktree(args: argparse.Namespace) -> int:
-    """Read-only: which non-terminal run record (if any) owns this worktree path?
-
-    See the `find-by-worktree` entry in this module's docstring for the full
-    scan/tie-break behavior. Feeds `liveness` for the deletion liveness
-    guard (`#worktree-deletion-liveness-guard`).
+def _resolve_worktree_owner(repo_dir: Path, worktree: str) -> Optional[Dict[str, Any]]:
+    """Non-terminal run record (if any) under `repo_dir` whose `worktree`
+    field exactly matches `worktree`. Shared scan/tolerance/tie-break logic
+    behind both `find-by-worktree` and `worktree-conflict` -- see the
+    `find-by-worktree` docstring entry for the full behavior (malformed
+    records skipped with a stderr warning, most-recently-started wins on a
+    multi-match). Returns `None` when nothing matches; otherwise the winning
+    candidate's `path`, `run_id`, and full `record` dict (needed by
+    `worktree-conflict` for its `liveness` check).
     """
-    repo = Path(args.repo).resolve()
-    repo_dir = Path(args.dir).expanduser() / repo.name
     candidates: List[Dict[str, Any]] = []
     if repo_dir.is_dir():
         for path in sorted(repo_dir.glob("*.yaml")):
@@ -1110,19 +1133,69 @@ def cmd_find_by_worktree(args: argparse.Namespace) -> int:
                 continue
             if record.get("final_status") is not None:
                 continue
-            if record.get("worktree") != args.worktree:
+            if record.get("worktree") != worktree:
                 continue
             candidates.append({
                 "path": str(path),
                 "run_id": record.get("run_id"),
                 "started_ts": _record_started_ts(record, path),
+                "record": record,
             })
     if not candidates:
+        return None
+    candidates.sort(key=lambda c: c["started_ts"], reverse=True)
+    return candidates[0]
+
+
+def cmd_find_by_worktree(args: argparse.Namespace) -> int:
+    """Read-only: which non-terminal run record (if any) owns this worktree path?
+
+    See the `find-by-worktree` entry in this module's docstring for the full
+    scan/tie-break behavior. Feeds `liveness` for the deletion liveness
+    guard (`#worktree-deletion-liveness-guard`).
+    """
+    repo = Path(args.repo).resolve()
+    repo_dir = Path(args.dir).expanduser() / repo.name
+    owner = _resolve_worktree_owner(repo_dir, args.worktree)
+    if owner is None:
         print(json.dumps({"found": False, "path": None, "run_id": None}))
         return 0
-    candidates.sort(key=lambda c: c["started_ts"], reverse=True)
-    best = candidates[0]
-    print(json.dumps({"found": True, "path": best["path"], "run_id": best["run_id"]}))
+    print(json.dumps({"found": True, "path": owner["path"], "run_id": owner["run_id"]}))
+    return 0
+
+
+def cmd_worktree_conflict(args: argparse.Namespace) -> int:
+    """Read-only, single-call combination of `find-by-worktree` + `liveness`.
+
+    See the `worktree-conflict` entry in this module's docstring for the full
+    field contract. `conflict` is true only when a record owns this worktree
+    AND is fresh AND is not the caller's own dispatch.
+    """
+    repo = Path(args.repo).resolve()
+    repo_dir = Path(args.dir).expanduser() / repo.name
+    owner = _resolve_worktree_owner(repo_dir, args.worktree)
+    if owner is None:
+        print(json.dumps({
+            "conflict": False, "found": False, "run_id": None, "path": None,
+            "fresh": None, "same_dispatch": None, "age_seconds": None,
+            "reason": "not_tracked",
+        }))
+        return 0
+    liveness = _run_liveness(owner["record"], args.ttl_seconds, args.dispatch_id)
+    conflict = liveness["fresh"] and not liveness["same_dispatch"]
+    reason = None
+    if not conflict:
+        reason = "same_dispatch" if liveness["same_dispatch"] else (liveness["reason"] or "stale")
+    print(json.dumps({
+        "conflict": conflict,
+        "found": True,
+        "run_id": owner["run_id"],
+        "path": owner["path"],
+        "fresh": liveness["fresh"],
+        "same_dispatch": liveness["same_dispatch"],
+        "age_seconds": liveness["age_seconds"],
+        "reason": reason,
+    }))
     return 0
 
 
@@ -1754,6 +1827,16 @@ def main(argv=None) -> int:
     s.add_argument("--repo", required=True)
     s.add_argument("--worktree", required=True, help="worktree path to look up (exact match)")
     s.set_defaults(func=cmd_find_by_worktree)
+
+    s = sub.add_parser("worktree-conflict")
+    s.add_argument("--dir", required=True, help="run records directory")
+    s.add_argument("--repo", required=True)
+    s.add_argument("--worktree", required=True, help="worktree path to look up (exact match)")
+    s.add_argument("--ttl-seconds", type=int, default=_DEFAULT_LIVENESS_TTL_SECONDS,
+                    help="heartbeat freshness window in seconds (default 1200)")
+    s.add_argument("--dispatch-id", default=None,
+                    help="caller's own dispatch id -- an owning record matching this is never a conflict")
+    s.set_defaults(func=cmd_worktree_conflict)
 
     args = p.parse_args(argv)
     try:
