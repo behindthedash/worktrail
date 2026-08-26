@@ -11,6 +11,16 @@ defaults (run records, telemetry logs, caches) can never touch the real
 ~/.worktrail or ~/.go either; a test that needs to exercise a real file does
 so explicitly (writing to tmp_path and overriding the same env var itself),
 which still wins since monkeypatch restores in LIFO order.
+
+WORKTRAIL_SKILL_DISPATCH_DEPTH is ambient *dispatch-session* state of the same
+class: a suite run from inside a dispatched session (worktrail-go ->
+worktrail-skill-dispatch -> agent shell -> pytest) inherits depth=1, and every
+test calling skill_dispatch.main() on an internal skill then trips
+blocked_internal_dispatch_recursion -- confirmed live 2026-08-25, 8 failures in
+test_skill_dispatch.py inside dispatched sessions while the clean-env suite
+passed (runs go-20260825-135050 / go-20260825-202107). The recursion guard
+itself reads ambient depth by design and stays; tests that exercise depth
+semantics set the variable explicitly.
 """
 
 import pytest
@@ -18,6 +28,8 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _isolate_go_machine_wide_config(tmp_path, monkeypatch):
+    # Dispatch-chain marker: see module docstring -- never inherit it ambiently.
+    monkeypatch.delenv("WORKTRAIL_SKILL_DISPATCH_DEPTH", raising=False)
     monkeypatch.setenv("WORKTRAIL_HOME", str(tmp_path / "worktrail-home"))
     monkeypatch.setenv("GO_ROUTING_FILE", str(tmp_path / "no-such-routing.yaml"))
     monkeypatch.setenv("GO_MODEL_DEFAULTS_FILE", str(tmp_path / "no-such-model-defaults.yaml"))

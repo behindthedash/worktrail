@@ -2,6 +2,7 @@ import json
 import os
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -800,6 +801,50 @@ class PendingDecisionBoundaryTests(unittest.TestCase):
             self._ask()
             rc = skill_dispatch.main(["--present-decision", self.DECISION_ID])
         self.assertEqual(rc, 0)
+
+
+class DispatchDepthHermeticityTests(unittest.TestCase):
+    """The suite must be hermetic to an ambient WORKTRAIL_SKILL_DISPATCH_DEPTH.
+
+    Confirmed live 2026-08-25 (runs go-20260825-135050 / go-20260825-202107):
+    inside a dispatched session the dispatcher exports
+    WORKTRAIL_SKILL_DISPATCH_DEPTH=1, pytest inherits it, and every test that
+    calls skill_dispatch.main() on an internal skill hit
+    blocked_internal_dispatch_recursion (8 failures) while the identical suite
+    passed in a clean env. The recursion guard reads ambient depth by design at
+    its entry point and stays untouched; tests/conftest.py strips the variable
+    instead. This test re-creates the leak deterministically: a child pytest run
+    with the variable poisoned into its environment must still pass.
+    """
+
+    def test_internal_skill_dispatch_tests_pass_with_depth_poisoned_env(self):
+        repo_root = Path(__file__).resolve().parents[2]
+        node = (
+            "tests/router/test_skill_dispatch.py::PendingDecisionBoundaryTests::"
+            "test_dry_run_with_valid_resume_prints_command_and_spawns_nothing"
+        )
+        python_path = os.pathsep.join(
+            [str(repo_root / "src"), os.environ.get("PYTHONPATH", "")]
+        ).rstrip(os.pathsep)
+        env = {
+            **os.environ,
+            "WORKTRAIL_SKILL_DISPATCH_DEPTH": "1",
+            "PYTHONPATH": python_path,
+        }
+        proc = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", node],
+            cwd=repo_root,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        self.assertEqual(
+            proc.returncode,
+            0,
+            "child pytest failed under a poisoned WORKTRAIL_SKILL_DISPATCH_DEPTH "
+            f"environment:\n{proc.stdout}\n{proc.stderr}",
+        )
 
 
 if __name__ == "__main__":
