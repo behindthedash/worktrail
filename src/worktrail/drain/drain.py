@@ -122,6 +122,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from . import stuck_remediation
 from ..orchestrator import agent_capacity
+from ..runtime.routing_source import routing_candidates
 from ..runtime.selection import NoExecutionTarget, select_execution_target
 from ..orchestrator.integrate import _refresh_pr_labels
 from ..router import branch_selfcheck, dashboard, quarantine_selfcheck
@@ -451,7 +452,19 @@ def read_capacity_cache(path: Path) -> dict:
         return {}
 
 
+def machine_wide_routing() -> Optional[Dict[str, Any]]:
+    """`policy["routing"]` with no repo-local override in play.
+
+    `worktrail_home()` never carries a repo-local `.worktrail/policy.yaml`
+    (it is the operator state directory routing.yaml itself lives in), so
+    `load_policy()`'s repo-local-then-machine-wide fallback always resolves
+    the single machine-wide `routing.yaml` here -- the one file D1 names.
+    """
+    return load_policy(worktrail_home()).get("routing")
+
+
 def select_available_agent(cache: dict, candidates: List[str],
+                            routing: Optional[Dict[str, Any]] = None,
                             now: Optional[datetime] = None) -> Optional[str]:
     """First candidate (in configured order) that is not capacity-gated; None
     when every candidate is gated. A candidate with no cache entry at all
@@ -463,20 +476,30 @@ def select_available_agent(cache: dict, candidates: List[str],
     higher-priority agent is picked back up automatically once its persisted
     gate's retry_after passes -- no restart or config edit needed.
     """
-    # Drain has historically selected providers without naming a model. Feed
-    # those ordered provider intents through the shared selector using an
-    # explicit sentinel model; the eventual provider adapter still resolves
-    # its configured/default model exactly as before. This preserves the old
-    # CLI contract while making nightly/originating calls use the same target
-    # ordering and TTL-aware capacity routine as subagent dispatch.
+    # routing_candidates(routing) yields the real (provider, model) pairs
+    # routing.agents/routing.tiers actually configure (D4). A candidate with
+    # no routing entry (routing unset, or that agent absent from routing.yaml)
+    # falls back to the old sentinel model -- the eventual provider adapter
+    # still resolves its configured/default model exactly as before, so an
+    # operator who has not adopted routing.yaml yet sees no behavior change.
+    by_provider: Dict[str, List[dict]] = {}
+    for entry in routing_candidates(routing):
+        by_provider.setdefault(entry["provider"], []).append(entry)
+
     catalog = [
-        {"provider": candidate, "model": "configured-default"}
+        {"provider": candidate, "model": entry["model"]}
         for candidate in candidates
+        for entry in (by_provider.get(candidate) or [{"model": "configured-default"}])
     ]
 
-    def available(provider: str, _model: str, **_kwargs: object) -> dict:
+    def available(provider: str, model: str, **_kwargs: object) -> dict:
+        # A real model keys the per-model cache entry (e.g. "claude:opus"),
+        # so a gate on one model no longer blocks every model of that
+        # provider; the sentinel keeps the prior provider-wide gate when no
+        # routing-sourced model is known.
+        key = provider if model == "configured-default" else agent_capacity.provider_key(provider, model)
         return {
-            "available": not capacity_gated(cache, provider, now=now),
+            "available": not capacity_gated(cache, key, now=now),
             "source": "agent-capacity.json",
         }
 
@@ -1422,6 +1445,7 @@ def sweep_remediations(
     spawner: Callable[[List[str], int], SpawnOutcome],
     log: Callable[[str], None],
     keys: Optional[Iterable[str]] = None,
+    routing: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, List[Dict[str, Any]]]:
     """Run every `REMEDIATION_TABLE` row's finder + action (or only the rows
     whose `key` is in `keys`, when given), one result dict per remediated
@@ -1450,7 +1474,8 @@ def sweep_remediations(
     for remediation in selected:
         applied: List[Dict[str, Any]] = []
         for finding in remediation.finder(repos_root, go_repo):
-            chosen = select_available_agent(read_capacity_cache(capacity_cache), candidates)
+            chosen = select_available_agent(
+                read_capacity_cache(capacity_cache), candidates, routing=routing)
             if chosen is None:
                 log(f"{remediation.label}: {finding.get('repo_name')} "
                     f"{finding.get('spec_id')}: skipped, every candidate agent "
@@ -1789,11 +1814,12 @@ def drain(config: DrainConfig,
     candidates = [config.agent] + list(config.fallback_agents)
     active_agent = config.agent
     seeded_backlog: Dict[str, Any] = {}
+    routing = machine_wide_routing()
     try:
         if slot == 0 and config.repos_root is not None and not config.dry_run:
             resumed = sweep_remediations(
                 config.repos_root, config.go_repo, candidates, config.capacity_cache,
-                config.iteration_timeout, spawner, log)
+                config.iteration_timeout, spawner, log, routing=routing)
             if config.seed_backlog:
                 # Top the queue up from backlog invisible to auto mode
                 # (needs-tasks specs, under-specced epics) BEFORE the loop's
@@ -1815,7 +1841,7 @@ def drain(config: DrainConfig,
             # A templated --agent-cmd has no per-agent identity to switch, so
             # fallback selection only applies to the named-agent shapes.
             if config.agent_cmd is None:
-                chosen = select_available_agent(cache, candidates)
+                chosen = select_available_agent(cache, candidates, routing)
                 if chosen is None:
                     state.agent_capacity_gated = True
                 else:
