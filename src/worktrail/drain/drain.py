@@ -125,16 +125,12 @@ from ..orchestrator import agent_capacity
 from ..runtime.selection import NoExecutionTarget, select_execution_target
 from ..orchestrator.integrate import _refresh_pr_labels
 from ..router import branch_selfcheck, dashboard, quarantine_selfcheck
-from ..router.policy import load_policy
+from ..router.policy import default_routing_file, load_policy, resolve_routing
 from ..router.policy_selfcheck import discover_repo_names
 from ..router.poll_run import unresolved_decision_ids as _poll_unresolved_decision_ids
 from ..router.pr_labels import ensure_pr_risk_label
 from ..shared.homedir import worktrail_home
-from ..shared.operator_config import (
-    OperatorConfigError,
-    config_path as operator_config_path,
-    drain_config as operator_drain_config,
-)
+from ..shared.operator_config import OperatorConfigError
 from ..taskformats.devkit.schema import set_status_completed
 from ..taskformats.openspec.schema import STATUS_COMPLETED, parse_tasks_md
 from ..workqueue import decisions as decisions_mod
@@ -2031,9 +2027,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--budget-minutes", type=int, default=0,
                         help="wall-clock budget (0 = none)")
     parser.add_argument("--agent", default=None, choices=SUPPORTED_AGENTS,
-                        help="one-shot provider; when omitted, falls back to the "
-                             "operator config's drain.agent "
-                             "(worktrail_home()/config.json), then to claude")
+                        help="one-shot provider; when omitted, falls back to "
+                             "routing.drain.agent (worktrail_home()/routing.yaml), "
+                             "then to claude")
     parser.add_argument("--fallback-agent", action="append", default=[],
                         dest="fallback_agents", choices=SUPPORTED_AGENTS, metavar="AGENT",
                         help="additional agent to try, in priority order, when a "
@@ -2056,9 +2052,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--max-workers", type=int, default=None,
                         help="concurrent drain-worker slots against the same "
                              "--lock-file; resolved CLI > config > built-in -- "
-                             "this flag when passed, else the operator config's "
-                             "drain.max_workers (worktrail_home()/config.json), "
-                             "else 2")
+                             "this flag when passed, else "
+                             "routing.drain.max_workers "
+                             "(worktrail_home()/routing.yaml), else 2")
     parser.add_argument("--queue-dir", type=Path, default=None,
                         help="WORK_QUEUE_DIR override for queue checks")
     parser.add_argument("--runs-dir", type=Path,
@@ -2095,29 +2091,29 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.work_queue_py is None or not Path(args.work_queue_py).is_file():
         print("error: work_queue.py not found; pass --work-queue-py", file=sys.stderr)
         return 2
-    # CLI > operator config (worktrail_home()/config.json, "drain" section) >
-    # built-in default. Explicit automation (the nightly drain script passes
-    # --agent/--fallback-agent itself) is never affected by the config file;
-    # a config-less manual `worktrail-drain` picks up the operator's stated
-    # provider preference instead of silently defaulting to claude.
+    # CLI > routing.yaml ("drain" block) > built-in default. Explicit
+    # automation (the nightly drain script passes --agent/--fallback-agent
+    # itself) is never affected by the routing file; a config-less manual
+    # `worktrail-drain` picks up the operator's stated provider preference
+    # instead of silently defaulting to claude.
     try:
-        operator_drain = operator_drain_config()
+        routing_drain = resolve_routing(load_policy(worktrail_home()), route="", risk="")["drain"]
     except OperatorConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    agent = args.agent or operator_drain["agent"] or "claude"
-    fallback_agents = list(args.fallback_agents) or list(operator_drain["fallback_agents"])
+    agent = args.agent or routing_drain.get("agent") or "claude"
+    fallback_agents = list(args.fallback_agents) or list(routing_drain.get("fallback_agents") or [])
     invalid = [a for a in [agent, *fallback_agents] if a not in SUPPORTED_AGENTS]
     if invalid:
         print(f"error: unsupported agent(s) {', '.join(sorted(set(invalid)))} "
-              f"from {operator_config_path()}; supported: "
+              f"from {default_routing_file()}; supported: "
               f"{', '.join(SUPPORTED_AGENTS)}", file=sys.stderr)
         return 2
     max_workers = (args.max_workers if args.max_workers is not None
-                   else operator_drain["max_workers"])
+                   else routing_drain.get("max_workers", 2))
     if not isinstance(max_workers, int) or isinstance(max_workers, bool) or max_workers < 1:
         print(f"error: max_workers must be a positive integer, got {max_workers!r} "
-              f"from --max-workers or {operator_config_path()}", file=sys.stderr)
+              f"from --max-workers or {default_routing_file()}", file=sys.stderr)
         return 2
     config = DrainConfig(
         work_queue_py=Path(args.work_queue_py),
