@@ -1770,6 +1770,24 @@ class LegacyRoutingKeys(unittest.TestCase):
         _reject_legacy_routing_keys(
             {"tiers": {"hard": {"codex-main": {"model": "gpt-5"}}}})  # must not raise
 
+    def test_target_named_after_harness_literal_does_not_raise(self):
+        # A target literally named `codex` is legal (target names are
+        # free-form; only `harness` is constrained to SUPPORTED_AGENTS) and
+        # must not be mistaken for the retired harness-keyed tier form.
+        _reject_legacy_routing_keys(
+            {"targets": {"codex": {"harness": "codex", "pool": "subscription"}},
+             "tiers": {"hard": {"codex": {"model": "gpt-5"}}}})  # must not raise
+
+    def test_undeclared_harness_keyed_tier_cell_still_raises(self):
+        # Without a matching routing.targets declaration, a cell keyed by a
+        # harness literal is still read as the retired form even when other
+        # unrelated targets are declared.
+        with self.assertRaises(OperatorConfigError) as ctx:
+            _reject_legacy_routing_keys(
+                {"targets": {"codex-main": {"harness": "codex", "pool": "subscription"}},
+                 "tiers": {"hard": {"codex": {"model": "gpt-5"}}}})
+        self.assertIn("routing.tiers.hard", str(ctx.exception))
+
     def test_role_with_agent_cli_raises(self):
         with self.assertRaises(OperatorConfigError) as ctx:
             _reject_legacy_routing_keys({"roles": {"reviewer": {"agent_cli": "codex"}}})

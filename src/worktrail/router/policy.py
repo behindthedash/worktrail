@@ -724,7 +724,11 @@ def _reject_legacy_routing_keys(raw: Dict[str, Any]) -> None:
     - `routing.purpose_tiers` — renamed to `routing.purposes` (task 1.3).
     - a `routing.tiers` row whose cells are keyed by harness literal
       (`VALID_AGENT_CLIS`) rather than by declared `routing.targets` name —
-      the pre-1.2 nested tier form.
+      the pre-1.2 nested tier form. A cell key is only flagged when it does
+      NOT also name a declared `routing.targets` entry, so an operator who
+      names a target literally `codex`/`claude`/`opencode` (targets are
+      free-form strings; only `harness` is constrained to `SUPPORTED_AGENTS`)
+      is read as the modern target-keyed form, not the retired one.
     - a `routing.roles` entry that is a mapping containing `agent_cli` or
       `agent_model` — the pre-1.3 role-resolves-to-an-agent-entry form,
       superseded by `{tier, prefer?, independent?}`.
@@ -733,6 +737,9 @@ def _reject_legacy_routing_keys(raw: Dict[str, Any]) -> None:
     non-empty raw mapping, so no legacy shape is ever partially validated
     (warned-and-dropped) before the operator sees the hard failure.
     """
+    declared_targets = raw.get("targets")
+    declared_target_names = (
+        set(declared_targets) if isinstance(declared_targets, dict) else set())
     if "agents" in raw:
         raise OperatorConfigError(f"routing.agents is a retired key; {MIGRATE_HINT}")
     if "fallback" in raw:
@@ -749,7 +756,8 @@ def _reject_legacy_routing_keys(raw: Dict[str, Any]) -> None:
     tiers = raw.get("tiers")
     if isinstance(tiers, dict):
         for row, cells in tiers.items():
-            if isinstance(cells, dict) and cells and all(k in VALID_AGENT_CLIS for k in cells):
+            if isinstance(cells, dict) and cells and all(
+                    k in VALID_AGENT_CLIS and k not in declared_target_names for k in cells):
                 raise OperatorConfigError(
                     f"routing.tiers.{row} uses the retired harness-keyed cell form "
                     f"(cells must be keyed by a declared routing.targets name); {MIGRATE_HINT}")
