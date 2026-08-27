@@ -71,8 +71,8 @@ candidates for flagging.
 ### Requirement: Handoff Cross-Check Before Flagging
 For each phrase-matching `deferred_work` candidate, the system SHALL check whether an
 existing work-queue handoff brief in `queue/` or `picked/` already covers it, using the
-same bounded probe-extraction-and-search approach `check_brief_staleness.py` uses to
-compare free text against other content. The system SHALL flag a candidate only when no
+same bounded probe extraction (`brief_probes.extract_probes`) used to compare free
+text against other content. The system SHALL flag a candidate only when no
 matching handoff is found.
 
 #### Scenario: Candidate with a matching handoff is not flagged

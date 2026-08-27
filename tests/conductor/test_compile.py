@@ -283,14 +283,26 @@ def test_the_default_spawn_policy_for_an_unconfigured_repo_keeps_pre_change_argv
     assert isinstance(prompt, str) and prompt
 
 
-def _clear_ambient_agent_env():
+def _clear_ambient_agent_env(tmp_path):
     """Same ambient-env guard as the unconfigured-repo test above, plus both
-    the current and legacy routing-file override names pointed at a path that
-    can't exist -- otherwise a real machine-wide `~/.worktrail/routing.yaml`
-    (or a stray env var from the host running the suite) could leak into the
-    resolver and make these policy-primary assertions flaky."""
+    the current and legacy routing-file override names pointed at an isolated
+    file this helper controls -- otherwise a real machine-wide
+    `~/.worktrail/routing.yaml` (or a stray env var from the host running the
+    suite) could leak into the resolver and make these policy-primary
+    assertions flaky. The file declares an `agents:` default for every
+    supported agent so `spawnlib.default_model_for_agent()` (no silent
+    fallback, task 3.3) still resolves during these tests; its exact values
+    are irrelevant here since these tests assert model/agent selection comes
+    from repo policy, not from this file."""
     from unittest.mock import patch
 
+    routing_file = tmp_path / "no-machine-routing.yaml"
+    routing_file.write_text(
+        "agents:\n"
+        "  claude:\n    default_model: sonnet\n"
+        "  codex:\n    default_model: gpt-5.4-mini\n"
+        "  opencode:\n    default_model: opencode/deepseek-v4-flash-free\n"
+    )
     return patch.dict(
         "os.environ",
         {
@@ -299,8 +311,8 @@ def _clear_ambient_agent_env():
             "OPENCODE_PARENT": "",
             "CODEX_CI": "",
             "CODEX_THREAD_ID": "",
-            "WORKTRAIL_ROUTING_FILE": "/nonexistent/worktrail-compile-test/routing.yaml",
-            "GO_ROUTING_FILE": "/nonexistent/worktrail-compile-test/routing.yaml",
+            "WORKTRAIL_ROUTING_FILE": str(routing_file),
+            "GO_ROUTING_FILE": str(routing_file),
         },
         clear=False,
     )
@@ -323,7 +335,7 @@ def test_repo_policy_agent_cli_and_agent_model_win_over_defaults(change, tmp_pat
     spec_id, tasks = _load(change)
     reply = _reply(**{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks})
 
-    with _clear_ambient_agent_env():
+    with _clear_ambient_agent_env(tmp_path):
         default_codex_model = spawnlib.default_model_for_agent("codex")
         with patch("worktrail.orchestrator.spawnlib.spawn_agent") as spawn_agent:
             spawn_agent.return_value = type("SpawnResult", (), {"text": reply})()
@@ -372,12 +384,13 @@ def test_machine_wide_routing_file_sets_the_compile_default_via_worktrail_routin
     routing_file = tmp_path / "machine-routing.yaml"
     routing_file.write_text(
         'defaults:\n  "":\n    "":\n      agent_cli: claude\n      agent_model: mw-primary-model\n'
+        "agents:\n  claude:\n    default_model: sonnet\n"
     )
 
     spec_id, tasks = _load(change)
     reply = _reply(**{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks})
 
-    with _clear_ambient_agent_env(), patch.dict(
+    with _clear_ambient_agent_env(tmp_path), patch.dict(
         "os.environ",
         {"WORKTRAIL_ROUTING_FILE": str(routing_file)},
     ):

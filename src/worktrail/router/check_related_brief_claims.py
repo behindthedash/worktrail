@@ -8,8 +8,8 @@ related briefs is *already claimed and in flight* -- a second agent can start
 work that collides with a session already underway, discovered only when the
 two land conflicting changes. This module answers one question: "of this
 brief's `related:` ids, which ones are actively claimed by someone else right
-now?" so a human can be asked before dispatch proceeds, mirroring
-`check_brief_staleness.py`'s shape: pure extraction, then a bounded,
+now?" so a human can be asked before dispatch proceeds, in the same shape as
+its sibling guards: pure extraction, then a bounded,
 best-effort lookup, every step best-effort and **never raising to its
 caller**. Any condition under which the question cannot be answered (an
 unreadable claimed brief) degrades to `checked: false` plus a non-null

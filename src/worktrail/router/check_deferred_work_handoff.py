@@ -24,7 +24,7 @@ from typing import Any, Dict, Iterable, List, Union
 
 from ..workqueue import work_queue as _wq
 from ..workqueue.work_queue import _focus_of as _wq_focus_of
-from .check_brief_staleness import extract_probes
+from .brief_probes import extract_probes
 from .run_record import _load_lenient
 
 # Deliberately narrow per proposal.md's non-goals: v1 ships a small starting
@@ -107,7 +107,7 @@ def has_handoff_coverage(text: str) -> bool:
     deferred-work entry `text`?
 
     Extracts `text`'s path/symbol/pull-request Evidence Probes via
-    `check_brief_staleness.extract_probes` and matches each, case-
+    `brief_probes.extract_probes` and matches each, case-
     insensitively, as a substring of some brief's focus text -- per the
     task brief, the same technique for all three probe kinds. Checked
     under `work_queue.queue_dir()` or `work_queue.picked_dir()`. No probes

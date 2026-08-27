@@ -893,7 +893,8 @@ git -C "$REPO" worktree add "$SYNC_WT" -b "sync/$SPEC_ID" "$BASE"
 
 Branch on the spec's on-disk format — `$SYNC_WT/openspec/changes/$SPEC_ID` (OpenSpec;
 the `new` pipeline's own default, and always true for `modify`) vs
-`$SYNC_WT/docs/specs/$SPEC_ID` (devkit) — same detection idiom as `#stale-spec-check`.
+`$SYNC_WT/docs/specs/$SPEC_ID` (devkit) — same detection idiom as `#orchestrator`'s
+`SPEC_REF` branch.
 Each branch sets `SYNC_PATH`, which Step 4 below uses in place of a hardcoded
 `docs/specs/`.
 
@@ -1611,109 +1612,42 @@ keeps `status: picked`; `release` it only if you want another session to retry i
 Run in order before launching the orchestrator. `$SPEC_ROOT` = `$WT` for the `new` and
 `modify` pipelines; `$REPO` for `implement`.
 
-### Stale-spec check {#stale-spec-check}
+### Already-implemented check {#already-implemented-check}
 
-Two independent signals, run in sequence. Signal 1 (below) branches on the spec's on-disk
-format — `$SPEC_ROOT/openspec/changes/$SPEC_ID` (OpenSpec; the `new` pipeline's own default,
-and always true for `modify`, `#modify-pipeline` step 5) vs `$SPEC_ROOT/docs/specs/$SPEC_ID`
-(devkit) — same detection idiom as `#orchestrator`'s `SPEC_REF` branch above, and is a
-checkbox-ratio/age heuristic for both formats. Signal 2 (further below) adds a second,
-independent check for the OpenSpec case only: a git-history probe that catches a failure
-shape signal 1's checkbox ratio structurally cannot (see that section for why). Run both;
-either can surface a warning.
+Before launching the orchestrator (and, for a brief-sourced dispatch, before Phase 6's run
+record — `worktrail-go/SKILL.md` Phase 5.5), answer one question **by reading the source**:
+is the pending work already implemented on the base branch?
 
-```bash
-if [ -d "$SPEC_ROOT/docs/specs/$SPEC_ID" ]; then
-python3 -c "
-import datetime, subprocess
-from pathlib import Path
-from worktrail.router.dashboard import is_stale_spec, spec_creation_date, _count_tasks, _STALE_THRESHOLD_DAYS
+There is no script for this and deliberately so. The three mechanical guards that used to run
+here — a spec-age/checkbox-ratio heuristic, `check_change_staleness.py`, and
+`check_brief_staleness.py` — inferred "already done" from commit-message and touched-path
+probes, a proxy for the thing that actually matters. Read the code instead.
 
-repo = Path('$SPEC_ROOT')
-openspec_dir = repo / 'openspec' / 'changes' / '$SPEC_ID'
+**Procedure.** Take the pending work's own description — an OpenSpec change's unchecked
+`tasks.md` entries, a devkit spec's pending `TASK-*.md` files, or a claimed brief's `focus`
+prose — and for each item, look for the thing it asks for in the working tree:
 
-if openspec_dir.is_dir():
-    from worktrail.taskformats.openspec.source import OpenSpecTaskSource
-    try:
-        _, tasks = OpenSpecTaskSource(repo).load('$SPEC_ID')
-    except FileNotFoundError:
-        tasks = []
-    total = len(tasks)
-    completed = sum(1 for t in tasks if t.get('status') == 'completed')
-    if completed == 0 and total > 0:
-        result = subprocess.run(
-            ['git', '-C', str(repo), 'log', '--follow', '--format=%ai', '-1', '--', str(openspec_dir / 'tasks.md')],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
-        )
-        created = datetime.datetime.strptime(result.stdout.strip()[:10], '%Y-%m-%d').date() if result.returncode == 0 and result.stdout.strip() else None
-        age_days = (datetime.date.today() - created).days if created else None
-        if age_days is not None and age_days > _STALE_THRESHOLD_DAYS:
-            print(f'Change \$SPEC_ID shows {completed}/{total} tasks done but tasks.md was last committed {age_days} days ago. This may indicate tasks were implemented outside the orchestrator (missing sync) or the change was abandoned.')
-else:
-    spec_dir = repo / 'docs' / 'specs' / '$SPEC_ID'
-    if is_stale_spec(spec_dir, repo):
-        counts = _count_tasks(spec_dir)
-        created = spec_creation_date(spec_dir, repo)
-        age_days = (datetime.date.today() - created).days if created else '?'
-        total = counts.get('total', 0) if counts else 0
-        completed = counts.get('completed', 0) if counts else 0
-        print(f'Spec \$SPEC_ID shows {completed}/{total} tasks done but was created {age_days} days ago. This may indicate tasks were implemented outside the orchestrator (missing sync) or the spec was abandoned.')
-" 2>&1
-fi
-```
+- Named files/symbols: `rg` for them from the repo root, no path or file-type filter.
+- Behavior with no obvious symbol: read the module the work would live in.
+- Cross-file reference questions: `gitnexus` query/impact against the base branch.
 
-If either branch prints, surface the warning; then proceed to signal 2 (OpenSpec case) or
-precheck (devkit case, which has no signal 2).
+Then branch:
 
-**Signal 2, OpenSpec only** — a cheap git-history probe (`worktrail-check-change-staleness`,
-`router/check_change_staleness.py`), mirroring `brief-staleness-check.md`'s approach instead of
-signal 1's checkbox-ratio heuristic above. Signal 1 cannot catch this format's failure shape on
-its own: it only flags a change stale when *zero* tasks are checked, so a change with even one
-flipped checkbox already — or whose checkboxes are simply behind reality — reads as "in
-progress" no matter how long its real implementation has actually sat on base unreflected.
-Confirmed recurring shape (PR #547 2026-08-19, PR #548 2026-08-20,
-`stale-brief-precheck-recheck-search-boundary` PR #610 2026-08-21): every one was discovered
-only after a live orchestrator dispatch burned a full run and found zero-diff on the flagged
-tasks.
+- **Everything the pending work asks for is already present in the source** — do not launch
+  the orchestrator. Surface what you found (file:line per item) and ask with the
+  **`AskUserQuestion` tool**: "The pending work appears already implemented on base (evidence
+  above). How would you like to proceed?", options: **Close as already-delivered** (a brief:
+  `worktrail-work-queue done ... --implementation-complete --note "..."`; an OpenSpec change:
+  the dashboard's `close-stale` action, `worktrail-go/SKILL.md`'s Phase 2 action table), or
+  **Proceed anyway** (the match is superficial; launch the orchestrator).
+- **Anything is missing, or you cannot tell** — continue to implementation. Silence is the
+  default: never report "checked and clean", and never delay a dispatch on a partial match.
 
-```bash
-if [ -d "$SPEC_ROOT/openspec/changes/$SPEC_ID" ]; then
-  STALE_CHANGE_JSON=$(worktrail-check-change-staleness --repo "$SPEC_ROOT" --change-id "$SPEC_ID" --json)
-  echo "$STALE_CHANGE_JSON" | python3 -c "
-import json, sys
-d = json.load(sys.stdin)
-if d['checked'] and (d['matches'] or d['pull_requests']):
-    print('FLAGGED')
-    for m in d['matches']:
-        print(f\"  {m['sha']}  {m['date']}  {m['subject']}   [{m['kind']} probe: {m['probe']}]\")
-    for pr in d['pull_requests']:
-        print(f\"  PR #{pr['number']}  {pr.get('merged_at') or '?'}  {pr.get('title') or ''}\")
-"
-fi
-```
-
-`checked: false` (no `tasks.md`, no pending tasks, or the change has no history on base yet) is
-"no signal", never "clean" — proceed silently to precheck, same fail-open contract
-`check_brief_staleness.py`'s own siblings document. `checked: true` with no `FLAGGED` line is a
-definite searched-and-clean negative — proceed to precheck without asking.
-
-On a `FLAGGED` line, ask with the **`AskUserQuestion` tool**: "Stale-bookkeeping check found
-git-history evidence this change's still-pending tasks may already be implemented on base (see
-matches above). How would you like to proceed?", options:
-
-1. **Proceed anyway** — the evidence doesn't actually cover this change's scope; launch the
-   orchestrator.
-2. **Confirm shipped and close** — the evidence confirms it; stop here and run the dashboard's
-   `close-stale` action (`worktrail-go/SKILL.md`'s Phase 2 action table — `worktrail-close-stale-openspec`
-   flips the confirmed-shipped checkboxes and archives) instead of launching the orchestrator.
-3. **Abort** — stop for manual investigation.
-
-`$AUTO_MODE=true`: no ask — same reasoning as `#precheck-gate`'s own `$AUTO_MODE` branch below:
-judging whether matched commits/PRs actually confirm this change's scope is a call about prior
-work no unattended run may make — never pick option 1 or 2 silently. Finish
-`blocked_product_decision` quoting the evidence, per `#auto-mode-ask-fallbacks`. Evidence
-surfaced here is never auto-applied — mirrors `check_brief_staleness.py`'s own module docstring
-("evidence surfaced here is for a human to judge, never auto-applied").
+`$AUTO_MODE=true`: no ask. Judging whether prior work actually satisfies this scope is a call
+about prior work no unattended run may make. When — and only when — the evidence says
+everything is already present, finish `blocked_product_decision` quoting the file:line
+evidence, per `#auto-mode-ask-fallbacks`. Anything short of that proceeds to implementation as
+normal.
 
 ### Precheck DAG validation {#precheck-gate}
 

@@ -153,7 +153,6 @@ def _default_post_merge_smoke_cmd(repo: Path) -> "str | None":
 # without an invocation-wide env var or a per-call --agent flag. Explicit
 # --agent, policy agent_cli, and GO_AGENT_CLI env var all override this.
 DEFAULT_AGENT = _detect_default_agent()
-DEFAULT_MODEL = spawnlib.DEFAULT_CLAUDE_MODEL
 
 # Every codex role defaults to the SAME model (spawnlib.default_model_for_agent
 # resolved fresh per call, not a frozen snapshot -- a stale frozen copy of
@@ -2224,9 +2223,14 @@ def _serving_agent_guess(agent: str, model: str, fallback) -> str:
     hops = (
         list(fallback) if isinstance(fallback, (list, tuple)) else ([fallback] if fallback else [])
     )
-    candidates = [(agent, model)] + [
-        (hop, spawnlib.default_model_for_agent(hop)) for hop in hops if hop and hop != agent
-    ]
+    candidates = [(agent, model)]
+    for hop in hops:
+        if not hop or hop == agent:
+            continue
+        try:
+            candidates.append((hop, spawnlib.default_model_for_agent(hop)))
+        except Exception:
+            continue
     try:
         for cand_agent, cand_model in candidates:
             try:

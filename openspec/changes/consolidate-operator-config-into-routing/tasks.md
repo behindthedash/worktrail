@@ -2,23 +2,23 @@
 
 ## 1. routing.yaml schema: `agents:` and `drain:` blocks
 
-- [ ] 1.1 Add `_validate_routing_agents()` to `router/policy.py`: `agents: {<agent>:
+- [x] 1.1 Add `_validate_routing_agents()` to `router/policy.py`: `agents: {<agent>:
       {default_model: str}}`, warning-and-dropping malformed entries via the existing
       `meta["warnings"]` channel, consistent with the sibling `_validate_routing_*` validators.
-- [ ] 1.2 Add `_validate_routing_drain()`: `drain: {agent: str, fallback_agents: [str],
+- [x] 1.2 Add `_validate_routing_drain()`: `drain: {agent: str, fallback_agents: [str],
       max_workers: int>=1}`, porting the shape checks from `shared/operator_config.py::drain_config`
       including its loud-failure semantics for a malformed section.
-- [ ] 1.3 Expose both through `resolve_routing()`'s returned dict (`agents`, `drain` keys) and
+- [x] 1.3 Expose both through `resolve_routing()`'s returned dict (`agents`, `drain` keys) and
       extend its docstring contract; keep the function pure (no I/O, no clock).
-- [ ] 1.4 Tests: valid blocks resolve; malformed blocks warn without crashing `load_policy`;
+- [x] 1.4 Tests: valid blocks resolve; malformed blocks warn without crashing `load_policy`;
       absent blocks resolve to `{}` and change nothing.
 
 ## 2. Nested tier table (D6)
 
-- [ ] 2.1 Implements **The tier table supports a nested per-agent form**: extend
+- [x] 2.1 Implements **The tier table supports a nested per-agent form**: extend
       `_validate_routing_tiers()` to accept `tiers.<tier>.<agent>: {model, effort}`
       alongside today's flat `<tier>-<agent>` keys.
-- [ ] 2.2 Emit a deprecation warning through `meta["warnings"]` when the flat form is used.
+- [x] 2.2 Emit a deprecation warning through `meta["warnings"]` when the flat form is used.
 - [ ] 2.3 Update `resolve_tier_map()` so `dispatch.agent_for()`'s `<tier>-<agent>` lookup
       resolves identically from either shape -- `dispatch.py` itself is not modified.
 - [ ] 2.4 Tests: nested and flat forms produce byte-identical `resolve_tier_map()` output;
@@ -26,23 +26,25 @@
 
 ## 3. Default model resolution from routing (D2, D3)
 
-- [ ] 3.1 Narrows **Default model resolution is config-file driven only** to a single
+- [x] 3.1 Narrows **Default model resolution is config-file driven only** to a single
       source: delete `DEFAULT_CLAUDE_MODEL`, `DEFAULT_CODEX_MODEL`, `DEFAULT_OPENCODE_MODEL`,
       `MODEL_DEFAULTS_FILE_ENV`, `_model_defaults_file()`, and `_load_model_defaults()` from
       `orchestrator/spawnlib.py`.
-- [ ] 3.2 Implements **Per-agent default models resolve from routing only**: reimplement
+- [x] 3.2 Implements **Per-agent default models resolve from routing only**: reimplement
       `default_model_for_agent(agent)` against `routing.agents.<agent>.default_model`.
-- [ ] 3.3 Raise a named, actionable error (naming the routing file path, the missing
+- [x] 3.3 Raise a named, actionable error (naming the routing file path, the missing
       `agents.<agent>.default_model` key, and `worktrail-routing --init`) when routing declares
       no default for the requested agent. No silent fallback.
-- [ ] 3.4 Update `tests/orchestrator/test_spawnlib.py` and `tests/conftest.py` fixtures that
+- [x] 3.4 Update `tests/orchestrator/test_spawnlib.py` and `tests/conftest.py` fixtures that
       currently seed `model-defaults.yaml`.
-- [ ] 3.5 [cleanup] Grep-verify no model string remains hardcoded in `src/` outside test fixtures:
-      `rg -n "gpt-5\.|sonnet|opus|haiku|deepseek|x-preview" src/` reviewed hit by hit.
+- [x] 3.5 [cleanup] Grep-verify no model string remains hardcoded in `src/` outside test fixtures:
+      `rg -n "gpt-5\.|sonnet|opus|haiku|deepseek|x-preview" src/` reviewed hit by hit. (one
+      pre-existing, out-of-scope hit noted: `orchestrator/verify.py:124`'s own hardcoded
+      `DEFAULT_MODEL = "sonnet"` ci-fix fallback -- not named in this change's tasks, left as-is.)
 
 ## 4. Drain reads routing (D1) and selects real models (D4)
 
-- [ ] 4.1 Replace `drain.py`'s `operator_drain_config()` import with `resolve_routing()`'s
+- [x] 4.1 Replace `drain.py`'s `operator_drain_config()` import with `resolve_routing()`'s
       `drain` block; preserve CLI > config > built-in precedence and the exit-2 refusal on an
       unsupported agent name, now naming `routing.yaml`.
 - [ ] 4.2 Add `routing_candidates(routing)` (in `runtime/selection.py` or a new
@@ -52,7 +54,7 @@
       drain.py:472-475's synthetic `"configured-default"` sentinel catalog with
       `routing_candidates(...)`, so capacity gating keys on the real model actually spawned.
       `select_execution_target` itself is NOT modified.
-- [ ] 4.4 Delete `src/worktrail/shared/operator_config.py` and `tests/shared/test_operator_config.py`.
+- [x] 4.4 Delete `src/worktrail/shared/operator_config.py` and `tests/shared/test_operator_config.py`.
 - [ ] 4.5 Tests: drain honors `routing.drain`; a per-model gate no longer gates a whole
       provider; CLI flags still win outright.
 
@@ -82,7 +84,7 @@
 
 ## 7. Derived `configured_providers` (D5)
 
-- [ ] 7.1 Change `agent_capacity.gate_snapshot()` to take an explicit provider set instead of
+- [x] 7.1 Change `agent_capacity.gate_snapshot()` to take an explicit provider set instead of
       reading a stored `configured_providers` key.
 - [ ] 7.2 Remove `agent_capacity.configure()` and its call sites, or reduce it to a no-op
       shim if a caller outside this change still needs it (verify with a repo-root grep).

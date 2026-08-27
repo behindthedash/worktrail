@@ -80,7 +80,7 @@ _PENDING_ANSWER = "_Pending — a human replaces this line with the decision._"
 #
 # Guards and resume surfaces exchange decisions as a provider-neutral JSON
 # envelope, never as ad-hoc dicts or prose: a guard (spec-collision,
-# brief-staleness, related-brief-claims) builds one with
+# related-brief-claims) builds one with
 # `pending_decision_envelope()`, files it via `ask(decision_id=...)`, and an
 # attended host answers it; the resuming run loads it back with
 # `load_decision_envelope()` and must validate it with
