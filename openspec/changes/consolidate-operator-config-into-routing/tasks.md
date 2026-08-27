@@ -71,7 +71,7 @@
 
 ## 6. Delete the catalog (D4)
 
-- [ ] 6.1 Delete `src/worktrail/runtime/catalog.py`, `tests/test_runtime_catalog.py`,
+- [x] 6.1 Delete `src/worktrail/runtime/catalog.py`, `tests/test_runtime_catalog.py`,
       `docs/config/provider-model-catalog.yaml.example`, and the catalog exports from
       `src/worktrail/runtime/__init__.py`. Confirm `runtime/selection.py` and
       `tests/test_runtime_selection.py` are untouched.
