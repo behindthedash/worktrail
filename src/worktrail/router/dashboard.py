@@ -1032,6 +1032,24 @@ def _openspec_delta_current_requirements(kind: str, body: str) -> set[str]:
     return set()
 
 
+def _git_last_commit_time(repo: Path, path: Path) -> Optional[int]:
+    """Unix timestamp of `path`'s most recent commit, or None if it has none
+    (e.g. an uncommitted-only file)."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "log", "-1", "--format=%ct", "--", str(path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        if result.returncode != 0:
+            return None
+        output = result.stdout.strip()
+        return int(output) if output else None
+    except (subprocess.SubprocessError, OSError):
+        return None
+
+
 def _openspec_delta_reconciled(change_dir: Path) -> bool:
     """Whether every structural declaration in an OpenSpec delta is canonical.
 
