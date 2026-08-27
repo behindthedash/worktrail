@@ -42,7 +42,7 @@
 
 ## 7. Docs
 
-- [ ] 7.1 [docs] Update `skills/worktrail-go/SKILL.md` routing section (helper output → flags mapping now `tier`/`prefer`/`independent`, no `fallback` list), `README.md` routing example, and `docs/` references to `agents`/`fallback`/`drain.agent` to the targets/rows form; add the purposes `frontend`, `backend`, `design`, `explore`, `categorize` to the worked example. (Requirement: Routing declares ordered execution targets that separate harness from pool)
+- [x] 7.1 [docs] Update `skills/worktrail-go/SKILL.md` routing section (helper output → flags mapping now `tier`/`prefer`/`independent`, no `fallback` list), `README.md` routing example, and `docs/` references to `agents`/`fallback`/`drain.agent` to the targets/rows form; add the purposes `frontend`, `backend`, `design`, `explore`, `categorize` to the worked example. (Requirement: Routing declares ordered execution targets that separate harness from pool)
 - [ ] 7.2 [docs] Record in `openspec/changes/routing-target-selector/design.md` the operator follow-ups outside this repo: run `worktrail-routing --migrate` on this machine, and drop the hardcoded `--agent/--fallback-agent` from `~/bin/worktrail-drain-nightly.sh` (devops). (Requirement: Drain agent selection resolves CLI over config over built-in)
 
 ## 8. Verification

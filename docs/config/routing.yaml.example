@@ -5,141 +5,137 @@
 # is used in full instead of this file -- it is not merged per-key with the
 # machine-wide file (see policy.py's _resolve_routing()).
 #
-# This is the consolidated operator-config schema (consolidate-operator-
-# config-into-routing): everything that used to live in the separate
-# config.json (drain defaults), model-defaults.yaml (per-agent default
-# model), and provider-model-catalog.yaml (provider/model candidates) now
-# lives here, under routing.*. All sections below are optional and
-# independent -- set only the ones this machine/repo needs; every unset
-# section falls through to worktrail's built-in defaults with no behavior
-# change (resolve_routing()/resolve_tier_map()/drain.py's own fallbacks).
+# This is the target-selector routing schema (routing-target-selector):
+# everything a spawn needs -- which harness to run, which account pool it
+# bills against, and which model/effort to ask for at a given tier -- lives
+# here, under routing.*. All sections below are optional and independent --
+# set only the ones this machine/repo needs; every unset section falls
+# through to worktrail's built-in defaults with no behavior change
+# (resolve_routing()/select_cell()/drain.py's own fallbacks).
 #
-# An agent literal anywhere below must be one of: claude, codex, opencode
-# (see policy.py VALID_AGENT_CLIS). "openrouter"/"api" are also accepted in
-# routing.fallback only, and only with api_opt_in: true (AC-005) -- they
-# bypass the per-subscription capacity system entirely.
+# A harness literal anywhere below must be one of: claude, codex, opencode
+# (see policy.py SUPPORTED_AGENTS). A target's pool must be one of:
+# subscription, free, api. "api" without api_opt_in: true is loaded but
+# skipped with a warning at selection time (AC-005) -- it bypasses the
+# per-subscription capacity system entirely, so it never fires silently.
 
-# routing.agents: per-agent default model (default_model_for_agent()),
-# consulted when no tier/role/purpose/defaults entry pins a more specific
-# model for a spawn. Replaces the retired model-defaults.yaml.
-agents:
-  claude:
-    default_model: sonnet
-  codex:
-    default_model: gpt-5.6-terra
-  opencode:
-    default_model: opencode/x-preview-f-free
+# routing.targets: an ORDERED mapping of execution target -> {harness, pool,
+# api_opt_in?, auth?}. Order is preference: select_cell() walks targets in
+# this file order (unless a role's `prefer` moves one to the front) and
+# serves the first one with a cell in the requested tier row that isn't
+# capacity-gated. Two targets may share a harness (e.g. a subscription lane
+# and an API lane on the same CLI) -- names are free-form and are exactly
+# the keys the `tiers` rows below use.
+targets:
+  claude-sub:
+    harness: claude
+    pool: subscription
+  codex-sub:
+    harness: codex
+    pool: subscription
+  opencode-free:
+    harness: opencode
+    pool: free
+  # An API/OpenRouter lane is excluded from selection unless it opts in
+  # explicitly -- it bypasses the per-subscription capacity system entirely,
+  # so a silent fallback to one would mask capacity/quota assumptions the
+  # rest of the routing system makes:
+  # claude-api:
+  #   harness: claude
+  #   pool: api
+  #   api_opt_in: true
+  #   auth:
+  #     env: ANTHROPIC_API_KEY
 
-# routing.defaults: the primary agent/model for a (route, risk) pair, keyed
-# by classify.py's route letter and risk level. resolve_routing() consults
-# this ahead of the flat agent_cli/agent_model policy keys.
-defaults:
-  B:
-    low:
-      agent_cli: codex
-      agent_model: gpt-5.6-terra
-    medium:
-      agent_cli: claude
-      agent_model: sonnet
+# routing.default_tier: the tier row consulted whenever nothing more
+# specific (a task's own tier, a role, or a purpose) pins one -- replaces
+# the retired per-agent default_model.
+default_tier: t2-build
 
-# routing.roles: pin one role (e.g. an independent review CLI) to a specific
-# agent/model regardless of which agent the run's own fallback chain picked
-# for implement/fix. For review/resolve/ci-fix/assembly-resolve this is the
-# *only* override that can beat the run default (independent-reviewer
-# guarantee) -- a per-task `agent` field or routing.tiers match is never
-# consulted for those roles.
-roles:
-  review:
-    agent_cli: claude
-    agent_model: opus
-
-# routing.purpose_tiers: map a task's `purpose` frontmatter value (set by
-# compile.py's inference pass, or by hand) to a routing.tiers key, so a task
-# routes on what it is (architecture design, bulk-mechanical edits, ...)
-# rather than a human-assigned `complexity` label. dispatch.agent_for()
-# consults this ahead of `complexity`; a task with no matching/no `purpose`
-# value falls through to `complexity`-keyed tiers, unaffected. The keys on
-# the left are this operator's own vocabulary -- rename/add/remove freely.
-purpose_tiers:
-  architecture-design: t1-deep
-  security-review: t1-deep
-  agentic-automation: t2-build
-  scaffolding: t2-build
-  bulk-mechanical: t3-bulk
-  trivial: t4-trivia
-
-# routing.tiers: a (complexity[/domain]) -> agent-entry match table,
-# resolved into dispatch.agent_for's tier_map by resolve_tier_map(). Prefer
-# the nested per-agent form below -- it lets dispatch pick a tier consistent
-# with whichever agent this spawn's own fallback chain already resolved
-# (looked up as "<tier>-<agent>", optionally scoped to "<tier>-<agent>/
-# <domain>"). The legacy flat form (e.g. "trivial: {agent_cli: codex,
-# agent_model: ...}") is still accepted but deprecated; each flat entry
-# resolved logs a warning naming its nested replacement.
+# routing.tiers: rows of model/effort cells keyed by declared target name --
+# `tiers.<row>.<target> = {model, effort?}`. A target with no cell in a row
+# cannot serve that tier and is skipped (a missing cell means "cannot
+# serve", not "use some default"). Rows are named freely; t1-deep..t4-trivia
+# are the shipped starter names, roughly ordered most- to least-capable.
 tiers:
   t1-deep:
-    claude:
+    claude-sub:
       model: opus
       effort: xhigh
-    codex:
+    codex-sub:
       model: gpt-5.6-sol
       effort: xhigh
-    opencode:
+    opencode-free:
       model: opencode/claude-opus-5
 
   t2-build:
-    claude:
+    claude-sub:
       model: sonnet
       effort: medium
-    codex:
+    codex-sub:
       model: gpt-5.6-terra
       effort: medium
-    opencode:
+    opencode-free:
       model: opencode/x-preview-f-free
 
   t3-bulk:
-    claude:
+    claude-sub:
       model: haiku
       effort: medium
-    codex:
+    codex-sub:
       model: gpt-5.6-terra
       effort: low
-    opencode:
+    opencode-free:
       model: opencode/x-preview-f-free
 
   t4-trivia:
-    claude:
+    claude-sub:
       model: haiku
       effort: low
-    codex:
+    codex-sub:
       model: gpt-5.6-luna
       effort: minimal
-    opencode:
+    opencode-free:
       model: opencode/x-preview-f-free
 
-# routing.fallback: the ordered agent chain drain/orchestrator dispatch try
-# in turn (by real-time capacity, ~/.worktrail/agent-capacity.json), used
-# whenever a spawn has no more specific defaults/roles/tiers match. Replaces
-# the flat single-entry fallback_agent_cli policy key.
-fallback:
-  - claude
-  - codex
-  - opencode
-  # An API/OpenRouter entry is excluded unless it opts in explicitly --
-  # these bypass the per-subscription capacity system entirely, so a silent
-  # fallback to one would mask capacity/quota assumptions the rest of the
-  # routing system makes:
-  # - agent_cli: openrouter
-  #   agent_model: some/openrouter-model
-  #   api_opt_in: true
+# routing.purposes (was routing.purpose_tiers): maps a task's `purpose`
+# frontmatter value (set by compile.py's inference pass, or by hand) to a
+# `tiers` row, so a task routes on what it is -- architecture design,
+# frontend/backend implementation work, exploratory spikes, bulk
+# categorization -- rather than a human-assigned `complexity` label.
+# `tier_for()` consults this ahead of `complexity`; a task with no
+# matching/no `purpose` value falls through to `complexity`-keyed tiers,
+# unaffected. The keys on the left are this operator's own vocabulary --
+# rename/add/remove freely.
+purposes:
+  architecture-design: t1-deep
+  security-review: t1-deep
+  frontend: t2-build
+  backend: t2-build
+  design: t2-build
+  explore: t2-build
+  categorize: t3-bulk
+  bulk-mechanical: t3-bulk
+  trivial: t4-trivia
+
+# routing.roles: resolve one role (e.g. an independent review pass) to a
+# tier row, an optional preferred target within that row, and whether the
+# selector should prefer to avoid the implementer's own harness. For
+# review/resolve/ci-fix/assembly-resolve this is the *only* override that
+# can beat the run default (independent-reviewer guarantee) -- a per-task
+# `tier` field or `purposes` match is never consulted for those roles.
+# `independent: true` is a soft preference, never a reason to fail: a
+# same-harness reviewer is the last resort when nothing else is healthy,
+# and the run record names which cell actually served.
+roles:
+  review:
+    tier: t1-deep
+    prefer: codex-sub
+    independent: true
 
 # routing.drain: machine-wide defaults for `worktrail-drain` (unattended
-# queue draining), replacing the retired config.json's drain block.
-# Claude-first order per the 2026-08-26 decision -- try claude, then fall
-# back through fallback_agents in order, based on real-time capacity.
+# queue draining). Provider/pool preference now lives entirely in
+# `targets`' file order plus `default_tier` above -- there is no separate
+# drain-specific agent or fallback chain to configure.
 drain:
-  agent: claude
-  fallback_agents:
-    - codex
-    - opencode
   max_workers: 2

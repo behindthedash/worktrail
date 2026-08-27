@@ -502,79 +502,83 @@ Route the request to the right handler. Per-route playbooks: `references/routes.
 
 Dispatch policy is simple:
 
-- Resolve the routing decision before dispatching the route: `ROUTING_JSON=$(worktrail-policy --repo "$REPO" --resolve-routing "$ROUTE:$RISK_LEVEL" --json)`. Use that helper result as the repository-policy tier for the orchestrator invocation.
-- Map the helper outputs directly to the dispatch flags: `agent_cli` -> `--agent`; `agent_model` -> `--model`; each `roles.<role>.agent_cli` -> `--role-agent-map`; each `roles.<role>.agent_model` -> `--model-map`. Carry the helper's `fallback` list through unchanged as the fallback chain for the dispatch layer.
-- Tiers resolve on a separate axis (per-task `(complexity, domain)`, not `$ROUTE:$RISK_LEVEL`): call `policy.resolve_tier_map(policy)` and map each `(complexity, domain) -> {agent_cli, agent_model}` entry onto `live.py full-real`'s `--tier-map` flag, joined `,`-separated as `complexity:domain=agent_cli[:agent_model]` (omit the `:agent_model` segment when unset). A domain-less tier (`domain is None`) has no CLI-string form — `live.py`'s `_parse_tier_map()` always yields an empty-string domain, never `None` — so a domain-less `routing.tiers` entry only reaches `dispatch.agent_for` through a native in-process `tier_map` dict (e.g. `RoutingFakeSpawn`/test fixtures), not this flag.
-- Purpose maps onto a tier on a third axis: the helper result's `purpose_tiers` (`routing.purpose_tiers`, from the same `resolve_routing()` call) maps each `purpose -> tier` entry onto `--purpose-tier-map`, joined `,`-separated as `purpose=tier`. A task whose `purpose` resolves through this table has that tier looked up in `--tier-map` in place of its `complexity` for implement/fix/cleanup spawns only; `review`/`resolve`/`ci-fix`/`assembly-resolve` never consult it (DEC-003).
+- Resolve the routing decision before dispatching the route: `ROUTING_JSON=$(worktrail-policy --repo "$REPO" --resolve-routing "$ROUTE:$RISK_LEVEL" --json)`. Under the target-selector schema (`routing-target-selector`) this is a `{tier, prefer, independent}` triple for the role about to spawn, resolved by `tier_for(role, task, roles, purposes, default_tier)` — not a flat `agent_cli`/`agent_model` pair.
+- Map the helper outputs directly to the dispatch layer: `tier` names the `routing.tiers` row to select from; `prefer` (optional) names a `routing.targets` entry to move to the front of that row; `independent` (optional bool, judgment roles only) asks the selector to prefer any target on a different harness than the one that implemented the task. There is no separate per-role agent/model map and no `fallback` list to carry through — preference order lives in `routing.targets`' own file order, and the row itself is the entire fallback chain: the orchestrator's single selector (`select_cell`) walks that row in order, skipping `api`-pool targets without `api_opt_in`, skipping cells gated in `agent-capacity.json`, and resolves the concrete harness/model/effort at spawn time.
+- Tiers resolve on a separate axis from `$ROUTE:$RISK_LEVEL` (per-task `tier`, or `complexity`/`purpose` mapped onto one): `tier_for()`'s precedence is an explicit per-task `tier` field > the role's own tier (for judgment roles: `review`/`resolve`/`ci-fix`/`assembly-resolve`) > a `routing.purposes` match on the task's `purpose` > `complexity` > `routing.default_tier`. `review` defaults to `{tier: default_tier, independent: true}` when `routing.roles.review` is unconfigured.
 - Explicit invocation flags or caller-supplied `AGENT_CLI` always win over the derived routing values. The routing table slots into the existing precedence at the repository-policy tier: explicit invocation > repository policy (routing table here) > machine-wide env > detected host > `claude`.
-- no routing table → behavior identical to today (flat keys, single fallback). Likewise, no `routing.tiers` → omit `--tier-map` entirely, and no `routing.purpose_tiers` → omit `--purpose-tier-map` entirely (dispatch behavior unchanged, REQ-NR005).
+- no routing table → every role resolves through `routing.default_tier` alone (a single row, its target file order the only preference), which for the starter template's two subscription targets behaves like today's flat single-agent behavior (REQ-NR005).
 
-  Example `routing.tiers` in `~/.worktrail/routing.yaml` — a 3-tier complexity fallback keyed by a
-  task's `complexity` frontmatter value (`trivial` / `standard` / `hard`), routing each to a
-  progressively more capable model on the same CLI:
+  Example `routing.tiers` in `~/.worktrail/routing.yaml` — target-keyed cells (`tiers.<row>.<target>
+  = {model, effort?}`; a target with no cell in a row cannot serve that tier), a 3-row complexity
+  ladder routing each to a progressively more capable model on the same target:
 
   ```yaml
   routing:
+    targets:
+      codex-sub: {harness: codex, pool: subscription}
     tiers:
       trivial:
-        agent_cli: codex
-        agent_model: gpt-5.6-luna
+        codex-sub: {model: gpt-5.6-luna}
       standard:
-        agent_cli: codex
-        agent_model: gpt-5.6-terra
+        codex-sub: {model: gpt-5.6-terra}
       hard:
-        agent_cli: codex
-        agent_model: gpt-5.6-sol
+        codex-sub: {model: gpt-5.6-sol}
   ```
 
   Model names above are illustrative — substitute whatever tier models the operator's provider
-  actually exposes. A key may carry a `/domain` suffix (e.g. `trivial/frontend`) to scope by
-  `(complexity, domain)` instead of complexity alone; omit `/domain` to match every domain at
-  that complexity. Tasks whose format has no `complexity` field, or whose value has no matching
-  tier entry, fall through to `routing.defaults`/`routing.roles` unaffected — `routing.tiers` is
+  actually exposes. Tasks whose format has no `complexity` field, or whose value has no matching
+  row, fall through to `routing.default_tier`/`routing.roles` unaffected — `routing.tiers` is
   purely additive.
 
-  **Routing by task purpose instead of complexity.** `routing.purpose_tiers` maps a task's own
-  `purpose` frontmatter value (set by `conductor/compile.py`'s inference pass, or by hand) to a
-  `routing.tiers` key, so a task routes on *what it is* — architecture design, terminal-heavy
-  automation, security review, CRUD scaffolding — rather than a human-assigned `complexity`
-  label. `dispatch.agent_for()` consults it ahead of `complexity` for implement/fix/cleanup
-  spawns only; a task whose `purpose` has no matching entry (or carries no `purpose` field at
-  all) falls through to `complexity` unaffected, same as an unmatched `routing.tiers` entry.
+  **Routing by task purpose instead of complexity.** `routing.purposes` (renamed from
+  `purpose_tiers`) maps a task's own `purpose` frontmatter value (set by
+  `conductor/compile.py`'s inference pass, or by hand) to a `routing.tiers` row, so a task routes
+  on *what it is* — architecture design, frontend/backend implementation, an exploratory spike,
+  bulk categorization — rather than a human-assigned `complexity` label. `tier_for()` consults it
+  ahead of `complexity` for implement/fix/cleanup spawns only; a task whose `purpose` has no
+  matching entry (or carries no `purpose` field at all) falls through to `complexity` unaffected,
+  same as an unmatched `routing.tiers` entry.
 
-  Worked example mapping a starter six-value purpose taxonomy onto the manual T1–T4
-  (Deep/Build/Bulk/Trivia) tier scheme `routing.tiers` examples above already use:
+  Worked example mapping an eight-value purpose taxonomy onto the manual T1–T4
+  (Deep/Build/Bulk/Trivia) tier scheme, over two subscription targets:
 
   ```yaml
   routing:
-    purpose_tiers:
+    default_tier: t2-build
+    targets:
+      claude-sub: {harness: claude, pool: subscription}
+      codex-sub:  {harness: codex,  pool: subscription}
+    purposes:
       architecture-design: t1-deep
       security-review: t1-deep
-      agentic-automation: t2-build
-      scaffolding: t2-build
+      frontend: t2-build
+      backend: t2-build
+      design: t2-build
+      explore: t2-build
+      categorize: t3-bulk
       bulk-mechanical: t3-bulk
       trivial: t4-trivia
     tiers:
       t1-deep:
-        agent_cli: claude
-        agent_model: opus
+        claude-sub: {model: opus}
+        codex-sub:  {model: gpt-5.6-sol}
       t2-build:
-        agent_cli: codex
-        agent_model: gpt-5.6-terra
+        claude-sub: {model: sonnet}
+        codex-sub:  {model: gpt-5.6-terra}
       t3-bulk:
-        agent_cli: codex
-        agent_model: gpt-5.6-sol
+        codex-sub:  {model: gpt-5.6-terra, effort: low}
       t4-trivia:
-        agent_cli: codex
-        agent_model: gpt-5.6-luna
+        codex-sub:  {model: gpt-5.6-luna}
   ```
 
-  These six purpose values are a starter set, not a fixed enum — `compile.py` reads
-  `routing.purpose_tiers`' own keys as the closed vocabulary it classifies a task's `purpose`
+  These purpose values are a starter set, not a fixed enum — `compile.py` reads
+  `routing.purposes`' own keys as the closed vocabulary it classifies a task's `purpose`
   into, so the operator renames, adds, or removes categories by editing this table alone, no
-  code change required. No `routing.purpose_tiers` table configured → `compile.py` never asks
-  for `purpose` at all, identical to today's output.
-- Record the resolved routing decision at dispatch time with `worktrail-run-record start ... --routing-decision "$ROUTING_JSON"` so the audit trail captures the exact route/risk-derived policy.
+  code change required. No `routing.purposes` table configured → `compile.py` never asks
+  for `purpose` at all, identical to today's output. A row that omits a target (`t3-bulk`/
+  `t4-trivia` above have no `claude-sub` cell) simply cannot be served by that target — the
+  selector skips straight to the next target in file order.
+- Record the resolved routing decision at dispatch time with `worktrail-run-record start ... --routing-decision "$ROUTING_JSON"` so the audit trail captures the exact tier/prefer/independent triple and which cell ultimately served.
 - **Branch on `$INVOCATION_CONTEXT_DISPATCH_MODE`, never on the provider name.** The
   invocation context already applied the decision tree; do not re-derive it here, and do
   not read `agent_cli` as evidence about `Skill(...)`:
@@ -625,12 +629,12 @@ Dispatch policy is simple:
   `Skill(...)` directly and say so. If it is false, that combination is `blocked` —
   report it rather than attempting either path.
 
-**Pinning a role to a specific agent/model.** `routing.roles` overrides one JUDGMENT_ROLE
+**Pinning a role to a tier/target.** `routing.roles` overrides one JUDGMENT_ROLE
 (`review`/`resolve`/`ci-fix`/`assembly-resolve`) or task role (`implement`/`fix`/`cleanup`)
-independently of the run's default agent — for example, to force an independent
-code-reviewer model regardless of which agent implemented the task. Add it under either the
+independently of the run's default tier — for example, to force an independent
+code-reviewer model regardless of which target implemented the task. Add it under either the
 repo-local policy's `routing:` block or the machine-wide `~/.worktrail/routing.yaml`
-(`WORKTRAIL_ROUTING_FILE`) — same wholesale, block-level fallback as `routing.fallback`: a
+(`WORKTRAIL_ROUTING_FILE`) — same wholesale, block-level fallback as the rest of `routing`: a
 non-empty repo-local `routing:` block is used in full and the machine-wide file is not
 read at all, so it is not merged per-role with the machine-wide file:
 
@@ -638,17 +642,21 @@ read at all, so it is not merged per-role with the machine-wide file:
 routing:
   roles:
     review:
-      agent_cli: claude
-      agent_model: opus
+      tier: t1-deep
+      prefer: codex-sub
+      independent: true
 ```
 
-This resolves through `resolve_routing()` into `roles.review = {agent_cli: "claude",
-agent_model: "opus"}`, which the bullet above maps onto `--role-agent-map`/`--model-map` for
-the orchestrator invocation. For `review`/`resolve`/`ci-fix`/`assembly-resolve` this is the
-*only* override that can beat the run default (DEC-003) — a per-task `agent` field or
-`routing.tiers` match is never consulted for those roles, by design (independent-reviewer
-guarantee, 13.3). No `routing.roles` entry for a role → unchanged pre-spec behavior for that
-role.
+This resolves through `tier_for()` into `roles.review = {tier: "t1-deep", prefer:
+"codex-sub", independent: true}`, which the bullet above maps onto the orchestrator
+invocation's `tier`/`prefer`/`independent` triple. For `review`/`resolve`/`ci-fix`/
+`assembly-resolve` this is the *only* override that can beat the run default (DEC-003) — a
+per-task `tier` field or `routing.purposes` match is never consulted for those roles, by
+design (independent-reviewer guarantee, 13.3). `independent: true` is a soft preference
+(`exclude_harness` on the selector), never a hard requirement — a same-harness reviewer beats
+no review when nothing else is healthy, and the run record names which cell actually served.
+No `routing.roles` entry for a role → it resolves through `routing.default_tier` like any
+other role.
 
 **Adapter dispatch (`dispatch_mode: adapter`).** `Skill(...)` is a host capability, not a
 shell command, and `native_skill_available` — not the provider name — is what says
