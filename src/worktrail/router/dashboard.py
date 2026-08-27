@@ -1100,6 +1100,15 @@ def _openspec_delta_drift(change_dir: Path, repo: Path) -> List[Dict[str, str]]:
                 open_names |= _openspec_delta_current_requirements(kind, body)
         if not open_names:
             continue
+
+        for archived_spec in sorted(
+            repo.glob(f"openspec/changes/archive/*/specs/{capability}/spec.md")
+        ):
+            archived_text = archived_spec.read_text(errors="ignore")
+            archived_names: set[str] = set()
+            for kind, body in _iter_openspec_delta_sections(archived_text):
+                if kind in {"ADDED", "MODIFIED", "RENAMED"}:
+                    archived_names |= _openspec_delta_current_requirements(kind, body)
     return drift
 
 
