@@ -869,6 +869,96 @@ class OpenSpecStaleBookkeeping(unittest.TestCase):
         self.assertEqual(result["stale_task_ids"], ["1.1"])
 
 
+class OpenSpecDeltaDrift(unittest.TestCase):
+    """_openspec_delta_drift / its wiring into _safe_detect_openspec: a shared
+    requirement name is drifted only when an archived sibling's commit postdates
+    the open change's own delta commit (spec modified-requirement-drift-detection)."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self._tmp.name)
+        for cmd in (
+            ["init", "-q"],
+            ["config", "user.email", "t@t"],
+            ["config", "user.name", "t"],
+        ):
+            subprocess.run(["git", "-C", str(self.repo), *cmd], check=True)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _commit_at(self, paths: list[Path], message: str, timestamp: int) -> None:
+        rel = [str(p.relative_to(self.repo)) for p in paths]
+        subprocess.run(["git", "-C", str(self.repo), "add", *rel], check=True)
+        env = dict(os.environ, GIT_AUTHOR_DATE=str(timestamp), GIT_COMMITTER_DATE=str(timestamp))
+        subprocess.run(
+            ["git", "-C", str(self.repo), "commit", "-qm", message],
+            check=True,
+            env=env,
+        )
+
+    def test_archived_sibling_after_open_delta_reports_drift(self):
+        change = self.repo / "openspec" / "changes" / "update-export"
+        delta = change / "specs" / "export" / "spec.md"
+        delta.parent.mkdir(parents=True)
+        delta.write_text("## MODIFIED Requirements\n\n### Requirement: Foo\n")
+        self._commit_at([delta], "open change delta", 1_000_000_000)
+
+        cases = {
+            "modified": "## MODIFIED Requirements\n\n### Requirement: Foo\n",
+            "added": "## ADDED Requirements\n\n### Requirement: Foo\n",
+            "renamed": (
+                "## RENAMED Requirements\n\n"
+                "- FROM: `### Requirement: Bar`\n"
+                "- TO: `### Requirement: Foo`\n"
+            ),
+        }
+        for index, (label, archived_body) in enumerate(cases.items()):
+            with self.subTest(label=label):
+                archived_id = f"2026-01-0{index + 1}-rework-export-{label}"
+                archived = (
+                    self.repo / "openspec" / "changes" / "archive" / archived_id
+                    / "specs" / "export" / "spec.md"
+                )
+                archived.parent.mkdir(parents=True)
+                archived.write_text(archived_body)
+                self._commit_at([archived], f"archived change delta ({label})", 1_000_000_100 + index)
+
+                drift = dashboard._openspec_delta_drift(change, self.repo)
+
+                self.assertIn(
+                    {
+                        "requirement": "Foo",
+                        "capability": "export",
+                        "archived_change_id": archived_id,
+                    },
+                    drift,
+                )
+
+    def test_safe_detect_openspec_reports_delta_drift_with_archived_change_id(self):
+        change = self.repo / "openspec" / "changes" / "update-export"
+        change.mkdir(parents=True)
+        (change / "proposal.md").write_text("# Update exporter\n")
+        (change / "tasks.md").write_text("## 1. Export\n\n- [x] 1.1 Update exporter\n")
+        delta = change / "specs" / "export" / "spec.md"
+        delta.parent.mkdir(parents=True)
+        delta.write_text("## MODIFIED Requirements\n\n### Requirement: Foo\n")
+        self._commit_at([delta, change / "proposal.md", change / "tasks.md"], "open change", 1_000_000_000)
+
+        archived_id = "2026-01-01-rework-export"
+        archived = self.repo / "openspec" / "changes" / "archive" / archived_id / "specs" / "export" / "spec.md"
+        archived.parent.mkdir(parents=True)
+        archived.write_text("## MODIFIED Requirements\n\n### Requirement: Foo\n")
+        self._commit_at([archived], "archived change", 1_000_000_100)
+
+        result = dashboard._safe_detect_openspec(change)
+
+        self.assertEqual(
+            result.get("delta_drift"),
+            [{"requirement": "Foo", "capability": "export", "archived_change_id": archived_id}],
+        )
+
+
 class NonSpecDirsGitignoreSync(unittest.TestCase):
     """artifact-policy.md documents which _NON_SPEC_DIRS entries are gitignored
     SDD scratch (PR #195: _ralph_loop, reviews). A rename on either side would
