@@ -360,6 +360,34 @@ class ProposeTests(unittest.TestCase):
         # ungated-automerge warning must not fire -- it would be false.
         self.assertFalse(any("nothing else to gate" in w for w in result["warnings"]))
 
+    def test_propose_writes_routing_yaml_when_absent(self):
+        from worktrail.router.routing_cli import STARTER_ROUTING_YAML
+
+        repo = _tmp_repo()
+        routing_path = Path(tempfile.mkdtemp()) / "routing.yaml"
+        self.assertFalse(routing_path.exists())
+        with mock.patch.dict("os.environ", {"WORKTRAIL_ROUTING_FILE": str(routing_path)}):
+            rc, result = self._run_propose(repo)
+        self.assertEqual(rc, 0)
+        self.assertIn(
+            "routing.yaml (machine-wide, worktrail-routing --init)", result["written"])
+        self.assertTrue(routing_path.is_file())
+        self.assertEqual(routing_path.read_text(), STARTER_ROUTING_YAML)
+
+    def test_propose_leaves_existing_routing_yaml_alone(self):
+        repo = _tmp_repo()
+        routing_path = Path(tempfile.mkdtemp()) / "routing.yaml"
+        routing_path.write_text("agents:\n  claude:\n    default_model: hand-edited\n")
+        with mock.patch.dict("os.environ", {"WORKTRAIL_ROUTING_FILE": str(routing_path)}):
+            rc, result = self._run_propose(repo)
+        self.assertEqual(rc, 0)
+        self.assertNotIn(
+            "routing.yaml (machine-wide, worktrail-routing --init)", result["written"])
+        self.assertTrue(
+            any("routing.yaml" in s and "already exists" in s for s in result["skipped"]))
+        self.assertEqual(
+            routing_path.read_text(), "agents:\n  claude:\n    default_model: hand-edited\n")
+
     def test_fresh_repo_writes_openspec_validate_workflow_and_gates_rulesets(self):
         repo = _tmp_repo()
         rc, result = self._run_propose(repo)

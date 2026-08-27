@@ -647,6 +647,30 @@ def enable_gitnexus(repo: Path) -> Tuple[bool, Optional[str]]:
 
 
 # --------------------------------------------------------------------------
+# Machine-wide routing.yaml (D3 fail-closed mitigation)
+# --------------------------------------------------------------------------
+
+def ensure_routing_config() -> Tuple[bool, Optional[str]]:
+    """Bootstrap the machine-wide `routing.yaml` (see `routing_cli.STARTER_ROUTING_YAML`)
+    if this machine doesn't already have one -- write-if-absent, matching every other
+    propose step; never overwrites an operator's existing file. Without this, a
+    freshly onboarded machine can walk through `propose`/`apply` successfully and
+    still fail at the very first orchestrator spawn, since
+    `default_model_for_agent()` requires a `routing.yaml` to resolve a default model
+    and names `worktrail-routing --init` in that error. Unlike `enable_aspens`/
+    `enable_gitnexus` this isn't gated behind an opt-in flag -- it's the fail-closed
+    mitigation itself, not an add-on. Returns (changed, warning)."""
+    from ..router.routing_cli import STARTER_ROUTING_YAML, _routing_file_path
+
+    path = _routing_file_path()
+    if path.exists():
+        return False, None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(STARTER_ROUTING_YAML, encoding="utf-8")
+    return True, None
+
+
+# --------------------------------------------------------------------------
 # OpenSpec scaffold
 # --------------------------------------------------------------------------
 
@@ -821,11 +845,14 @@ def detect_state(repo: Path) -> Dict[str, Any]:
         sorted(p.name for p in rulesets_dir.glob("*.json")) if rulesets_dir.is_dir() else []
     )
     policy_exists = has_policy_file(repo)
+    from ..router.routing_cli import _routing_file_path
+
     return {
         "claude_md_already_split": already_split,
         "agents_md_exists": (repo / "AGENTS.md").is_file(),
         "existing_rulesets": existing_rulesets,
         "policy_file_exists": policy_exists,
+        "routing_config_exists": _routing_file_path().exists(),
         "openspec_initialized": (repo / "openspec" / "config.yaml").is_file(),
         "automerge_workflow_exists": (repo / AUTOMERGE_WORKFLOW_RELPATH).is_file(),
         "rulesets_drift_guard_exists": (
@@ -1031,6 +1058,14 @@ def cmd_propose(args: argparse.Namespace) -> int:
             default_policy_yaml(resolve_repo_display_name(repo), enable_aspens=args.with_aspens),
             encoding="utf-8")
         written.append(str(policy_path.relative_to(repo)))
+
+    changed, warn = ensure_routing_config()
+    if warn:
+        warnings.append(warn)
+    elif changed:
+        written.append("routing.yaml (machine-wide, worktrail-routing --init)")
+    else:
+        skipped.append("routing.yaml (machine-wide, already exists)")
 
     if args.with_aspens:
         configured, warn = enable_aspens(repo)
