@@ -15,7 +15,7 @@
 
 ## 2. Nested tier table (D6)
 
-- [ ] 2.1 Implements **The tier table supports a nested per-agent form**: extend
+- [x] 2.1 Implements **The tier table supports a nested per-agent form**: extend
       `_validate_routing_tiers()` to accept `tiers.<tier>.<agent>: {model, effort}`
       alongside today's flat `<tier>-<agent>` keys.
 - [ ] 2.2 Emit a deprecation warning through `meta["warnings"]` when the flat form is used.
