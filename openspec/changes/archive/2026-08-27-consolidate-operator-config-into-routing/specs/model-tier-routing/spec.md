@@ -105,8 +105,17 @@ no-env-override decision is preserved and extended; the fallback tail is removed
 - **THEN** dispatch SHALL use that entry's model regardless of any default-model resolution,
   identical to behavior before this change
 
-#### Scenario: Operators migrate from the removed model-defaults file
-- **WHEN** an operator previously maintained `model-defaults.yaml`
-- **THEN** moving each `<agent>: <model>` entry to `routing.agents.<agent>.default_model`
-  SHALL produce the same resolved model, and the removed file SHALL have no effect if left
-  on disk
+#### Scenario: Config-file entry still wins over the hardcoded constant
+- **WHEN** this requirement's earlier (archived) formulation described a hardcoded
+  per-agent fallback constant behind the config file
+- **THEN** that fallback constant no longer exists in this package -- `routing.agents.
+  <agent>.default_model` is now the sole source, and its absence raises loud (see the
+  sibling "No default declared fails loud" scenario) rather than falling back to any
+  package-resident model string
+
+#### Scenario: Operators migrate via the config file
+- **WHEN** an operator previously relied on `ORCH_CODEX_MODEL`/`ORCH_OPENCODE_MODEL`, or
+  maintained the now-removed `model-defaults.yaml`
+- **THEN** setting the equivalent agent's `routing.agents.<agent>.default_model` SHALL
+  produce the previously overridden/configured model, and neither the removed env vars
+  nor a leftover `model-defaults.yaml` on disk SHALL have any effect
