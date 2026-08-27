@@ -71,7 +71,7 @@ jobs:
     # bookkeeping-bypass job that instead called checks.create() to post a
     # same-named synthetic check raced against every other workflow this same
     # pull_request event also triggers (auto-merge.yml, scope-check,
-    # version-bump-check): each gets its own check suite from the
+    # release-metadata-check): each gets its own check suite from the
     # github-actions app for the same commit, and the synthetic check could
     # land in a sibling workflow's suite instead of this one. Required-check
     # matching then never saw it there, so the required check sat "Expected

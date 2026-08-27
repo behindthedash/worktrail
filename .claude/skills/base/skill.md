@@ -19,7 +19,7 @@ Python 3.10+ | one runtime dependency: `pyyaml` | pytest for tests (`dev` extra)
 ## Critical Conventions
 - **Never `pip install -e` from a task worktree.** The editable install records the checkout's absolute path; deleting a merged worktree (the standard teardown-after-merge step) then breaks every `worktrail-*` console script with `ModuleNotFoundError: No module named 'worktrail'` until someone manually reinstalls from the canonical checkout. `dev-install.sh` enforces this by refusing to run from a worktree.
 - **~70 console scripts, one per `[project.scripts]` entry in `pyproject.toml`.** A skill, doc, or code path that names a `worktrail-*` command must match a real entry point exactly — `tests/test_plugin_surface.py` enforces this in CI.
-- **Every PR that changes `src/worktrail/**` must also bump `pyproject.toml`'s `version`** (real semver, unlike sibling plugin repos' version-less/SHA-tracked model), unless the PR carries the `go:no-version-bump` label for an intentionally deferred, later batch bump. `CI: Version Bump Check` enforces this.
+- **Version bumps are batched, standalone commits, not per-PR** (real semver, unlike sibling plugin repos' version-less/SHA-tracked model). Ordinary feature/fix PRs need no label or bump. `CI: Version Bump Check` validates only PRs that actually change `pyproject.toml`'s version: valid semver, increased over base, and `.codex-plugin/plugin.json` in sync.
 - **Never commit or develop directly on `main`.** Branch off `main` into a sibling worktree (`git worktree add ../worktrail-worktrees/<branch> -b <branch> main`); merge only after CI is green; delete the branch once its PR lands.
 
 ## Structure

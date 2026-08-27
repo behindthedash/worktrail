@@ -12,8 +12,11 @@ on:
 # The group includes the triggering event action: a `labeled` run must never
 # cancel an in-flight `opened`/`reopened`/`ready_for_review` run for the same
 # PR -- a cancelled run of a required check stays on the head SHA and blocks
-# the merge/auto-merge even after a newer run succeeds (same failure class
-# `version_bump_check.yml`'s group guards against, PRs #344-#346).
+# the merge/auto-merge even after a newer run succeeds (same failure class the
+# version-bump check's concurrency group guarded against, PRs #344-#346 --
+# that check no longer triggers on labeled/unlabeled at all as of
+# release_metadata_check.yml, but the cancellation hazard this group guards
+# against is general to any required check with a labeled/unlabeled trigger).
 #
 # The group also includes the label name for labeled/unlabeled events: a PR
 # opened with two `gh pr create --label` flags fires two separate `labeled`
