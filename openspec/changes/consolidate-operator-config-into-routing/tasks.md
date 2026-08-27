@@ -105,7 +105,7 @@
 
 ## 9. Docs
 
-- [ ] 9.1 Update `AGENTS.md` and any skill `references/` naming `config.json`,
+- [x] 9.1 Update `AGENTS.md` and any skill `references/` naming `config.json`,
       `model-defaults.yaml`, or the catalog.
 - [ ] 9.2 Add a `docs/config/routing.yaml.example` covering the full consolidated schema,
       replacing the deleted catalog example.
