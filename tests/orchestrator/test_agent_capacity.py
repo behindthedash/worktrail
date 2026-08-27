@@ -112,6 +112,14 @@ def test_parse_explicit_reset_returns_none_without_a_timestamp():
     assert agent_capacity.parse_explicit_reset("") is None
 
 
+def test_model_not_found_wording_classifies_as_model_unavailable():
+    assert agent_capacity.classify_failure(1, "", "Error: model not found") == "model_unavailable"
+
+
+def test_model_unavailable_default_cooldown_is_one_day():
+    assert agent_capacity.DEFAULT_COOLDOWNS["model_unavailable"] == 86400
+
+
 def test_opencode_generic_error_event_classifies_as_transport():
     # Real shape from a live reproduction (handoff 20260722-152514,
     # /tmp/opencode-error-repro.jsonl): opencode's own error surface only exposed
@@ -162,6 +170,47 @@ def test_gate_snapshot_reports_retry_class_and_all_gated(tmp_path):
     assert snapshot["all_gated"] is True
     assert snapshot["retry_after"] == "2026-07-20T20:05:00+00:00"
     assert [item["failure_class"] for item in snapshot["gated"]] == ["transport", "auth"]
+
+
+def test_gate_snapshot_reports_model_unavailable_failure_class(tmp_path):
+    path = tmp_path / "capacity.json"
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    agent_capacity.record(
+        "claude-heavy", "retired-model", outcome="unavailable",
+        failure_class="model_unavailable",
+        retry_after=now + timedelta(hours=1), path=path, now=now,
+    )
+
+    snapshot = agent_capacity.gate_snapshot(
+        [agent_capacity.provider_key("claude-heavy", "retired-model")],
+        path=path, now=now,
+    )
+
+    assert snapshot["gated"] == [{
+        "provider": "claude-heavy:retired-model",
+        "failure_class": "model_unavailable",
+        "retry_after": "2026-07-20T21:00:00+00:00",
+    }]
+
+
+def test_record_and_check_key_on_target_names(tmp_path):
+    # provider_key/check/record are keyed on routing target names, not
+    # harness/agent names -- two different targets sharing the same model
+    # must not collide.
+    path = tmp_path / "capacity.json"
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    agent_capacity.record(
+        "claude-heavy", "sonnet", outcome="unavailable", failure_class="transport",
+        retry_after=now + timedelta(minutes=5), path=path, now=now,
+    )
+
+    agent_capacity.check("claude-light", "sonnet", path=path, now=now)
+    try:
+        agent_capacity.check("claude-heavy", "sonnet", path=path, now=now)
+    except agent_capacity.ProviderUnavailable:
+        pass
+    else:
+        raise AssertionError("gated target was not distinguished from a differently named target")
 
 
 def test_gate_snapshot_ignores_stale_configured_providers_key(tmp_path):
