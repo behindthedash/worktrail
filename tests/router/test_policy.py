@@ -1072,7 +1072,15 @@ class Routing(unittest.TestCase):
             "  fallback:\n"
             "    - opencode\n"
             "  purpose_tiers:\n"
-            "    scaffolding: t3\n")
+            "    scaffolding: t3\n"
+            "  agents:\n"
+            "    claude:\n"
+            "      default_model: opus\n"
+            "  drain:\n"
+            "    agent: claude\n"
+            "    fallback_agents:\n"
+            "      - codex\n"
+            "    max_workers: 3\n")
         with self._no_mw_env():
             pol = load_policy(repo)
         first = resolve_routing(pol, "B", "medium")
@@ -1083,6 +1091,19 @@ class Routing(unittest.TestCase):
         self.assertEqual(first["roles"], {"reviewer": {"agent_cli": "codex", "agent_model": None, "effort": None}})
         self.assertEqual(first["fallback"], [{"agent_cli": "opencode", "agent_model": None, "effort": None}])
         self.assertEqual(first["purpose_tiers"], {"scaffolding": "t3"})
+        self.assertEqual(first["agents"], {"claude": {"default_model": "opus"}})
+        self.assertEqual(first["drain"], {
+            "agent": "claude", "fallback_agents": ["codex"], "max_workers": 3,
+        })
+
+    def test_resolve_routing_agents_and_drain_empty_when_unconfigured(self):
+        repo = _repo_with(
+            "routing:\n  defaults:\n    B:\n      medium:\n        agent_cli: claude\n")
+        with self._no_mw_env():
+            pol = load_policy(repo)
+        result = resolve_routing(pol, "B", "medium")
+        self.assertEqual(result["agents"], {})
+        self.assertEqual(result["drain"], {})
 
     def test_resolve_routing_purpose_tiers_empty_when_unconfigured(self):
         repo = _repo_with(
@@ -1111,6 +1132,8 @@ class Routing(unittest.TestCase):
         self.assertEqual(result["roles"], {})
         self.assertEqual(result["fallback"], [{"agent_cli": "codex", "agent_model": None}])
         self.assertEqual(result["purpose_tiers"], {})
+        self.assertEqual(result["agents"], {})
+        self.assertEqual(result["drain"], {})
 
     def test_malformed_scalar_routing_value_warns_and_ignored(self):
         # REQ-001, REQ-NR004

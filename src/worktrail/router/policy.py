@@ -537,7 +537,7 @@ def _validate_routing_fallback(raw: Any, meta: Dict[str, Any]) -> List[Dict[str,
 def _validate_routing(raw: Any, meta: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Validate a raw `routing:` mapping (from either `go-policy.yaml` or the
     machine-wide routing file) into
-    `{defaults, roles, tiers, fallback, purpose_tiers}`.
+    `{defaults, roles, tiers, fallback, purpose_tiers, agents, drain}`.
 
     Returns `None` when `raw` is absent, an empty mapping, or not a mapping at
     all (the last case appends a `_meta.warnings` entry) — callers treat `None`
@@ -557,6 +557,8 @@ def _validate_routing(raw: Any, meta: Dict[str, Any]) -> Optional[Dict[str, Any]
         "tiers": _validate_routing_tiers(raw.get("tiers"), meta),
         "fallback": _validate_routing_fallback(raw.get("fallback"), meta),
         "purpose_tiers": _validate_routing_purpose_tiers(raw.get("purpose_tiers"), meta),
+        "agents": _validate_routing_agents(raw.get("agents"), meta),
+        "drain": _validate_routing_drain(raw.get("drain"), meta),
     }
 
 
@@ -648,6 +650,14 @@ def resolve_routing(policy: Dict[str, Any], route: str, risk: str) -> Dict[str, 
           "purpose_tiers": {purpose: tier},  # routing.purpose_tiers, consulted
                                           # by dispatch.agent_for ahead of
                                           # complexity to resolve a task's tier
+          "agents": {agent: {"default_model": str}},
+                                          # routing.agents, the per-agent
+                                          # default-model table
+                                          # default_model_for_agent() resolves
+                                          # against (D2/D3); {} when absent
+          "drain": {"agent": Optional[str], "fallback_agents": [str],
+                    "max_workers": int}, # routing.drain, the machine-wide
+                                          # drain defaults (D1); {} when absent
         }
 
     Resolution order for `agent_cli`/`agent_model`:
@@ -670,6 +680,8 @@ def resolve_routing(policy: Dict[str, Any], route: str, risk: str) -> Dict[str, 
             "roles": {},
             "fallback": flat_fallback,
             "purpose_tiers": {},
+            "agents": {},
+            "drain": {},
         }
     route_map = (routing.get("defaults") or {}).get(route)
     entry = route_map.get(risk) if isinstance(route_map, dict) else None
@@ -679,6 +691,8 @@ def resolve_routing(policy: Dict[str, Any], route: str, risk: str) -> Dict[str, 
         "roles": routing.get("roles") or {},
         "fallback": routing.get("fallback") or flat_fallback,
         "purpose_tiers": routing.get("purpose_tiers") or {},
+        "agents": routing.get("agents") or {},
+        "drain": routing.get("drain") or {},
     }
 
 
