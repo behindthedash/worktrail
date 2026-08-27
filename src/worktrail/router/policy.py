@@ -637,6 +637,18 @@ def _resolve_add_ons(parsed_local: Dict[str, Any], meta: Dict[str, Any]) -> Dict
     return raw
 
 
+def resolved_routing_file_path() -> Path:
+    """The machine-wide routing file `_resolve_routing()`/`routing_cli` actually
+    read from and write to: `WORKTRAIL_ROUTING_FILE` (or its legacy `GO_`
+    synonym) if set, else `default_routing_file()`. Any caller that names this
+    path in a message to the operator (e.g. an error pointing at
+    `worktrail-routing --init`) must resolve it through here, not through
+    `default_routing_file()` alone -- naming the unconditional default while an
+    override env var is actually in effect names the wrong file."""
+    override = env_setting(ROUTING_FILE_ENV)
+    return Path(override).expanduser() if override else default_routing_file()
+
+
 def _resolve_routing(repo: Path, parsed_local: Dict[str, Any], meta: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Resolve `policy["routing"]`: repo-local `routing:` block, else the
     machine-wide routing file (`WORKTRAIL_ROUTING_FILE`, default `worktrail_home()/routing.yaml`),
@@ -650,10 +662,7 @@ def _resolve_routing(repo: Path, parsed_local: Dict[str, Any], meta: Dict[str, A
     validated = _validate_routing(local_raw, meta)
     if validated is not None:
         return validated
-    routing_override = env_setting(ROUTING_FILE_ENV)
-    routing_path = (
-        Path(routing_override).expanduser() if routing_override else default_routing_file()
-    )
+    routing_path = resolved_routing_file_path()
     if not routing_path.is_file():
         return None
     try:

@@ -73,9 +73,9 @@ from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence
 from . import agent_capacity
 from ..router.policy import (
     OperatorConfigError,
-    default_routing_file,
     load_policy,
     resolve_routing,
+    resolved_routing_file_path,
 )
 from ..router.skill_dispatch import prepare_codex_child_environment
 from ..shared.homedir import env_setting, worktrail_home
@@ -383,7 +383,7 @@ def default_model_for_agent(agent: str) -> str:
         raise OperatorConfigError(
             f"no default model configured for agent {agent!r} -- "
             f"add it under routing.agents.{agent}.default_model in "
-            f"{default_routing_file()}, or run `worktrail-routing --init` "
+            f"{resolved_routing_file_path()}, or run `worktrail-routing --init` "
             "to write a starter config"
         )
     return model

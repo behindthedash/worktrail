@@ -21,8 +21,7 @@ import json
 import sys
 from pathlib import Path
 
-from ..shared.homedir import env_setting
-from .policy import ROUTING_FILE_ENV, _json_safe, default_routing_file, load_policy
+from .policy import _json_safe, load_policy, resolved_routing_file_path
 
 STARTER_ROUTING_YAML = """\
 # worktrail machine-wide routing config -- written by `worktrail-routing --init`.
@@ -78,11 +77,9 @@ drain:
 
 
 def _routing_file_path() -> Path:
-    """`WORKTRAIL_ROUTING_FILE` if set, else `default_routing_file()` --
-    mirrors `policy._resolve_routing()`'s own override precedence, so
-    `--init` writes exactly where `load_policy()` will look for it."""
-    override = env_setting(ROUTING_FILE_ENV)
-    return Path(override).expanduser() if override else default_routing_file()
+    """Where `--init` writes and `load_policy()` looks: `policy.resolved_routing_file_path()`,
+    the same override-aware resolution `_resolve_routing()` uses internally."""
+    return resolved_routing_file_path()
 
 
 def _init(force: bool) -> int:
