@@ -13,9 +13,8 @@ blocked point.
 
 A decision record is markdown for the human; it also has a machine contract on
 top, so the lifecycle stays auditable no matter which dispatch mode touched it.
-Guards (`spec-collision-check.md`, `brief-staleness-check.md`,
-`related-brief-collision-check.md`) emit every judgment call they hand to a
-human as a **provider-neutral, versioned JSON envelope** (schema
+Guards (`spec-collision-check.md`, `related-brief-collision-check.md`) emit every
+judgment call they hand to a human as a **provider-neutral, versioned JSON envelope** (schema
 `worktrail.pending-decision`, version `1`) under their result's
 `pending_decision` key — built by `workqueue/decisions.py`'s
 `pending_decision_envelope()`:

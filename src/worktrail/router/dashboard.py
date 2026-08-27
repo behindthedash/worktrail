@@ -251,9 +251,6 @@ _TAIL_KINDS = ("e2e", "cleanup")
 # was intentionally removed/made irrelevant and should not count as pending work.
 _TERMINAL_STATUSES = {"completed", "superseded", "optional"}
 
-# Stale spec detection: specs with no completed tasks and older than this threshold are marked stale.
-_STALE_THRESHOLD_DAYS = 7
-
 
 def _task_files(d: Path) -> List[Path]:
     """TASK-*.md files directly in `d`, skipping generated/aux files whose stem
@@ -642,96 +639,6 @@ def _pending_tail_stale(
         if _task_files_are_shipped(repo, files, tracked):
             stale.append(t["id"])
     return stale
-
-
-# --- stale spec detection ----------------------------------------------------
-
-
-def spec_creation_date(spec_dir: Path, repo: Path) -> Optional[datetime.date]:
-    """Extract the spec creation date from the spec file or git log fallback.
-
-    Reads the Date: or **Date**: field from the spec file in YYYY-MM-DD format.
-    Falls back to the git commit timestamp if no date header is found.
-    Returns None on parse failure.
-    """
-    spec_dir = Path(spec_dir)
-    repo = Path(repo)
-
-    # Find the spec file
-    spec_file = find_spec_file(spec_dir)
-    if not spec_file:
-        return None
-
-    try:
-        spec_text = spec_file.read_text(errors="ignore")
-    except (OSError, IOError):
-        return None
-
-    # Try to match **Date**: YYYY-MM-DD or Date: YYYY-MM-DD
-    date_match = re.search(r"\*\*Date\*\*:\s*(\d{4}-\d{2}-\d{2})", spec_text)
-    if not date_match:
-        date_match = re.search(r"^Date:\s*(\d{4}-\d{2}-\d{2})", spec_text, re.MULTILINE)
-
-    if date_match:
-        try:
-            date_str = date_match.group(1)
-            return datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
-        except (ValueError, AttributeError):
-            return None
-
-    # Fallback: git log
-    try:
-        result = subprocess.run(
-            ["git", "-C", str(repo), "log", "--follow", "--format=%ai", "-1", "--", str(spec_file)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            # Format: 2026-06-05 12:34:56 +0000, take first 10 chars as date
-            date_str = result.stdout.strip()[:10]
-            return datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
-    except (subprocess.SubprocessError, ValueError, OSError):
-        pass
-
-    return None
-
-
-def is_stale_spec(spec_dir: Path, repo: Path) -> bool:
-    """Check if a spec is stale: no completed tasks, all pending, and old.
-
-    Returns True when:
-    - No tasks are completed (completed == 0)
-    - At least one task exists (total > 0)
-    - Spec creation date is more than _STALE_THRESHOLD_DAYS days ago
-
-    Returns False otherwise or on any parse failure.
-    """
-    spec_dir = Path(spec_dir)
-    repo = Path(repo)
-
-    # Get task counts
-    counts = _count_tasks(spec_dir)
-    if not counts:
-        return False
-
-    completed = counts.get("completed", 0)
-    total = counts.get("total", 0)
-
-    # Must have 0 completed and > 0 total
-    if completed != 0 or total <= 0:
-        return False
-
-    # Check creation date
-    creation_date = spec_creation_date(spec_dir, repo)
-    if creation_date is None:
-        return False
-
-    # Check if more than _STALE_THRESHOLD_DAYS old
-    today = datetime.date.today()
-    age = (today - creation_date).days
-
-    return age > _STALE_THRESHOLD_DAYS
 
 
 # --- header / marker probes --------------------------------------------------
