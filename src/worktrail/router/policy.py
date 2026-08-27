@@ -30,6 +30,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 
 from ..shared.homedir import env_setting, worktrail_home
+from ..shared.operator_config import OperatorConfigError
 
 POLICY_RELPATH = ".worktrail/policy.yaml"
 # Prior conventions, checked in this order when POLICY_RELPATH is absent, so no
@@ -337,6 +338,75 @@ def _validate_agent_entry(value: Any, meta: Dict[str, Any], label: str) -> Optio
     return {"agent_cli": agent_cli, "agent_model": agent_model, "effort": effort}
 
 
+def _validate_routing_agents(raw: Any, meta: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """`routing.agents`: `{<agent>: {default_model: str}}` — the per-agent
+    default-model table `default_model_for_agent()` resolves against, replacing
+    the retired `model-defaults.yaml` (D2/D3). Unlike the other
+    `_validate_routing_*` tables, entries here are not `_validate_agent_entry`
+    shorthand — malformed entries are dropped via `meta["warnings"]`, never
+    raised, consistent with the sibling validators."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        meta["warnings"].append(f"routing.agents must be a mapping; got {raw!r} — ignored")
+        return {}
+    resolved: Dict[str, Dict[str, Any]] = {}
+    for agent, entry in raw.items():
+        if not isinstance(agent, str) or agent not in VALID_AGENT_CLIS:
+            meta["warnings"].append(
+                f"routing.agents: invalid agent literal {agent!r} "
+                f"(allowed: {VALID_AGENT_CLIS}); dropped")
+            continue
+        if not isinstance(entry, dict):
+            meta["warnings"].append(
+                f"routing.agents.{agent} must be a mapping ({{default_model: str}}); "
+                f"got {entry!r} — dropped")
+            continue
+        default_model = entry.get("default_model")
+        if not isinstance(default_model, str):
+            meta["warnings"].append(
+                f"routing.agents.{agent}.default_model must be a string; "
+                f"got {default_model!r} — dropped")
+            continue
+        resolved[agent] = {"default_model": default_model}
+    return resolved
+
+
+def _validate_routing_drain(raw: Any, meta: Dict[str, Any]) -> Dict[str, Any]:
+    """`routing.drain`: `{agent: str, fallback_agents: [str], max_workers: int>=1}` —
+    the machine-wide drain defaults formerly read from `config.json` by
+    `shared/operator_config.py::drain_config()`, consolidated into
+    `routing.yaml`. Ports that function's field-level shape checks, messages,
+    and loud-failure semantics verbatim: a malformed `drain` section is stated
+    operator intent, so it raises `OperatorConfigError` rather than warning
+    and falling back — unlike the sibling `_validate_routing_*` validators,
+    which drop-and-warn. Agent literal validity (is it a supported agent?)
+    stays the drain CLI's own check, same as `drain_config()`."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise OperatorConfigError(f"routing.drain must be a mapping; got {raw!r}")
+    agent = raw.get("agent")
+    if agent is not None and not isinstance(agent, str):
+        raise OperatorConfigError("routing.drain.agent must be a string")
+    fallback_agents = raw.get("fallback_agents", [])
+    if not isinstance(fallback_agents, list) or any(
+            not isinstance(f, str) for f in fallback_agents):
+        raise OperatorConfigError(
+            "routing.drain.fallback_agents must be a list of strings")
+    max_workers = raw.get("max_workers")
+    if max_workers is None:
+        max_workers = 2
+    elif not isinstance(max_workers, int) or isinstance(max_workers, bool) or max_workers < 1:
+        raise OperatorConfigError(
+            "routing.drain.max_workers must be a positive integer")
+    return {
+        "agent": agent,
+        "fallback_agents": list(fallback_agents),
+        "max_workers": max_workers,
+    }
+
+
 def _validate_routing_defaults(raw: Any, meta: Dict[str, Any]) -> Dict[str, Dict[str, Dict[str, Any]]]:
     """`routing.defaults`: `{route: {risk: agent-entry}}` — the `(route, risk)` table
     `resolve_routing()` consults for the primary agent/model."""
@@ -403,7 +473,16 @@ def _validate_routing_tiers(
 ) -> Dict[Tuple[str, Optional[str]], Dict[str, Any]]:
     """`routing.tiers`: `{<complexity>[/<domain>]: agent-entry}` — a
     `(complexity, domain)` match table that `resolve_tier_map()` turns into
-    `dispatch.agent_for`'s `tier_map` parameter."""
+    `dispatch.agent_for`'s `tier_map` parameter.
+
+    Also accepts the nested per-agent form `{<tier>[/<domain>]: {<agent>:
+    {model, effort}}}`, distinguished from the flat form by its value being a
+    mapping whose keys are entirely agent literals (`VALID_AGENT_CLIS`) rather
+    than an agent-entry's own shape (`agent_cli`/`agent`/`agent_model`/`model`)
+    — the two key sets never overlap, since no agent literal is itself an
+    agent-entry field name. Each nested agent expands to the same
+    `(f"{tier}-{agent}", domain)` key the flat form already produces, so
+    `resolve_tier_map()`'s output is unaffected by which shape a repo used."""
     if raw is None:
         return {}
     if not isinstance(raw, dict):
@@ -415,6 +494,18 @@ def _validate_routing_tiers(
             meta["warnings"].append(f"routing.tiers: key must be a string; got {key!r} — ignored")
             continue
         complexity, _, domain = key.partition("/")
+        if isinstance(entry, dict) and entry and all(k in VALID_AGENT_CLIS for k in entry):
+            for agent, agent_entry in entry.items():
+                if not isinstance(agent_entry, dict):
+                    meta["warnings"].append(
+                        f"routing.tiers.{key}.{agent} must be a mapping ({{model, effort}}); "
+                        f"got {agent_entry!r} — dropped")
+                    continue
+                normalized = _validate_agent_entry(
+                    {**agent_entry, "agent": agent}, meta, f"routing.tiers.{key}.{agent}")
+                if normalized is not None:
+                    resolved[(f"{complexity}-{agent}", domain or None)] = normalized
+            continue
         normalized = _validate_agent_entry(entry, meta, f"routing.tiers.{key}")
         if normalized is not None:
             resolved[(complexity, domain or None)] = normalized
@@ -467,7 +558,7 @@ def _validate_routing_fallback(raw: Any, meta: Dict[str, Any]) -> List[Dict[str,
 def _validate_routing(raw: Any, meta: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Validate a raw `routing:` mapping (from either `go-policy.yaml` or the
     machine-wide routing file) into
-    `{defaults, roles, tiers, fallback, purpose_tiers}`.
+    `{defaults, roles, tiers, fallback, purpose_tiers, agents, drain}`.
 
     Returns `None` when `raw` is absent, an empty mapping, or not a mapping at
     all (the last case appends a `_meta.warnings` entry) — callers treat `None`
@@ -487,6 +578,8 @@ def _validate_routing(raw: Any, meta: Dict[str, Any]) -> Optional[Dict[str, Any]
         "tiers": _validate_routing_tiers(raw.get("tiers"), meta),
         "fallback": _validate_routing_fallback(raw.get("fallback"), meta),
         "purpose_tiers": _validate_routing_purpose_tiers(raw.get("purpose_tiers"), meta),
+        "agents": _validate_routing_agents(raw.get("agents"), meta),
+        "drain": _validate_routing_drain(raw.get("drain"), meta),
     }
 
 
@@ -578,6 +671,14 @@ def resolve_routing(policy: Dict[str, Any], route: str, risk: str) -> Dict[str, 
           "purpose_tiers": {purpose: tier},  # routing.purpose_tiers, consulted
                                           # by dispatch.agent_for ahead of
                                           # complexity to resolve a task's tier
+          "agents": {agent: {"default_model": str}},
+                                          # routing.agents, the per-agent
+                                          # default-model table
+                                          # default_model_for_agent() resolves
+                                          # against (D2/D3); {} when absent
+          "drain": {"agent": Optional[str], "fallback_agents": [str],
+                    "max_workers": int}, # routing.drain, the machine-wide
+                                          # drain defaults (D1); {} when absent
         }
 
     Resolution order for `agent_cli`/`agent_model`:
@@ -600,6 +701,8 @@ def resolve_routing(policy: Dict[str, Any], route: str, risk: str) -> Dict[str, 
             "roles": {},
             "fallback": flat_fallback,
             "purpose_tiers": {},
+            "agents": {},
+            "drain": {},
         }
     route_map = (routing.get("defaults") or {}).get(route)
     entry = route_map.get(risk) if isinstance(route_map, dict) else None
@@ -609,6 +712,8 @@ def resolve_routing(policy: Dict[str, Any], route: str, risk: str) -> Dict[str, 
         "roles": routing.get("roles") or {},
         "fallback": routing.get("fallback") or flat_fallback,
         "purpose_tiers": routing.get("purpose_tiers") or {},
+        "agents": routing.get("agents") or {},
+        "drain": routing.get("drain") or {},
     }
 
 
