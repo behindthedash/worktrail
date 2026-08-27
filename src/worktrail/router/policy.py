@@ -30,7 +30,11 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 
 from ..shared.homedir import env_setting, worktrail_home
-from ..shared.operator_config import OperatorConfigError
+
+
+class OperatorConfigError(ValueError):
+    """A machine-wide operator config (routing.yaml) exists but cannot be honored."""
+
 
 POLICY_RELPATH = ".worktrail/policy.yaml"
 # Prior conventions, checked in this order when POLICY_RELPATH is absent, so no

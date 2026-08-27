@@ -125,12 +125,16 @@ from ..orchestrator import agent_capacity
 from ..runtime.selection import NoExecutionTarget, select_execution_target
 from ..orchestrator.integrate import _refresh_pr_labels
 from ..router import branch_selfcheck, dashboard, quarantine_selfcheck
-from ..router.policy import default_routing_file, load_policy, resolve_routing
+from ..router.policy import (
+    OperatorConfigError,
+    default_routing_file,
+    load_policy,
+    resolve_routing,
+)
 from ..router.policy_selfcheck import discover_repo_names
 from ..router.poll_run import unresolved_decision_ids as _poll_unresolved_decision_ids
 from ..router.pr_labels import ensure_pr_risk_label
 from ..shared.homedir import worktrail_home
-from ..shared.operator_config import OperatorConfigError
 from ..taskformats.devkit.schema import set_status_completed
 from ..taskformats.openspec.schema import STATUS_COMPLETED, parse_tasks_md
 from ..workqueue import decisions as decisions_mod
