@@ -1015,6 +1015,23 @@ def _iter_openspec_delta_sections(text: str) -> Iterator[tuple[str, str]]:
         yield section.group(1), text[section.end():end]
 
 
+def _openspec_delta_current_requirements(kind: str, body: str) -> set[str]:
+    """Return the requirement names a delta `(kind, body)` section declares as current.
+
+    `ADDED`/`MODIFIED` bodies declare current requirements by heading; `RENAMED` bodies
+    declare them via their `TO:` values. `REMOVED` bodies declare none.
+    """
+    if kind in {"ADDED", "MODIFIED"}:
+        return {match.strip() for match in _OPENSPEC_REQUIREMENT.findall(body)}
+    if kind == "RENAMED":
+        return {
+            _rename_requirement_name(value)
+            for direction, value in _OPENSPEC_RENAME.findall(body)
+            if direction == "TO"
+        }
+    return set()
+
+
 def _openspec_delta_reconciled(change_dir: Path) -> bool:
     """Whether every structural declaration in an OpenSpec delta is canonical.
 
