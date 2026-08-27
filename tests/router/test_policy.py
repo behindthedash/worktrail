@@ -956,13 +956,18 @@ class Routing(unittest.TestCase):
                           {"agent_cli": "openrouter", "agent_model": None, "effort": None, "api": True}])
 
     def test_validate_routing_tiers_complexity_and_domain(self):
-        # AC-CHG-004
+        # AC-CHG-004. The flat `<complexity>/<domain>` form itself still
+        # resolves correctly -- task 2.2 (consolidate-operator-config-into-
+        # routing) adds a deprecation warning on top, asserted separately.
         meta = {"warnings": []}
         resolved = _validate_routing_tiers(
             {"hard/backend": {"agent": "codex", "model": "gpt-5"}}, meta)
         self.assertEqual(resolved,
                          {("hard", "backend"): {"agent_cli": "codex", "agent_model": "gpt-5", "effort": None}})
-        self.assertEqual(meta["warnings"], [])
+        self.assertEqual(meta["warnings"], [
+            "routing.tiers.hard/backend: flat form is deprecated -- use the "
+            "nested tiers.hard.<agent> form instead",
+        ])
 
     def test_validate_routing_tiers_no_domain_yields_none(self):
         # AC-CHG-005
