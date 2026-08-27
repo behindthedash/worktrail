@@ -226,19 +226,17 @@ def _purpose_prompt_additions(purpose_tiers: Dict[str, str]) -> tuple[str, str]:
 
 
 def _resolve_purpose_tiers(repo: Path) -> Dict[str, str]:
-    """Resolve the target repo's `routing.purpose_tiers` (policy.py, task 3) --
-    the `{purpose: tier}` vocabulary a repo declares for task-purpose
-    classification. `load_policy()` already validates this table (a plain
-    string-to-string map dropping malformed entries), so this is a read, not a
-    second validation pass. Empty when the repo has none configured; that is
-    what tells the PROMPT builder (task 2.2) whether to request `purpose` at
-    all.
+    """Resolve the target repo's `routing.purposes` (renamed from
+    `purpose_tiers`, routing-target-selector task 1.3) -- the `{purpose:
+    tier}` vocabulary a repo declares for task-purpose classification.
+    `load_policy()` already validates this table (a plain string-to-string
+    map dropping malformed entries), so this is a read, not a second
+    validation pass. Empty when the repo has none configured; that is what
+    tells the PROMPT builder (task 2.2) whether to request `purpose` at all.
     """
-    from worktrail.router import policy as router_policy
+    from worktrail.router.policy import load_policy, resolve_routing
 
-    policy = router_policy.load_policy(repo)
-    routing = policy.get("routing") or {}
-    return routing.get("purpose_tiers") or {}
+    return resolve_routing(load_policy(repo)).get("purposes") or {}
 
 
 def _extract_json(text: str) -> Optional[Dict[str, Any]]:
@@ -349,6 +347,33 @@ def _validate(
     return [seen[i] for i in sorted(seen)], [], warnings
 
 
+def _explicit_cell(routing: Dict[str, Any], agent: Optional[str], model: Optional[str]):
+    """An explicit `--agent`/`--model` pair is an explicit-cell override: unlike
+    the pre-selector CLI, `agent`'s value now names a `routing.targets` entry,
+    not a harness, and `select_cell()` is skipped entirely once one is named
+    this way (design D3 walks a tier row; naming a target and model directly
+    is the escape hatch around that walk). `agent` naming no configured
+    target -- including every repo with no `routing.targets` at all -- keeps
+    the pre-selector meaning of a literal harness/provider name, so existing
+    `--agent claude` invocations keep working unchanged.
+    """
+    if agent is None:
+        return None
+    from worktrail.runtime import Cell
+
+    target = (routing.get("targets") or {}).get(agent)
+    if target is None:
+        return Cell(target=agent, harness=agent, model=model, effort=None, pool=None, auth=None)
+    return Cell(
+        target=agent,
+        harness=target.get("harness"),
+        model=model,
+        effort=None,
+        pool=target.get("pool"),
+        auth=target.get("auth"),
+    )
+
+
 def _resolve_spawn_policy(
     repo: "str | Path",
     *,
@@ -356,18 +381,51 @@ def _resolve_spawn_policy(
     model: Optional[str] = None,
     fallback_agent: Optional["str | Sequence[str]"] = None,
 ) -> tuple[str, str, List[str]]:
-    """Resolve the compile worker's agent/model/fallback chain from policy.
+    """Resolve the compile worker's agent/model/fallback chain.
 
-    Explicit invocation values still win when provided. Missing values fall
-    back through repo policy, then the existing per-agent model defaults, and
-    the routing table's fallback chain.
+    An explicit `agent`/`model` pair is an explicit-cell override
+    (`_explicit_cell`) and skips selection outright. Otherwise the compile
+    role's tier (`routing.roles.compile.tier`, else `routing.default_tier`)
+    is walked by `select_cell()` (design D3) across `routing.targets` in
+    preference order -- "a single selector walks a tier row across targets in
+    preference order". A repo with no matching tier/cell at all -- including
+    every repo with no `routing.targets`/`routing.tiers` configured -- falls
+    back to the pre-selector defaults: the flat `policy.agent_cli`/
+    `policy.agent_model` keys, then `claude` and the config-file per-agent
+    model default. `fallback_agent` (`--fallback-chain`) is independent of
+    cell resolution either way: it is spawnlib's own harness-level retry
+    chain, not part of the routing table.
     """
     from worktrail.orchestrator import spawnlib
     from worktrail.router import invocation_context
     from worktrail.router.policy import load_policy, resolve_routing
+    from worktrail.runtime import select_cell
+    from worktrail.runtime.selection import NoExecutionTarget
 
     repo = Path(repo)
     policy = load_policy(repo)
+    routing = resolve_routing(policy)
+
+    if fallback_agent is None:
+        fallback_chain: List[str] = []
+    elif isinstance(fallback_agent, str):
+        fallback_chain = [fallback_agent]
+    else:
+        fallback_chain = [hop for hop in fallback_agent if hop]
+
+    cell = _explicit_cell(routing, agent, model)
+    if cell is None:
+        tier = ((routing.get("roles") or {}).get("compile") or {}).get("tier") \
+            or routing.get("default_tier")
+        if tier:
+            try:
+                cell = select_cell(routing, tier)
+            except NoExecutionTarget:
+                cell = None
+
+    if cell is not None:
+        resolved_model = cell.model or spawnlib.default_model_for_agent(cell.harness)
+        return cell.harness, resolved_model, fallback_chain
 
     try:
         resolved_agent = invocation_context.resolve(
@@ -378,20 +436,8 @@ def _resolve_spawn_policy(
         print(f"warning: {exc}; falling back to 'claude'", file=sys.stderr)
         resolved_agent = "claude"
 
-    resolved_routing = resolve_routing(policy, route="", risk="")
-    resolved_model = model or resolved_routing.get("agent_model")
-    resolved_model = resolved_model or spawnlib.default_model_for_agent(resolved_agent)
-
-    if fallback_agent is None:
-        fallback_chain = [
-            entry["agent_cli"]
-            for entry in resolved_routing["fallback"]
-            if entry.get("agent_cli")
-        ]
-    elif isinstance(fallback_agent, str):
-        fallback_chain = [fallback_agent]
-    else:
-        fallback_chain = [hop for hop in fallback_agent if hop]
+    resolved_model = model or policy.get("agent_model") \
+        or spawnlib.default_model_for_agent(resolved_agent)
 
     return resolved_agent, resolved_model, fallback_chain
 
@@ -416,29 +462,23 @@ def _default_spawn(
 ) -> str:
     from worktrail.orchestrator import spawnlib
 
-    if agent is None or model is None or fallback_agent is None:
-        resolved_agent, resolved_model, resolved_fallback = _resolve_spawn_policy(
-            cwd,
-            agent=agent,
-            model=model,
-            fallback_agent=fallback_agent,
-        )
-        agent = agent or resolved_agent
-        model = model or resolved_model
-        if fallback_agent is None:
-            fallback_agent = resolved_fallback
-
-    fallback_chain = spawnlib._normalize_fallback_chain(agent or "claude", fallback_agent)
+    resolved_agent, resolved_model, resolved_fallback = _resolve_spawn_policy(
+        cwd,
+        agent=agent,
+        model=model,
+        fallback_agent=fallback_agent,
+    )
+    fallback_chain = spawnlib._normalize_fallback_chain(resolved_agent, resolved_fallback)
 
     log(
-        f"run plan: spawn policy resolved agent={agent or 'claude'} "
-        f"model={model} fallback_hops={len(fallback_chain)}"
+        f"run plan: spawn policy resolved agent={resolved_agent} "
+        f"model={resolved_model} fallback_hops={len(fallback_chain)}"
     )
     return spawnlib.spawn_agent(
         prompt,
         cwd,
-        agent=agent or "claude",
-        model=model,
+        agent=resolved_agent,
+        model=resolved_model,
         fallback_agent=fallback_chain,
         timeout=timeout,
         log=log,
@@ -591,8 +631,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         description="Compile a spec/change into a cached RunPlan (file scope + dependency edges)."
     )
     ap.add_argument("spec", help="path to the spec or OpenSpec change directory")
-    ap.add_argument("--agent", default=None, help="override the compile spawn agent")
-    ap.add_argument("--model", default=None, help="override the compile spawn model")
+    ap.add_argument(
+        "--agent",
+        default=None,
+        help="explicit-cell override: a routing.targets name (falls back to a literal "
+        "harness/provider name if it names no configured target)",
+    )
+    ap.add_argument("--model", default=None, help="explicit-cell override: the model to spawn")
     ap.add_argument(
         "--fallback-chain",
         default=None,
