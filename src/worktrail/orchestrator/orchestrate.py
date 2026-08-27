@@ -49,7 +49,16 @@ _SKILL = _HERE.parent
 DEFAULT_FIXTURE = _SKILL / ".fixtures" / "toy-spec.json"
 DEFAULT_GOLDEN = _SKILL / ".fixtures" / "toy-spec.golden.txt"
 
-TERMINAL = {"done", "failed", "escalated"}
+# "completed" (OpenSpec's own on-disk terminal status, taskformats/openspec/schema.py
+# STATUS_COMPLETED; also devkit's TaskStatus.COMPLETED) is distinct from "done" (this
+# module's own in-memory terminal marker for a task the live run itself drove to
+# completion) but both mean "nothing left to do" -- coordinator.DONE already treats
+# them as equivalent. A task loaded fresh from disk already marked completed (e.g. a
+# tail/cleanup task whose checkbox was ticked before this run started) must short-
+# circuit every `while status not in TERMINAL` guard below without dispatching a
+# worker; omitting "completed" here crashed drive() with `KeyError: 'completed'` at
+# the ROLE_BY_STATUS lookup (confirmed live 2026-08-27).
+TERMINAL = {"done", "completed", "failed", "escalated"}
 ROLE_BY_STATUS = {
     "pending": dispatch.ROLE_IMPLEMENT,
     "claimed": dispatch.ROLE_IMPLEMENT,
