@@ -3186,7 +3186,9 @@ def _run_main(tmp_path, monkeypatch, argv_extra=(), config_payload=None):
     home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("WORKTRAIL_HOME", str(home))
     if config_payload is not None:
-        (home / "config.json").write_text(config_payload, encoding="utf-8")
+        routing_file = home / "routing.yaml"
+        monkeypatch.setenv("WORKTRAIL_ROUTING_FILE", str(routing_file))
+        routing_file.write_text(config_payload, encoding="utf-8")
     wq = tmp_path / "work_queue.py"
     wq.write_text("# placeholder\n")
     captured = {}
@@ -3235,14 +3237,15 @@ def test_main_rejects_unsupported_config_agent(tmp_path, monkeypatch, capsys):
     assert rc == 2
     assert config is None
     err = capsys.readouterr().err
-    assert "deepseek" in err and "config.json" in err
+    assert "deepseek" in err and "routing.yaml" in err
 
 
 def test_main_fails_loud_on_malformed_config(tmp_path, monkeypatch, capsys):
-    rc, config = _run_main(tmp_path, monkeypatch, config_payload="{broken")
+    rc, config = _run_main(
+        tmp_path, monkeypatch, config_payload='{"drain": "not-a-mapping"}')
     assert rc == 2
     assert config is None
-    assert "not valid JSON" in capsys.readouterr().err
+    assert "routing.drain must be a mapping" in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------

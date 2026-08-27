@@ -42,7 +42,7 @@
 
 ## 4. Drain reads routing (D1) and selects real models (D4)
 
-- [ ] 4.1 Replace `drain.py`'s `operator_drain_config()` import with `resolve_routing()`'s
+- [x] 4.1 Replace `drain.py`'s `operator_drain_config()` import with `resolve_routing()`'s
       `drain` block; preserve CLI > config > built-in precedence and the exit-2 refusal on an
       unsupported agent name, now naming `routing.yaml`.
 - [ ] 4.2 Add `routing_candidates(routing)` (in `runtime/selection.py` or a new
