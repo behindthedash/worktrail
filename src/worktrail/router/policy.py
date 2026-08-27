@@ -540,63 +540,87 @@ def _validate_routing_purpose_tiers(raw: Any, meta: Dict[str, Any]) -> Dict[str,
 
 
 def _validate_routing_tiers(
-    raw: Any, meta: Dict[str, Any]
-) -> Dict[Tuple[str, Optional[str]], Dict[str, Any]]:
-    """`routing.tiers`: `{<complexity>[/<domain>]: agent-entry}` — a
-    `(complexity, domain)` match table that `resolve_tier_map()` turns into
-    `dispatch.agent_for`'s `tier_map` parameter.
+    raw: Any, targets: Dict[str, Dict[str, Any]], meta: Dict[str, Any]
+) -> Dict[str, Dict[str, Dict[str, Any]]]:
+    """`routing.tiers`: `{<row>: {<target>: {model, effort?}}}` — tier rows
+    keyed by declared target name (`routing.targets`, task 1.1), replacing the
+    old `(complexity, domain)`-keyed agent-entry table.
 
-    Also accepts the nested per-agent form `{<tier>[/<domain>]: {<agent>:
-    {model, effort}}}`, distinguished from the flat form by its value being a
-    mapping whose keys are entirely agent literals (`VALID_AGENT_CLIS`) rather
-    than an agent-entry's own shape (`agent_cli`/`agent`/`agent_model`/`model`)
-    — the two key sets never overlap, since no agent literal is itself an
-    agent-entry field name. Each nested agent expands to the same
-    `(f"{tier}-{agent}", domain)` key the flat form already produces, so
-    `resolve_tier_map()`'s output is unaffected by which shape a repo used.
+    A row is a tier name (e.g. `t1-deep`); each cell names one of that row's
+    declared targets and the model (required) / effort (optional) to use when
+    the selector (task 2.1) walks that target for that tier. A target with no
+    cell in a given row simply cannot serve that tier — the selector skips it;
+    this is not itself a warning-worthy condition, since not every target need
+    cover every tier.
 
-    The flat form is deprecated in favor of the nested form; each flat entry
-    resolved appends a `meta["warnings"]` entry pointing at its nested
-    replacement, without dropping the entry.
-
-    Flat and nested entries are resolved in two passes -- all flat keys, then
-    all nested keys -- rather than in raw YAML declaration order, so a nested
-    entry always overwrites a flat entry for the same `(tier-agent, domain)`
-    key regardless of which one a repo happened to list first."""
+    A cell naming an undeclared target (not a key of `targets`, the already-
+    validated `_validate_routing_targets()` output) is dropped with a warning
+    — `routing.targets` is the single source of truth for what a target *is*,
+    so a typo'd or removed target name here is a local, per-cell mistake, not
+    a `routing.targets` problem.
+    """
     if raw is None:
         return {}
     if not isinstance(raw, dict):
         meta["warnings"].append(f"routing.tiers must be a mapping; got {raw!r} — ignored")
         return {}
-    resolved: Dict[Tuple[str, Optional[str]], Dict[str, Any]] = {}
-    nested_keys: List[str] = []
-    for key, entry in raw.items():
-        if not isinstance(key, str):
-            meta["warnings"].append(f"routing.tiers: key must be a string; got {key!r} — ignored")
+    resolved: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    for row, cells in raw.items():
+        if not isinstance(row, str):
+            meta["warnings"].append(f"routing.tiers: key must be a string; got {row!r} — ignored")
             continue
-        if isinstance(entry, dict) and entry and all(k in VALID_AGENT_CLIS for k in entry):
-            nested_keys.append(key)
-            continue
-        complexity, _, domain = key.partition("/")
-        normalized = _validate_agent_entry(entry, meta, f"routing.tiers.{key}")
-        if normalized is not None:
-            resolved[(complexity, domain or None)] = normalized
+        if not isinstance(cells, dict):
             meta["warnings"].append(
-                f"routing.tiers.{key}: flat form is deprecated -- use the nested "
-                f"tiers.{complexity}.<agent> form instead")
-    for key in nested_keys:
-        complexity, _, domain = key.partition("/")
-        for agent, agent_entry in raw[key].items():
-            if not isinstance(agent_entry, dict):
+                f"routing.tiers.{row} must be a mapping of target -> {{model, effort?}}; "
+                f"got {cells!r} — ignored")
+            continue
+        row_resolved: Dict[str, Dict[str, Any]] = {}
+        for target, cell in cells.items():
+            if not isinstance(target, str) or target not in targets:
                 meta["warnings"].append(
-                    f"routing.tiers.{key}.{agent} must be a mapping ({{model, effort}}); "
-                    f"got {agent_entry!r} — dropped")
+                    f"routing.tiers.{row}.{target!r}: undeclared target "
+                    "(not in routing.targets); dropped")
                 continue
-            normalized = _validate_agent_entry(
-                {**agent_entry, "agent": agent}, meta, f"routing.tiers.{key}.{agent}")
-            if normalized is not None:
-                resolved[(f"{complexity}-{agent}", domain or None)] = normalized
+            if not isinstance(cell, dict):
+                meta["warnings"].append(
+                    f"routing.tiers.{row}.{target} must be a mapping ({{model, effort?}}); "
+                    f"got {cell!r} — dropped")
+                continue
+            model = cell.get("model")
+            if not isinstance(model, str):
+                meta["warnings"].append(
+                    f"routing.tiers.{row}.{target}.model must be a string; "
+                    f"got {model!r} — dropped")
+                continue
+            effort = cell.get("effort")
+            if effort is not None and not isinstance(effort, str):
+                meta["warnings"].append(
+                    f"routing.tiers.{row}.{target}.effort must be a string; dropped")
+                effort = None
+            row_resolved[target] = {"model": model, "effort": effort}
+        if row_resolved:
+            resolved[row] = row_resolved
     return resolved
+
+
+def _validate_routing_default_tier(
+    raw: Any, tiers: Dict[str, Dict[str, Dict[str, Any]]], meta: Dict[str, Any]
+) -> Optional[str]:
+    """`routing.default_tier`: the tier row used absent any more specific
+    role/purpose/task tier (`dispatch.tier_for()`, task 4.1). Must name a
+    declared row of the already-resolved `routing.tiers` table; anything else
+    resolves to `None` with a warning rather than silently pointing dispatch
+    at a row with no cells."""
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        meta["warnings"].append(f"routing.default_tier must be a string; got {raw!r} — ignored")
+        return None
+    if raw not in tiers:
+        meta["warnings"].append(
+            f"routing.default_tier {raw!r} does not name a declared routing.tiers row; ignored")
+        return None
+    return raw
 
 
 def _validate_routing_fallback(raw: Any, meta: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -645,11 +669,16 @@ def _validate_routing_fallback(raw: Any, meta: Dict[str, Any]) -> List[Dict[str,
 def _validate_routing(raw: Any, meta: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Validate a raw `routing:` mapping (from either `go-policy.yaml` or the
     machine-wide routing file) into
-    `{defaults, roles, tiers, fallback, purpose_tiers, agents, drain}`.
+    `{targets, defaults, roles, tiers, default_tier, fallback, purpose_tiers,
+    agents, drain}`.
 
     Returns `None` when `raw` is absent, an empty mapping, or not a mapping at
     all (the last case appends a `_meta.warnings` entry) — callers treat `None`
     as "fall through to the next source" (AC-003/AC-004).
+
+    `targets` is resolved first: `tiers`' cells are only valid when they name
+    a target already declared there, and `default_tier` is only valid when it
+    names a row `tiers` actually resolved.
     """
     if raw is None:
         return None
@@ -659,10 +688,14 @@ def _validate_routing(raw: Any, meta: Dict[str, Any]) -> Optional[Dict[str, Any]
         return None
     if not raw:
         return None
+    targets = _validate_routing_targets(raw.get("targets"), meta)
+    tiers = _validate_routing_tiers(raw.get("tiers"), targets, meta)
     return {
+        "targets": targets,
         "defaults": _validate_routing_defaults(raw.get("defaults"), meta),
         "roles": _validate_routing_roles(raw.get("roles"), meta),
-        "tiers": _validate_routing_tiers(raw.get("tiers"), meta),
+        "tiers": tiers,
+        "default_tier": _validate_routing_default_tier(raw.get("default_tier"), tiers, meta),
         "fallback": _validate_routing_fallback(raw.get("fallback"), meta),
         "purpose_tiers": _validate_routing_purpose_tiers(raw.get("purpose_tiers"), meta),
         "agents": _validate_routing_agents(raw.get("agents"), meta),
@@ -813,18 +846,13 @@ def resolve_routing(policy: Dict[str, Any], route: str, risk: str) -> Dict[str, 
     }
 
 
-def resolve_tier_map(policy: Dict[str, Any]) -> Dict[Tuple[str, Optional[str]], Dict[str, Any]]:
-    """Resolve `policy["routing"]["tiers"]` into the dispatch-ready
-    `{(complexity, domain): {"agent_cli", "agent_model"}}` mapping consumed by
-    `dispatch.agent_for`'s `tier_map` parameter (TASK-CHG-002).
+def resolve_tier_map(policy: Dict[str, Any]) -> Dict[str, Dict[str, Dict[str, Any]]]:
+    """Resolve `policy["routing"]["tiers"]` into the selector-ready
+    `{row: {target: {"model", "effort"}}}` mapping (task 2.1's `select_cell()`
+    walks one row across its declared targets in preference order).
 
     A pure passthrough of the already-normalized table `_validate_routing_tiers()`
-    built eagerly at `load_policy()` time: both the flat `<tier>-<agent>` form and
-    the nested `tiers.<tier>.<agent>: {model, effort}` form are expanded there into
-    the same `(f"{tier}-{agent}", domain)` tuple keys `dispatch.agent_for`'s
-    `tier_map.get((f"{tier}-{agent}", domain))` lookup expects, so this function's
-    output is identical regardless of which shape a repo declared (D6) --
-    `dispatch.py` itself needs no changes.
+    built eagerly at `load_policy()` time.
 
     Args:
         policy: the dict returned by `load_policy()`.
@@ -841,12 +869,11 @@ def resolve_tier_map(policy: Dict[str, Any]) -> Dict[Tuple[str, Optional[str]], 
 
 
 def _json_safe(obj: Any) -> Any:
-    """Recursively convert `policy["routing"]["tiers"]`'s `(complexity, domain)`
-    tuple keys (built eagerly by `_validate_routing_tiers()`) back into their
-    `"complexity/domain"` (or bare `"complexity"`) string form so `load_policy()`'s
-    return value can be `json.dumps`-ed. Only affects the CLI `--json` display
-    path — `resolve_tier_map()` and every other in-memory consumer still read the
-    tuple-keyed dict produced by `load_policy()` directly, unchanged."""
+    """Recursively convert any tuple dict key to its `"a/b"` (or bare `"a"`)
+    string form so `load_policy()`'s return value can be `json.dumps`-ed.
+    `routing.tiers` is string-keyed by row/target since `_validate_routing_tiers()`'s
+    1.2 rewrite, so this is now a defensive no-op for it specifically; kept
+    generic in case a future validator stores another non-JSON-safe key."""
     if isinstance(obj, dict):
         safe: Dict[Any, Any] = {}
         for key, value in obj.items():
