@@ -415,8 +415,11 @@ def _with_default_setting_sources(
 
 def build_cmd(
     prompt: str,
-    cell: Cell,
+    cell: Optional[Cell] = None,
     *,
+    agent: Optional[str] = None,
+    model: Optional[str] = None,
+    effort: Optional[str] = None,
     extra_args: Optional[Sequence[str]] = None,
     resume_session_id: Optional[str] = None,
     output_last_message: Optional[str] = None,
@@ -425,7 +428,18 @@ def build_cmd(
     CLI, `cell.model`/`cell.effort` are translated per-harness exactly as before,
     and `cell.pool` decides claude's auth lane -- `--bare` is appended only for
     a claude `api`-pool cell (`subscription` omits it, matching every existing
-    claude spawn); opencode/codex are unaffected by pool."""
+    claude spawn); opencode/codex are unaffected by pool.
+
+    For call sites that predate the `Cell` selector (`check_agent_contract.py`,
+    `provider_command_compatibility.py`) and have no target/pool to resolve,
+    *cell* may be omitted in favor of the legacy `agent=`/`model=`/`effort=`
+    keywords, which are adapted onto a `subscription`-pool `Cell` via
+    `_legacy_spawn_cell` -- byte-identical to this function's pre-`Cell`
+    argv for every such caller."""
+    if cell is None:
+        if agent is None:
+            raise TypeError("build_cmd() requires either a Cell or agent=...")
+        cell = _legacy_spawn_cell(agent, model, effort)
     agent = cell.harness
     if agent not in SUPPORTED_AGENTS:
         raise ValueError(f"unsupported agent: {agent}")
