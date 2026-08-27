@@ -1234,6 +1234,10 @@ def _safe_detect_openspec(change_dir: Path) -> Dict[str, Any]:
         }
         if pending and stale_ids:
             info["stale_task_ids"] = stale_ids
+        repo = change_dir.parent.parent.parent
+        delta_drift = _openspec_delta_drift(change_dir, repo)
+        if delta_drift:
+            info["delta_drift"] = delta_drift
         return info
     except Exception as e:  # noqa: BLE001 — one malformed change must not kill /go
         return {
