@@ -59,15 +59,15 @@
       path and `MODIFIED Requirement: Foo` (or `ADDED`, or `RENAMED ... TO: Foo`) — assert
       `_safe_detect_openspec` (or `_openspec_delta_drift` directly) reports the drift with the
       correct `archived_change_id`.
-- [ ] 5.2 Add a test where the archived change is committed *before* the open change's delta's
+- [x] 5.2 Add a test where the archived change is committed *before* the open change's delta's
       last commit — assert no drift is reported.
-- [ ] 5.3 Add a test where the open change's delta file is uncommitted (working-tree only, no
+- [x] 5.3 Add a test where the open change's delta file is uncommitted (working-tree only, no
       prior commit) — assert no drift is reported even though a matching archived change exists.
-- [ ] 5.4 Add a test where no archived change exists for the capability path at all — assert no
+- [x] 5.4 Add a test where no archived change exists for the capability path at all — assert no
       drift is reported and the function does not raise.
-- [ ] 5.5 Add a test asserting that a drift finding does not change the reported `stage` for a
+- [x] 5.5 Add a test asserting that a drift finding does not change the reported `stage` for a
       change that is otherwise `ready-to-implement`, `stale-bookkeeping`, or `complete` — the
       `delta_drift` field is additive only.
-- [ ] 5.6 [cleanup] Run `PYTHONPATH=src pytest -q` and
+- [x] 5.6 [cleanup] Run `PYTHONPATH=src pytest -q` and
       `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` and confirm both are
       green.

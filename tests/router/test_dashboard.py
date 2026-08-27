@@ -897,6 +897,20 @@ class OpenSpecDeltaDrift(unittest.TestCase):
             env=env,
         )
 
+    def _cache(self, change: Path, files_by_task: dict[str, list[str]]) -> None:
+        spec_id, tasks = dashboard._taskformats.load_spec(change)
+        fp = runplan.fingerprint(change, tasks)
+        plan = runplan.RunPlan(
+            spec_id=spec_id,
+            fingerprint=fp,
+            source=runplan.SOURCE_COMPILED,
+            tasks=tuple(
+                runplan.TaskPlan(id=task_id, files=tuple(files))
+                for task_id, files in files_by_task.items()
+            ),
+        )
+        runplan.store(runplan_compile.default_cache_dir(self.repo), plan)
+
     def test_archived_sibling_after_open_delta_reports_drift(self):
         change = self.repo / "openspec" / "changes" / "update-export"
         delta = change / "specs" / "export" / "spec.md"
@@ -957,6 +971,146 @@ class OpenSpecDeltaDrift(unittest.TestCase):
             result.get("delta_drift"),
             [{"requirement": "Foo", "capability": "export", "archived_change_id": archived_id}],
         )
+
+    def test_archived_sibling_before_open_delta_reports_no_drift(self):
+        change = self.repo / "openspec" / "changes" / "update-export"
+        delta = change / "specs" / "export" / "spec.md"
+        delta.parent.mkdir(parents=True)
+
+        archived_id = "2026-01-01-rework-export"
+        archived = (
+            self.repo / "openspec" / "changes" / "archive" / archived_id
+            / "specs" / "export" / "spec.md"
+        )
+        archived.parent.mkdir(parents=True)
+        archived.write_text("## MODIFIED Requirements\n\n### Requirement: Foo\n")
+        self._commit_at([archived], "archived change delta", 1_000_000_000)
+
+        delta.write_text("## MODIFIED Requirements\n\n### Requirement: Foo\n")
+        self._commit_at([delta], "open change delta", 1_000_000_100)
+
+        drift = dashboard._openspec_delta_drift(change, self.repo)
+
+        self.assertEqual(drift, [])
+
+    def test_uncommitted_open_delta_reports_no_drift(self):
+        change = self.repo / "openspec" / "changes" / "update-export"
+        delta = change / "specs" / "export" / "spec.md"
+        delta.parent.mkdir(parents=True)
+        delta.write_text("## MODIFIED Requirements\n\n### Requirement: Foo\n")
+
+        archived_id = "2026-01-01-rework-export"
+        archived = (
+            self.repo / "openspec" / "changes" / "archive" / archived_id
+            / "specs" / "export" / "spec.md"
+        )
+        archived.parent.mkdir(parents=True)
+        archived.write_text("## MODIFIED Requirements\n\n### Requirement: Foo\n")
+        self._commit_at([archived], "archived change delta", 1_000_000_000)
+
+        drift = dashboard._openspec_delta_drift(change, self.repo)
+
+        self.assertEqual(drift, [])
+
+    def test_no_archived_sibling_reports_no_drift(self):
+        change = self.repo / "openspec" / "changes" / "update-export"
+        delta = change / "specs" / "export" / "spec.md"
+        delta.parent.mkdir(parents=True)
+        delta.write_text("## MODIFIED Requirements\n\n### Requirement: Foo\n")
+        self._commit_at([delta], "open change delta", 1_000_000_000)
+
+        drift = dashboard._openspec_delta_drift(change, self.repo)
+
+        self.assertEqual(drift, [])
+
+    def test_delta_drift_is_additive_and_does_not_change_stage(self):
+        """delta_drift must not perturb the stage state machine: a change that
+        would independently land on ready-to-implement, stale-bookkeeping, or
+        complete must still report that same stage once a drift finding is
+        attached (spec modified-requirement-drift-detection)."""
+
+        def _drift(change: Path, capability: str, archived_id: str) -> tuple[Path, Path]:
+            delta = change / "specs" / capability / "spec.md"
+            delta.parent.mkdir(parents=True)
+            delta.write_text("## MODIFIED Requirements\n\n### Requirement: Foo\n")
+            archived = (
+                self.repo / "openspec" / "changes" / "archive" / archived_id
+                / "specs" / capability / "spec.md"
+            )
+            archived.parent.mkdir(parents=True)
+            archived.write_text("## MODIFIED Requirements\n\n### Requirement: Foo\n")
+            return delta, archived
+
+        with self.subTest(stage="ready-to-implement"):
+            change = self.repo / "openspec" / "changes" / "update-export-ready"
+            change.mkdir(parents=True)
+            (change / "proposal.md").write_text("# Update exporter\n")
+            (change / "tasks.md").write_text("## 1. Export\n\n- [ ] 1.1 Update exporter\n")
+            delta, archived = _drift(change, "export-ready", "2026-01-01-rework-export-ready")
+            self._commit_at(
+                [change / "proposal.md", change / "tasks.md", delta],
+                "open change ready",
+                1_000_000_000,
+            )
+            self._commit_at([archived], "archived ready", 1_000_000_100)
+
+            result = dashboard._safe_detect_openspec(change)
+
+            self.assertEqual(result["stage"], "ready-to-implement")
+            self.assertEqual(
+                result.get("delta_drift"),
+                [{"requirement": "Foo", "capability": "export-ready", "archived_change_id": "2026-01-01-rework-export-ready"}],
+            )
+
+        with self.subTest(stage="stale-bookkeeping"):
+            change = self.repo / "openspec" / "changes" / "update-export-stale"
+            change.mkdir(parents=True)
+            (change / "proposal.md").write_text("# Update exporter\n")
+            (change / "tasks.md").write_text("## 1. Export\n\n- [ ] 1.1 Update exporter\n")
+            delta, archived = _drift(change, "export-stale", "2026-01-01-rework-export-stale")
+            self._commit_at(
+                [change / "proposal.md", change / "tasks.md", delta],
+                "open change stale",
+                1_000_000_000,
+            )
+            self._cache(change, {"1.1": ["src/export.py"]})
+            shipped = self.repo / "src" / "export.py"
+            shipped.parent.mkdir(parents=True, exist_ok=True)
+            shipped.write_text("shipped\n")
+            self._commit_at([shipped], "ship export", 1_000_000_050)
+            self._commit_at([archived], "archived stale", 1_000_000_100)
+
+            result = dashboard._safe_detect_openspec(change)
+
+            self.assertEqual(result["stage"], "stale-bookkeeping")
+            self.assertEqual(
+                result.get("delta_drift"),
+                [{"requirement": "Foo", "capability": "export-stale", "archived_change_id": "2026-01-01-rework-export-stale"}],
+            )
+
+        with self.subTest(stage="complete"):
+            change = self.repo / "openspec" / "changes" / "update-export-complete"
+            change.mkdir(parents=True)
+            (change / "proposal.md").write_text("# Update exporter\n")
+            (change / "tasks.md").write_text("## 1. Export\n\n- [x] 1.1 Update exporter\n")
+            delta, archived = _drift(change, "export-complete", "2026-01-01-rework-export-complete")
+            canonical = self.repo / "openspec" / "specs" / "export-complete" / "spec.md"
+            canonical.parent.mkdir(parents=True)
+            canonical.write_text("### Requirement: Foo\n")
+            self._commit_at(
+                [change / "proposal.md", change / "tasks.md", delta, canonical],
+                "open change complete",
+                1_000_000_000,
+            )
+            self._commit_at([archived], "archived complete", 1_000_000_100)
+
+            result = dashboard._safe_detect_openspec(change)
+
+            self.assertEqual(result["stage"], "complete")
+            self.assertEqual(
+                result.get("delta_drift"),
+                [{"requirement": "Foo", "capability": "export-complete", "archived_change_id": "2026-01-01-rework-export-complete"}],
+            )
 
 
 class NonSpecDirsGitignoreSync(unittest.TestCase):
