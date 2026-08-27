@@ -144,9 +144,6 @@ def test_opencode_error_event_is_recognized_as_infra_failure():
 def test_gate_snapshot_reports_retry_class_and_all_gated(tmp_path):
     path = tmp_path / "capacity.json"
     now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
-    agent_capacity.configure(
-        [("claude", "sonnet"), ("opencode", "safe/model")], path=path
-    )
     for agent, model, failure_class in (
         ("claude", "sonnet", "transport"),
         ("opencode", "safe/model", "auth"),
@@ -165,6 +162,32 @@ def test_gate_snapshot_reports_retry_class_and_all_gated(tmp_path):
     assert snapshot["all_gated"] is True
     assert snapshot["retry_after"] == "2026-07-20T20:05:00+00:00"
     assert [item["failure_class"] for item in snapshot["gated"]] == ["transport", "auth"]
+
+
+def test_gate_snapshot_ignores_stale_configured_providers_key(tmp_path):
+    # Task 7.4: a stale `configured_providers` key left behind in a cache file
+    # from before this consolidation (or hand-edited) must never gate or
+    # ungate anything -- only the caller's explicit routing-derived
+    # `providers` argument decides what gate_snapshot evaluates.
+    path = tmp_path / "capacity.json"
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    agent_capacity.record(
+        "claude", "sonnet", outcome="unavailable", failure_class="transport",
+        retry_after=now + timedelta(minutes=5), path=path, now=now,
+    )
+    data = json.loads(path.read_text())
+    # A stale key naming a DIFFERENT provider -- if gate_snapshot ever fell
+    # back to reading it, "claude:sonnet" would be dropped from `configured`
+    # entirely and never show up as gated.
+    data["configured_providers"] = ["codex:gpt"]
+    path.write_text(json.dumps(data))
+
+    snapshot = agent_capacity.gate_snapshot(
+        [agent_capacity.provider_key("claude", "sonnet")], path=path, now=now,
+    )
+
+    assert snapshot["configured"] == ["claude:sonnet"]
+    assert snapshot["all_gated"] is True
 
 
 def test_preflight_uses_fallback_when_primary_is_gated(tmp_path, monkeypatch):
@@ -244,10 +267,14 @@ def test_status_reads_empty_cache(tmp_path):
     assert cap == 0
 
 
-def test_status_shows_configured_unconfigured_providers(tmp_path):
+def test_status_lists_all_recorded_providers(tmp_path):
     path = tmp_path / "capacity.json"
-    agent_capacity.configure([("claude", "sonnet"), ("opencode", "model")], path=path)
-    cap = agent_capacity.cmd_status(path=path)
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    agent_capacity.record(
+        "claude", "sonnet", outcome="unavailable", failure_class="transport",
+        retry_after=now + timedelta(minutes=5), path=path, now=now)
+    agent_capacity.record("opencode", "model", outcome="available", path=path, now=now)
+    cap = agent_capacity.cmd_status(path=path, now=now)
     assert cap == 0
 
 
@@ -282,27 +309,22 @@ def test_clear_targeted_removes_exactly_one_provider(tmp_path):
     now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
     agent_capacity.record("claude", "sonnet", outcome="unavailable", failure_class="transport", retry_after=now + timedelta(minutes=5), path=path, now=now)
     agent_capacity.record("opencode", "model", outcome="unavailable", failure_class="auth", retry_after=now + timedelta(minutes=5), path=path, now=now)
-    agent_capacity.configure([("claude", "sonnet"), ("opencode", "model")], path=path)
-    content_before = path.read_text()
     rc = agent_capacity.cmd_clear("claude:sonnet", "transport resolved", path=path, now=now)
     assert rc == 0
     data = json.loads(path.read_text())
     assert "claude:sonnet" not in data["providers"]
     assert data["providers"]["opencode:model"]["status"] == "unavailable"
-    assert data["configured_providers"] == ["claude:sonnet", "opencode:model"]
 
 
-def test_clear_all_removes_all_gates_preserves_config(tmp_path):
+def test_clear_all_removes_all_gates(tmp_path):
     path = tmp_path / "capacity.json"
     now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
     agent_capacity.record("claude", "sonnet", outcome="unavailable", failure_class="transport", retry_after=now + timedelta(minutes=5), path=path, now=now)
     agent_capacity.record("opencode", "model", outcome="unavailable", failure_class="auth", retry_after=now + timedelta(minutes=5), path=path, now=now)
-    agent_capacity.configure([("claude", "sonnet"), ("opencode", "model")], path=path)
     rc = agent_capacity.cmd_clear("--all", "all resolved", path=path, now=now)
     assert rc == 0
     data = json.loads(path.read_text())
     assert data["providers"] == {}
-    assert data["configured_providers"] == ["claude:sonnet", "opencode:model"]
 
 
 def test_clear_rejects_all_without_explicit_flag(tmp_path):
@@ -466,20 +488,29 @@ def test_concurrent_record_calls_both_survive(tmp_path, monkeypatch):
     assert providers["codex:gpt"]["status"] == "available"
 
 
-def test_concurrent_record_and_configure_both_survive(tmp_path, monkeypatch):
-    # configure() and record() mutate different top-level keys of the same
-    # file; without the shared lock either one's save can clobber the other's.
+def test_concurrent_record_and_clear_both_survive(tmp_path, monkeypatch):
+    # record() and cmd_clear() both load-mutate-save the same `providers` dict
+    # from different entry points; without the shared lock either save can
+    # clobber the other's.
     path = tmp_path / "capacity.json"
+    now = datetime(2026, 8, 12, 20, 0, tzinfo=timezone.utc)
+    agent_capacity.record(
+        "codex", "gpt", outcome="unavailable", failure_class="transport",
+        retry_after=now + timedelta(minutes=5), path=path, now=now,
+    )
     _run_racing_writers(
         tmp_path,
         monkeypatch,
-        lambda: agent_capacity.configure([("claude", "sonnet")], path=path),
-        lambda: agent_capacity.record("claude", "sonnet", outcome="available", path=path),
+        lambda: agent_capacity.record(
+            "claude", "sonnet", outcome="unavailable", failure_class="billing",
+            retry_after=now + timedelta(hours=1), path=path, now=now,
+        ),
+        lambda: agent_capacity.cmd_clear("codex:gpt", "resolved", path=path, now=now),
     )
 
     data = json.loads(path.read_text(encoding="utf-8"))
-    assert data["configured_providers"] == ["claude:sonnet"]
-    assert data["providers"]["claude:sonnet"]["status"] == "available"
+    assert data["providers"]["claude:sonnet"]["status"] == "unavailable"
+    assert "codex:gpt" not in data["providers"]
 
 
 def test_concurrent_record_capacity_gate_calls_both_survive(tmp_path, monkeypatch):

@@ -789,7 +789,6 @@ def spawn_agent(
     configured = [(agent, model)] + [
         (hop, default_model_for_agent(hop)) for hop in fallback_chain
     ]
-    agent_capacity.configure(configured)
 
     # A persisted gate prevents repeated launches when a provider is known to be
     # unavailable. Each hop is tried in list order, at most once; the first

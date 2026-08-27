@@ -116,7 +116,7 @@ def save(value: Dict, path: Optional[Path] = None) -> None:
 def write_lock(path: Path) -> Iterator[None]:
     """Serialize a load -> mutate -> save sequence against concurrent writers.
 
-    Every writer in this module (``configure``/``record``/``cmd_clear``) holds
+    Every writer in this module (``record``/``cmd_clear``) holds
     a blocking exclusive ``flock`` on a sidecar ``<cache>.lock`` for the whole
     read-modify-write; without it, two workers finishing close together both
     load the same snapshot and the second ``os.replace`` silently discards the
@@ -141,17 +141,6 @@ def write_lock(path: Path) -> Iterator[None]:
             yield
         finally:
             fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-
-
-def configure(providers: Iterable[tuple[str, str]], path: Optional[Path] = None) -> None:
-    """Remember the provider/model-safe set used by the current dispatch."""
-    path = path or cache_path()
-    with write_lock(path):
-        data = load(path)
-        data["configured_providers"] = sorted(
-            {_safe_identifier(provider_key(agent, model)) for agent, model in providers}
-        )
-        save(data, path)
 
 
 def gate_snapshot(
@@ -316,21 +305,25 @@ def _add_audit(data: Dict, action: str, scope: str, providers: list[str], reason
 
 
 def cmd_status(path: Optional[Path] = None, now: Optional[datetime] = None) -> int:
+    """Print every provider this cache has a recorded status for.
+
+    Pre-7.2, this listed only the ``configured_providers`` subset written by
+    ``configure()``. That function is gone (task 7.2 -- nothing populates
+    ``configured_providers`` anymore, and ``gate_snapshot`` has ignored it
+    since task 7.1), so this now lists every key under ``providers`` directly
+    -- the same set ``record()``/``cmd_clear()`` actually maintain.
+    """
     now = now or _now()
     p = path or cache_path()
     raw = load(p)
     providers = raw.get("providers", {})
-    configured = raw.get("configured_providers", [])
 
     print(f"cache: {p}")
-    print(f"configured: {len(configured)}")
-    if configured:
+    print(f"providers: {len(providers)}")
+    if providers:
         print()
-        for key in sorted(configured):
-            state = providers.get(key)
-            if not isinstance(state, dict):
-                print(f"  {key}  (no record)")
-                continue
+        for key in sorted(providers):
+            state = providers[key]
             status_label = state.get("status", "unknown")
             retry_at = _parse_time(state.get("retry_after")) or _parse_time(state.get("reset_at"))
             active = "  (active)" if retry_at and retry_at > now else ""
