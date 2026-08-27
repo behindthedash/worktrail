@@ -964,7 +964,10 @@ class Routing(unittest.TestCase):
             {"hard/backend": {"agent": "codex", "model": "gpt-5"}}, meta)
         self.assertEqual(resolved,
                          {("hard", "backend"): {"agent_cli": "codex", "agent_model": "gpt-5", "effort": None}})
-        self.assertEqual(meta["warnings"], [])
+        # 2.2: the flat form now emits a deprecation warning pointing at its
+        # nested replacement, without dropping the entry.
+        self.assertTrue(any("routing.tiers.hard/backend" in w and "deprecated" in w
+                            for w in meta["warnings"]))
 
     def test_validate_routing_tiers_no_domain_yields_none(self):
         # AC-CHG-005
@@ -980,6 +983,92 @@ class Routing(unittest.TestCase):
              "easy": {"agent": "claude"}}, meta)
         self.assertEqual(resolved, {("easy", None): {"agent_cli": "claude", "agent_model": None, "effort": None}})
         self.assertTrue(any("routing.tiers.hard/backend" in w for w in meta["warnings"]))
+
+    def test_flat_and_nested_tiers_forms_byte_identical(self):
+        # 2.4 (D6): the flat `<tier>-<agent>[/<domain>]` form and the nested
+        # `tiers.<tier>[/<domain>].<agent>: {model, effort}` form, declaring
+        # the same tier/agent/domain/model/effort, resolve to the exact same
+        # tier_map entry.
+        flat_repo = _repo_with(
+            "routing:\n"
+            "  tiers:\n"
+            "    hard-codex/backend:\n"
+            "      agent: codex\n"
+            "      model: gpt-5\n"
+            "      effort: high\n")
+        nested_repo = _repo_with(
+            "routing:\n"
+            "  tiers:\n"
+            "    hard/backend:\n"
+            "      codex:\n"
+            "        model: gpt-5\n"
+            "        effort: high\n")
+        with self._no_mw_env():
+            flat_pol = load_policy(flat_repo)
+            nested_pol = load_policy(nested_repo)
+        expected = {("hard-codex", "backend"):
+                    {"agent_cli": "codex", "agent_model": "gpt-5", "effort": "high"}}
+        self.assertEqual(resolve_tier_map(flat_pol), expected)
+        self.assertEqual(resolve_tier_map(nested_pol), expected)
+        self.assertEqual(resolve_tier_map(flat_pol), resolve_tier_map(nested_pol))
+
+    def test_flat_and_nested_tiers_forms_byte_identical_no_domain(self):
+        # 2.4 (D6): same as above, without a domain component.
+        flat_repo = _repo_with(
+            "routing:\n"
+            "  tiers:\n"
+            "    easy-claude:\n"
+            "      agent: claude\n")
+        nested_repo = _repo_with(
+            "routing:\n"
+            "  tiers:\n"
+            "    easy:\n"
+            "      claude: {}\n")
+        with self._no_mw_env():
+            flat_pol = load_policy(flat_repo)
+            nested_pol = load_policy(nested_repo)
+        expected = {("easy-claude", None):
+                    {"agent_cli": "claude", "agent_model": None, "effort": None}}
+        self.assertEqual(resolve_tier_map(flat_pol), expected)
+        self.assertEqual(resolve_tier_map(nested_pol), expected)
+
+    def test_nested_tiers_wins_over_flat_for_same_tier_agent(self):
+        # 2.4 (D6): nested wins when both declare the same tier/agent,
+        # regardless of raw YAML declaration order (resolved in two passes:
+        # all flat keys, then all nested keys).
+        repo = _repo_with(
+            "routing:\n"
+            "  tiers:\n"
+            "    hard-codex:\n"
+            "      agent: codex\n"
+            "      model: gpt-5\n"
+            "    hard:\n"
+            "      codex:\n"
+            "        model: gpt-5.4\n"
+            "        effort: high\n")
+        with self._no_mw_env():
+            pol = load_policy(repo)
+        self.assertEqual(resolve_tier_map(pol),
+                         {("hard-codex", None):
+                          {"agent_cli": "codex", "agent_model": "gpt-5.4", "effort": "high"}})
+
+    def test_nested_tiers_wins_over_flat_reverse_declaration_order(self):
+        # 2.4: nested wins even when the nested key is declared before the
+        # flat key in raw YAML.
+        repo = _repo_with(
+            "routing:\n"
+            "  tiers:\n"
+            "    hard:\n"
+            "      codex:\n"
+            "        model: gpt-5.4\n"
+            "    hard-codex:\n"
+            "      agent: codex\n"
+            "      model: gpt-5\n")
+        with self._no_mw_env():
+            pol = load_policy(repo)
+        self.assertEqual(resolve_tier_map(pol),
+                         {("hard-codex", None):
+                          {"agent_cli": "codex", "agent_model": "gpt-5.4", "effort": None}})
 
     def test_purpose_tiers_configured_resolves_and_validates(self):
         # 3.3: a configured routing.purpose_tiers table resolves and validates.
