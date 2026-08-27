@@ -140,8 +140,8 @@ pick up changes deliberately. Bump both `pyproject.toml` and `.codex-plugin/plug
 in a standalone `chore: bump Worktrail to X.Y.Z` commit (see `0b62a12`, `#75`) — not bundled into
 a feature/fix PR.
 
-`CI: Version Bump Check` (`.github/workflows/version_bump_check.yml`) enforces this: any PR that
-changes `src/worktrail/**` without also changing `pyproject.toml`'s `version` line fails, unless
-the PR carries the `go:no-version-bump` label (for an intentionally deferred, later batch bump —
-this repo's actual practice is periodic multi-PR batches, not a bump on every PR). Apply the label
-deliberately, not as a default way to silence the check.
+`CI: Release Metadata Check` (`.github/workflows/release_metadata_check.yml`) enforces this, but
+only for PRs that declare release intent by actually changing `pyproject.toml`'s `version` line —
+an ordinary feature/fix PR passes unconditionally, no label required. A PR that does bump the
+version is validated: the new value must be valid semver, greater than the base branch's version,
+and `.codex-plugin/plugin.json`'s version must match it.

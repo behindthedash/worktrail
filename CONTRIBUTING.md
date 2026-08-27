@@ -31,10 +31,10 @@ an absolute path, and installing from a worktree that later gets deleted silentl
   the suite must pass in full, and `orchestrate check` must stay golden. Tests must never touch
   operator state — `tests/conftest.py` isolates `WORKTRAIL_HOME` and `WORK_QUEUE_DIR` per test,
   and new machine-wide state needs the same treatment.
-- **Version bumps are batched, not per-PR.** Feature/fix PRs carry the `go:no-version-bump`
-  label; a standalone `chore: bump Worktrail to X.Y.Z` PR bumps `pyproject.toml` and
-  `.codex-plugin/plugin.json` together once a batch lands (`CI: Version Bump Check` enforces
-  this).
+- **Version bumps are batched, not per-PR.** Feature/fix PRs need no label or bump; a standalone
+  `chore: bump Worktrail to X.Y.Z` PR bumps `pyproject.toml` and `.codex-plugin/plugin.json`
+  together once a batch lands. `CI: Release Metadata Check` only validates PRs that actually
+  change `pyproject.toml`'s version.
 - **Skill docs are load-bearing.** Every `worktrail-*` command named in a `skills/**` doc must
   be a real `[project.scripts]` entry point, and cross-references between skills resolve by
   `{#anchor}` — `tests/test_plugin_surface.py` fails the build on drift.
