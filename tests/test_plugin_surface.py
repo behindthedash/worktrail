@@ -584,8 +584,8 @@ def test_route_execution_ask_sites_carry_auto_mode_fallbacks():
 
 
 def test_phase55_auto_mode_blocks_actually_file_a_decision():
-    """Handoff 20260813-104029: `brief-staleness-check.md`'s (and its two
-    siblings') `$AUTO_MODE=true` code block went straight from `run-record
+    """Handoff 20260813-104029: the Phase 5.5 guard docs' `$AUTO_MODE=true`
+    code blocks went straight from `run-record
     start` to `run-record finish --status blocked_product_decision`, even
     though the prose immediately below the block says to file a decision via
     `decision-queue.md#file-a-decision` and release the brief *before* that
@@ -600,7 +600,6 @@ def test_phase55_auto_mode_blocks_actually_file_a_decision():
     """
     guard_dir = SKILLS_DIR / "worktrail-go" / "references"
     targets = [
-        guard_dir / "brief-staleness-check.md",
         guard_dir / "spec-collision-check.md",
         guard_dir / "related-brief-collision-check.md",
     ]
@@ -633,7 +632,6 @@ def test_phase55_auto_mode_blocks_actually_file_a_decision():
 
 _GUARD_DOC_PAIRS = (
     ("check_spec_collision", "spec-collision-check.md"),
-    ("check_brief_staleness", "brief-staleness-check.md"),
     ("check_related_brief_claims", "related-brief-collision-check.md"),
 )
 

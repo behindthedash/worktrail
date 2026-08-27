@@ -921,6 +921,12 @@ class LiveSpawnFallbackChainTests(unittest.TestCase):
         return captured
 
     def test_configured_three_entry_chain_reaches_spawn_agent_intact(self):
+        # "opencode-2" is a synthetic hop name (this test only proves the
+        # chain list threads through unmodified, it isn't a real agent, and
+        # `routing.agents` validation would drop it as an unsupported literal
+        # anyway) -- `_serving_agent_guess`'s best-effort model lookup for
+        # each hop must tolerate that (task 3.3 made an unconfigured/unknown
+        # agent raise instead of silently defaulting).
         chain = ["codex", "opencode-2", "claude"]
         captured = self._call(agent="opencode", fallback_chain=chain)
         self.assertEqual(captured.get("fallback_agent"), chain)

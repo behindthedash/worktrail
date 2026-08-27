@@ -95,9 +95,10 @@ rather than an exception or a partial result presented as complete.
 
 The system SHALL run this check during `/go` Phase 5.5 only when the
 dispatch is brief-sourced, the claimed brief carries at least one
-`related:` entry, and the resolved route is not `C`, `D`, `E`, or `F` (the
-routes already covered by the existing spec-collision and brief-staleness
-branches). A free-text dispatch with no claimed brief SHALL skip this check
+`related:` entry, and the resolved route is not `C`, `D`, or `F` (the
+routes already covered by the existing spec-collision branch, plus `F`,
+which keeps the narrowest signal). A free-text dispatch with no claimed
+brief SHALL skip this check
 entirely, as SHALL a brief-sourced dispatch with no `related:` entries.
 
 #### Scenario: Brief-sourced Route I dispatch with related entries runs the check

@@ -21,8 +21,8 @@ confirmed-fresh claim can never land on E, mechanically, instead of relying on a
 agent to notice (the gap worktrail-drain's unattended one-shots have no one to
 catch).
 
-Best-effort by design, same posture as `check_repo_freshness.py` and
-`check_brief_staleness.py`. `checked: false` means the question is unanswered:
+Best-effort by design, same posture as `check_repo_freshness.py`.
+`checked: false` means the question is unanswered:
 either the brief itself couldn't be read, or it carries no `repo:` frontmatter
 AND no `--repo` override was supplied, so there was nothing to scan evidence
 against -- the caller's contract treats that as "unknown", not as an

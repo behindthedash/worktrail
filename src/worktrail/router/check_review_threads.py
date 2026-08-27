@@ -16,8 +16,8 @@ fixed" case), auto-replies and resolves the ones it can correlate, and
 reports the rest as `blocking` -- the same way a red required check blocks
 `ci-watch-loop.md` case 1 from finishing.
 
-This is a **gate**, not an advisory check like its siblings
-(`check_brief_staleness.py`, `check_spec_collision.py`): a definitive
+This is a **gate**, not an advisory check like its sibling
+`check_spec_collision.py`: a definitive
 `blocking: true` is meant to stop `finish()` the same way a failing check
 does. It only degrades to `checked: false` (never `blocking`) when the
 question itself could not be answered -- `gh` missing/unauthenticated, a

@@ -22,8 +22,8 @@ There was no way to tell "this change-id already has partial artifacts, resume
 with `/opsx:update` instead" from "this change-id is untouched, `/opsx:propose`
 is safe to run" without this check.
 
-Pure filesystem check, no live I/O boundary -- unlike `check_resumable_state.py`
-and `check_brief_staleness.py`, there is no `gh` lookup here, so `checked=True`
+Pure filesystem check, no live I/O boundary -- unlike `check_resumable_state.py`,
+there is no `gh` lookup here, so `checked=True`
 whenever the worktree path itself is reachable.
 """
 from __future__ import annotations
