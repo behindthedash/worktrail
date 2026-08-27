@@ -885,9 +885,15 @@ class OpenCodeSpawn(unittest.TestCase):
         spawnlib.subprocess.run = fake_run
         with tempfile.TemporaryDirectory() as cache_dir, \
                 tempfile.TemporaryDirectory() as cwd:
+            routing_file = os.path.join(cwd, "routing.yaml")
+            with open(routing_file, "w", encoding="utf-8") as f:
+                f.write("agents:\n  opencode:\n    default_model: opencode/deepseek-v4-flash-free\n")
             with patch.dict(
                 os.environ,
-                {"GO_AGENT_CAPACITY_CACHE": os.path.join(cache_dir, "capacity.json")},
+                {
+                    "GO_AGENT_CAPACITY_CACHE": os.path.join(cache_dir, "capacity.json"),
+                    "GO_ROUTING_FILE": routing_file,
+                },
                 clear=True,
             ):
                 out = spawnlib.spawn_agent("prompt", cwd, agent="opencode")
