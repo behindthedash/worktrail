@@ -436,20 +436,24 @@ def capacity_gated(cache: dict, agent: str, now: Optional[datetime] = None) -> b
     concept of its own and always writes bare agent-name keys -- a
     provider-wide gate (account rate limit, billing block) applies to every
     model of that provider regardless of which model the read side happens
-    to know about.
+    to know about. The bare-provider gate wins even when a specific model's
+    own cache entry says available: a per-model entry can be stale (seeded
+    before the provider-wide failure, or from a different model's routing
+    history), and a provider-wide gate is never weaker evidence than that.
     """
     now = now or agent_capacity._now()
     providers = cache.get("providers") if isinstance(cache.get("providers"), dict) else cache
     if not isinstance(providers, dict):
         return False
+    if ":" in agent:
+        provider = agent.split(":", 1)[0]
+        bare = providers.get(provider)
+        if isinstance(bare, dict) and _entry_gated(bare, now):
+            return True
     exact = providers.get(agent)
     if isinstance(exact, dict):
         return _entry_gated(exact, now)
     if ":" in agent:
-        provider = agent.split(":", 1)[0]
-        bare = providers.get(provider)
-        if isinstance(bare, dict):
-            return _entry_gated(bare, now)
         return False
     matched = [v for k, v in providers.items()
                if isinstance(v, dict) and str(k).startswith(agent + ":")]
