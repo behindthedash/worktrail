@@ -235,23 +235,22 @@ def test_the_default_spawn_patch_site_still_receives_the_same_call_shape(change,
 def test_the_default_spawn_policy_for_an_unconfigured_repo_keeps_pre_change_argv_inputs(
     change, tmp_path
 ):
-    """An empty repo-local policy/routing setup must still resolve to the
-    pre-change spawn argv: `claude`, the config-file default model, and no
-    fallback hops."""
+    """An empty repo-local policy/routing setup -- no `routing.targets`/
+    `routing.tiers` at all, so `select_cell` has no row to walk -- must still
+    resolve to the pre-selector spawn argv: `claude`, the config-file default
+    model, and no fallback hops. `default_model_for_agent` itself is patched
+    rather than invoked for real: it is spawnlib's own per-agent config-file
+    lookup, out of this file's scope, and this test only needs to know
+    `_default_spawn` defers to it, not that it resolves correctly on its own."""
     from unittest.mock import patch
-
-    from worktrail.orchestrator import spawnlib
 
     spec_id, tasks = _load(change)
     reply = _reply(**{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks})
-    model_defaults = tmp_path / "model-defaults.yaml"
-    model_defaults.write_text("claude: opus\n", encoding="utf-8")
-    expected_model = None
+    expected_model = "config-file-claude-default"
 
     with patch.dict(
         "os.environ",
         {
-            "WORKTRAIL_MODEL_DEFAULTS_FILE": str(model_defaults),
             "GO_AGENT_CLI": "",
             "ORCH_AGENT": "",
             "OPENCODE_PARENT": "",
@@ -259,8 +258,9 @@ def test_the_default_spawn_policy_for_an_unconfigured_repo_keeps_pre_change_argv
             "CODEX_THREAD_ID": "",
         },
         clear=False,
+    ), patch(
+        "worktrail.orchestrator.spawnlib.default_model_for_agent", return_value=expected_model
     ):
-        expected_model = spawnlib.default_model_for_agent("claude")
         with patch("worktrail.orchestrator.spawnlib.spawn_agent") as spawn_agent:
             spawn_agent.return_value = type("SpawnResult", (), {"text": reply})()
             plan = conductor_compile.compile_run_plan(
@@ -289,11 +289,10 @@ def _clear_ambient_agent_env(tmp_path):
     file this helper controls -- otherwise a real machine-wide
     `~/.worktrail/routing.yaml` (or a stray env var from the host running the
     suite) could leak into the resolver and make these policy-primary
-    assertions flaky. The file declares an `agents:` default for every
-    supported agent so `spawnlib.default_model_for_agent()` (no silent
-    fallback, task 3.3) still resolves during these tests; its exact values
-    are irrelevant here since these tests assert model/agent selection comes
-    from repo policy, not from this file."""
+    assertions flaky. The file declares no `targets`/`tiers` of its own, so it
+    resolves to empty routing (same as no machine-wide file at all) for every
+    caller of this helper that does not point `WORKTRAIL_ROUTING_FILE`
+    elsewhere first."""
     from unittest.mock import patch
 
     routing_file = tmp_path / "no-machine-routing.yaml"
@@ -319,13 +318,15 @@ def _clear_ambient_agent_env(tmp_path):
 
 
 def test_repo_policy_agent_cli_and_agent_model_win_over_defaults(change, tmp_path):
-    """`.worktrail/policy.yaml`'s flat `agent_cli`/`agent_model` keys must beat
-    both the detected/claude agent default and `spawnlib.default_model_for_agent`'s
-    config-file model default -- `_resolve_spawn_policy`'s documented precedence
-    (repo policy over "the existing per-agent model defaults")."""
+    """`.worktrail/policy.yaml`'s flat `agent_cli`/`agent_model` keys -- with
+    no `routing.targets`/`routing.tiers` declared, so there is no cell for
+    `select_cell` to walk -- must beat both the detected/claude agent default
+    and `spawnlib.default_model_for_agent`'s config-file model default --
+    `_resolve_spawn_policy`'s documented precedence (repo policy over "the
+    existing per-agent model defaults"). `default_model_for_agent` is patched
+    to a sentinel rather than invoked for real: it is spawnlib's own
+    per-agent config-file lookup, out of this file's scope."""
     from unittest.mock import patch
-
-    from worktrail.orchestrator import spawnlib
 
     repo = change.parents[2]
     policy_dir = repo / ".worktrail"
@@ -335,8 +336,10 @@ def test_repo_policy_agent_cli_and_agent_model_win_over_defaults(change, tmp_pat
     spec_id, tasks = _load(change)
     reply = _reply(**{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks})
 
-    with _clear_ambient_agent_env(tmp_path):
-        default_codex_model = spawnlib.default_model_for_agent("codex")
+    with _clear_ambient_agent_env(tmp_path), patch(
+        "worktrail.orchestrator.spawnlib.default_model_for_agent",
+        return_value="config-file-codex-default",
+    ):
         with patch("worktrail.orchestrator.spawnlib.spawn_agent") as spawn_agent:
             spawn_agent.return_value = type("SpawnResult", (), {"text": reply})()
             plan = conductor_compile.compile_run_plan(
@@ -352,39 +355,34 @@ def test_repo_policy_agent_cli_and_agent_model_win_over_defaults(change, tmp_pat
     kwargs = spawn_agent.call_args.kwargs
     assert kwargs["agent"] == "codex"
     assert kwargs["model"] == "policy-primary-model"
-    assert kwargs["model"] != default_codex_model, (
-        "the assertion above is only meaningful if the policy value actually "
-        "differs from the config-file default it must win over"
-    )
 
 
 def test_machine_wide_routing_file_sets_the_compile_default_via_worktrail_routing_file(
     change, tmp_path
 ):
     """The machine-wide variant of the same "policy wins over defaults"
-    behavior: no repo-local `.worktrail/policy.yaml` at all, but a
-    `WORKTRAIL_ROUTING_FILE`-pointed routing table with a `defaults` entry for
-    the empty `(route, risk)` pair `_resolve_spawn_policy` resolves against
-    (compile has no real route/risk of its own to classify -- see its
-    `resolve_routing(policy, route="", risk="")` call) must still override the
-    per-agent config-file model default, the same way a repo-local flat
-    `agent_model` key does.
-
-    Agent selection is unaffected here -- `_resolve_spawn_policy` resolves
-    `agent` from the flat `policy["agent_cli"]` key only (task 1.1), which a
-    machine-wide routing file never sets, so it still resolves to the
-    warn-and-claude default; only `agent_model` is sourced from the matched
-    routing entry.
-    """
+    behavior, now expressed in the targets/tiers/roles schema: no repo-local
+    `.worktrail/policy.yaml` at all, but a `WORKTRAIL_ROUTING_FILE`-pointed
+    routing table declaring a `compile` role, a tier row, and one target must
+    still be walked by `select_cell` for `_default_spawn`'s default -- the
+    same "single selector walks a tier row across targets in preference
+    order" path a repo-local `routing:` block exercises."""
     from unittest.mock import patch
-
-    from worktrail.orchestrator import spawnlib
 
     repo = change.parents[2]
     routing_file = tmp_path / "machine-routing.yaml"
     routing_file.write_text(
-        'defaults:\n  "":\n    "":\n      agent_cli: claude\n      agent_model: mw-primary-model\n'
-        "agents:\n  claude:\n    default_model: sonnet\n"
+        "targets:\n"
+        "  claude-primary:\n"
+        "    harness: claude\n"
+        "    pool: subscription\n"
+        "roles:\n"
+        "  compile:\n"
+        "    tier: t2\n"
+        "tiers:\n"
+        "  t2:\n"
+        "    claude-primary:\n"
+        "      model: mw-primary-model\n"
     )
 
     spec_id, tasks = _load(change)
@@ -394,7 +392,6 @@ def test_machine_wide_routing_file_sets_the_compile_default_via_worktrail_routin
         "os.environ",
         {"WORKTRAIL_ROUTING_FILE": str(routing_file)},
     ):
-        default_claude_model = spawnlib.default_model_for_agent("claude")
         with patch("worktrail.orchestrator.spawnlib.spawn_agent") as spawn_agent:
             spawn_agent.return_value = type("SpawnResult", (), {"text": reply})()
             plan = conductor_compile.compile_run_plan(
@@ -410,10 +407,223 @@ def test_machine_wide_routing_file_sets_the_compile_default_via_worktrail_routin
     kwargs = spawn_agent.call_args.kwargs
     assert kwargs["agent"] == "claude"
     assert kwargs["model"] == "mw-primary-model"
-    assert kwargs["model"] != default_claude_model, (
-        "the assertion above is only meaningful if the machine-wide routing "
-        "value actually differs from the config-file default it must win over"
+
+
+def _write_routing_policy(repo: Path, routing_yaml: str) -> None:
+    policy_dir = repo / ".worktrail"
+    policy_dir.mkdir(parents=True, exist_ok=True)
+    (policy_dir / "policy.yaml").write_text(f"routing:\n{routing_yaml}")
+
+
+# --------------------------------------------------------------------------- #
+# `_default_spawn` resolving through `select_cell` (design D3) -- task 5.2
+# --------------------------------------------------------------------------- #
+def test_default_spawn_walks_the_compile_roles_tier_row_via_select_cell(change, tmp_path):
+    """`routing.roles.compile.tier` names the row; `select_cell` walks that
+    row's declared targets in file order and the first one with a cell in
+    the row wins -- `claude-secondary` here has no cell in `t1`, so
+    `claude-primary` (declared first, and the only one with a `t1` cell)
+    must be served even though it is not the row's only target."""
+    repo = change.parents[2]
+    _write_routing_policy(
+        repo,
+        "  targets:\n"
+        "    claude-primary:\n"
+        "      harness: claude\n"
+        "      pool: subscription\n"
+        "    claude-secondary:\n"
+        "      harness: codex\n"
+        "      pool: subscription\n"
+        "  roles:\n"
+        "    compile:\n"
+        "      tier: t1\n"
+        "  tiers:\n"
+        "    t1:\n"
+        "      claude-primary:\n"
+        "        model: selected-model\n",
     )
+
+    spec_id, tasks = _load(change)
+    reply = _reply(**{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks})
+
+    from unittest.mock import patch
+
+    with patch("worktrail.orchestrator.spawnlib.spawn_agent") as spawn_agent:
+        spawn_agent.return_value = type("SpawnResult", (), {"text": reply})()
+        plan = conductor_compile.compile_run_plan(
+            change, tasks, spec_id=spec_id, repo=repo, cache_dir=tmp_path / "plans"
+        )
+
+    assert plan.source == runplan.SOURCE_COMPILED
+    kwargs = spawn_agent.call_args.kwargs
+    assert kwargs["agent"] == "claude"
+    assert kwargs["model"] == "selected-model"
+    assert kwargs["fallback_agent"] == []
+
+
+def test_default_spawn_falls_back_to_default_tier_when_the_compile_role_has_none(
+    change, tmp_path
+):
+    """No `routing.roles.compile` entry at all -- `select_cell` must still be
+    walked, against `routing.default_tier`."""
+    repo = change.parents[2]
+    _write_routing_policy(
+        repo,
+        "  targets:\n"
+        "    claude-primary:\n"
+        "      harness: claude\n"
+        "      pool: subscription\n"
+        "  tiers:\n"
+        "    t3:\n"
+        "      claude-primary:\n"
+        "        model: default-tier-model\n"
+        "  default_tier: t3\n",
+    )
+
+    spec_id, tasks = _load(change)
+    reply = _reply(**{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks})
+
+    from unittest.mock import patch
+
+    with patch("worktrail.orchestrator.spawnlib.spawn_agent") as spawn_agent:
+        spawn_agent.return_value = type("SpawnResult", (), {"text": reply})()
+        plan = conductor_compile.compile_run_plan(
+            change, tasks, spec_id=spec_id, repo=repo, cache_dir=tmp_path / "plans"
+        )
+
+    assert plan.source == runplan.SOURCE_COMPILED
+    kwargs = spawn_agent.call_args.kwargs
+    assert kwargs["agent"] == "claude"
+    assert kwargs["model"] == "default-tier-model"
+
+
+def test_explicit_agent_and_model_flags_name_a_target_and_bypass_select_cell(change, tmp_path):
+    """`--agent`/`--model` are an explicit-cell override (task 5.2): `agent`
+    names a `routing.targets` entry, not a harness, so a target whose row
+    cell would otherwise resolve to a different model/harness must still be
+    served exactly as named on the command line, not walked by `select_cell`."""
+    repo = change.parents[2]
+    _write_routing_policy(
+        repo,
+        "  targets:\n"
+        "    claude-primary:\n"
+        "      harness: claude\n"
+        "      pool: subscription\n"
+        "    codex-secondary:\n"
+        "      harness: codex\n"
+        "      pool: subscription\n"
+        "  roles:\n"
+        "    compile:\n"
+        "      tier: t1\n"
+        "  tiers:\n"
+        "    t1:\n"
+        "      claude-primary:\n"
+        "        model: tier-selected-model\n",
+    )
+
+    spec_id, tasks = _load(change)
+    reply = _reply(**{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks})
+
+    from unittest.mock import patch
+
+    with patch("worktrail.orchestrator.spawnlib.spawn_agent") as spawn_agent:
+        spawn_agent.return_value = type("SpawnResult", (), {"text": reply})()
+        plan = conductor_compile.compile_run_plan(
+            change,
+            tasks,
+            spec_id=spec_id,
+            repo=repo,
+            cache_dir=tmp_path / "plans",
+            spawn=lambda prompt, cwd, timeout, log: conductor_compile._default_spawn(
+                prompt,
+                cwd,
+                timeout,
+                log,
+                agent="codex-secondary",
+                model="explicit-model",
+            ),
+        )
+
+    assert plan.source == runplan.SOURCE_COMPILED
+    kwargs = spawn_agent.call_args.kwargs
+    assert kwargs["agent"] == "codex"
+    assert kwargs["model"] == "explicit-model"
+
+
+def test_explicit_agent_flag_naming_no_target_keeps_pre_selector_harness_meaning(
+    change, tmp_path
+):
+    """`agent` naming nothing in `routing.targets` -- including every repo
+    with no `routing.targets` configured at all -- keeps working as a literal
+    harness/provider name, the pre-selector meaning of `--agent`."""
+    spec_id, tasks = _load(change)
+    reply = _reply(**{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks})
+
+    from unittest.mock import patch
+
+    with patch("worktrail.orchestrator.spawnlib.spawn_agent") as spawn_agent:
+        spawn_agent.return_value = type("SpawnResult", (), {"text": reply})()
+        plan = conductor_compile.compile_run_plan(
+            change,
+            tasks,
+            spec_id=spec_id,
+            repo=change.parents[2],
+            cache_dir=tmp_path / "plans",
+            spawn=lambda prompt, cwd, timeout, log: conductor_compile._default_spawn(
+                prompt, cwd, timeout, log, agent="codex", model="explicit-model"
+            ),
+        )
+
+    assert plan.source == runplan.SOURCE_COMPILED
+    kwargs = spawn_agent.call_args.kwargs
+    assert kwargs["agent"] == "codex"
+    assert kwargs["model"] == "explicit-model"
+
+
+def test_fallback_chain_flag_still_applies_alongside_a_select_cell_resolution(change, tmp_path):
+    """`--fallback-chain` is independent of cell resolution -- spawnlib's own
+    harness-level retry chain, not part of the routing table -- so it must
+    still reach `spawn_agent` even when `select_cell` resolved the primary
+    agent/model."""
+    repo = change.parents[2]
+    _write_routing_policy(
+        repo,
+        "  targets:\n"
+        "    claude-primary:\n"
+        "      harness: claude\n"
+        "      pool: subscription\n"
+        "  roles:\n"
+        "    compile:\n"
+        "      tier: t1\n"
+        "  tiers:\n"
+        "    t1:\n"
+        "      claude-primary:\n"
+        "        model: tier-selected-model\n",
+    )
+
+    spec_id, tasks = _load(change)
+    reply = _reply(**{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks})
+
+    from unittest.mock import patch
+
+    with patch("worktrail.orchestrator.spawnlib.spawn_agent") as spawn_agent:
+        spawn_agent.return_value = type("SpawnResult", (), {"text": reply})()
+        plan = conductor_compile.compile_run_plan(
+            change,
+            tasks,
+            spec_id=spec_id,
+            repo=repo,
+            cache_dir=tmp_path / "plans",
+            spawn=lambda prompt, cwd, timeout, log: conductor_compile._default_spawn(
+                prompt, cwd, timeout, log, fallback_agent=["codex"]
+            ),
+        )
+
+    assert plan.source == runplan.SOURCE_COMPILED
+    kwargs = spawn_agent.call_args.kwargs
+    assert kwargs["agent"] == "claude"
+    assert kwargs["model"] == "tier-selected-model"
+    assert kwargs["fallback_agent"] == ["codex"]
 
 
 def test_an_injected_spawn_callable_bypasses_the_policy_resolver(change, tmp_path):
@@ -1087,7 +1297,7 @@ def test_extract_returns_none_when_there_is_nothing_to_parse():
 def _with_purpose_tiers(repo: Path, tiers: str) -> None:
     policy_dir = repo / "docs" / "specs"
     policy_dir.mkdir(parents=True, exist_ok=True)
-    (policy_dir / "go-policy.yaml").write_text(f"routing:\n  purpose_tiers:\n{tiers}")
+    (policy_dir / "go-policy.yaml").write_text(f"routing:\n  purposes:\n{tiers}")
 
 
 def test_a_purpose_within_the_configured_vocabulary_is_kept(change, tmp_path):
