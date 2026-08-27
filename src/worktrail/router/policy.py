@@ -473,7 +473,16 @@ def _validate_routing_tiers(
 ) -> Dict[Tuple[str, Optional[str]], Dict[str, Any]]:
     """`routing.tiers`: `{<complexity>[/<domain>]: agent-entry}` — a
     `(complexity, domain)` match table that `resolve_tier_map()` turns into
-    `dispatch.agent_for`'s `tier_map` parameter."""
+    `dispatch.agent_for`'s `tier_map` parameter.
+
+    Also accepts the nested per-agent form `{<tier>[/<domain>]: {<agent>:
+    {model, effort}}}`, distinguished from the flat form by its value being a
+    mapping whose keys are entirely agent literals (`VALID_AGENT_CLIS`) rather
+    than an agent-entry's own shape (`agent_cli`/`agent`/`agent_model`/`model`)
+    — the two key sets never overlap, since no agent literal is itself an
+    agent-entry field name. Each nested agent expands to the same
+    `(f"{tier}-{agent}", domain)` key the flat form already produces, so
+    `resolve_tier_map()`'s output is unaffected by which shape a repo used."""
     if raw is None:
         return {}
     if not isinstance(raw, dict):
@@ -485,6 +494,18 @@ def _validate_routing_tiers(
             meta["warnings"].append(f"routing.tiers: key must be a string; got {key!r} — ignored")
             continue
         complexity, _, domain = key.partition("/")
+        if isinstance(entry, dict) and entry and all(k in VALID_AGENT_CLIS for k in entry):
+            for agent, agent_entry in entry.items():
+                if not isinstance(agent_entry, dict):
+                    meta["warnings"].append(
+                        f"routing.tiers.{key}.{agent} must be a mapping ({{model, effort}}); "
+                        f"got {agent_entry!r} — dropped")
+                    continue
+                normalized = _validate_agent_entry(
+                    {**agent_entry, "agent": agent}, meta, f"routing.tiers.{key}.{agent}")
+                if normalized is not None:
+                    resolved[(f"{complexity}-{agent}", domain or None)] = normalized
+            continue
         normalized = _validate_agent_entry(entry, meta, f"routing.tiers.{key}")
         if normalized is not None:
             resolved[(complexity, domain or None)] = normalized
