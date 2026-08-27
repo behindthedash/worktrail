@@ -31,6 +31,7 @@ DEFAULT_COOLDOWNS = {
     "transport": 30,
     "auth": 3600,
     "billing": 3600,
+    "model_unavailable": 86400,
 }
 
 
@@ -72,8 +73,8 @@ def _parse_time(value: object) -> Optional[datetime]:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
-def provider_key(agent: str, model: str) -> str:
-    return f"{agent}:{model}"
+def provider_key(target: str, model: str) -> str:
+    return f"{target}:{model}"
 
 
 def _safe_identifier(value: str) -> str:
@@ -177,9 +178,9 @@ def gate_snapshot(
     }
 
 
-def check(agent: str, model: str, path: Optional[Path] = None, now: Optional[datetime] = None) -> None:
+def check(target: str, model: str, path: Optional[Path] = None, now: Optional[datetime] = None) -> None:
     now = now or _now()
-    key = provider_key(agent, model)
+    key = provider_key(target, model)
     state = load(path).get("providers", {}).get(key)
     if not isinstance(state, dict):
         return
@@ -189,7 +190,7 @@ def check(agent: str, model: str, path: Optional[Path] = None, now: Optional[dat
 
 
 def record(
-    agent: str,
+    target: str,
     model: str,
     *,
     outcome: str,
@@ -202,10 +203,10 @@ def record(
 ) -> Dict:
     now = now or _now()
     path = path or cache_path()
-    key = provider_key(agent, model)
+    key = provider_key(target, model)
     state = {
         "status": outcome,
-        "agent": _safe_identifier(agent),
+        "target": _safe_identifier(target),
         "model": _safe_identifier(model),
         "checked_at": now.isoformat(),
         "failure_class": failure_class,
@@ -224,6 +225,10 @@ def record(
 
 def classify_failure(returncode: int, stdout: str, stderr: str) -> str:
     text = f"{stdout}\n{stderr}".lower()
+    if any(token in text for token in
+           ("model not found", "unknown model", "invalid model", "unsupported model",
+            "model does not exist", "no such model")):
+        return "model_unavailable"
     if any(token in text for token in ("authentication", "unauthorized", "invalid api key")):
         return "auth"
     # "usage limit"/"session limit" cover Codex's and Claude's own wording for a
