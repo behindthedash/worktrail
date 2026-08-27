@@ -1050,6 +1050,39 @@ def _git_last_commit_time(repo: Path, path: Path) -> Optional[int]:
         return None
 
 
+def _git_added_commit_time(repo: Path, path: Path) -> Optional[int]:
+    """Unix timestamp of `path`'s add commit, or None if it has none.
+
+    Prefers the commit that first added `path` under its current name
+    (`--diff-filter=A`); falls back to the earliest entry of its rename/move
+    history (`--follow`) when the add-filtered query finds nothing, e.g.
+    because `path` arrived via a rename `git log --diff-filter=A` does not
+    attribute to it.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "log", "--diff-filter=A", "-1", "--format=%ct", "--", str(path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return int(result.stdout.strip())
+
+        result = subprocess.run(
+            ["git", "-C", str(repo), "log", "--follow", "--format=%ct", "--", str(path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        if result.returncode != 0:
+            return None
+        lines = [line for line in result.stdout.splitlines() if line.strip()]
+        return int(lines[-1]) if lines else None
+    except (subprocess.SubprocessError, OSError):
+        return None
+
+
 def _openspec_delta_reconciled(change_dir: Path) -> bool:
     """Whether every structural declaration in an OpenSpec delta is canonical.
 
