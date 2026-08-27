@@ -979,6 +979,25 @@ class OpenSpecDeltaDrift(unittest.TestCase):
 
         self.assertEqual(drift, [])
 
+    def test_uncommitted_open_delta_reports_no_drift(self):
+        change = self.repo / "openspec" / "changes" / "update-export"
+        delta = change / "specs" / "export" / "spec.md"
+        delta.parent.mkdir(parents=True)
+        delta.write_text("## MODIFIED Requirements\n\n### Requirement: Foo\n")
+
+        archived_id = "2026-01-01-rework-export"
+        archived = (
+            self.repo / "openspec" / "changes" / "archive" / archived_id
+            / "specs" / "export" / "spec.md"
+        )
+        archived.parent.mkdir(parents=True)
+        archived.write_text("## MODIFIED Requirements\n\n### Requirement: Foo\n")
+        self._commit_at([archived], "archived change delta", 1_000_000_000)
+
+        drift = dashboard._openspec_delta_drift(change, self.repo)
+
+        self.assertEqual(drift, [])
+
 
 class NonSpecDirsGitignoreSync(unittest.TestCase):
     """artifact-policy.md documents which _NON_SPEC_DIRS entries are gitignored
