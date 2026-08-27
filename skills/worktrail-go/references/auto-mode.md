@@ -50,12 +50,13 @@ actively working that repo — stale lock files probe as free).
    mode has no human present to catch a bad one — one run record listing every claimed
    brief id in `handoffs_consumed`, dispatch, CI watch, and per-brief `done`/`release`.
 
-## Phase 5.5 — collision/staleness checks have no ask
+## Phase 5.5 — collision / already-implemented checks have no ask
 
 `AskUserQuestion` is not a callable tool inside the headless one-shot processes
 `worktrail-go drain` spawns (verified 2026-08-10: a direct `claude -p` probe found the tool
 entirely absent, not merely unanswered). Auto mode's three Phase 5.5 branches
-(`references/spec-collision-check.md` Route F/G, `references/brief-staleness-check.md`,
+(`references/spec-collision-check.md` Route F/G,
+`references/subagent-prompts.md#already-implemented-check`,
 `references/related-brief-collision-check.md`) each check `$AUTO_MODE` before their ask and,
 when true, skip it: they open a minimal run record, file the judgment call as a decision record
 and release the brief per `references/decision-queue.md#file-a-decision` (so a human can answer

@@ -32,6 +32,11 @@ import yaml
 from ..shared.homedir import env_setting, worktrail_home
 from ..shared.operator_config import OperatorConfigError
 
+
+class OperatorConfigError(ValueError):
+    """A machine-wide operator config (routing.yaml) exists but cannot be honored."""
+
+
 POLICY_RELPATH = ".worktrail/policy.yaml"
 # Prior conventions, checked in this order when POLICY_RELPATH is absent, so no
 # repo is forced through a synchronized flag-day rename -- each migrates on its

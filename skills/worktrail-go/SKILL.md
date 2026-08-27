@@ -205,7 +205,7 @@ Handle a missing/empty dashboard gracefully (the `rendered` field already prints
 **Branch on the classification from above — this decides what gets printed, not the other way around:**
 
 - **Brief-ID** (`$BRIEF_ID` held, from `handoff:ID`, `route:X` naming a brief, or the queue-resolve match above): print only a one-line summary (e.g. `Dashboard: N specs, M in-flight`) — never the full `rendered` dashboard — and skip the picker entirely. Go straight to Phase 2.
-- **Auto** (`$AUTO_MODE=true`): print the `rendered` dashboard as usual, skip BOTH picker levels, and use `$DASHBOARD_JSON.auto_pick`. Phase 5.5's three collision/staleness branches (`references/spec-collision-check.md`, `references/brief-staleness-check.md`, `references/related-brief-collision-check.md`) branch on `$AUTO_MODE` to skip `AskUserQuestion` — that tool is not registered in the headless one-shot processes `worktrail-go drain` spawns (verified 2026-08-10: a direct `claude -p` probe found no such tool available to call, not merely unanswered), so a Phase 5.5 prompt reached from an auto/drain dispatch would fail outright or leave the agent guessing an answer with no human to catch a bad one. Full flow: `references/auto-mode.md`.
+- **Auto** (`$AUTO_MODE=true`): print the `rendered` dashboard as usual, skip BOTH picker levels, and use `$DASHBOARD_JSON.auto_pick`. Phase 5.5's collision branches (`references/spec-collision-check.md`, `references/related-brief-collision-check.md`) and its already-implemented branch (`references/subagent-prompts.md#already-implemented-check`) branch on `$AUTO_MODE` to skip `AskUserQuestion` — that tool is not registered in the headless one-shot processes `worktrail-go drain` spawns (verified 2026-08-10: a direct `claude -p` probe found no such tool available to call, not merely unanswered), so a Phase 5.5 prompt reached from an auto/drain dispatch would fail outright or leave the agent guessing an answer with no human to catch a bad one. Full flow: `references/auto-mode.md`.
 - **Everything else** (`route:X` not naming a brief, a v1 intent keyword, a bare integer with no active picker, or free-text): **print `$DASHBOARD_JSON.rendered` verbatim.** Do NOT re-render, reorder, regroup, or summarize it — rendering it yourself reintroduces the non-determinism this field exists to remove. Proceed to Phase 1b.
 
 ### Phase 1b — Two-Level Picker (AskUserQuestion)
@@ -402,38 +402,23 @@ filed, presented, answered, and resumed identically across attended, adapter,
 and unattended dispatch modes. Contract and resume procedure:
 `references/decision-queue.md`.
 
-**Brief-staleness branch (every brief-sourced dispatch).**
+**Already-implemented branch (every brief-sourced dispatch).**
 
 Gated on the dispatch being brief-sourced (a claimed brief is in play) — there is no route
-restriction. A free-text dispatch with no claimed brief skips this branch regardless of route —
-the check is built on a brief's `created:` timestamp and captured prose, which free text has no
-equivalent of. Before starting Phase 6's run record, run:
+restriction. A free-text dispatch with no claimed brief skips this branch regardless of route.
+Before starting Phase 6's run record, read the source and answer whether the brief's `focus`
+already describes work present on the base branch. There is no script: the procedure, the
+prompt shape, and the `$AUTO_MODE` fallback are
+`references/subagent-prompts.md#already-implemented-check`, the same check the orchestrator
+pre-launch gates run against a spec's pending tasks.
 
-```bash
-worktrail-check-brief-staleness --repo "$REPO" --brief "<claimed-brief-path>" --json
-```
-
-It extracts bounded path/symbol/PR probes from the brief's prose and searches the base branch's
-commit history — plus, best-effort, merged PRs — for anything matching them since the brief was
-captured. Read the result the same way as the sibling branches: `checked: false` means the
-question was unanswerable (not a git checkout, missing/malformed `created:`, no probes, a
-timeout) and Phase 6/7 proceed unmodified; `checked: true` with empty `matches` is a definite
-searched-and-clean negative and also proceeds silently. `gh` being missing, unauthenticated,
-erroring, or slow is **not** a `checked: false` cause — it degrades to an empty `pull_requests`
-list plus a warning while any git-history `matches` are kept.
-
-On `checked: true` with non-empty `matches` (or `pull_requests`), **never auto-close the brief** —
-unlike the spec-collision branch, evidence that a commit touched the named symbols is not proof
-the brief is satisfied, so the operator is always asked via `AskUserQuestion` (close as
-already-delivered, or proceed anyway) before Phase 6/7 continues. On "proceed", still run
-whichever of the two route-gated branches below also applies to this dispatch — the staleness
-prompt resolving does not skip them. Full procedure — command, how to read the result, the
-prompt shape, and the run-record entries: `references/brief-staleness-check.md`.
+On "proceed", still run whichever of the two route-gated branches below also applies to this
+dispatch — resolving this prompt does not skip them.
 
 **Route C/D/F/G branch: spec collision.**
 
 Gated on Phase 5's resolved route (`$ROUTE`) being `C`, `D`, `F`, or `G` — every other route
-skips this branch. Runs in addition to the brief-staleness branch above when the dispatch is
+skips this branch. Runs in addition to the already-implemented branch above when the dispatch is
 also brief-sourced. Before starting Phase 6's run record, check whether an existing,
 already-`Implemented` spec under `docs/specs/` already covers the request: run
 `check_spec_collision.py --repo "$REPO" --json` for the candidate list, judge each candidate
@@ -460,10 +445,11 @@ rule, and exact command syntax: `references/spec-collision-check.md`.
 **Related-brief collision branch.**
 
 Gated on the dispatch being brief-sourced (a claimed brief is in play), that brief's `related:`
-frontmatter being non-empty, **and** Phase 5's resolved route being anything other than C, D, E,
-F, or G — Route C/D/F/G is already covered by the branch above, and Route E deliberately keeps
-only the staleness signal rather than adding a second prompt surface on top of it. A free-text
-dispatch has no claimed brief to read `related:` off. Runs in addition to the brief-staleness
+frontmatter being non-empty, **and** Phase 5's resolved route being anything other than C, D,
+F, or G — Route C/D/F/G is already covered by the branch above. Route E was also excluded while
+the brief-staleness guard ran, to avoid stacking a second prompt surface on top of it; with that
+guard removed, E has no other in-flight-sibling check, so it runs this branch. A free-text
+dispatch has no claimed brief to read `related:` off. Runs in addition to the already-implemented
 branch above when it applies. Before starting Phase 6's run record, run
 `worktrail-check-related-brief-claims --brief "<claimed-brief-path>" --json` to ask whether any
 brief this one names as `related:` is itself actively claimed and in flight right now. Read the
@@ -889,6 +875,16 @@ When a brief is claimed, surface any related briefs from its `related` frontmatt
   explicitly selected planning-only; continue inline to Route D for requested
   implementation work.
 - For routes that end in a PR or merge outcome, keep going through the CI watch loop until CI is green (or the loop reaches a terminal state); "tests passed locally" is not closeout.
+- Once a human has given direction — approved a fix, approved a batch of quarantine-recovery
+  fixes, said to continue — carry it through to completion without re-pausing to ask
+  "continue?" at each subsequent step, task, or batch. This applies to Route E quarantine
+  recovery in particular: fixing one blocked task is not itself a reason to stop and check in
+  before fixing the next one the same direction already covers. Confirmed live 2026-08-27: an
+  agent stopped mid-recovery to ask "continue with the rest, or leave it here?" after the human
+  had already approved the fix pattern for the batch — the human's reaction was "why did you
+  stop? ... the orchestrator is supposed to be autonomous." Only the skill's own named
+  human-gates (stale-spec-check collision, precheck DAG conflicts, a pending
+  `worktrail-decision`) warrant a pause; a large remaining task count is not one of them.
 
 ## Constraints and Warnings
 
@@ -904,3 +900,7 @@ When a brief is claimed, surface any related briefs from its `related` frontmatt
   (`worktrail-skill-dispatch --present-decision`), let a human answer, and
   resume through the exact id (`--resume-decision`) — every hop lands on the
   run record's `pending_decisions` audit trail.
+- A pending user decision is a genuine fork (see above) — not "there is more work left" or
+  "the next step is the same kind of fix the human already approved." Don't manufacture a
+  check-in out of remaining task count or session length; see the Best Practices bullet on
+  carrying through already-given direction.

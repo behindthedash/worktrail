@@ -7,7 +7,8 @@ from pathlib import Path
 from unittest import mock
 
 from worktrail.router.policy import (
-    DEFAULTS, _json_safe, _validate_routing_purpose_tiers,
+    DEFAULTS, OperatorConfigError, _json_safe, _validate_routing_agents,
+    _validate_routing_drain, _validate_routing_purpose_tiers,
     _validate_routing_tiers, automerge_eligible,
     automerge_labels, detect_external_automerge, load_policy,
     merge_method_for_branch, parse_policy_yaml,
@@ -956,13 +957,18 @@ class Routing(unittest.TestCase):
                           {"agent_cli": "openrouter", "agent_model": None, "effort": None, "api": True}])
 
     def test_validate_routing_tiers_complexity_and_domain(self):
-        # AC-CHG-004
+        # AC-CHG-004. The flat `<complexity>/<domain>` form itself still
+        # resolves correctly -- task 2.2 (consolidate-operator-config-into-
+        # routing) adds a deprecation warning on top, asserted separately.
         meta = {"warnings": []}
         resolved = _validate_routing_tiers(
             {"hard/backend": {"agent": "codex", "model": "gpt-5"}}, meta)
         self.assertEqual(resolved,
                          {("hard", "backend"): {"agent_cli": "codex", "agent_model": "gpt-5", "effort": None}})
-        self.assertEqual(meta["warnings"], [])
+        self.assertEqual(meta["warnings"], [
+            "routing.tiers.hard/backend: flat form is deprecated -- use the "
+            "nested tiers.hard.<agent> form instead",
+        ])
 
     def test_validate_routing_tiers_no_domain_yields_none(self):
         # AC-CHG-005
@@ -978,6 +984,92 @@ class Routing(unittest.TestCase):
              "easy": {"agent": "claude"}}, meta)
         self.assertEqual(resolved, {("easy", None): {"agent_cli": "claude", "agent_model": None, "effort": None}})
         self.assertTrue(any("routing.tiers.hard/backend" in w for w in meta["warnings"]))
+
+    def test_flat_and_nested_tiers_forms_byte_identical(self):
+        # 2.4 (D6): the flat `<tier>-<agent>[/<domain>]` form and the nested
+        # `tiers.<tier>[/<domain>].<agent>: {model, effort}` form, declaring
+        # the same tier/agent/domain/model/effort, resolve to the exact same
+        # tier_map entry.
+        flat_repo = _repo_with(
+            "routing:\n"
+            "  tiers:\n"
+            "    hard-codex/backend:\n"
+            "      agent: codex\n"
+            "      model: gpt-5\n"
+            "      effort: high\n")
+        nested_repo = _repo_with(
+            "routing:\n"
+            "  tiers:\n"
+            "    hard/backend:\n"
+            "      codex:\n"
+            "        model: gpt-5\n"
+            "        effort: high\n")
+        with self._no_mw_env():
+            flat_pol = load_policy(flat_repo)
+            nested_pol = load_policy(nested_repo)
+        expected = {("hard-codex", "backend"):
+                    {"agent_cli": "codex", "agent_model": "gpt-5", "effort": "high"}}
+        self.assertEqual(resolve_tier_map(flat_pol), expected)
+        self.assertEqual(resolve_tier_map(nested_pol), expected)
+        self.assertEqual(resolve_tier_map(flat_pol), resolve_tier_map(nested_pol))
+
+    def test_flat_and_nested_tiers_forms_byte_identical_no_domain(self):
+        # 2.4 (D6): same as above, without a domain component.
+        flat_repo = _repo_with(
+            "routing:\n"
+            "  tiers:\n"
+            "    easy-claude:\n"
+            "      agent: claude\n")
+        nested_repo = _repo_with(
+            "routing:\n"
+            "  tiers:\n"
+            "    easy:\n"
+            "      claude: {}\n")
+        with self._no_mw_env():
+            flat_pol = load_policy(flat_repo)
+            nested_pol = load_policy(nested_repo)
+        expected = {("easy-claude", None):
+                    {"agent_cli": "claude", "agent_model": None, "effort": None}}
+        self.assertEqual(resolve_tier_map(flat_pol), expected)
+        self.assertEqual(resolve_tier_map(nested_pol), expected)
+
+    def test_nested_tiers_wins_over_flat_for_same_tier_agent(self):
+        # 2.4 (D6): nested wins when both declare the same tier/agent,
+        # regardless of raw YAML declaration order (resolved in two passes:
+        # all flat keys, then all nested keys).
+        repo = _repo_with(
+            "routing:\n"
+            "  tiers:\n"
+            "    hard-codex:\n"
+            "      agent: codex\n"
+            "      model: gpt-5\n"
+            "    hard:\n"
+            "      codex:\n"
+            "        model: gpt-5.4\n"
+            "        effort: high\n")
+        with self._no_mw_env():
+            pol = load_policy(repo)
+        self.assertEqual(resolve_tier_map(pol),
+                         {("hard-codex", None):
+                          {"agent_cli": "codex", "agent_model": "gpt-5.4", "effort": "high"}})
+
+    def test_nested_tiers_wins_over_flat_reverse_declaration_order(self):
+        # 2.4: nested wins even when the nested key is declared before the
+        # flat key in raw YAML.
+        repo = _repo_with(
+            "routing:\n"
+            "  tiers:\n"
+            "    hard:\n"
+            "      codex:\n"
+            "        model: gpt-5.4\n"
+            "    hard-codex:\n"
+            "      agent: codex\n"
+            "      model: gpt-5\n")
+        with self._no_mw_env():
+            pol = load_policy(repo)
+        self.assertEqual(resolve_tier_map(pol),
+                         {("hard-codex", None):
+                          {"agent_cli": "codex", "agent_model": "gpt-5.4", "effort": None}})
 
     def test_purpose_tiers_configured_resolves_and_validates(self):
         # 3.3: a configured routing.purpose_tiers table resolves and validates.
@@ -1137,6 +1229,191 @@ class Routing(unittest.TestCase):
         with self._no_mw_env():
             pol = load_policy(repo)
         self.assertIsNone(pol["routing"])
+
+
+class RoutingAgentsAndDrain(unittest.TestCase):
+    """routing.agents / routing.drain schema (1.1-1.3): unit-level validators,
+    load_policy() integration, and resolve_routing() exposure."""
+
+    def _no_mw_env(self):
+        return mock.patch.dict(
+            os.environ, {"GO_ROUTING_FILE": "/nonexistent/go-routing-test/routing.yaml"})
+
+    # -- _validate_routing_agents() -----------------------------------
+
+    def test_validate_routing_agents_valid_entry_resolves(self):
+        meta = {"warnings": []}
+        resolved = _validate_routing_agents(
+            {"claude": {"default_model": "sonnet"}}, meta)
+        self.assertEqual(resolved, {"claude": {"default_model": "sonnet"}})
+        self.assertEqual(meta["warnings"], [])
+
+    def test_validate_routing_agents_absent_resolves_to_empty(self):
+        meta = {"warnings": []}
+        self.assertEqual(_validate_routing_agents(None, meta), {})
+        self.assertEqual(meta["warnings"], [])
+
+    def test_validate_routing_agents_non_mapping_warns_and_ignored(self):
+        meta = {"warnings": []}
+        resolved = _validate_routing_agents(["claude"], meta)
+        self.assertEqual(resolved, {})
+        self.assertTrue(any("routing.agents must be a mapping" in w for w in meta["warnings"]))
+
+    def test_validate_routing_agents_invalid_agent_literal_dropped(self):
+        meta = {"warnings": []}
+        resolved = _validate_routing_agents(
+            {"bogus": {"default_model": "sonnet"},
+             "codex": {"default_model": "gpt-5"}}, meta)
+        self.assertEqual(resolved, {"codex": {"default_model": "gpt-5"}})
+        self.assertTrue(any("routing.agents" in w and "bogus" in w for w in meta["warnings"]))
+
+    def test_validate_routing_agents_entry_not_mapping_dropped(self):
+        meta = {"warnings": []}
+        resolved = _validate_routing_agents({"claude": "sonnet"}, meta)
+        self.assertEqual(resolved, {})
+        self.assertTrue(any("routing.agents.claude must be a mapping" in w for w in meta["warnings"]))
+
+    def test_validate_routing_agents_non_string_default_model_dropped(self):
+        meta = {"warnings": []}
+        resolved = _validate_routing_agents({"claude": {"default_model": 5}}, meta)
+        self.assertEqual(resolved, {})
+        self.assertTrue(any("routing.agents.claude.default_model" in w for w in meta["warnings"]))
+
+    # -- _validate_routing_drain() -------------------------------------
+
+    def test_validate_routing_drain_valid_entry_resolves(self):
+        meta = {"warnings": []}
+        resolved = _validate_routing_drain(
+            {"agent": "codex", "fallback_agents": ["opencode"], "max_workers": 4}, meta)
+        self.assertEqual(resolved,
+                         {"agent": "codex", "fallback_agents": ["opencode"], "max_workers": 4})
+        self.assertEqual(meta["warnings"], [])
+
+    def test_validate_routing_drain_absent_resolves_to_empty(self):
+        meta = {"warnings": []}
+        self.assertEqual(_validate_routing_drain(None, meta), {})
+        self.assertEqual(meta["warnings"], [])
+
+    def test_validate_routing_drain_missing_max_workers_defaults_to_two(self):
+        meta = {"warnings": []}
+        resolved = _validate_routing_drain({"agent": "codex"}, meta)
+        self.assertEqual(resolved, {"agent": "codex", "fallback_agents": [], "max_workers": 2})
+
+    def test_validate_routing_drain_non_mapping_raises(self):
+        meta = {"warnings": []}
+        with self.assertRaises(OperatorConfigError):
+            _validate_routing_drain(["codex"], meta)
+
+    def test_validate_routing_drain_non_string_agent_raises(self):
+        meta = {"warnings": []}
+        with self.assertRaises(OperatorConfigError):
+            _validate_routing_drain({"agent": 5}, meta)
+
+    def test_validate_routing_drain_non_string_fallback_agents_raises(self):
+        meta = {"warnings": []}
+        with self.assertRaises(OperatorConfigError):
+            _validate_routing_drain({"fallback_agents": ["codex", 5]}, meta)
+
+    def test_validate_routing_drain_invalid_max_workers_raises(self):
+        meta = {"warnings": []}
+        with self.assertRaises(OperatorConfigError):
+            _validate_routing_drain({"max_workers": 0}, meta)
+
+    # -- load_policy() integration --------------------------------------
+
+    def test_load_policy_valid_agents_and_drain_resolve(self):
+        repo = _repo_with(
+            "routing:\n"
+            "  agents:\n"
+            "    claude:\n"
+            "      default_model: sonnet\n"
+            "    codex:\n"
+            "      default_model: gpt-5\n"
+            "  drain:\n"
+            "    agent: codex\n"
+            "    fallback_agents:\n"
+            "      - opencode\n"
+            "    max_workers: 3\n")
+        with self._no_mw_env():
+            pol = load_policy(repo)
+        self.assertEqual(pol["routing"]["agents"],
+                         {"claude": {"default_model": "sonnet"}, "codex": {"default_model": "gpt-5"}})
+        self.assertEqual(pol["routing"]["drain"],
+                         {"agent": "codex", "fallback_agents": ["opencode"], "max_workers": 3})
+        self.assertEqual(pol["_meta"]["warnings"], [])
+
+    def test_load_policy_malformed_agents_warns_without_crashing(self):
+        repo = _repo_with(
+            "routing:\n"
+            "  agents:\n"
+            "    bogus:\n"
+            "      default_model: sonnet\n"
+            "    codex:\n"
+            "      default_model: gpt-5\n")
+        with self._no_mw_env():
+            pol = load_policy(repo)
+        self.assertEqual(pol["routing"]["agents"], {"codex": {"default_model": "gpt-5"}})
+        self.assertTrue(any("routing.agents" in w and "bogus" in w for w in pol["_meta"]["warnings"]))
+
+    def test_load_policy_malformed_drain_raises(self):
+        # 1.2's docstring: routing.drain is stated operator intent, so a
+        # malformed section raises rather than warning-and-dropping, unlike
+        # the sibling _validate_routing_* tables.
+        repo = _repo_with(
+            "routing:\n"
+            "  drain:\n"
+            "    max_workers: 0\n")
+        with self._no_mw_env():
+            with self.assertRaises(OperatorConfigError):
+                load_policy(repo)
+
+    def test_load_policy_absent_agents_and_drain_resolve_to_empty_and_change_nothing(self):
+        repo = _repo_with(
+            "routing:\n"
+            "  defaults:\n"
+            "    A:\n"
+            "      low:\n"
+            "        agent_cli: claude\n")
+        with self._no_mw_env():
+            pol = load_policy(repo)
+        self.assertEqual(pol["routing"]["agents"], {})
+        self.assertEqual(pol["routing"]["drain"], {})
+        self.assertEqual(pol["routing"]["defaults"],
+                         {"A": {"low": {"agent_cli": "claude", "agent_model": None, "effort": None}}})
+        self.assertEqual(pol["_meta"]["warnings"], [])
+
+    # -- resolve_routing() exposure --------------------------------------
+
+    def test_resolve_routing_exposes_agents_and_drain(self):
+        repo = _repo_with(
+            "routing:\n"
+            "  agents:\n"
+            "    claude:\n"
+            "      default_model: sonnet\n"
+            "  drain:\n"
+            "    agent: codex\n"
+            "    max_workers: 5\n")
+        with self._no_mw_env():
+            pol = load_policy(repo)
+        result = resolve_routing(pol, "A", "low")
+        self.assertEqual(result["agents"], {"claude": {"default_model": "sonnet"}})
+        self.assertEqual(result["drain"], {"agent": "codex", "fallback_agents": [], "max_workers": 5})
+
+    def test_resolve_routing_agents_and_drain_empty_when_absent(self):
+        repo = _repo_with("routing:\n  defaults:\n    A:\n      low:\n        agent_cli: claude\n")
+        with self._no_mw_env():
+            pol = load_policy(repo)
+        result = resolve_routing(pol, "A", "low")
+        self.assertEqual(result["agents"], {})
+        self.assertEqual(result["drain"], {})
+
+    def test_resolve_routing_agents_and_drain_empty_when_no_routing_configured(self):
+        repo = _repo_with("agent_cli: claude\n")
+        with self._no_mw_env():
+            pol = load_policy(repo)
+        result = resolve_routing(pol, "A", "low")
+        self.assertEqual(result["agents"], {})
+        self.assertEqual(result["drain"], {})
 
 
 if __name__ == "__main__":

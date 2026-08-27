@@ -382,19 +382,30 @@ class E2EBackwardCompatTest(unittest.TestCase):
             resolved = policy_mod.resolve_routing(policy, "B", "medium")
             self.assertEqual(resolved, {
                 "agent_cli": None, "agent_model": None, "roles": {}, "fallback": [],
-                "purpose_tiers": {},
+                "purpose_tiers": {}, "agents": {}, "drain": {},
             })
 
-            spawn = RoutingFakeSpawn(default_agent="claude")  # no role_agents/tier_map at all
-            journal_path = str(Path(tmp) / "journal.json")
-            result = live.live_run_real(
-                repo, "docs/specs/023-x", max_workers=1,
-                out_cassette=journal_path, run_id="e2e-backcompat", spawn=spawn,
-            )
-            self.assertEqual(result["done"], 3)
-            # Every role of every task resolves to exactly the run default --
-            # byte-identical to pre-spec dispatch (REQ-016).
-            self.assertTrue(all(agent == "claude" for _, _, agent in spawn.calls), spawn.calls)
+        # REQ-016 (tier/role dispatch, not model-default resolution): with
+        # only an `agents:` default configured -- no `defaults`/`tiers`/
+        # `roles` -- every role of every task still resolves to exactly the
+        # run default, byte-identical to pre-spec dispatch. `agents:` must be
+        # present for the run to spawn at all now (task 3.3: no silent
+        # fallback), so this half of the test uses its own isolated routing
+        # file instead of the fully-empty one above.
+        with tempfile.TemporaryDirectory() as tmp:
+            routing_file = Path(tmp) / "routing.yaml"
+            routing_file.write_text("agents:\n  claude:\n    default_model: sonnet\n")
+            with mock.patch.dict(os.environ, {"GO_ROUTING_FILE": str(routing_file)}):
+                repo = _init_routing_repo(Path(tmp), tier_stamps=False)
+                spawn = RoutingFakeSpawn(default_agent="claude")  # no role_agents/tier_map at all
+                journal_path = str(Path(tmp) / "journal.json")
+                result = live.live_run_real(
+                    repo, "docs/specs/023-x", max_workers=1,
+                    out_cassette=journal_path, run_id="e2e-backcompat", spawn=spawn,
+                )
+                self.assertEqual(result["done"], 3)
+                self.assertTrue(
+                    all(agent == "claude" for _, _, agent in spawn.calls), spawn.calls)
 
     def test_orchestrate_golden_check_passes(self):
         """AC-016 [EXT]: `orchestrate.py check` must exit 0 (golden unchanged)."""
@@ -470,9 +481,16 @@ class E2EFallbackChainTest(unittest.TestCase):
         # Isolate the machine-wide routing file: this test asserts the LEGACY
         # single-entry shape specifically, which only holds when no machine-wide
         # fallback chain (e.g. an operator's real machine-wide routing.yaml) is in play.
-        with tempfile.TemporaryDirectory() as tmp, \
-                mock.patch.dict(os.environ,
-                                {"GO_ROUTING_FILE": str(Path(tmp) / "no-such-routing.yaml")}):
+        with tempfile.TemporaryDirectory() as tmp:
+            routing_file = Path(tmp) / "routing.yaml"
+            routing_file.write_text(
+                "agents:\n"
+                "  claude:\n    default_model: sonnet\n"
+                "  opencode:\n    default_model: opencode/deepseek-v4-flash-free\n"
+            )
+            os_environ_patch = mock.patch.dict(os.environ, {"GO_ROUTING_FILE": str(routing_file)})
+            os_environ_patch.start()
+            self.addCleanup(os_environ_patch.stop)
             repo = Path(tmp) / "repo"
             specs = repo / "docs" / "specs"
             specs.mkdir(parents=True)
