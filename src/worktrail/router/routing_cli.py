@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -74,6 +75,27 @@ drain:
     - opencode
   max_workers: 2
 """
+
+
+def list_opencode_models(runner=subprocess.run) -> set:
+    """`opencode/*`, `openrouter/*`, `google/*` ids `opencode models` currently
+    serves, one per stdout line -- the source of truth D7's `model_unavailable`
+    gate (task 3.5) and `--check` (task 6.2) compare cells against. Fails open:
+    a missing binary, timeout, or non-zero exit warns on stderr and returns an
+    empty set rather than raising, since an unreachable listing must never be
+    mistaken for "no models exist"."""
+    try:
+        result = runner(["opencode", "models"], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"worktrail-routing: could not list opencode models: {exc}", file=sys.stderr)
+        return set()
+    if result.returncode != 0:
+        print(
+            f"worktrail-routing: `opencode models` exited {result.returncode}",
+            file=sys.stderr,
+        )
+        return set()
+    return {line.strip() for line in (result.stdout or "").splitlines() if line.strip()}
 
 
 def _routing_file_path() -> Path:
