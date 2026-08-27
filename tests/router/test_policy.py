@@ -7,14 +7,13 @@ from pathlib import Path
 from unittest import mock
 
 from worktrail.router.policy import (
-    DEFAULTS, _json_safe, _validate_routing_agents,
+    DEFAULTS, OperatorConfigError, _json_safe, _validate_routing_agents,
     _validate_routing_drain, _validate_routing_purpose_tiers,
     _validate_routing_tiers, automerge_eligible,
     automerge_labels, detect_external_automerge, load_policy,
     merge_method_for_branch, parse_policy_yaml,
     resolve_post_merge_smoke_cmd, resolve_routing, resolve_tier_map,
 )
-from worktrail.shared.operator_config import OperatorConfigError
 
 
 def _repo_with(policy_text):
