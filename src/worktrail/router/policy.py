@@ -843,6 +843,23 @@ def resolve_routing(policy: Dict[str, Any], route: str = "", risk: str = "") -> 
           "drain": {"agent": Optional[str], "fallback_agents": [str],
                     "max_workers": int}, # routing.drain, the machine-wide
                                           # drain defaults (D1); {} when absent
+          "agents": {agent: {"default_model": str}},
+                                          # routing.agents -- STILL exposed
+                                          # here, not just internal to
+                                          # policy["routing"]: spawnlib.py's
+                                          # default_model_for_agent() (retired
+                                          # only in task 4.2) reads
+                                          # resolve_routing(...)["agents"]
+                                          # directly, so dropping this key
+                                          # before that retirement lands
+                                          # raises KeyError on every agent
+                                          # spawn. {} when absent.
+          "fallback": [{"agent_cli", "agent_model", "effort", "api"?}, ...],
+                                          # routing.fallback -- STILL exposed
+                                          # for the same reason: compile.py's
+                                          # invocation-context resolution
+                                          # reads resolve_routing(...)["fallback"]
+                                          # directly. [] when absent.
         }
 
     Same inputs always produce the same output (REQ-NR002): no randomness, no
@@ -857,6 +874,8 @@ def resolve_routing(policy: Dict[str, Any], route: str = "", risk: str = "") -> 
             "purposes": {},
             "default_tier": None,
             "drain": {},
+            "agents": {},
+            "fallback": [],
         }
     return {
         "targets": routing.get("targets") or {},
@@ -865,6 +884,8 @@ def resolve_routing(policy: Dict[str, Any], route: str = "", risk: str = "") -> 
         "purposes": routing.get("purposes") or {},
         "default_tier": routing.get("default_tier"),
         "drain": routing.get("drain") or {},
+        "agents": routing.get("agents") or {},
+        "fallback": routing.get("fallback") or [],
     }
 
 

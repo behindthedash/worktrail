@@ -1393,7 +1393,9 @@ class Routing(unittest.TestCase):
     def test_resolve_routing_deterministic_match(self):
         # REQ-002, REQ-NR002 (1.3: resolve_routing() exposes
         # targets/tiers/roles/purposes/default_tier/drain, not
-        # route/risk-keyed agent_cli/agent_model).
+        # route/risk-keyed agent_cli/agent_model; agents/fallback stay
+        # exposed too, for spawnlib.py/compile.py call sites not yet
+        # migrated off them — see test_resolve_routing_still_exposes_agents_and_fallback).
         repo = _repo_with(
             "routing:\n"
             "  targets:\n"
@@ -1425,8 +1427,29 @@ class Routing(unittest.TestCase):
         self.assertEqual(first["purposes"], {"scaffolding": "t3"})
         self.assertEqual(first["default_tier"], "t3")
         self.assertEqual(first["drain"], {"agent": None, "fallback_agents": [], "max_workers": 3})
-        self.assertNotIn("agents", first)
-        self.assertNotIn("fallback", first)
+        self.assertEqual(first["agents"], {})
+        self.assertEqual(first["fallback"], [])
+
+    def test_resolve_routing_still_exposes_agents_and_fallback(self):
+        # 1.3 rewrote resolve_routing()'s primary contract to
+        # targets/tiers/roles/purposes/default_tier/drain, but `agents` and
+        # `fallback` stay exposed on the returned dict: spawnlib.py's
+        # default_model_for_agent() reads resolve_routing(...)["agents"] and
+        # compile.py's invocation-context resolution reads
+        # resolve_routing(...)["fallback"] directly, and neither call site is
+        # retired until later tasks (4.2 and downstream) migrate off them.
+        repo = _repo_with(
+            "routing:\n"
+            "  agents:\n"
+            "    claude:\n"
+            "      default_model: sonnet\n"
+            "  fallback:\n"
+            "    - codex\n")
+        with self._no_mw_env():
+            pol = load_policy(repo)
+        result = resolve_routing(pol)
+        self.assertEqual(result["agents"], {"claude": {"default_model": "sonnet"}})
+        self.assertEqual(result["fallback"], [{"agent_cli": "codex", "agent_model": None, "effort": None}])
 
     def test_resolve_routing_purposes_empty_when_unconfigured(self):
         repo = _repo_with("routing:\n  fallback:\n    - codex\n")
@@ -1441,7 +1464,7 @@ class Routing(unittest.TestCase):
         result = resolve_routing(pol)
         self.assertEqual(result, {
             "targets": {}, "tiers": {}, "roles": {}, "purposes": {},
-            "default_tier": None, "drain": {},
+            "default_tier": None, "drain": {}, "agents": {}, "fallback": [],
         })
 
     def test_malformed_scalar_routing_value_warns_and_ignored(self):
@@ -1719,12 +1742,14 @@ class RoutingAgentsAndDrain(unittest.TestCase):
         self.assertEqual(pol["_meta"]["warnings"], [])
 
     # -- resolve_routing() exposure --------------------------------------
-    # 1.3: resolve_routing() drops `agents`/`fallback` from its returned
-    # shape entirely (routing.agents/routing.fallback stay internal to
-    # `policy["routing"]`, resolved by `_validate_routing()` above, but are
-    # no longer part of the selector-facing contract).
+    # 1.3: resolve_routing()'s primary contract is now
+    # targets/tiers/roles/purposes/default_tier/drain, but `agents` and
+    # `fallback` stay exposed too (see
+    # test_resolve_routing_still_exposes_agents_and_fallback above) — the
+    # spawnlib.py/compile.py call sites that index them directly are only
+    # retired in later tasks (4.2 and downstream).
 
-    def test_resolve_routing_exposes_drain_but_not_agents(self):
+    def test_resolve_routing_exposes_drain_and_agents(self):
         repo = _repo_with(
             "routing:\n"
             "  agents:\n"
@@ -1736,7 +1761,7 @@ class RoutingAgentsAndDrain(unittest.TestCase):
         with self._no_mw_env():
             pol = load_policy(repo)
         result = resolve_routing(pol)
-        self.assertNotIn("agents", result)
+        self.assertEqual(result["agents"], {"claude": {"default_model": "sonnet"}})
         self.assertEqual(result["drain"], {"agent": "codex", "fallback_agents": [], "max_workers": 5})
 
     def test_resolve_routing_drain_empty_when_absent(self):
@@ -1744,7 +1769,7 @@ class RoutingAgentsAndDrain(unittest.TestCase):
         with self._no_mw_env():
             pol = load_policy(repo)
         result = resolve_routing(pol)
-        self.assertNotIn("agents", result)
+        self.assertEqual(result["agents"], {})
         self.assertEqual(result["drain"], {})
 
     def test_resolve_routing_drain_empty_when_no_routing_configured(self):
@@ -1752,7 +1777,7 @@ class RoutingAgentsAndDrain(unittest.TestCase):
         with self._no_mw_env():
             pol = load_policy(repo)
         result = resolve_routing(pol)
-        self.assertNotIn("agents", result)
+        self.assertEqual(result["agents"], {})
         self.assertEqual(result["drain"], {})
 
 
