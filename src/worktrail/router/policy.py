@@ -705,6 +705,63 @@ def _validate_routing_fallback(raw: Any, meta: Dict[str, Any]) -> List[Dict[str,
     return resolved
 
 
+MIGRATE_HINT = "run `worktrail-routing --migrate` to convert it to the current schema"
+
+
+def _reject_legacy_routing_keys(raw: Dict[str, Any]) -> None:
+    """Fail loud on any pre-target-selector `routing:` shape, rather than
+    silently misinterpreting or dropping it.
+
+    Raises `OperatorConfigError` naming the offending key and pointing at
+    `worktrail-routing --migrate` (design D9, task 6.3) for each of:
+
+    - `routing.agents` / `routing.fallback` — retired top-level tables
+      (default-model-per-agent, ordered agent-entry fallback) superseded by
+      `routing.targets`/`routing.tiers` (tasks 1.1/1.2).
+    - `routing.drain.agent` / `routing.drain.fallback_agents` — retired
+      drain-specific agent selection, superseded by target/tier selection
+      (`routing.drain.max_workers` is unaffected and still valid).
+    - `routing.purpose_tiers` — renamed to `routing.purposes` (task 1.3).
+    - a `routing.tiers` row whose cells are keyed by harness literal
+      (`VALID_AGENT_CLIS`) rather than by declared `routing.targets` name —
+      the pre-1.2 nested tier form.
+    - a `routing.roles` entry that is a mapping containing `agent_cli` or
+      `agent_model` — the pre-1.3 role-resolves-to-an-agent-entry form,
+      superseded by `{tier, prefer?, independent?}`.
+
+    Called first thing in `_validate_routing()`, on the already-confirmed
+    non-empty raw mapping, so no legacy shape is ever partially validated
+    (warned-and-dropped) before the operator sees the hard failure.
+    """
+    if "agents" in raw:
+        raise OperatorConfigError(f"routing.agents is a retired key; {MIGRATE_HINT}")
+    if "fallback" in raw:
+        raise OperatorConfigError(f"routing.fallback is a retired key; {MIGRATE_HINT}")
+    if "purpose_tiers" in raw:
+        raise OperatorConfigError(
+            f"routing.purpose_tiers is a retired key (renamed to routing.purposes); {MIGRATE_HINT}")
+    drain = raw.get("drain")
+    if isinstance(drain, dict):
+        if "agent" in drain:
+            raise OperatorConfigError(f"routing.drain.agent is a retired key; {MIGRATE_HINT}")
+        if "fallback_agents" in drain:
+            raise OperatorConfigError(f"routing.drain.fallback_agents is a retired key; {MIGRATE_HINT}")
+    tiers = raw.get("tiers")
+    if isinstance(tiers, dict):
+        for row, cells in tiers.items():
+            if isinstance(cells, dict) and cells and all(k in VALID_AGENT_CLIS for k in cells):
+                raise OperatorConfigError(
+                    f"routing.tiers.{row} uses the retired harness-keyed cell form "
+                    f"(cells must be keyed by a declared routing.targets name); {MIGRATE_HINT}")
+    roles = raw.get("roles")
+    if isinstance(roles, dict):
+        for role, entry in roles.items():
+            if isinstance(entry, dict) and ("agent_cli" in entry or "agent_model" in entry):
+                raise OperatorConfigError(
+                    f"routing.roles.{role} uses the retired agent_cli/agent_model role form "
+                    f"(roles now resolve to {{tier, prefer?, independent?}}); {MIGRATE_HINT}")
+
+
 def _validate_routing(raw: Any, meta: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Validate a raw `routing:` mapping (from either `go-policy.yaml` or the
     machine-wide routing file) into
@@ -718,6 +775,12 @@ def _validate_routing(raw: Any, meta: Dict[str, Any]) -> Optional[Dict[str, Any]
     `targets` is resolved first: `tiers`' cells are only valid when they name
     a target already declared there, and `default_tier` is only valid when it
     names a row `tiers` actually resolved.
+
+    `_reject_legacy_routing_keys()` runs first, on the confirmed non-empty raw
+    mapping: a pre-target-selector shape (`agents`/`fallback`/`purpose_tiers`,
+    `drain.agent`/`drain.fallback_agents`, harness-keyed tier cells, or an
+    agent-entry role) raises `OperatorConfigError` rather than being silently
+    warned-and-dropped by the validators below.
     """
     if raw is None:
         return None
@@ -727,6 +790,7 @@ def _validate_routing(raw: Any, meta: Dict[str, Any]) -> Optional[Dict[str, Any]
         return None
     if not raw:
         return None
+    _reject_legacy_routing_keys(raw)
     targets = _validate_routing_targets(raw.get("targets"), meta)
     tiers = _validate_routing_tiers(raw.get("tiers"), targets, meta)
     return {
