@@ -47,10 +47,10 @@
 - [x] 4.1 Replace `drain.py`'s `operator_drain_config()` import with `resolve_routing()`'s
       `drain` block; preserve CLI > config > built-in precedence and the exit-2 refusal on an
       unsupported agent name, now naming `routing.yaml`.
-- [ ] 4.2 Add `routing_candidates(routing)` (in `runtime/selection.py` or a new
+- [x] 4.2 Add `routing_candidates(routing)` (in `runtime/selection.py` or a new
       `runtime/routing_source.py`) yielding `{provider, model, tiers, purposes}` from
       `routing.agents` + `routing.tiers`.
-- [ ] 4.3 Implements **Provider/model intent has exactly one machine-wide file**: replace
+- [x] 4.3 Implements **Provider/model intent has exactly one machine-wide file**: replace
       drain.py:472-475's synthetic `"configured-default"` sentinel catalog with
       `routing_candidates(...)`, so capacity gating keys on the real model actually spawned.
       `select_execution_target` itself is NOT modified.
@@ -94,12 +94,12 @@
 
 ## 8. Operator migration (this machine)
 
-- [ ] 8.1 [cleanup] Rewrite `~/.worktrail/routing.yaml`: add `agents:` (declaring each provider's default
+- [x] 8.1 [cleanup] Rewrite `~/.worktrail/routing.yaml`: add `agents:` (declaring each provider's default
       model once), nest `tiers`, fold in `drain:` with **claude-first** order per the
       2026-08-26 decision, and keep the existing pricing/free-tier commentary.
-- [ ] 8.2 [cleanup] Delete `~/.worktrail/config.json` and `~/.worktrail/provider-model-catalog.yaml`.
-- [ ] 8.3 [cleanup] Remove the stale `configured_providers` key from `~/.worktrail/agent-capacity.json`.
-- [ ] 8.4 [cleanup] Investigate and remove the stray `~/.worktrail/runs/agent-capacity.json` -- confirm
+- [x] 8.2 [cleanup] Delete `~/.worktrail/config.json` and `~/.worktrail/provider-model-catalog.yaml`.
+- [x] 8.3 [cleanup] Remove the stale `configured_providers` key from `~/.worktrail/agent-capacity.json`.
+- [x] 8.4 [cleanup] Investigate and remove the stray `~/.worktrail/runs/agent-capacity.json` -- confirm
       what wrote it (suspected relative `WORKTRAIL_HOME` or cache override) before deleting,
       and fix that path resolution if the cause is in worktrail.
 
