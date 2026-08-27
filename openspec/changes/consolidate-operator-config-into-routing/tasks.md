@@ -65,7 +65,7 @@
       (prints the resolved routing for a repo).
 - [ ] 5.2 Wire `--init` into `onboarding/repo_init.py` so a bootstrapped machine is never left
       unable to spawn.
-- [ ] 5.3 Acceptance test: a fresh `WORKTRAIL_HOME` with no `routing.yaml` produces the
+- [x] 5.3 Acceptance test: a fresh `WORKTRAIL_HOME` with no `routing.yaml` produces the
       actionable named error (not a traceback, not a silent paid-model spawn), and
       `worktrail-routing --init` then makes the same spawn resolve.
 
