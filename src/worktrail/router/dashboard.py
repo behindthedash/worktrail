@@ -1032,6 +1032,106 @@ def _openspec_delta_current_requirements(kind: str, body: str) -> set[str]:
     return set()
 
 
+def _git_last_commit_time(repo: Path, path: Path) -> Optional[int]:
+    """Unix timestamp of `path`'s most recent commit, or None if it has none
+    (e.g. an uncommitted-only file)."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "log", "-1", "--format=%ct", "--", str(path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        if result.returncode != 0:
+            return None
+        output = result.stdout.strip()
+        return int(output) if output else None
+    except (subprocess.SubprocessError, OSError):
+        return None
+
+
+def _git_added_commit_time(repo: Path, path: Path) -> Optional[int]:
+    """Unix timestamp of `path`'s add commit, or None if it has none.
+
+    Prefers the commit that first added `path` under its current name
+    (`--diff-filter=A`); falls back to the earliest entry of its rename/move
+    history (`--follow`) when the add-filtered query finds nothing, e.g.
+    because `path` arrived via a rename `git log --diff-filter=A` does not
+    attribute to it.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "log", "--diff-filter=A", "-1", "--format=%ct", "--", str(path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return int(result.stdout.strip())
+
+        result = subprocess.run(
+            ["git", "-C", str(repo), "log", "--follow", "--format=%ct", "--", str(path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        if result.returncode != 0:
+            return None
+        lines = [line for line in result.stdout.splitlines() if line.strip()]
+        return int(lines[-1]) if lines else None
+    except (subprocess.SubprocessError, OSError):
+        return None
+
+
+def _openspec_delta_drift(change_dir: Path, repo: Path) -> List[Dict[str, str]]:
+    """Requirement names an open change's delta MODIFIED/RENAMED that an archived
+    sibling touched more recently.
+
+    Parses on-disk delta headings and compares local `git log` commit ordering only
+    -- never a model call.
+    """
+    try:
+        drift: List[Dict[str, str]] = []
+        for delta_file in sorted((change_dir / "specs").glob("**/spec.md")):
+            capability = delta_file.relative_to(change_dir / "specs").parent
+            text = delta_file.read_text(errors="ignore")
+            open_names: set[str] = set()
+            for kind, body in _iter_openspec_delta_sections(text):
+                if kind in {"MODIFIED", "RENAMED"}:
+                    open_names |= _openspec_delta_current_requirements(kind, body)
+            if not open_names:
+                continue
+            open_time = _git_last_commit_time(repo, delta_file)
+            if open_time is None:
+                continue
+
+            archive_root = repo / "openspec" / "changes" / "archive"
+            for archived_spec in sorted(
+                repo.glob(f"openspec/changes/archive/*/specs/{capability}/spec.md")
+            ):
+                archived_change_id = archived_spec.relative_to(archive_root).parts[0]
+                archived_text = archived_spec.read_text(errors="ignore")
+                archived_names: set[str] = set()
+                for kind, body in _iter_openspec_delta_sections(archived_text):
+                    if kind in {"ADDED", "MODIFIED", "RENAMED"}:
+                        archived_names |= _openspec_delta_current_requirements(kind, body)
+
+                for name in open_names & archived_names:
+                    archived_time = _git_added_commit_time(repo, archived_spec)
+                    if archived_time is None or archived_time <= open_time:
+                        continue
+                    drift.append(
+                        {
+                            "requirement": name,
+                            "capability": str(capability),
+                            "archived_change_id": archived_change_id,
+                        }
+                    )
+        return drift
+    except Exception:
+        return []
+
+
 def _openspec_delta_reconciled(change_dir: Path) -> bool:
     """Whether every structural declaration in an OpenSpec delta is canonical.
 
@@ -1134,6 +1234,10 @@ def _safe_detect_openspec(change_dir: Path) -> Dict[str, Any]:
         }
         if pending and stale_ids:
             info["stale_task_ids"] = stale_ids
+        repo = change_dir.parent.parent.parent
+        delta_drift = _openspec_delta_drift(change_dir, repo)
+        if delta_drift:
+            info["delta_drift"] = delta_drift
         return info
     except Exception as e:  # noqa: BLE001 — one malformed change must not kill /go
         return {
