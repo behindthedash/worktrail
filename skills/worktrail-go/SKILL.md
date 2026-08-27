@@ -875,6 +875,16 @@ When a brief is claimed, surface any related briefs from its `related` frontmatt
   explicitly selected planning-only; continue inline to Route D for requested
   implementation work.
 - For routes that end in a PR or merge outcome, keep going through the CI watch loop until CI is green (or the loop reaches a terminal state); "tests passed locally" is not closeout.
+- Once a human has given direction — approved a fix, approved a batch of quarantine-recovery
+  fixes, said to continue — carry it through to completion without re-pausing to ask
+  "continue?" at each subsequent step, task, or batch. This applies to Route E quarantine
+  recovery in particular: fixing one blocked task is not itself a reason to stop and check in
+  before fixing the next one the same direction already covers. Confirmed live 2026-08-27: an
+  agent stopped mid-recovery to ask "continue with the rest, or leave it here?" after the human
+  had already approved the fix pattern for the batch — the human's reaction was "why did you
+  stop? ... the orchestrator is supposed to be autonomous." Only the skill's own named
+  human-gates (stale-spec-check collision, precheck DAG conflicts, a pending
+  `worktrail-decision`) warrant a pause; a large remaining task count is not one of them.
 
 ## Constraints and Warnings
 
@@ -890,3 +900,7 @@ When a brief is claimed, surface any related briefs from its `related` frontmatt
   (`worktrail-skill-dispatch --present-decision`), let a human answer, and
   resume through the exact id (`--resume-decision`) — every hop lands on the
   run record's `pending_decisions` audit trail.
+- A pending user decision is a genuine fork (see above) — not "there is more work left" or
+  "the next step is the same kind of fix the human already approved." Don't manufacture a
+  check-in out of remaining task count or session length; see the Best Practices bullet on
+  carrying through already-given direction.
