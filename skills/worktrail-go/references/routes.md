@@ -61,6 +61,10 @@ Completion: `investigation_complete` (note only) or
 
 ## Route B — Epic Planning
 
+**Before authoring anything:** run `epic-collision-check.md` — does an existing epic already
+decompose this scope, citing a spec already in flight? An unambiguous match redirects the route
+(no ask); only a genuinely ambiguous match escalates.
+
 Multi-feature capability. Output an epic document
 `docs/specs/epics/<NNN>-<slug>.md` containing: business objective, personas,
 scope/non-goals, success metrics, feature decomposition (each independently
