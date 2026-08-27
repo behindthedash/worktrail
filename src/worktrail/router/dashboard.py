@@ -114,7 +114,16 @@ from .quarantine_selfcheck import check_repo as _quarantine_check_repo
 # invariants (integrate_complete with undispatched tail; malformed journals).
 from .journal_selfcheck import check_repo as _journal_check_repo
 
-from ..orchestrator.agent_capacity import gate_snapshot as _capacity_gate_snapshot
+from ..orchestrator.agent_capacity import (
+    gate_snapshot as _capacity_gate_snapshot,
+    provider_key as _capacity_provider_key,
+)
+
+# routing_candidates is the pure targets/tiers -> candidate-catalog projection
+# (task 2.2); the capacity gate's provider-key set and the capacity line's
+# per-cell labels are both derived from it, never from the removed
+# `routing.agents` table.
+from ..runtime.routing_source import routing_candidates as _routing_candidates
 
 # audit_postmerge is a sibling module (spec post-merge-reconciliation-audit):
 # its dashboard_snapshot() is a pure state-file read (no `gh` calls), reused
@@ -397,17 +406,17 @@ def _planned_agent_for_item(
 
 
 def _routing_configured_providers(policy: Optional[Dict[str, Any]]) -> List[str]:
-    """The routing-derived `agent:model` provider-key set fed to
-    `agent_capacity.gate_snapshot()` -- `routing.agents`' per-agent
-    default-model table (D5), replacing the removed `configure()`-written
+    """The routing-derived `target:model` provider-key set fed to
+    `agent_capacity.gate_snapshot()` -- every `(target, model)` cell
+    `routing_candidates()` (task 2.2) yields from `routing.targets`/
+    `routing.tiers`, replacing the removed `configure()`-written
     `configured_providers` cache key that `gate_snapshot()` no longer reads."""
     if not policy:
         return []
-    agents = (policy.get("routing") or {}).get("agents") or {}
+    routing = policy.get("routing")
     return sorted(
-        f"{agent}:{cfg['default_model']}"
-        for agent, cfg in agents.items()
-        if isinstance(cfg, dict) and cfg.get("default_model")
+        _capacity_provider_key(c["target"], c["model"])
+        for c in _routing_candidates(routing)
     )
 
 
@@ -2663,7 +2672,7 @@ def render_dashboard(
 
     if capacity and capacity.get("gated"):
         entries = ", ".join(
-            f"{item['provider']} [{item['failure_class']}]"
+            f"{item['provider']} ({item['failure_class']}, retry {item['retry_after']})"
             for item in capacity["gated"][:4]
         )
         more = f" … +{len(capacity['gated']) - 4}" if len(capacity["gated"]) > 4 else ""
