@@ -1090,43 +1090,46 @@ def _openspec_delta_drift(change_dir: Path, repo: Path) -> List[Dict[str, str]]:
     Parses on-disk delta headings and compares local `git log` commit ordering only
     -- never a model call.
     """
-    drift: List[Dict[str, str]] = []
-    for delta_file in sorted((change_dir / "specs").glob("**/spec.md")):
-        capability = delta_file.relative_to(change_dir / "specs").parent
-        text = delta_file.read_text(errors="ignore")
-        open_names: set[str] = set()
-        for kind, body in _iter_openspec_delta_sections(text):
-            if kind in {"MODIFIED", "RENAMED"}:
-                open_names |= _openspec_delta_current_requirements(kind, body)
-        if not open_names:
-            continue
-        open_time = _git_last_commit_time(repo, delta_file)
-        if open_time is None:
-            continue
+    try:
+        drift: List[Dict[str, str]] = []
+        for delta_file in sorted((change_dir / "specs").glob("**/spec.md")):
+            capability = delta_file.relative_to(change_dir / "specs").parent
+            text = delta_file.read_text(errors="ignore")
+            open_names: set[str] = set()
+            for kind, body in _iter_openspec_delta_sections(text):
+                if kind in {"MODIFIED", "RENAMED"}:
+                    open_names |= _openspec_delta_current_requirements(kind, body)
+            if not open_names:
+                continue
+            open_time = _git_last_commit_time(repo, delta_file)
+            if open_time is None:
+                continue
 
-        archive_root = repo / "openspec" / "changes" / "archive"
-        for archived_spec in sorted(
-            repo.glob(f"openspec/changes/archive/*/specs/{capability}/spec.md")
-        ):
-            archived_change_id = archived_spec.relative_to(archive_root).parts[0]
-            archived_text = archived_spec.read_text(errors="ignore")
-            archived_names: set[str] = set()
-            for kind, body in _iter_openspec_delta_sections(archived_text):
-                if kind in {"ADDED", "MODIFIED", "RENAMED"}:
-                    archived_names |= _openspec_delta_current_requirements(kind, body)
+            archive_root = repo / "openspec" / "changes" / "archive"
+            for archived_spec in sorted(
+                repo.glob(f"openspec/changes/archive/*/specs/{capability}/spec.md")
+            ):
+                archived_change_id = archived_spec.relative_to(archive_root).parts[0]
+                archived_text = archived_spec.read_text(errors="ignore")
+                archived_names: set[str] = set()
+                for kind, body in _iter_openspec_delta_sections(archived_text):
+                    if kind in {"ADDED", "MODIFIED", "RENAMED"}:
+                        archived_names |= _openspec_delta_current_requirements(kind, body)
 
-            for name in open_names & archived_names:
-                archived_time = _git_added_commit_time(repo, archived_spec)
-                if archived_time is None or archived_time <= open_time:
-                    continue
-                drift.append(
-                    {
-                        "requirement": name,
-                        "capability": str(capability),
-                        "archived_change_id": archived_change_id,
-                    }
-                )
-    return drift
+                for name in open_names & archived_names:
+                    archived_time = _git_added_commit_time(repo, archived_spec)
+                    if archived_time is None or archived_time <= open_time:
+                        continue
+                    drift.append(
+                        {
+                            "requirement": name,
+                            "capability": str(capability),
+                            "archived_change_id": archived_change_id,
+                        }
+                    )
+        return drift
+    except Exception:
+        return []
 
 
 def _openspec_delta_reconciled(change_dir: Path) -> bool:
