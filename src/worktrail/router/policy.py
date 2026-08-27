@@ -503,9 +503,27 @@ def _validate_routing_defaults(raw: Any, meta: Dict[str, Any]) -> Dict[str, Dict
     return resolved
 
 
-def _validate_routing_roles(raw: Any, meta: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
-    """`routing.roles`: `{role: agent-entry}` — same semantics as `--role-agent-map`
-    (`live.py`'s `role=agent` map), exposed here as the single source of truth."""
+def _validate_routing_roles(
+    raw: Any, tiers: Dict[str, Dict[str, Dict[str, Any]]],
+    targets: Dict[str, Dict[str, Any]], meta: Dict[str, Any]
+) -> Dict[str, Dict[str, Any]]:
+    """`routing.roles`: `{role: {tier, prefer?, independent?}}` — a role now
+    resolves to a *tier row* (`routing.tiers`, task 1.2), not directly to an
+    agent/model: `dispatch.tier_for()` (task 4.1) reads `tier` to pick the row
+    `select_cell()` (task 2.1) walks, `prefer` to reorder that row toward one
+    declared target first, and `independent` to mark a role (e.g. review)
+    that should avoid re-using the implementer's own harness.
+
+    An entry is dropped (with a `meta["warnings"]` entry) when it is not a
+    mapping, or when `tier` is missing, not a string, or does not name a
+    declared row of the already-resolved `tiers` table (`_validate_routing_tiers()`)
+    — a role with no valid tier has nothing for the selector to walk. A
+    `prefer` naming a target not declared in `targets` (`_validate_routing_targets()`)
+    drops the whole entry the same way, rather than keeping a tier with an
+    unusable preference. `independent` defaults to `False`; a non-bool value
+    is dropped (with a warning), falling back to `False` rather than the
+    whole entry, since it is the least load-bearing field.
+    """
     if raw is None:
         return {}
     if not isinstance(raw, dict):
@@ -513,27 +531,48 @@ def _validate_routing_roles(raw: Any, meta: Dict[str, Any]) -> Dict[str, Dict[st
         return {}
     resolved: Dict[str, Dict[str, Any]] = {}
     for role, entry in raw.items():
-        normalized = _validate_agent_entry(entry, meta, f"routing.roles.{role}")
-        if normalized is not None:
-            resolved[role] = normalized
+        if not isinstance(entry, dict):
+            meta["warnings"].append(
+                f"routing.roles.{role} must be a mapping ({{tier, prefer?, independent?}}); "
+                f"got {entry!r} — dropped")
+            continue
+        tier = entry.get("tier")
+        if not isinstance(tier, str) or tier not in tiers:
+            meta["warnings"].append(
+                f"routing.roles.{role}.tier {tier!r} does not name a declared "
+                "routing.tiers row; dropped")
+            continue
+        prefer = entry.get("prefer")
+        if prefer is not None and (not isinstance(prefer, str) or prefer not in targets):
+            meta["warnings"].append(
+                f"routing.roles.{role}.prefer {prefer!r} does not name a declared "
+                "routing.targets entry; dropped")
+            continue
+        independent = entry.get("independent", False)
+        if not isinstance(independent, bool):
+            meta["warnings"].append(
+                f"routing.roles.{role}.independent must be a boolean; "
+                f"got {independent!r} — dropped")
+            independent = False
+        resolved[role] = {"tier": tier, "prefer": prefer, "independent": independent}
     return resolved
 
 
 def _validate_routing_purpose_tiers(raw: Any, meta: Dict[str, Any]) -> Dict[str, str]:
-    """`routing.purpose_tiers`: `{purpose: tier}` — a plain string-to-string map
+    """`routing.purposes`: `{purpose: tier}` — a plain string-to-string map
     (unlike `routing.roles`/`routing.tiers`, values here are tier names, not
-    agent entries) that `dispatch.agent_for` consults ahead of `complexity` to
-    resolve a task's tier."""
+    agent entries) that `dispatch.tier_for()` (task 4.1) consults ahead of
+    `complexity` to resolve a task's tier."""
     if raw is None:
         return {}
     if not isinstance(raw, dict):
-        meta["warnings"].append(f"routing.purpose_tiers must be a mapping; got {raw!r} — ignored")
+        meta["warnings"].append(f"routing.purposes must be a mapping; got {raw!r} — ignored")
         return {}
     resolved: Dict[str, str] = {}
     for purpose, tier in raw.items():
         if not isinstance(purpose, str) or not isinstance(tier, str):
             meta["warnings"].append(
-                f"routing.purpose_tiers.{purpose!r}: value must be a string; got {tier!r} — dropped")
+                f"routing.purposes.{purpose!r}: value must be a string; got {tier!r} — dropped")
             continue
         resolved[purpose] = tier
     return resolved
@@ -669,7 +708,7 @@ def _validate_routing_fallback(raw: Any, meta: Dict[str, Any]) -> List[Dict[str,
 def _validate_routing(raw: Any, meta: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Validate a raw `routing:` mapping (from either `go-policy.yaml` or the
     machine-wide routing file) into
-    `{targets, defaults, roles, tiers, default_tier, fallback, purpose_tiers,
+    `{targets, defaults, roles, tiers, default_tier, fallback, purposes,
     agents, drain}`.
 
     Returns `None` when `raw` is absent, an empty mapping, or not a mapping at
@@ -693,11 +732,11 @@ def _validate_routing(raw: Any, meta: Dict[str, Any]) -> Optional[Dict[str, Any]
     return {
         "targets": targets,
         "defaults": _validate_routing_defaults(raw.get("defaults"), meta),
-        "roles": _validate_routing_roles(raw.get("roles"), meta),
+        "roles": _validate_routing_roles(raw.get("roles"), tiers, targets, meta),
         "tiers": tiers,
         "default_tier": _validate_routing_default_tier(raw.get("default_tier"), tiers, meta),
         "fallback": _validate_routing_fallback(raw.get("fallback"), meta),
-        "purpose_tiers": _validate_routing_purpose_tiers(raw.get("purpose_tiers"), meta),
+        "purposes": _validate_routing_purpose_tiers(raw.get("purposes"), meta),
         "agents": _validate_routing_agents(raw.get("agents"), meta),
         "drain": _validate_routing_drain(raw.get("drain"), meta),
     }
@@ -777,71 +816,54 @@ def _resolve_routing(repo: Path, parsed_local: Dict[str, Any], meta: Dict[str, A
     return _validate_routing(mw_raw, meta)
 
 
-def resolve_routing(policy: Dict[str, Any], route: str, risk: str) -> Dict[str, Any]:
-    """Deterministically resolve the effective agent/model/roles/fallback for a
-    `(route, risk)` pair — the single source of truth for `/go` Phase 7
-    (TASK-011), the dashboard (TASK-010), and the run record (TASK-008).
+def resolve_routing(policy: Dict[str, Any], route: str = "", risk: str = "") -> Dict[str, Any]:
+    """Deterministically resolve the effective targets/tiers/roles/purposes/
+    drain configuration — the single source of truth for the selector
+    (`select_cell()`, task 2.1) and dispatch (`tier_for()`, task 4.1).
 
     Args:
         policy: the dict returned by `load_policy()`.
-        route: a classify.py route letter (e.g. "B").
-        risk: a classify.py risk level ("low"/"medium"/"high"/"critical").
+        route, risk: unused (kept for call-site compatibility with the
+            retired route/risk-keyed `routing.defaults` resolution; every
+            caller of `resolve_routing()` is migrated off passing them by
+            the tasks depending on this one).
 
     Returns:
         {
-          "agent_cli": str,              # primary agent CLI
-          "agent_model": Optional[str],  # primary model override, if any
-          "roles": {role: {"agent_cli": str, "agent_model": Optional[str]}},
-                                          # routing.roles, same semantics as
-                                          # --role-agent-map
-          "fallback": [{"agent_cli": str, "agent_model": Optional[str],
-                        "api": bool (optional, True for an opted-in
-                        API/OpenRouter entry)}, ...],  # ordered chain
-          "purpose_tiers": {purpose: tier},  # routing.purpose_tiers, consulted
-                                          # by dispatch.agent_for ahead of
+          "targets": {name: {"harness", "pool", "api_opt_in", "auth"}},
+                                          # routing.targets (task 1.1)
+          "tiers": {row: {target: {"model", "effort"}}},
+                                          # routing.tiers (task 1.2)
+          "roles": {role: {"tier", "prefer", "independent"}},
+                                          # routing.roles
+          "purposes": {purpose: tier},   # routing.purposes, consulted by
+                                          # dispatch.tier_for() ahead of
                                           # complexity to resolve a task's tier
-          "agents": {agent: {"default_model": str}},
-                                          # routing.agents, the per-agent
-                                          # default-model table
-                                          # default_model_for_agent() resolves
-                                          # against (D2/D3); {} when absent
+          "default_tier": Optional[str], # routing.default_tier
           "drain": {"agent": Optional[str], "fallback_agents": [str],
                     "max_workers": int}, # routing.drain, the machine-wide
                                           # drain defaults (D1); {} when absent
         }
 
-    Resolution order for `agent_cli`/`agent_model`:
-      1. `routing.defaults[route][risk]`, if the routing table has a match.
-      2. The flat `policy["agent_cli"]` / `policy["agent_model"]` keys.
-    `fallback` is `routing.fallback` when routing is configured and non-empty,
-    else the single-entry chain built from `policy["fallback_agent_cli"]`.
     Same inputs always produce the same output (REQ-NR002): no randomness, no
     I/O, no clock/env reads beyond what `load_policy()` already resolved.
     """
-    flat_fallback = (
-        [{"agent_cli": policy["fallback_agent_cli"], "agent_model": None}]
-        if policy.get("fallback_agent_cli") else []
-    )
     routing = policy.get("routing")
     if not routing:
         return {
-            "agent_cli": policy.get("agent_cli"),
-            "agent_model": policy.get("agent_model"),
+            "targets": {},
+            "tiers": {},
             "roles": {},
-            "fallback": flat_fallback,
-            "purpose_tiers": {},
-            "agents": {},
+            "purposes": {},
+            "default_tier": None,
             "drain": {},
         }
-    route_map = (routing.get("defaults") or {}).get(route)
-    entry = route_map.get(risk) if isinstance(route_map, dict) else None
     return {
-        "agent_cli": entry["agent_cli"] if entry else policy.get("agent_cli"),
-        "agent_model": entry.get("agent_model") if entry else policy.get("agent_model"),
+        "targets": routing.get("targets") or {},
+        "tiers": routing.get("tiers") or {},
         "roles": routing.get("roles") or {},
-        "fallback": routing.get("fallback") or flat_fallback,
-        "purpose_tiers": routing.get("purpose_tiers") or {},
-        "agents": routing.get("agents") or {},
+        "purposes": routing.get("purposes") or {},
+        "default_tier": routing.get("default_tier"),
         "drain": routing.get("drain") or {},
     }
 
