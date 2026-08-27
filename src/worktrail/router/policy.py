@@ -473,21 +473,58 @@ def _validate_routing_tiers(
 ) -> Dict[Tuple[str, Optional[str]], Dict[str, Any]]:
     """`routing.tiers`: `{<complexity>[/<domain>]: agent-entry}` — a
     `(complexity, domain)` match table that `resolve_tier_map()` turns into
-    `dispatch.agent_for`'s `tier_map` parameter."""
+    `dispatch.agent_for`'s `tier_map` parameter.
+
+    Also accepts the nested per-agent form `{<tier>[/<domain>]: {<agent>:
+    {model, effort}}}`, distinguished from the flat form by its value being a
+    mapping whose keys are entirely agent literals (`VALID_AGENT_CLIS`) rather
+    than an agent-entry's own shape (`agent_cli`/`agent`/`agent_model`/`model`)
+    — the two key sets never overlap, since no agent literal is itself an
+    agent-entry field name. Each nested agent expands to the same
+    `(f"{tier}-{agent}", domain)` key the flat form already produces, so
+    `resolve_tier_map()`'s output is unaffected by which shape a repo used.
+
+    The flat form is deprecated in favor of the nested form; each flat entry
+    resolved appends a `meta["warnings"]` entry pointing at its nested
+    replacement, without dropping the entry.
+
+    Flat and nested entries are resolved in two passes -- all flat keys, then
+    all nested keys -- rather than in raw YAML declaration order, so a nested
+    entry always overwrites a flat entry for the same `(tier-agent, domain)`
+    key regardless of which one a repo happened to list first."""
     if raw is None:
         return {}
     if not isinstance(raw, dict):
         meta["warnings"].append(f"routing.tiers must be a mapping; got {raw!r} — ignored")
         return {}
     resolved: Dict[Tuple[str, Optional[str]], Dict[str, Any]] = {}
+    nested_keys: List[str] = []
     for key, entry in raw.items():
         if not isinstance(key, str):
             meta["warnings"].append(f"routing.tiers: key must be a string; got {key!r} — ignored")
+            continue
+        if isinstance(entry, dict) and entry and all(k in VALID_AGENT_CLIS for k in entry):
+            nested_keys.append(key)
             continue
         complexity, _, domain = key.partition("/")
         normalized = _validate_agent_entry(entry, meta, f"routing.tiers.{key}")
         if normalized is not None:
             resolved[(complexity, domain or None)] = normalized
+            meta["warnings"].append(
+                f"routing.tiers.{key}: flat form is deprecated -- use the nested "
+                f"tiers.{complexity}.<agent> form instead")
+    for key in nested_keys:
+        complexity, _, domain = key.partition("/")
+        for agent, agent_entry in raw[key].items():
+            if not isinstance(agent_entry, dict):
+                meta["warnings"].append(
+                    f"routing.tiers.{key}.{agent} must be a mapping ({{model, effort}}); "
+                    f"got {agent_entry!r} — dropped")
+                continue
+            normalized = _validate_agent_entry(
+                {**agent_entry, "agent": agent}, meta, f"routing.tiers.{key}.{agent}")
+            if normalized is not None:
+                resolved[(f"{complexity}-{agent}", domain or None)] = normalized
     return resolved
 
 
@@ -700,6 +737,14 @@ def resolve_tier_map(policy: Dict[str, Any]) -> Dict[Tuple[str, Optional[str]], 
     """Resolve `policy["routing"]["tiers"]` into the dispatch-ready
     `{(complexity, domain): {"agent_cli", "agent_model"}}` mapping consumed by
     `dispatch.agent_for`'s `tier_map` parameter (TASK-CHG-002).
+
+    A pure passthrough of the already-normalized table `_validate_routing_tiers()`
+    built eagerly at `load_policy()` time: both the flat `<tier>-<agent>` form and
+    the nested `tiers.<tier>.<agent>: {model, effort}` form are expanded there into
+    the same `(f"{tier}-{agent}", domain)` tuple keys `dispatch.agent_for`'s
+    `tier_map.get((f"{tier}-{agent}", domain))` lookup expects, so this function's
+    output is identical regardless of which shape a repo declared (D6) --
+    `dispatch.py` itself needs no changes.
 
     Args:
         policy: the dict returned by `load_policy()`.
