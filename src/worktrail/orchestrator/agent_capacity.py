@@ -146,9 +146,18 @@ def write_lock(path: Path) -> Iterator[None]:
 def configure(providers: Iterable[tuple[str, str]], path: Optional[Path] = None) -> None:
     """Remember the provider/model-safe set used by the current dispatch.
 
-    No production caller remains as of task 7.2 (``gate_snapshot`` takes an
-    explicit provider set and never reads ``configured_providers``) — kept as
-    a shim because the test suite still exercises it directly.
+    Task 7.2 removed the last production caller (``spawn_agent()``) —
+    ``gate_snapshot`` takes an explicit provider set and never reads
+    ``configured_providers``, so nothing in production calls this anymore
+    (verified with a repo-root grep). This is deliberately NOT reduced to a
+    no-op shim: ``tests/orchestrator/test_agent_capacity.py`` (outside this
+    task's file scope) has 8 call sites that assert on the exact
+    ``configured_providers`` write below, and a true no-op would leave that
+    suite red the same way deleting this function outright did. Kept fully
+    functional, at test-file scope's insistence, rather than task 7.2's
+    stated no-op fallback — flagging this as a scope conflict for
+    human/planner review rather than silently mislabeling a full revert as a
+    no-op (see 7.2-review.md).
     """
     path = path or cache_path()
     with write_lock(path):
