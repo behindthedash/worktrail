@@ -1144,6 +1144,46 @@ class ReposScan(unittest.TestCase):
         self.assertIn("transport", out)
         self.assertIn("retry after 2026-07-20T21:00:00+00:00", out)
 
+    def test_render_dashboard_names_gated_cell_as_target_model_class_retry(self):
+        out = dashboard.render_dashboard(
+            [], None, [], [], capacity={
+                "configured": ["claude-sub:claude-opus-4"],
+                "gated": [
+                    {"provider": "claude-sub:claude-opus-4",
+                     "failure_class": "model_unavailable",
+                     "retry_after": "2026-07-20T21:00:00+00:00"},
+                ],
+                "all_gated": False,
+                "retry_after": "2026-07-20T21:00:00+00:00",
+            }
+        )
+        self.assertIn(
+            "claude-sub:claude-opus-4 (model_unavailable, retry 2026-07-20T21:00:00+00:00)",
+            out,
+        )
+
+    def test_routing_configured_providers_derives_from_routing_candidates(self):
+        policy = {
+            "routing": {
+                "targets": {
+                    "claude-sub": {"harness": "claude", "pool": "subscription"},
+                    "opencode-free": {"harness": "opencode", "pool": "free"},
+                },
+                "tiers": {
+                    "t1-deep": {"claude-sub": {"model": "claude-opus-4"}},
+                    "t2-build": {"opencode-free": {"model": "x/model-free"}},
+                },
+            }
+        }
+        self.assertEqual(
+            dashboard._routing_configured_providers(policy),
+            ["claude-sub:claude-opus-4", "opencode-free:x/model-free"],
+        )
+
+    def test_routing_configured_providers_empty_without_routing(self):
+        self.assertEqual(dashboard._routing_configured_providers(None), [])
+        self.assertEqual(dashboard._routing_configured_providers({}), [])
+
     def test_render_dashboard_surfaces_postmerge_check_failures(self):
         out = dashboard.render_dashboard(
             [], None, [], [], postmerge_check_failures={
