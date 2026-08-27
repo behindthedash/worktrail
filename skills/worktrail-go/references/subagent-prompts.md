@@ -362,6 +362,12 @@ Per-site branches (`$AUTO_MODE=true`):
 - `#handoff-seed` step 2b/2c pickers and claim `none`/`ambiguous`: unreachable
   in auto mode by construction (go claims the brief itself and dispatches
   `handoff:<id> route:<X>`); if hit anyway, stop and report — never ask.
+- `epic-collision-check.md` (Route B): an unambiguous match (exactly one
+  citing spec covers the request) has no ask in either dispatch mode — it
+  redirects the route silently. Only a genuinely ambiguous match reaches this
+  fallback: no ask — file `blocked_product_decision` per
+  `decision-queue.md#file-a-decision`, quoting the matched epic id and its
+  citing specs.
 
 Route I defines no ask sites in its playbook — nothing to branch there.
 

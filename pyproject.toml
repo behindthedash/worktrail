@@ -52,6 +52,7 @@ worktrail-check-clarification-integrity = "worktrail.router.check_clarification_
 worktrail-check-deferred-work-handoff = "worktrail.router.check_deferred_work_handoff:main"
 worktrail-check-durable-artifact-capture-gate = "worktrail.router.check_durable_artifact_capture_gate:main"
 worktrail-check-dod-verification = "worktrail.router.check_dod_verification:main"
+worktrail-check-epic-collision = "worktrail.router.check_epic_collision:main"
 worktrail-check-openspec-propose-resume = "worktrail.router.check_openspec_propose_resume:main"
 worktrail-close-stale-openspec = "worktrail.router.close_stale_openspec:main"
 worktrail-check-related-brief-claims = "worktrail.router.check_related_brief_claims:main"
