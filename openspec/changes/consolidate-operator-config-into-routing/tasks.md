@@ -19,7 +19,7 @@
       `_validate_routing_tiers()` to accept `tiers.<tier>.<agent>: {model, effort}`
       alongside today's flat `<tier>-<agent>` keys.
 - [x] 2.2 Emit a deprecation warning through `meta["warnings"]` when the flat form is used.
-- [ ] 2.3 Update `resolve_tier_map()` so `dispatch.agent_for()`'s `<tier>-<agent>` lookup
+- [x] 2.3 Update `resolve_tier_map()` so `dispatch.agent_for()`'s `<tier>-<agent>` lookup
       resolves identically from either shape -- `dispatch.py` itself is not modified.
 - [ ] 2.4 Tests: nested and flat forms produce byte-identical `resolve_tier_map()` output;
       nested wins when both declare the same tier/agent.
