@@ -30,6 +30,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 
 from ..shared.homedir import env_setting, worktrail_home
+from ..shared.operator_config import OperatorConfigError
 
 
 class OperatorConfigError(ValueError):

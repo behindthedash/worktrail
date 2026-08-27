@@ -124,7 +124,8 @@ from .audit_postmerge import (
     resolve_state_dir as _postmerge_resolve_state_dir,
 )
 
-# Policy routing is used only to annotate picker items.
+# Policy routing is used to annotate picker items and, via _routing_configured_providers,
+# to derive the provider set fed to the capacity gate snapshot below.
 from .policy import DEFAULTS as _POLICY_DEFAULTS, load_policy as _load_policy, resolve_routing as _resolve_routing
 
 from ..shared.homedir import env_setting, worktrail_home
@@ -393,6 +394,21 @@ def _planned_agent_for_item(
             return policy.get("agent_cli") or default_agent
         return resolved.get("agent_cli") or policy.get("agent_cli") or default_agent
     return policy.get("agent_cli") or default_agent
+
+
+def _routing_configured_providers(policy: Optional[Dict[str, Any]]) -> List[str]:
+    """The routing-derived `agent:model` provider-key set fed to
+    `agent_capacity.gate_snapshot()` -- `routing.agents`' per-agent
+    default-model table (D5), replacing the removed `configure()`-written
+    `configured_providers` cache key that `gate_snapshot()` no longer reads."""
+    if not policy:
+        return []
+    agents = (policy.get("routing") or {}).get("agents") or {}
+    return sorted(
+        f"{agent}:{cfg['default_model']}"
+        for agent, cfg in agents.items()
+        if isinstance(cfg, dict) and cfg.get("default_model")
+    )
 
 
 # --- stale status bookkeeping (files merged, status never flipped) -----------
@@ -2921,8 +2937,10 @@ def main(argv=None) -> int:
     capacity = None
     if _capacity_gate_snapshot is not None:
         try:
+            dashboard_policy = _load_dashboard_policy(str(_dashboard_repo_root()))
             capacity = _capacity_gate_snapshot(
-                Path(args.capacity_cache) if args.capacity_cache else None
+                _routing_configured_providers(dashboard_policy),
+                Path(args.capacity_cache) if args.capacity_cache else None,
             )
         except Exception:  # noqa: BLE001 — telemetry must never break the dashboard
             capacity = None
