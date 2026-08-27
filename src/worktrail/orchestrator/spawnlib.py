@@ -71,8 +71,14 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence
 
 from . import agent_capacity
+from ..router.policy import (
+    OperatorConfigError,
+    default_routing_file,
+    load_policy,
+    resolve_routing,
+)
 from ..router.skill_dispatch import prepare_codex_child_environment
-from ..shared.homedir import env_setting
+from ..shared.homedir import env_setting, worktrail_home
 
 
 class SpawnResult(NamedTuple):
@@ -361,20 +367,26 @@ def is_infra_failure(returncode: int, stdout: Optional[str]) -> bool:
 
 SUPPORTED_AGENTS = {"claude", "codex", "opencode"}
 
-# Retained only because live.py reads spawnlib.DEFAULT_CLAUDE_MODEL directly at
-# import time; task 3.2 reimplements default_model_for_agent() against
-# routing.agents.<agent>.default_model and removes these along with that read.
-DEFAULT_CLAUDE_MODEL = "sonnet"
-DEFAULT_CODEX_MODEL = "gpt-5.4-mini"
-DEFAULT_OPENCODE_MODEL = "opencode/deepseek-v4-flash-free"
-
 
 def default_model_for_agent(agent: str) -> str:
-    if agent == "codex":
-        return DEFAULT_CODEX_MODEL
-    if agent == "opencode":
-        return DEFAULT_OPENCODE_MODEL
-    return DEFAULT_CLAUDE_MODEL
+    """The operator's declared default model for `agent`, resolved fresh from
+    `routing.agents.<agent>.default_model` (worktrail_home()/routing.yaml) on
+    every call -- never cached, so an operator edit to routing.yaml takes
+    effect on the very next spawn (see the staleness note on `DEFAULT_AGENT`
+    in live.py). No silent fallback to a hardcoded model: a missing
+    declaration is stated operator intent no configuration file provides,
+    and this is exactly the failure mode ("operator intent has no single
+    home") this consolidation exists to close."""
+    routing_agents = resolve_routing(load_policy(worktrail_home()), route="", risk="")["agents"]
+    model = (routing_agents.get(agent) or {}).get("default_model")
+    if not model:
+        raise OperatorConfigError(
+            f"no default model configured for agent {agent!r} -- "
+            f"add it under routing.agents.{agent}.default_model in "
+            f"{default_routing_file()}, or run `worktrail-routing --init` "
+            "to write a starter config"
+        )
+    return model
 
 
 def _with_default_setting_sources(

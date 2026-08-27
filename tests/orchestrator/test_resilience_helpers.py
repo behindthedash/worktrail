@@ -27,6 +27,7 @@ from worktrail.orchestrator import coordinator  # noqa: E402
 from worktrail.orchestrator import integrate  # noqa: E402
 from worktrail.orchestrator import live  # noqa: E402
 from worktrail.orchestrator import spawnlib  # noqa: E402
+from worktrail.router import policy  # noqa: E402
 
 
 def _git(repo, *args):
@@ -190,119 +191,59 @@ class DefaultModelSelection(unittest.TestCase):
         )
 
     def test_opencode_defaults_to_sonnet_family(self):
-        # clear=True wipes the conftest-level GO_MODEL_DEFAULTS_FILE isolation
-        # too, so it must be re-supplied here -- without it this test would
-        # read whatever is actually in the machine's real model-defaults.yaml
-        # (under worktrail_home()) on a real operator machine instead of falling through to the hardcoded default.
-        with patch.dict(os.environ, {"GO_MODEL_DEFAULTS_FILE": "/nonexistent-model-defaults.yaml"},
-                        clear=True):
-            self.assertEqual(
-                spawnlib.default_model_for_agent("opencode"), "opencode/deepseek-v4-flash-free"
+        # clear=True wipes the conftest-level routing.yaml seed too, so it
+        # must be re-supplied here.
+        with tempfile.TemporaryDirectory() as tmp:
+            routing_file = Path(tmp) / "routing.yaml"
+            routing_file.write_text(
+                "agents:\n  opencode:\n    default_model: opencode/deepseek-v4-flash-free\n"
             )
-            self.assertEqual(
-                live.LiveSpawn("001-x", "docs/specs/001-x/", agent="opencode").model,
-                "opencode/deepseek-v4-flash-free",
+            with patch.dict(os.environ, {"GO_ROUTING_FILE": str(routing_file)}, clear=True):
+                self.assertEqual(
+                    spawnlib.default_model_for_agent("opencode"),
+                    "opencode/deepseek-v4-flash-free",
+                )
+                self.assertEqual(
+                    live.LiveSpawn("001-x", "docs/specs/001-x/", agent="opencode").model,
+                    "opencode/deepseek-v4-flash-free",
+                )
+
+    def test_env_var_overrides_are_ignored_returns_routing_configured_model(self):
+        # ORCH_*_MODEL was never a real override layer for this resolution;
+        # routing.agents.<agent>.default_model is the only source, so even
+        # with both vars patched into the environment the answer comes from
+        # the seeded routing file.
+        with tempfile.TemporaryDirectory() as tmp:
+            routing_file = Path(tmp) / "routing.yaml"
+            routing_file.write_text(
+                "agents:\n"
+                "  codex:\n    default_model: gpt-5.4-mini\n"
+                "  opencode:\n    default_model: opencode/deepseek-v4-flash-free\n"
             )
+            with patch.dict(
+                os.environ,
+                {
+                    "GO_ROUTING_FILE": str(routing_file),
+                    "ORCH_CODEX_MODEL": "env/codex-model",
+                    "ORCH_OPENCODE_MODEL": "env/opencode-model",
+                },
+                clear=True,
+            ):
+                self.assertEqual(spawnlib.default_model_for_agent("codex"), "gpt-5.4-mini")
+                self.assertEqual(
+                    spawnlib.default_model_for_agent("opencode"),
+                    "opencode/deepseek-v4-flash-free",
+                )
 
-    def test_env_var_overrides_are_ignored_returns_hardcoded_constant(self):
-        # ORCH_*_MODEL used to be an explicit per-invocation override layer on
-        # top of the file; resolution is config-file driven only now, so even
-        # with both vars patched into the environment the answer is the
-        # hardcoded constant.
-        # clear=True wipes the conftest-level GO_MODEL_DEFAULTS_FILE isolation
-        # too, so it must be re-supplied here -- see
-        # test_opencode_defaults_to_sonnet_family.
-        with patch.dict(
-            os.environ,
-            {
-                "GO_MODEL_DEFAULTS_FILE": "/nonexistent-model-defaults.yaml",
-                "ORCH_CODEX_MODEL": "env/codex-model",
-                "ORCH_OPENCODE_MODEL": "env/opencode-model",
-            },
-            clear=True,
-        ):
-            self.assertEqual(spawnlib.default_model_for_agent("codex"), "gpt-5.4-mini")
-            self.assertEqual(
-                spawnlib.default_model_for_agent("opencode"),
-                "opencode/deepseek-v4-flash-free",
-            )
-
-
-class ModelDefaultsFileTest(unittest.TestCase):
-    """worktrail_home()/model-defaults.yaml (GO_MODEL_DEFAULTS_FILE): an operator-maintained
-    override so a vendor renaming/retiring a model doesn't need a code change --
-    confirmed live 2026-08-03: DEFAULT_CODEX_MODEL had drifted to "gpt-5.4-mini"
-    while the operator's actual codex CLI listed "gpt-5.6-sol" as current."""
-
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.defaults_file = Path(self._tmp.name) / "model-defaults.yaml"
-        self._env_patch = patch.dict(
-            os.environ, {"GO_MODEL_DEFAULTS_FILE": str(self.defaults_file)}, clear=False
-        )
-        self._env_patch.start()
-
-    def tearDown(self):
-        self._env_patch.stop()
-        self._tmp.cleanup()
-
-    def test_missing_file_falls_through_to_hardcoded_default(self):
-        self.assertEqual(spawnlib.default_model_for_agent("codex"), "gpt-5.4-mini")
-
-    def test_file_value_overrides_hardcoded_default(self):
-        self.defaults_file.write_text("codex: gpt-5.6-luna\n")
-        self.assertEqual(spawnlib.default_model_for_agent("codex"), "gpt-5.6-luna")
-
-    def test_file_covers_all_three_agents(self):
-        self.defaults_file.write_text(
-            "claude: opus\ncodex: gpt-5.6-luna\nopencode: opencode/gpt-5.6-luna\n"
-        )
-        self.assertEqual(spawnlib.default_model_for_agent("claude"), "opus")
-        self.assertEqual(spawnlib.default_model_for_agent("codex"), "gpt-5.6-luna")
-        self.assertEqual(spawnlib.default_model_for_agent("opencode"), "opencode/gpt-5.6-luna")
-
-    def test_agent_absent_from_file_falls_through(self):
-        self.defaults_file.write_text("claude: opus\n")
-        self.assertEqual(spawnlib.default_model_for_agent("codex"), "gpt-5.4-mini")
-
-    def test_file_value_wins_despite_ambient_env_vars(self):
-        # The old precedence put ORCH_*_MODEL above the file; that env layer is
-        # gone, so the file entry wins even with both vars set.
-        self.defaults_file.write_text("codex: gpt-5.6-luna\nopencode: opencode/gpt-5.6-luna\n")
-        with patch.dict(
-            os.environ,
-            {
-                "ORCH_CODEX_MODEL": "env/codex-model",
-                "ORCH_OPENCODE_MODEL": "env/opencode-model",
-            },
-        ):
-            self.assertEqual(spawnlib.default_model_for_agent("codex"), "gpt-5.6-luna")
-            self.assertEqual(
-                spawnlib.default_model_for_agent("opencode"), "opencode/gpt-5.6-luna"
-            )
-
-    def test_malformed_yaml_degrades_to_hardcoded_default(self):
-        self.defaults_file.write_text("codex: [unterminated\n")
-        self.assertEqual(spawnlib.default_model_for_agent("codex"), "gpt-5.4-mini")
-
-    def test_non_mapping_yaml_degrades_to_hardcoded_default(self):
-        self.defaults_file.write_text("- just\n- a\n- list\n")
-        self.assertEqual(spawnlib.default_model_for_agent("codex"), "gpt-5.4-mini")
-
-    def test_non_string_value_ignored(self):
-        self.defaults_file.write_text("codex: 123\n")
-        self.assertEqual(spawnlib.default_model_for_agent("codex"), "gpt-5.4-mini")
-
-    def test_codex_role_models_pick_up_file_value(self):
-        # Regression: CODEX_DEFAULT_ROLE_MODELS used to be a dict frozen at
-        # live.py's import time from spawnlib.DEFAULT_CODEX_MODEL directly --
-        # the exact staleness bug this file exists to fix, just one layer up.
-        self.defaults_file.write_text("codex: gpt-5.6-luna\n")
-        role_models = live._effective_role_models("codex", None)
-        assert role_models is not None
-        self.assertEqual(role_models["implement"], "gpt-5.6-luna")
-        self.assertEqual(role_models["review"], "gpt-5.6-luna")
-        self.assertEqual(set(role_models), {"implement", "review", "fix", "cleanup", "ci-fix"})
+    def test_raises_when_agent_has_no_configured_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            routing_file = Path(tmp) / "routing.yaml"
+            routing_file.write_text("agents:\n  claude:\n    default_model: opus\n")
+            with patch.dict(os.environ, {"GO_ROUTING_FILE": str(routing_file)}, clear=True):
+                with self.assertRaises(policy.OperatorConfigError) as ctx:
+                    spawnlib.default_model_for_agent("codex")
+                self.assertIn("codex", str(ctx.exception))
+                self.assertIn("routing.agents.codex.default_model", str(ctx.exception))
 
 
 class RunLockTest(unittest.TestCase):
