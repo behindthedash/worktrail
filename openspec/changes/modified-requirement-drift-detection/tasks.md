@@ -1,11 +1,11 @@
 ## 1. Shared delta-section parsing helper
 
-- [ ] 1.1 Extract the section-walking loop currently inline in `_openspec_delta_reconciled`
+- [x] 1.1 Extract the section-walking loop currently inline in `_openspec_delta_reconciled`
       (`src/worktrail/router/dashboard.py`) into a shared `_iter_openspec_delta_sections(text)`
       helper that yields `(kind, body)` per `## ADDED|MODIFIED|REMOVED|RENAMED Requirements`
       section, reusing the existing `_OPENSPEC_DELTA_SECTION` regex. Update
       `_openspec_delta_reconciled` to use it so the loop is not duplicated.
-- [ ] 1.2 Add a small helper that extracts, from a `(kind, body)` pair, the set of requirement
+- [x] 1.2 Add a small helper that extracts, from a `(kind, body)` pair, the set of requirement
       names it declares as "current" for drift-matching purposes: `_OPENSPEC_REQUIREMENT` names
       for `ADDED`/`MODIFIED` bodies, and `TO:` values (via `_OPENSPEC_RENAME` filtered to
       `TO`, run through `_rename_requirement_name`) for `RENAMED` bodies.
