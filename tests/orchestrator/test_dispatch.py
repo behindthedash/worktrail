@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from worktrail.workqueue import decisions as decisions_mod
 from worktrail.orchestrator.dispatch import (
-    agent_for,
+    tier_for,
     build_worker_prompt,
     transition,
     validate_resolved_decision_input,
@@ -664,364 +664,125 @@ class TestExtraReadsContextWidening(unittest.TestCase):
             self.assertIn(path, prompt)
 
 
-class TestAgentForPrecedence(unittest.TestCase):
-    """worktrail.orchestrator.dispatch.agent_for(): 4-tier precedence + judgment-role guard (TASK-006)."""
+class TestTierForPrecedence(unittest.TestCase):
+    """worktrail.orchestrator.dispatch.tier_for(): explicit task tier > role
+    tier for judgment roles > purpose > complexity > default_tier
+    (model-tier-routing "Roles resolve to a tier")."""
 
-    TIER_MAP = {
-        ("complex", "backend"): {"agent_cli": "codex", "agent_model": "gpt-tier", "effort": "high"}
+    ROLES = {
+        "review": {"tier": "t1-deep", "prefer": "codex-sub", "independent": True},
+        "resolve": {"tier": "t2-build", "prefer": None, "independent": False},
     }
-    ROLE_MAP = {"implement": {"agent_cli": "opencode", "agent_model": "oc-model"}}
+    PURPOSES = {"architecture-design": "t1-deep"}
 
     def _task(self, **overrides):
         task = {
             "id": "TASK-001",
             "files": ["src/foo.py"],
-            "complexity": "complex",
-            "domain": "backend",
+            "complexity": "t3-fast",
         }
         task.update(overrides)
         return task
 
-    def test_tier_match_no_overrides_resolves_to_tier_agent(self):
-        """AC-011: implement + tier match + no per-task/role override -> tier's
-        agent+model+effort (model-tier-routing 3.2)."""
-        task = self._task()
-        result = agent_for(ROLE_IMPLEMENT, task, tier_map=self.TIER_MAP)
-        self.assertEqual(
-            result, {"agent_cli": "codex", "agent_model": "gpt-tier", "effort": "high"}
-        )
+    def test_explicit_task_tier_wins_for_implement(self):
+        task = self._task(tier="t1-deep", purpose="architecture-design")
+        result = tier_for(ROLE_IMPLEMENT, task, roles=self.ROLES, purposes=self.PURPOSES,
+                           default_tier="t4-trivia")
+        self.assertEqual(result, ("t1-deep", None, False))
 
-    def test_tier_match_no_match_falls_through_to_run_default(self):
-        """A tier_map with no entry for this task's (complexity, domain) falls through."""
-        task = self._task(complexity="simple", domain="frontend")
-        result = agent_for(ROLE_IMPLEMENT, task, default_agent="claude", tier_map=self.TIER_MAP)
-        self.assertEqual(result, {"agent_cli": "claude", "agent_model": None, "effort": None})
+    def test_explicit_task_tier_wins_for_judgment_role_over_role_config(self):
+        """The task's own explicit tier outranks even a configured
+        `roles.<role>` entry -- the top of the precedence chain applies to
+        every role, judgment roles included."""
+        task = self._task(tier="t3-fast")
+        result = tier_for(ROLE_REVIEW, task, roles=self.ROLES, purposes=self.PURPOSES,
+                           default_tier="t4-trivia")
+        self.assertEqual(result, ("t3-fast", None, False))
 
-    def test_per_task_override_beats_tier_match(self):
-        """AC-012: task['agent'] outranks a tier match, for implement/fix/cleanup."""
-        for role in (ROLE_IMPLEMENT, ROLE_FIX, ROLE_CLEANUP):
-            task = self._task(agent="claude")
-            result = agent_for(role, task, tier_map=self.TIER_MAP, role_agent_map=self.ROLE_MAP)
-            self.assertEqual(
-                result,
-                {"agent_cli": "claude", "agent_model": None, "effort": None},
-                f"per-task override must win for role={role!r}",
-            )
+    def test_role_tier_used_for_judgment_role_without_explicit_task_tier(self):
+        task = self._task(purpose="architecture-design", complexity="t3-fast")
+        result = tier_for(ROLE_REVIEW, task, roles=self.ROLES, purposes=self.PURPOSES,
+                           default_tier="t4-trivia")
+        self.assertEqual(result, ("t1-deep", "codex-sub", True))
 
-    def test_role_override_beats_tier_match(self):
-        """AC-013: an operator role_agent_map entry for implement outranks a tier match."""
-        task = self._task()
-        result = agent_for(
-            ROLE_IMPLEMENT, task, tier_map=self.TIER_MAP, role_agent_map=self.ROLE_MAP
-        )
-        self.assertEqual(
-            result, {"agent_cli": "opencode", "agent_model": "oc-model", "effort": None}
-        )
+    def test_judgment_role_ignores_purpose_and_complexity_without_role_entry(self):
+        """A judgment role with no `roles.<role>` entry configured falls
+        straight through to default_tier, never consulting purpose/complexity."""
+        task = self._task(purpose="architecture-design", complexity="t3-fast")
+        result = tier_for(ROLE_CI_FIX, task, roles={}, purposes=self.PURPOSES,
+                           default_tier="t4-trivia")
+        self.assertEqual(result, ("t4-trivia", None, False))
 
-    def test_review_ignores_per_task_override_and_tier_match(self):
-        """AC-014: review uses only role override / run default, even with both
-        a per-task override and a tier match configured."""
-        task = self._task(agent="claude")
-        result = agent_for(
-            ROLE_REVIEW,
-            task,
-            reviewer_agent="code-reviewer",
-            tier_map=self.TIER_MAP,
-            role_agent_map={},
-        )
-        self.assertEqual(result, {"agent_cli": "code-reviewer", "agent_model": None, "effort": None})
+    def test_review_defaults_when_unconfigured(self):
+        """Requirement 'Review role defaults to claude:opus': absent
+        `roles.review`, review resolves to `{tier: t1-deep, independent:
+        True}`, ignoring the task's own purpose/complexity."""
+        task = self._task(purpose="architecture-design", complexity="t3-fast")
+        result = tier_for(ROLE_REVIEW, task, roles={}, purposes=self.PURPOSES,
+                           default_tier="t4-trivia")
+        self.assertEqual(result, ("t1-deep", None, True))
 
-    def test_review_role_override_still_applies(self):
-        """A role_agent_map entry for review IS consulted (it's tier 2, judgment
-        roles only skip tiers 1 and 3)."""
-        task = self._task(agent="claude")
-        result = agent_for(
-            ROLE_REVIEW,
-            task,
-            tier_map=self.TIER_MAP,
-            role_agent_map={"review": "gemini"},
-        )
-        self.assertEqual(result, {"agent_cli": "gemini", "agent_model": None, "effort": None})
-
-    def test_role_override_carries_effort(self):
-        """model-tier-routing 3.2: an effort on a role_agent_map entry reaches
-        the resolved result, for both an implement/fix/cleanup role and a
-        judgment role (tier 2 for both)."""
-        role_map = {
-            "implement": {"agent_cli": "opencode", "agent_model": "oc-model", "effort": "low"},
-            "review": {"agent_cli": "gemini", "agent_model": None, "effort": "medium"},
-        }
-        task = self._task()
-        self.assertEqual(
-            agent_for(ROLE_IMPLEMENT, task, role_agent_map=role_map),
-            {"agent_cli": "opencode", "agent_model": "oc-model", "effort": "low"},
-        )
-        self.assertEqual(
-            agent_for(ROLE_REVIEW, task, role_agent_map=role_map),
-            {"agent_cli": "gemini", "agent_model": None, "effort": "medium"},
-        )
-
-    def test_resolve_ci_fix_assembly_resolve_ignore_per_task_and_tier(self):
-        """AC-015: resolve, ci-fix, and assembly-resolve behave identically to review."""
+    def test_resolve_ci_fix_assembly_resolve_share_judgment_precedence(self):
         for role in (ROLE_RESOLVE, ROLE_CI_FIX, ROLE_ASSEMBLY_RESOLVE):
-            task = self._task(agent="claude")
-            result = agent_for(
-                role,
-                task,
-                default_agent="claude-run-default",
-                tier_map=self.TIER_MAP,
-                role_agent_map={},
-            )
-            self.assertEqual(
-                result,
-                {"agent_cli": "claude-run-default", "agent_model": None, "effort": None},
-                f"judgment-role guard must hold for role={role!r}",
-            )
-            override_result = agent_for(
-                role,
-                task,
-                default_agent="claude-run-default",
-                tier_map=self.TIER_MAP,
-                role_agent_map={role: "codex"},
-            )
-            self.assertEqual(
-                override_result,
-                {"agent_cli": "codex", "agent_model": None, "effort": None},
-                f"role override must still apply for role={role!r}",
-            )
+            task = self._task(purpose="architecture-design")
+            result = tier_for(role, task, roles={}, purposes=self.PURPOSES,
+                               default_tier="t4-trivia")
+            self.assertEqual(result, ("t4-trivia", None, False), f"role={role!r}")
+            configured = tier_for(role, task, roles={role: {"tier": "t2-build", "prefer": "codex-sub",
+                                                              "independent": True}},
+                                   purposes=self.PURPOSES, default_tier="t4-trivia")
+            self.assertEqual(configured, ("t2-build", "codex-sub", True), f"role={role!r}")
 
-    def test_no_routing_no_tier_matches_pre_spec_behavior(self):
-        """REQ-016: with no role_agent_map/tier_map, agent_for returns exactly the
-        pre-spec truth table for every role."""
-        cases = [
-            (
-                ROLE_IMPLEMENT,
-                self._task(agent="claude"),
-                {"default_agent": "codex"},
-                {"agent_cli": "claude", "agent_model": None, "effort": None},
-            ),
-            (
-                ROLE_IMPLEMENT,
-                self._task(agent=None),
-                {"default_agent": "codex"},
-                {"agent_cli": "codex", "agent_model": None, "effort": None},
-            ),
-            (
-                ROLE_IMPLEMENT,
-                self._task(agent=None),
-                {},
-                {"agent_cli": "claude", "agent_model": None, "effort": None},
-            ),
-            (
-                ROLE_FIX,
-                self._task(agent="opencode"),
-                {"default_agent": "codex"},
-                {"agent_cli": "opencode", "agent_model": None, "effort": None},
-            ),
-            (
-                ROLE_CLEANUP,
-                self._task(agent=None),
-                {"default_agent": "codex"},
-                {"agent_cli": "codex", "agent_model": None, "effort": None},
-            ),
-            (
-                ROLE_REVIEW,
-                self._task(agent="claude"),
-                {"reviewer_agent": "code-reviewer"},
-                {"agent_cli": "code-reviewer", "agent_model": None, "effort": None},
-            ),
-            (
-                ROLE_RESOLVE,
-                self._task(agent="claude"),
-                {"default_agent": "codex"},
-                {"agent_cli": "codex", "agent_model": None, "effort": None},
-            ),
-            (
-                ROLE_CI_FIX,
-                self._task(agent="claude"),
-                {"default_agent": "codex"},
-                {"agent_cli": "codex", "agent_model": None, "effort": None},
-            ),
-            (
-                ROLE_ASSEMBLY_RESOLVE,
-                self._task(agent="claude"),
-                {},
-                {"agent_cli": "claude", "agent_model": None, "effort": None},
-            ),
-        ]
-        for role, task, kwargs, expected in cases:
-            result = agent_for(role, task, **kwargs)
-            self.assertEqual(result, expected, f"role={role!r} kwargs={kwargs!r}")
+    def test_purpose_takes_precedence_over_complexity(self):
+        task = self._task(purpose="architecture-design", complexity="t3-fast")
+        result = tier_for(ROLE_IMPLEMENT, task, roles=self.ROLES, purposes=self.PURPOSES,
+                           default_tier="t4-trivia")
+        self.assertEqual(result, ("t1-deep", None, False))
+
+    def test_falls_back_to_complexity_when_purpose_unmapped(self):
+        task = self._task(purpose="unmapped-purpose", complexity="t3-fast")
+        result = tier_for(ROLE_FIX, task, roles=self.ROLES, purposes=self.PURPOSES,
+                           default_tier="t4-trivia")
+        self.assertEqual(result, ("t3-fast", None, False))
+
+        task_no_purpose = self._task(purpose=None, complexity="t3-fast")
+        result_no_purpose = tier_for(ROLE_FIX, task_no_purpose, roles=self.ROLES,
+                                      purposes=self.PURPOSES, default_tier="t4-trivia")
+        self.assertEqual(result_no_purpose, ("t3-fast", None, False))
+
+    def test_falls_back_to_default_tier_when_nothing_resolves(self):
+        task = {"id": "TASK-001", "files": ["src/foo.py"]}
+        result = tier_for(ROLE_CLEANUP, task, roles=self.ROLES, purposes=self.PURPOSES,
+                           default_tier="t4-trivia")
+        self.assertEqual(result, ("t4-trivia", None, False))
+
+    def test_no_routing_no_task_tier_falls_to_default_tier_for_every_role(self):
+        task = {"id": "TASK-001", "files": ["src/foo.py"]}
+        for role in (ROLE_IMPLEMENT, ROLE_FIX, ROLE_CLEANUP, ROLE_RESOLVE, ROLE_CI_FIX,
+                     ROLE_ASSEMBLY_RESOLVE):
+            result = tier_for(role, task, roles={}, purposes={}, default_tier="t2-build")
+            self.assertEqual(result, ("t2-build", None, False), f"role={role!r}")
+
+    def test_review_default_with_no_default_tier_still_resolves_t1_deep(self):
+        task = {"id": "TASK-001", "files": ["src/foo.py"]}
+        result = tier_for(ROLE_REVIEW, task, roles={}, purposes={}, default_tier=None)
+        self.assertEqual(result, ("t1-deep", None, True))
 
     def test_deterministic_same_inputs_same_output(self):
         """REQ-NR002: same inputs always produce the same output."""
-        task = self._task()
-        kwargs = dict(
-            reviewer_agent="code-reviewer",
-            default_agent="claude",
-            role_agent_map=self.ROLE_MAP,
-            tier_map=self.TIER_MAP,
-        )
-        for role in (
-            ROLE_IMPLEMENT,
-            ROLE_REVIEW,
-            ROLE_FIX,
-            ROLE_CLEANUP,
-            ROLE_RESOLVE,
-            ROLE_CI_FIX,
-            ROLE_ASSEMBLY_RESOLVE,
-        ):
-            first = agent_for(role, task, **kwargs)
+        task = self._task(purpose="architecture-design")
+        for role in (ROLE_IMPLEMENT, ROLE_REVIEW, ROLE_FIX, ROLE_CLEANUP, ROLE_RESOLVE,
+                     ROLE_CI_FIX, ROLE_ASSEMBLY_RESOLVE):
+            kwargs = dict(roles=self.ROLES, purposes=self.PURPOSES, default_tier="t4-trivia")
+            first = tier_for(role, task, **kwargs)
             for _ in range(5):
-                self.assertEqual(agent_for(role, task, **kwargs), first)
+                self.assertEqual(tier_for(role, task, **kwargs), first)
 
-
-class TestAgentForPurposeTierPrecedence(unittest.TestCase):
-    """worktrail.orchestrator.dispatch.agent_for(): purpose-derived tier
-    precedence + agent-aware tier_map lookup (task-purpose-classification 4.2/4.3)."""
-
-    PURPOSE_TIER_MAP = {"architecture-design": "t1-deep"}
-
-    TIER_MAP = {
-        ("t1-deep", "backend"): {"agent_cli": "codex", "agent_model": None, "effort": None},
-        ("complex", "backend"): {"agent_cli": "opencode", "agent_model": None, "effort": None},
-    }
-
-    AGENT_AWARE_TIER_MAP = {
-        ("t1-deep-codex", "backend"): {
-            "agent_cli": "codex",
-            "agent_model": "codex-model",
-            "effort": "high",
-        },
-        ("t1-deep", "backend"): {
-            "agent_cli": "claude",
-            "agent_model": "claude-model",
-            "effort": "low",
-        },
-    }
-
-    def _task(self, **overrides):
-        task = {
-            "id": "TASK-001",
-            "files": ["src/foo.py"],
-            "complexity": "complex",
-            "domain": "backend",
-            "purpose": "architecture-design",
-        }
-        task.update(overrides)
-        return task
-
-    def test_purpose_tier_takes_precedence_over_complexity(self):
-        """4.4: when purpose resolves via purpose_tier_map, its tier is used
-        instead of task['complexity'] for the tier_map lookup."""
-        task = self._task()
-        result = agent_for(
-            ROLE_IMPLEMENT,
-            task,
-            tier_map=self.TIER_MAP,
-            purpose_tier_map=self.PURPOSE_TIER_MAP,
-        )
-        self.assertEqual(result, {"agent_cli": "codex", "agent_model": None, "effort": None})
-
-    def test_falls_back_to_complexity_when_purpose_does_not_resolve(self):
-        """4.4: an unmapped purpose (or none) falls back to task['complexity']."""
-        task = self._task(purpose="unmapped-purpose")
-        result = agent_for(
-            ROLE_IMPLEMENT,
-            task,
-            tier_map=self.TIER_MAP,
-            purpose_tier_map=self.PURPOSE_TIER_MAP,
-        )
-        self.assertEqual(result, {"agent_cli": "opencode", "agent_model": None, "effort": None})
-
-        task_no_purpose = self._task(purpose=None)
-        result_no_purpose = agent_for(
-            ROLE_IMPLEMENT,
-            task_no_purpose,
-            tier_map=self.TIER_MAP,
-            purpose_tier_map=self.PURPOSE_TIER_MAP,
-        )
-        self.assertEqual(
-            result_no_purpose, {"agent_cli": "opencode", "agent_model": None, "effort": None}
-        )
-
-    def test_judgment_roles_never_consult_purpose_or_purpose_tier_map(self):
-        """4.4: JUDGMENT_ROLES ignore purpose/purpose_tier_map entirely, even
-        when both are populated and would otherwise resolve a tier match."""
-        for role in (ROLE_REVIEW, ROLE_RESOLVE, ROLE_CI_FIX, ROLE_ASSEMBLY_RESOLVE):
-            task = self._task()
-            result = agent_for(
-                role,
-                task,
-                default_agent="claude-run-default",
-                reviewer_agent="code-reviewer",
-                tier_map=self.TIER_MAP,
-                purpose_tier_map=self.PURPOSE_TIER_MAP,
-                role_agent_map={},
-            )
-            expected_cli = "code-reviewer" if role == ROLE_REVIEW else "claude-run-default"
-            self.assertEqual(
-                result,
-                {"agent_cli": expected_cli, "agent_model": None, "effort": None},
-                f"purpose_tier_map must be ignored for judgment role={role!r}",
-            )
-
-    def test_agent_aware_key_preferred_over_plain_key(self):
-        """4.4: (f'{tier}-{agent}', domain) is tried before (tier, domain)
-        when both are present in tier_map."""
-        task = self._task(agent=None)
-        result = agent_for(
-            ROLE_IMPLEMENT,
-            task,
-            default_agent="codex",
-            tier_map=self.AGENT_AWARE_TIER_MAP,
-            purpose_tier_map=self.PURPOSE_TIER_MAP,
-        )
-        self.assertEqual(
-            result,
-            {"agent_cli": "codex", "agent_model": "codex-model", "effort": "high"},
-        )
-
-    def test_falls_back_to_plain_key_when_no_agent_specific_entry(self):
-        """4.4: when only the plain (tier, domain) key exists, that match is
-        used."""
-        task = self._task(agent=None)
-        result = agent_for(
-            ROLE_IMPLEMENT,
-            task,
-            default_agent="claude",
-            tier_map=self.TIER_MAP,
-            purpose_tier_map=self.PURPOSE_TIER_MAP,
-        )
-        self.assertEqual(result, {"agent_cli": "codex", "agent_model": None, "effort": None})
-
-    def test_byte_identical_to_pre_change_agent_for_without_purpose(self):
-        """4.4: with no purpose/purpose_tier_map/agent-aware keys involved,
-        output is identical to pre-change agent_for() behavior."""
-        task = {
-            "id": "TASK-001",
-            "files": ["src/foo.py"],
-            "complexity": "complex",
-            "domain": "backend",
-        }
-        legacy_tier_map = {
-            ("complex", "backend"): {
-                "agent_cli": "codex",
-                "agent_model": "gpt-tier",
-                "effort": "high",
-            }
-        }
-        result_without_purpose_kw = agent_for(ROLE_IMPLEMENT, task, tier_map=legacy_tier_map)
-        result_with_none_purpose_map = agent_for(
-            ROLE_IMPLEMENT, task, tier_map=legacy_tier_map, purpose_tier_map=None
-        )
-        result_with_empty_purpose_map = agent_for(
-            ROLE_IMPLEMENT, task, tier_map=legacy_tier_map, purpose_tier_map={}
-        )
-        expected = {"agent_cli": "codex", "agent_model": "gpt-tier", "effort": "high"}
-        self.assertEqual(result_without_purpose_kw, expected)
-        self.assertEqual(result_with_none_purpose_map, expected)
-        self.assertEqual(result_with_empty_purpose_map, expected)
+    def test_omitted_optional_kwargs_default_to_empty(self):
+        """roles/purposes are optional (default {}); default_tier optional (None)."""
+        task = {"id": "TASK-001", "files": ["src/foo.py"]}
+        self.assertEqual(tier_for(ROLE_IMPLEMENT, task), (None, None, False))
+        self.assertEqual(tier_for(ROLE_CI_FIX, task), (None, None, False))
 
 
 class ResolvedDecisionDispatchGateTests(unittest.TestCase):

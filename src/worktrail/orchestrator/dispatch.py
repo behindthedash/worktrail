@@ -32,7 +32,7 @@ the prompt must carry every pointer it needs. This module:
       Find the task and apply the transition + record head_sha / review_status.
 
 Review runs as a DIFFERENT agent than the implementer (locked decision 13.3):
-see agent_for().
+see tier_for().
 
 Pure logic -- no agents, no git, no FS. `python3 dispatch.py demo` shows it.
 """
@@ -69,145 +69,81 @@ ROLE_ASSEMBLY_RESOLVE = "assembly-resolve"
 GROUP_ROLES = (ROLE_RESOLVE, ROLE_CI_FIX, ROLE_ASSEMBLY_RESOLVE)
 
 # Judgment roles (DEC-003, REQ-NR003): task-level judgment calls where the
-# task's own per-task agent override and any tier match must NEVER decide the
-# agent -- only a per-role override or the run default do -- so a review
-# verdict, PR-conflict resolution, or CI fix stays independent of whichever
-# agent/tier implemented the task. Consulted by agent_for()'s precedence.
+# task's own purpose/complexity must NEVER decide the tier -- only a
+# `roles.<role>` override or `default_tier` do -- so a review verdict,
+# PR-conflict resolution, or CI fix stays independent of whichever tier
+# implemented the task. Consulted by tier_for()'s precedence.
 JUDGMENT_ROLES = frozenset({ROLE_REVIEW, ROLE_RESOLVE, ROLE_CI_FIX, ROLE_ASSEMBLY_RESOLVE})
-
-# Locked decision 13.3: review uses a DIFFERENT agent type than the implementer.
-# DEFAULT_IMPLEMENT_AGENT is no longer hardcoded — it's resolved from the
-# invocation context carried through ctx["default_agent"]. The Go front door
-# resolves the agent CLI once per invocation and passes it through all
-# downstream paths. An absent default_agent still falls back to "claude" as
-# the outermost compatibility layer (pre-existing tests, non-Go callers).
-DEFAULT_IMPLEMENT_AGENT: str | None = None
-DEFAULT_REVIEWER_AGENT = "code-reviewer"
 
 MAX_REVIEW_RETRIES = 3
 
+# review's built-in fallback tier (model-tier-routing spec, "Review role
+# defaults to claude:opus") when no `roles.review` entry is configured --
+# `t1-deep` remains a shipped row name; `or default_tier` is the documented
+# escape hatch for a routing table that has retired it.
+_REVIEW_DEFAULT_TIER = "t1-deep"
+
 
 # --------------------------------------------------------------------------- #
-# Agent selection
+# Tier selection
 # --------------------------------------------------------------------------- #
-def _entry(value: Any) -> Dict[str, Any]:
-    """Normalize one agent-resolution entry into
-    `{"agent_cli", "agent_model", "effort"}`.
-
-    `value` is either a bare agent_cli string (`"codex"`) or a
-    `{"agent_cli":.., "agent_model":.., "effort":..}` dict -- the same shape
-    `policy.py`'s `_validate_agent_entry()` / `resolve_routing()` produce for
-    `routing.roles`/`routing.tiers` entries (TASK-001, model-tier-routing),
-    so callers can pass those dicts straight through. Anything else
-    normalizes to `{"agent_cli": None, "agent_model": None, "effort": None}`
-    so callers can treat a missing match and a malformed entry identically
-    (fall through to the next tier of precedence).
-    """
-    if isinstance(value, str):
-        return {"agent_cli": value, "agent_model": None, "effort": None}
-    if isinstance(value, dict):
-        return {
-            "agent_cli": value.get("agent_cli"),
-            "agent_model": value.get("agent_model"),
-            "effort": value.get("effort"),
-        }
-    return {"agent_cli": None, "agent_model": None, "effort": None}
-
-
-def agent_for(
+def tier_for(
     role: str,
     task: Dict[str, Any],
-    reviewer_agent: str = DEFAULT_REVIEWER_AGENT,
-    default_agent: str | None = None,
     *,
-    role_agent_map: Optional[Dict[str, Any]] = None,
-    tier_map: Optional[Dict[Tuple[Any, Any], Any]] = None,
-    purpose_tier_map: Optional[Dict[str, str]] = None,
-) -> Dict[str, Any]:
-    """Resolve `{"agent_cli", "agent_model", "effort"}` for one spawn -- the
-    canonical per-spawn agent-resolution function (REQ-015/016/017). Pure,
+    roles: Optional[Dict[str, Dict[str, Any]]] = None,
+    purposes: Optional[Dict[str, str]] = None,
+    default_tier: Optional[str] = None,
+) -> Tuple[Optional[str], Optional[str], bool]:
+    """Resolve `(tier, prefer, independent)` for one spawn -- the canonical
+    per-spawn tier-resolution function (model-tier-routing D4). Pure,
     stdlib-only, deterministic (REQ-NR002): same inputs always produce the
-    same output. Called by TASK-007's `LiveSpawn.__call__` for every
-    task/group spawn.
+    same output. The selector (`router.select_cell`, not this function) does
+    the actual target/model resolution against the returned tier row.
 
     Args:
         role: one of ROLES (implement/review/fix/cleanup) or GROUP_ROLES
             (resolve/ci-fix/assembly-resolve).
-        task: the task dict; `task["agent"]` is its explicit per-task
-            override, `task.get("complexity")`/`task.get("domain")` its tier
-            key.
-        reviewer_agent: the review role's run default (independent reviewer,
-            locked decision 13.3) -- unchanged pre-spec parameter.
-        default_agent: the run-level default for every other role.
-        role_agent_map: `{role_name: agent-entry}` -- `routing.roles` /
-            `--role-agent-map` (TASK-001), keyed by role name (`"implement"`,
-            `"review"`, ...).
-        tier_map: `{(tier, domain): agent-entry}` -- a resolved
-            `routing.tiers` match table keyed by the task's own
-            `(tier, domain)` pair, where `tier` is `complexity` or a
-            purpose-derived tier (see `purpose_tier_map` below). Looked up
-            two ways: first `(f"{tier}-{agent}", domain)` where `agent` is
-            `default_agent or "claude"` (agent-aware entry, e.g.
-            `"t1-deep-codex"`), then plain `(tier, domain)` if that misses.
-        purpose_tier_map: `{purpose: tier}` -- a resolved
-            `routing.purpose_tiers` table mapping the task's own
-            `task.get("purpose")` to a tier name, consulted ahead of
-            `task.get("complexity")` when resolving the tier_map key for
-            implement/fix/cleanup roles (task-purpose-classification 4.2).
+        task: the task dict; `task.get("tier")` is its explicit per-task
+            override, `task.get("purpose")`/`task.get("complexity")` the
+            purpose/complexity-derived tier keys.
+        roles: `resolve_routing()["roles"]` -- `{role: {tier, prefer,
+            independent}}`, consulted only for JUDGMENT_ROLES.
+        purposes: `resolve_routing()["purposes"]` -- `{purpose: tier}`,
+            consulted only for non-judgment roles.
+        default_tier: `resolve_routing()["default_tier"]`, the last resort.
 
-    Precedence for JUDGMENT_ROLES (review/resolve/ci-fix/assembly-resolve --
-    DEC-003, REQ-017, REQ-NR003): only (2) role_agent_map override, else
-    (4) run default (reviewer_agent for review, default_agent/"claude"
-    otherwise) are ever consulted. The task's own per-task override,
-    tier_map, and purpose_tier_map are NEVER consulted for these roles,
-    regardless of what they contain.
-
-    Precedence for implement/fix/cleanup (REQ-015): (1) task["agent"]
-    explicit per-task override, (2) role_agent_map override, (3) tier_map
-    match on (tier, domain) -- tier is `purpose_tier_map.get(task.get
-    ("purpose"))` when that resolves, else `task.get("complexity")`;
-    within this step, an agent-aware key (`f"{tier}-{agent}"`, domain) is
-    tried before the plain (tier, domain) key -- (4) run default
-    (default_agent or "claude").
-
-    With no role_agent_map, no tier_map, and no per-task override, this
-    returns exactly the run default for every role -- pre-spec behavior
-    preserved (REQ-016).
+    Precedence (model-tier-routing spec, "Roles resolve to a tier"):
+    (1) `task["tier"]` explicit per-task override -- applies to every role,
+    judgment roles included; (2) for JUDGMENT_ROLES only, `roles[role]`
+    (`review` defaults to `{tier: t1-deep or default_tier, independent:
+    True}` when unconfigured; other judgment roles with no entry fall
+    straight through to `default_tier`, never consulting purpose/complexity);
+    (3) for every other role, `purposes[task["purpose"]]`; (4)
+    `task["complexity"]`; (5) `default_tier`.
     """
-    role_agent_map = role_agent_map or {}
+    roles = roles or {}
+    purposes = purposes or {}
+
+    explicit_tier = task.get("tier")
+    if explicit_tier:
+        return explicit_tier, None, False
 
     if role in JUDGMENT_ROLES:
-        override = _entry(role_agent_map[role]) if role in role_agent_map else None
-        if override and override["agent_cli"]:
-            return override
+        entry = roles.get(role)
+        if entry:
+            return entry.get("tier"), entry.get("prefer"), bool(entry.get("independent", False))
         if role == ROLE_REVIEW:
-            # independent reviewer (13.3)
-            return {"agent_cli": reviewer_agent, "agent_model": None, "effort": None}
-        return {"agent_cli": default_agent or "claude", "agent_model": None, "effort": None}
+            return _REVIEW_DEFAULT_TIER or default_tier, None, True
+        return default_tier, None, False
 
-    # implement / fix / cleanup
-    if task.get("agent"):
-        return {"agent_cli": task["agent"], "agent_model": None, "effort": None}
-    if role in role_agent_map:
-        override = _entry(role_agent_map[role])
-        if override["agent_cli"]:
-            return override
-    if tier_map:
-        tier = None
-        if purpose_tier_map:
-            tier = purpose_tier_map.get(task.get("purpose"))
-        if tier is None:
-            tier = task.get("complexity")
-        domain = task.get("domain")
-        agent = default_agent or "claude"
-        match = tier_map.get((f"{tier}-{agent}", domain))
-        if match is None:
-            match = tier_map.get((tier, domain))
-        if match is not None:
-            resolved = _entry(match)
-            if resolved["agent_cli"]:
-                return resolved
-    return {"agent_cli": default_agent or "claude", "agent_model": None, "effort": None}
+    purpose_tier = purposes.get(task.get("purpose"))
+    if purpose_tier:
+        return purpose_tier, None, False
+    complexity = task.get("complexity")
+    if complexity:
+        return complexity, None, False
+    return default_tier, None, False
 
 
 # --------------------------------------------------------------------------- #
@@ -506,7 +442,7 @@ def build_worker_prompt(
             # inside a shared tasks.md would otherwise know only its id.
             f"You are the {role.upper()} worker for {tid} of spec {ctx['spec_id']}."
             + (f"\nTask title: {task['title']}" if task.get("title") else ""),
-            f"Agent: {agent_for(role, task, ctx.get('reviewer_agent', DEFAULT_REVIEWER_AGENT), ctx.get('default_agent'))['agent_cli']}",
+            f"Agent: {ctx.get('default_agent') or 'claude'}",
             "",
             f"Worktree (operate ONLY here): {ctx['worktree_path']}",
             f"Branch (already checked out): {ctx['branch']}",
@@ -941,8 +877,8 @@ def _demo() -> None:
 
     print("\n" + "=" * 64)
     print(
-        f"REVIEW worker prompt  (routes to DIFFERENT agent: "
-        f"{agent_for(ROLE_REVIEW, task)['agent_cli']})"
+        f"REVIEW worker prompt  (routes to independent tier: "
+        f"{tier_for(ROLE_REVIEW, task)[0]})"
     )
     print("=" * 64)
     print(build_worker_prompt(ROLE_REVIEW, task, ctx))
