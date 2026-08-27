@@ -86,10 +86,10 @@
 
 - [x] 7.1 Change `agent_capacity.gate_snapshot()` to take an explicit provider set instead of
       reading a stored `configured_providers` key.
-- [ ] 7.2 Remove `agent_capacity.configure()` and its call sites, or reduce it to a no-op
+- [x] 7.2 Remove `agent_capacity.configure()` and its call sites, or reduce it to a no-op
       shim if a caller outside this change still needs it (verify with a repo-root grep).
 - [ ] 7.3 Update the dashboard and run-record call sites to pass the routing-derived set.
-- [ ] 7.4 Tests: `all_gated` is computed over the routing-derived set; a stale
+- [x] 7.4 Tests: `all_gated` is computed over the routing-derived set; a stale
       `configured_providers` key left in an existing cache file is ignored, not honored.
 
 ## 8. Operator migration (this machine)
