@@ -19,9 +19,9 @@
       `_validate_routing_tiers()` to accept `tiers.<tier>.<agent>: {model, effort}`
       alongside today's flat `<tier>-<agent>` keys.
 - [x] 2.2 Emit a deprecation warning through `meta["warnings"]` when the flat form is used.
-- [ ] 2.3 Update `resolve_tier_map()` so `dispatch.agent_for()`'s `<tier>-<agent>` lookup
+- [x] 2.3 Update `resolve_tier_map()` so `dispatch.agent_for()`'s `<tier>-<agent>` lookup
       resolves identically from either shape -- `dispatch.py` itself is not modified.
-- [ ] 2.4 Tests: nested and flat forms produce byte-identical `resolve_tier_map()` output;
+- [x] 2.4 Tests: nested and flat forms produce byte-identical `resolve_tier_map()` output;
       nested wins when both declare the same tier/agent.
 
 ## 3. Default model resolution from routing (D2, D3)
@@ -55,7 +55,7 @@
       `routing_candidates(...)`, so capacity gating keys on the real model actually spawned.
       `select_execution_target` itself is NOT modified.
 - [x] 4.4 Delete `src/worktrail/shared/operator_config.py` and `tests/shared/test_operator_config.py`.
-- [ ] 4.5 Tests: drain honors `routing.drain`; a per-model gate no longer gates a whole
+- [x] 4.5 Tests: drain honors `routing.drain`; a per-model gate no longer gates a whole
       provider; CLI flags still win outright.
 
 ## 5. Fail-closed mitigation -- ship with D3, not after it
@@ -71,7 +71,7 @@
 
 ## 6. Delete the catalog (D4)
 
-- [ ] 6.1 Delete `src/worktrail/runtime/catalog.py`, `tests/test_runtime_catalog.py`,
+- [x] 6.1 Delete `src/worktrail/runtime/catalog.py`, `tests/test_runtime_catalog.py`,
       `docs/config/provider-model-catalog.yaml.example`, and the catalog exports from
       `src/worktrail/runtime/__init__.py`. Confirm `runtime/selection.py` and
       `tests/test_runtime_selection.py` are untouched.
@@ -88,7 +88,7 @@
       reading a stored `configured_providers` key.
 - [x] 7.2 Remove `agent_capacity.configure()` and its call sites, or reduce it to a no-op
       shim if a caller outside this change still needs it (verify with a repo-root grep).
-- [ ] 7.3 Update the dashboard and run-record call sites to pass the routing-derived set.
+- [x] 7.3 Update the dashboard and run-record call sites to pass the routing-derived set.
 - [x] 7.4 Tests: `all_gated` is computed over the routing-derived set; a stale
       `configured_providers` key left in an existing cache file is ignored, not honored.
 
@@ -105,7 +105,7 @@
 
 ## 9. Docs
 
-- [ ] 9.1 Update `AGENTS.md` and any skill `references/` naming `config.json`,
+- [x] 9.1 Update `AGENTS.md` and any skill `references/` naming `config.json`,
       `model-defaults.yaml`, or the catalog.
-- [ ] 9.2 Add a `docs/config/routing.yaml.example` covering the full consolidated schema,
+- [x] 9.2 Add a `docs/config/routing.yaml.example` covering the full consolidated schema,
       replacing the deleted catalog example.

@@ -1,0 +1,55 @@
+name: 'CI: Version Bump Check'
+# The check's *display name* below (the job's `name:`, which is what GitHub
+# branch protection matches a required status check against) is deliberately
+# left as "Version bump check" even though the file/logic are now release-
+# metadata-flavored: renaming it would require the live GitHub ruleset to be
+# updated in lockstep, and until that update lands every OTHER open PR
+# against main (still running the pre-rename workflow) would be unable to
+# satisfy a required check name that no longer exists on their branch --
+# self-inflicted deadlock, discovered live on this PR's own mergeStateStatus.
+# Renaming the check name is a separate, coordinated follow-up.
+
+on:
+  pull_request:
+    branches: [main]
+    # Release intent is read directly from the diff (did pyproject.toml's
+    # `version` line change?), not from a label, so there is no async
+    # label event to also listen for and no race between an opened/synchronize
+    # run starting before label state is visible.
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: release-metadata-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  version-bump-check:
+    name: Version bump check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Collect pyproject.toml diff
+        run: |
+          git diff "origin/${{ github.base_ref }}...HEAD" -- pyproject.toml > /tmp/version_diff.txt
+
+      - name: Evaluate release metadata
+        id: check
+        run: |
+          bash scripts/ci/release_metadata_check.sh \
+            --version-diff /tmp/version_diff.txt \
+            --plugin-manifest .codex-plugin/plugin.json \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Report
+        run: |
+          echo "is_release=${{ steps.check.outputs.is_release }}"
+          echo "${{ steps.check.outputs.reason }}"
+          if [ "${{ steps.check.outputs.pass }}" != "true" ]; then
+            echo "::error::${{ steps.check.outputs.reason }}. See the 'chore: bump Worktrail to X.Y.Z'" \
+              "commits for the expected pattern -- pyproject.toml and .codex-plugin/plugin.json bumped" \
+              "together to a semver value greater than the base branch's version."
+            exit 1
+          fi
