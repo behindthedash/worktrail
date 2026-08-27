@@ -116,7 +116,7 @@ def save(value: Dict, path: Optional[Path] = None) -> None:
 def write_lock(path: Path) -> Iterator[None]:
     """Serialize a load -> mutate -> save sequence against concurrent writers.
 
-    Every writer in this module (``configure``/``record``/``cmd_clear``) holds
+    Every writer in this module (``record``/``cmd_clear``) holds
     a blocking exclusive ``flock`` on a sidecar ``<cache>.lock`` for the whole
     read-modify-write; without it, two workers finishing close together both
     load the same snapshot and the second ``os.replace`` silently discards the
@@ -141,17 +141,6 @@ def write_lock(path: Path) -> Iterator[None]:
             yield
         finally:
             fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-
-
-def configure(providers: Iterable[tuple[str, str]], path: Optional[Path] = None) -> None:
-    """Remember the provider/model-safe set used by the current dispatch."""
-    path = path or cache_path()
-    with write_lock(path):
-        data = load(path)
-        data["configured_providers"] = sorted(
-            {_safe_identifier(provider_key(agent, model)) for agent, model in providers}
-        )
-        save(data, path)
 
 
 def gate_snapshot(
