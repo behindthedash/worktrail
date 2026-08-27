@@ -97,7 +97,8 @@ out of scope, and identical to how full-real behaves today.
 **D5 — Sibling reconciliation adopted verbatim.**
 From `archive/2026-08-25-model-tier-routing-remove-env-model-overrides`: (D1) hard
 no-new-env-channels stance — the compile spawn adds no env lookup, and model selection
-is config-driven only (policy `agent_model` > `model-defaults.yaml` > constant);
+is config-driven only (policy `agent_model` > `routing.agents.<agent>.default_model`,
+raising `OperatorConfigError` if neither is declared);
 (D2) uniform resolution shape via `default_model_for_agent`; config-driven
 `routing.tiers`/`roles`/`fallback` selection is the mechanism, consulted — never
 re-derived. Concretely: this change introduces zero `os.environ` reads; the only env

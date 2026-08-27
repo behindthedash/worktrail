@@ -27,7 +27,8 @@ with `--agent opencode --model openrouter/stealth/ox-alpha`.
   (archive/2026-08-25-model-tier-routing-remove-env-model-overrides): adopt its
   decisions where they overlap — no new env-var override channels are introduced;
   model selection stays config-file driven (`routing.tiers`/`roles`/`fallback` +
-  `model-defaults.yaml` are the mechanism), never re-derived as env vars.
+  `routing.agents.<agent>.default_model` are the mechanism), never re-derived as env
+  vars.
 
 ## Capabilities
 
