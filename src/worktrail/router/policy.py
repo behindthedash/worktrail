@@ -482,7 +482,11 @@ def _validate_routing_tiers(
     — the two key sets never overlap, since no agent literal is itself an
     agent-entry field name. Each nested agent expands to the same
     `(f"{tier}-{agent}", domain)` key the flat form already produces, so
-    `resolve_tier_map()`'s output is unaffected by which shape a repo used."""
+    `resolve_tier_map()`'s output is unaffected by which shape a repo used.
+
+    The flat form is deprecated in favor of the nested form; each flat entry
+    resolved appends a `meta["warnings"]` entry pointing at its nested
+    replacement, without dropping the entry."""
     if raw is None:
         return {}
     if not isinstance(raw, dict):
@@ -509,6 +513,9 @@ def _validate_routing_tiers(
         normalized = _validate_agent_entry(entry, meta, f"routing.tiers.{key}")
         if normalized is not None:
             resolved[(complexity, domain or None)] = normalized
+            meta["warnings"].append(
+                f"routing.tiers.{key}: flat form is deprecated -- use the nested "
+                f"tiers.{complexity}.<agent> form instead")
     return resolved
 
 
