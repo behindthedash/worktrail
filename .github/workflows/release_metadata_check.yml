@@ -1,4 +1,13 @@
-name: 'CI: Release Metadata Check'
+name: 'CI: Version Bump Check'
+# The check's *display name* below (the job's `name:`, which is what GitHub
+# branch protection matches a required status check against) is deliberately
+# left as "Version bump check" even though the file/logic are now release-
+# metadata-flavored: renaming it would require the live GitHub ruleset to be
+# updated in lockstep, and until that update lands every OTHER open PR
+# against main (still running the pre-rename workflow) would be unable to
+# satisfy a required check name that no longer exists on their branch --
+# self-inflicted deadlock, discovered live on this PR's own mergeStateStatus.
+# Renaming the check name is a separate, coordinated follow-up.
 
 on:
   pull_request:
@@ -14,8 +23,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  release-metadata-check:
-    name: Release metadata check
+  version-bump-check:
+    name: Version bump check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

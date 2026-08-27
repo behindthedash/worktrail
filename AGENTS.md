@@ -140,7 +140,9 @@ pick up changes deliberately. Bump both `pyproject.toml` and `.codex-plugin/plug
 in a standalone `chore: bump Worktrail to X.Y.Z` commit (see `0b62a12`, `#75`) — not bundled into
 a feature/fix PR.
 
-`CI: Release Metadata Check` (`.github/workflows/release_metadata_check.yml`) enforces this, but
+`CI: Version Bump Check` (`.github/workflows/release_metadata_check.yml`; the workflow file and
+script were renamed for the release-metadata logic below, but the check's required-status-check
+name stays `Version bump check` to avoid a live-ruleset rename deadlock) enforces this, but
 only for PRs that declare release intent by actually changing `pyproject.toml`'s `version` line —
 an ordinary feature/fix PR passes unconditionally, no label required. A PR that does bump the
 version is validated: the new value must be valid semver, greater than the base branch's version,

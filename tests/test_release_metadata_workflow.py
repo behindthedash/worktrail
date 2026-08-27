@@ -46,16 +46,30 @@ def test_trigger_declares_only_pull_request():
     assert set(wf["on"]["pull_request"]) <= {"branches", "types"}
 
 
-def test_ruleset_requires_the_release_metadata_check():
-    """The ruleset must keep "Release metadata check" required -- the
-    always-running gate that validates any PR declaring release intent."""
+def test_ruleset_requires_the_version_bump_check():
+    """The ruleset must keep "Version bump check" required -- the check's
+    display name (what branch protection matches against) is deliberately
+    unchanged from before this fix, even though the underlying file/logic are
+    now release-metadata-flavored, to avoid a rename deadlock: renaming it
+    here would require the live GitHub ruleset to update in lockstep, and
+    until it does every other open PR against main (still running the
+    pre-rename workflow) could never satisfy a required check name that no
+    longer exists on their branch."""
     ruleset = json.loads(RULESET.read_text(encoding="utf-8"))
     contexts = []
     for rule in ruleset["rules"]:
         if rule["type"] == "required_status_checks":
             contexts = [c["context"] for c in rule["parameters"]["required_status_checks"]]
-    assert "Release metadata check" in contexts
-    assert "Version bump check" not in contexts
+    assert "Version bump check" in contexts
+
+
+def test_workflow_job_name_matches_the_required_check():
+    """The job's `name:` is what GitHub branch protection actually matches a
+    required status check against -- it must equal the ruleset's context
+    string exactly, or this workflow can never satisfy the requirement."""
+    wf = _workflow()
+    job = wf["jobs"]["version-bump-check"]
+    assert job["name"] == "Version bump check"
 
 
 def test_ordinary_pr_passes_without_any_version_change():
