@@ -2,11 +2,11 @@
 
 `routing_candidates()` is what task 4.3 uses to replace `drain.py`'s synthetic
 `"configured-default"` sentinel catalog: everything it yields comes from
-`routing["agents"]`/`routing["tiers"]` -- the same dict shape `policy["routing"]`
-already holds (see `router.policy._validate_routing`, `resolve_routing()`,
-`resolve_tier_map()`) -- so capacity gating keys on the model actually spawned
-instead of a sentinel that could not distinguish one model from another under
-the same provider.
+`routing["targets"]`/`routing["tiers"]` -- the same dict shape `resolve_routing()`
+already returns (see `router.policy._validate_routing`, `resolve_routing()`) --
+so capacity gating keys on the target/model actually spawned instead of a
+sentinel that could not distinguish one model from another under the same
+harness.
 """
 
 from __future__ import annotations
@@ -15,68 +15,63 @@ from typing import Any, Iterator, Mapping, Optional
 
 
 def routing_candidates(routing: Optional[Mapping[str, Any]]) -> Iterator[dict[str, Any]]:
-    """Yield `{provider, model, tiers, purposes}` candidates from
-    `routing["agents"]` and `routing["tiers"]`.
+    """Yield `{target, harness, model, tiers, purposes}` candidates from
+    `routing["targets"]` and `routing["tiers"]`.
 
-    One candidate per distinct `(agent, model)` pair actually configured:
-    every `routing.agents.<agent>.default_model` entry, and every
-    `routing.tiers` entry's `(agent_cli, agent_model)` (falling back to that
-    agent's `routing.agents` default when a tier entry omits `agent_model`,
-    same as `dispatch.agent_for`'s own resolution). Each tier-sourced
-    candidate is tagged with the tier name recovered from its
-    `(f"{tier}-{agent}", domain)` key (`_validate_routing_tiers()`'s
-    composite form, shared by both the flat and nested `routing.tiers`
-    shapes -- D6).
+    One candidate per distinct `(target, model)` pair actually configured:
+    every `routing.tiers.<row>.<target>` cell, tagged with the harness
+    declared on that target (`routing.targets.<target>.harness`) and the
+    tier row(s) it appears under. A cell naming a target absent from
+    `routing["targets"]` is skipped -- `resolve_routing()` never produces
+    that (`_validate_routing_tiers()` already drops undeclared targets), but
+    this stays defensive rather than raising on a malformed input.
 
-    `purposes` lists every `routing.purpose_tiers` purpose whose mapped tier
-    matches one of a candidate's tiers.
+    `purposes` lists every `routing.purposes` entry (`{purpose: tier}`)
+    whose mapped tier matches one of a candidate's tiers.
 
     Pure: no I/O, no clock, same input always produces the same output
-    (REQ-NR002), matching `resolve_routing()`/`resolve_tier_map()`. `routing`
-    falsy (`None` or `{}`, i.e. no routing.yaml/`routing:` block configured)
-    yields nothing, same as `resolve_tier_map()`'s `{}` return.
+    (REQ-NR002), matching `resolve_routing()`. `routing` falsy (`None` or
+    `{}`, i.e. no routing.yaml/`routing:` block configured) yields nothing.
     """
     if not routing:
         return
-    agents: Mapping[str, Any] = routing.get("agents") or {}
-    tiers: Mapping[Any, Any] = routing.get("tiers") or {}
-    purpose_tiers: Mapping[str, str] = routing.get("purpose_tiers") or {}
+    targets: Mapping[str, Any] = routing.get("targets") or {}
+    tiers: Mapping[str, Any] = routing.get("tiers") or {}
+    purposes: Mapping[str, str] = routing.get("purposes") or {}
 
     seen: dict[tuple[str, str], dict[str, Any]] = {}
 
-    def candidate(provider: str, model: str) -> dict[str, Any]:
-        key = (provider, model)
+    def candidate(target: str, harness: str, model: str) -> dict[str, Any]:
+        key = (target, model)
         entry = seen.get(key)
         if entry is None:
-            entry = {"provider": provider, "model": model, "tiers": set(), "purposes": set()}
+            entry = {"target": target, "harness": harness, "model": model,
+                      "tiers": set(), "purposes": set()}
             seen[key] = entry
         return entry
 
-    for agent, entry in agents.items():
-        model = entry.get("default_model") if isinstance(entry, Mapping) else None
-        if agent and model:
-            candidate(agent, model)
-
-    for tier_key, entry in tiers.items():
-        if not isinstance(entry, Mapping):
+    for tier_name, row in tiers.items():
+        if not isinstance(row, Mapping):
             continue
-        agent_cli = entry.get("agent_cli")
-        agent_model = entry.get("agent_model") or (agents.get(agent_cli) or {}).get("default_model")
-        if not agent_cli or not agent_model:
-            continue
-        composite = tier_key[0] if isinstance(tier_key, tuple) else tier_key
-        suffix = f"-{agent_cli}"
-        tier_name = composite[: -len(suffix)] if composite.endswith(suffix) else composite
-        candidate(agent_cli, agent_model)["tiers"].add(tier_name)
+        for target_name, cell in row.items():
+            target = targets.get(target_name)
+            if not isinstance(target, Mapping) or not isinstance(cell, Mapping):
+                continue
+            harness = target.get("harness")
+            model = cell.get("model")
+            if not harness or not model:
+                continue
+            candidate(target_name, harness, model)["tiers"].add(tier_name)
 
-    for purpose, tier_name in purpose_tiers.items():
+    for purpose, tier_name in purposes.items():
         for entry in seen.values():
             if tier_name in entry["tiers"]:
                 entry["purposes"].add(purpose)
 
     for entry in seen.values():
         yield {
-            "provider": entry["provider"],
+            "target": entry["target"],
+            "harness": entry["harness"],
             "model": entry["model"],
             "tiers": tuple(sorted(entry["tiers"])),
             "purposes": tuple(sorted(entry["purposes"])),
