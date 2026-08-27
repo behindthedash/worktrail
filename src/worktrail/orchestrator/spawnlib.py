@@ -68,7 +68,7 @@ import sys
 import time
 import tempfile
 from pathlib import Path
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence
+from typing import Any, Callable, Dict, List, Mapping, NamedTuple, Optional, Sequence
 
 from . import agent_capacity
 from ..router.policy import (
@@ -78,6 +78,7 @@ from ..router.policy import (
     resolved_routing_file_path,
 )
 from ..router.skill_dispatch import prepare_codex_child_environment
+from ..runtime.selection import Cell
 from ..shared.homedir import env_setting, worktrail_home
 
 
@@ -414,16 +415,22 @@ def _with_default_setting_sources(
 
 def build_cmd(
     prompt: str,
+    cell: Cell,
     *,
-    agent: str = "claude",
-    model: Optional[str] = None,
-    effort: Optional[str] = None,
     extra_args: Optional[Sequence[str]] = None,
     resume_session_id: Optional[str] = None,
     output_last_message: Optional[str] = None,
 ) -> List[str]:
+    """Build the launcher argv for *cell* (design D3/D6): `cell.harness` picks the
+    CLI, `cell.model`/`cell.effort` are translated per-harness exactly as before,
+    and `cell.pool` decides claude's auth lane -- `--bare` is appended only for
+    a claude `api`-pool cell (`subscription` omits it, matching every existing
+    claude spawn); opencode/codex are unaffected by pool."""
+    agent = cell.harness
     if agent not in SUPPORTED_AGENTS:
         raise ValueError(f"unsupported agent: {agent}")
+    model = cell.model
+    effort = cell.effort
     extra_args = _with_default_setting_sources(agent, extra_args)
 
     if agent == "claude":
@@ -432,6 +439,8 @@ def build_cmd(
             cmd += ["--model", model]
         if effort:
             cmd += ["--effort", effort]
+        if cell.pool == "api":
+            cmd += ["--bare"]
         if resume_session_id:
             cmd += ["--resume", resume_session_id, "--fork-session"]
         if extra_args:
@@ -462,6 +471,51 @@ def build_cmd(
         cmd += list(extra_args)
     cmd.append(prompt)
     return cmd
+
+
+def build_child_env(cell: Cell, base_env: Mapping[str, str]) -> Dict[str, str]:
+    """The auth lane *cell*'s harness/pool draws from (design D6), layered onto
+    a copy of *base_env*.
+
+    A claude `subscription` cell has `ANTHROPIC_API_KEY` removed so an ambient
+    key can never silently switch a subscription spawn's billing to the API.
+    A claude `api` cell requires its target's declared `auth: {env: <NAME>}`
+    and that named variable set (non-empty) in *base_env*; both are load-bearing
+    identity the launcher cannot guess, so a missing one raises
+    `OperatorConfigError` naming the target and what to fix rather than spawning
+    an unauthenticated worker. Every other harness/pool combination returns
+    *base_env* unchanged -- opencode/codex auth is unaffected by pool (D6)."""
+    env = dict(base_env)
+    if cell.harness != "claude":
+        return env
+    if cell.pool == "subscription":
+        env.pop("ANTHROPIC_API_KEY", None)
+        return env
+    if cell.pool == "api":
+        auth = cell.auth if isinstance(cell.auth, Mapping) else {}
+        var_name = auth.get("env")
+        if not var_name:
+            raise OperatorConfigError(
+                f"routing target {cell.target!r} (harness claude, pool api) has no "
+                "auth.env configured -- add `auth: {env: <ENV_VAR_NAME>}` to its "
+                f"routing.targets entry in {resolved_routing_file_path()}"
+            )
+        value = env.get(var_name)
+        if not value:
+            raise OperatorConfigError(
+                f"routing target {cell.target!r} requires {var_name} to be set in "
+                "the environment for its 'api' pool -- export it before spawning"
+            )
+        env[var_name] = value
+    return env
+
+
+def _legacy_spawn_cell(agent: str, model: Optional[str], effort: Optional[str]) -> Cell:
+    """Adapt `spawn_agent`'s pre-selector `agent`/`model`/`effort` locals into a
+    `Cell` for `build_cmd()`. `spawn_agent` does not yet resolve a target/pool
+    (task 3.3 rewrites it onto `select_cell`); `pool="subscription"` reproduces
+    every existing spawn's argv byte-for-byte (no `--bare`)."""
+    return Cell(target=agent, harness=agent, model=model, effort=effort, pool="subscription")
 
 
 # --------------------------------------------------------------------------- #
@@ -828,9 +882,7 @@ def spawn_agent(
 
     cmd = build_cmd(
         prompt,
-        agent=agent,
-        model=model,
-        effort=effort,
+        _legacy_spawn_cell(agent, model, effort),
         # Callers derive extra_args for the requested primary CLI. A persisted
         # capacity gate can select a different CLI before this first command is
         # built, so do not leak primary-only flags across that boundary. This
@@ -840,7 +892,7 @@ def spawn_agent(
         output_last_message=output_file,
     )
 
-    def build_child_env(current_agent: str) -> "tuple[Dict[str, str], Optional[Path]]":
+    def _prepare_child_env(current_agent: str) -> "tuple[Dict[str, str], Optional[Path]]":
         """Agent-specific child environment. Rebuilt on every fallback hop
         switch so a codex-prepared env (CODEX_HOME) never leaks into an
         opencode hop and vice versa."""
@@ -862,7 +914,7 @@ def spawn_agent(
             ]
         return env, oc_data_dir
 
-    child_env, opencode_dir = build_child_env(agent)
+    child_env, opencode_dir = _prepare_child_env(agent)
 
     def _persist_transcript(raw: str) -> None:
         """Best-effort raw stream-json JSONL dump, gated by $WORKTRAIL_KEEP_TRANSCRIPTS
@@ -948,17 +1000,15 @@ def spawn_agent(
                 os.close(fd)
             cmd = build_cmd(
                 prompt,
-                agent=agent,
-                model=model,
                 # effort is a CLI-agnostic tier semantic (build_cmd translates it
                 # per agent) so it carries across the fallback boundary; unlike
                 # extra_args, which are primary-agent-specific and cannot.
-                effort=effort,
+                _legacy_spawn_cell(agent, model, effort),
                 extra_args=None,
                 resume_session_id=None,
                 output_last_message=output_file,
             )
-            child_env, opencode_dir = build_child_env(agent)
+            child_env, opencode_dir = _prepare_child_env(agent)
             log(f"    session limit hit on {previous_agent}; switching once to {agent}")
             attempt -= 1
             continue
