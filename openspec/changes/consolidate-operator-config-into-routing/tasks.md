@@ -75,10 +75,10 @@
       `docs/config/provider-model-catalog.yaml.example`, and the catalog exports from
       `src/worktrail/runtime/__init__.py`. Confirm `runtime/selection.py` and
       `tests/test_runtime_selection.py` are untouched.
-- [ ] 6.2 Update the in-flight `model-tier-routing-compile-default-spawn-policy-routing`
+- [x] 6.2 Update the in-flight `model-tier-routing-compile-default-spawn-policy-routing`
       change's proposal/spec references from `model-defaults.yaml` to
       `routing.agents.<agent>.default_model`.
-- [ ] 6.3 [cleanup] `rg -n "provider-model-catalog|ModelCatalog|default_catalog|runtime.catalog" .`
+- [x] 6.3 [cleanup] `rg -n "provider-model-catalog|ModelCatalog|default_catalog|runtime.catalog" .`
       from the repo root, no path or file-type filter -- reconcile every hit including
       `.github/`, `scripts/`, `skills/`, and docs.
 
