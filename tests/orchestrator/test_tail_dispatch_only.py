@@ -51,10 +51,10 @@ def _init_repo(root: Path, tasks_frontmatter: dict) -> Path:
     return repo
 
 
-def _fm(tid, files, deps="", **extra):
+def _fm(tid, files, deps="", status="pending", **extra):
     lines = [
         f"id: {tid}",
-        "status: pending",
+        f"status: {status}",
         f"dependencies: [{deps}]",
         f"files: [{files}]",
         "kind: impl",
@@ -159,6 +159,69 @@ class TailDispatchRespectsOnly(unittest.TestCase):
                 "TASK-001 (outside --only) was reset instead of pre-marked completed",
             )
             self.assertIn(by_id["TASK-002"]["status"], ("done", "reviewing"))
+
+    def test_already_completed_tail_task_is_noop(self):
+        """Regression: a tail (kind: e2e/cleanup) task already marked
+        `status: completed` on disk before this run started (e.g. a checkbox
+        ticked to reflect work merged outside the orchestrator) must be
+        skipped, not crash. Before the fix, `orchestrate.TERMINAL` didn't
+        include "completed", so `drive()`'s `while status not in TERMINAL`
+        guard let it into the loop body and crashed on
+        `ROLE_BY_STATUS["completed"]` -- confirmed live 2026-08-27 on
+        worktrail's own `consolidate-operator-config-into-routing` run,
+        `KeyError: 'completed'`."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _init_repo(
+                Path(tmp),
+                {
+                    "TASK-001": _fm("TASK-001", "src/task-001.txt", status="completed"),
+                    "TASK-002": _fm(
+                        "TASK-002", "src/task-002.txt", deps="TASK-001",
+                        kind="cleanup", status="completed",
+                    ),
+                },
+            )
+            journal = str(Path(tmp) / "run-001-x.json")
+            fake = FakeSpawn()
+
+            # Mirrors the real incident: the scheduler's own in-memory task
+            # list (what gates `tail_held_out_task_ids`) still shows TASK-002
+            # as "pending" -- its own status hasn't been reloaded since disk
+            # was ticked. No `only` restriction here: `live_run_real`'s fresh
+            # reload picks up TASK-002's on-disk "completed" status directly
+            # (the real run's other path to the same crash: a tail task
+            # already ticked before the run started, independent of --only).
+            gate_tasks = [
+                {"id": "TASK-001", "status": "completed", "kind": "impl", "deps": []},
+                {"id": "TASK-002", "status": "pending", "kind": "cleanup", "deps": ["TASK-001"]},
+            ]
+
+            result = live._dispatch_pending_tail(
+                repo,
+                "docs/specs/001-x",
+                journal,
+                "test-tail-already-completed",
+                gate_tasks,
+                3,  # max_workers
+                live.DEFAULT_AGENT,
+                None,  # model
+                60,  # timeout
+                None,  # role_models
+                None,  # role_agents
+                None,  # fallback_agent
+                None,  # tier_map
+                None,  # purpose_tier_map
+                None,  # fallback_chain
+                None,  # effort
+                None,  # run_budget
+                spawn=fake,
+                only=None,
+            )
+
+            self.assertEqual(fake.calls, [], "an already-completed tail task must not spawn a worker")
+            if result is not None:
+                by_id = {t["id"]: t for t in result["tasks"]}
+                self.assertEqual(by_id["TASK-002"]["status"], "completed")
 
 
 if __name__ == "__main__":
