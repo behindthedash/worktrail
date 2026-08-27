@@ -593,6 +593,54 @@ def test_select_available_agent_single_candidate_no_fallback_configured():
 
 
 # ---------------------------------------------------------------------------
+# agent fallback selection with routing-sourced (real) models (task 4.3/4.5)
+#
+# routing_candidates(routing) turns routing.agents/routing.tiers into real
+# (provider, model) pairs; select_available_agent then keys the capacity
+# check on the real model (agent_capacity.provider_key) instead of the old
+# "configured-default" sentinel, so a gate on ONE model no longer gates
+# every model of that provider (D4).
+
+_ROUTING_TWO_CLAUDE_MODELS = {
+    "agents": {"claude": {"default_model": "sonnet"}},
+    "tiers": {"heavy-claude": {"agent_cli": "claude", "agent_model": "opus"}},
+}
+
+
+def test_select_available_agent_per_model_gate_does_not_gate_whole_provider():
+    cache = {"providers": {"claude:opus": {"status": "gated"}}}
+    assert select_available_agent(
+        cache, ["claude"], routing=_ROUTING_TWO_CLAUDE_MODELS) == "claude"
+
+
+def test_select_available_agent_routing_all_models_gated_falls_back():
+    cache = {"providers": {
+        "claude:sonnet": {"status": "gated"},
+        "claude:opus": {"status": "gated"},
+    }}
+    assert select_available_agent(
+        cache, ["claude", "codex"], routing=_ROUTING_TWO_CLAUDE_MODELS) == "codex"
+
+
+def test_select_available_agent_routing_all_models_gated_none_when_no_fallback():
+    cache = {"providers": {
+        "claude:sonnet": {"status": "gated"},
+        "claude:opus": {"status": "gated"},
+    }}
+    assert select_available_agent(
+        cache, ["claude"], routing=_ROUTING_TWO_CLAUDE_MODELS) is None
+
+
+def test_select_available_agent_routing_candidate_absent_uses_bare_sentinel():
+    # "codex" has no routing entry of its own here -- falls back to the
+    # bare-agent sentinel key exactly like routing=None, so an operator who
+    # has not configured that agent in routing.yaml sees no behavior change.
+    cache = {"providers": {"codex": {"status": "gated"}}}
+    assert select_available_agent(
+        cache, ["codex"], routing=_ROUTING_TWO_CLAUDE_MODELS) is None
+
+
+# ---------------------------------------------------------------------------
 # iteration transcripts (why did THIS outcome happen, not just what it was)
 
 
@@ -1146,6 +1194,58 @@ def test_drain_capacity_gate_stops_after_blocked_iteration(tmp_path, monkeypatch
     config = make_config(tmp_path)
     config.capacity_cache.write_text(json.dumps(
         {"providers": {"claude": {"status": "gated"}}}))
+
+    def spawner(cmd, timeout):
+        write_run_record(config.runs_dir, "go-1", "blocked_external_dependency")
+        return SpawnOutcome(0)
+
+    summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
+    assert len(summary["iterations"]) == 1
+    assert summary["stopped"].startswith("capacity_gated")
+
+
+def test_drain_routing_partial_model_gate_does_not_gate_whole_provider(
+        tmp_path, monkeypatch):
+    # routing.yaml configures two real models for "claude" (default_model
+    # sonnet + a tier's opus); only "claude:opus" is gated in the capacity
+    # cache. Before D4/4.3 this whole scenario collapsed onto one bare
+    # "claude" sentinel key, so a single model's gate would have stopped the
+    # drain outright -- with the real per-model key, the still-available
+    # sonnet model keeps the single configured agent (no fallback) usable.
+    fake = FakeQueue([1, 0])
+    install_fake_queue(monkeypatch, fake)
+    monkeypatch.setattr(drain, "machine_wide_routing",
+                         lambda: _ROUTING_TWO_CLAUDE_MODELS)
+    config = make_config(tmp_path, agent="claude")
+    config.capacity_cache.write_text(json.dumps(
+        {"providers": {"claude:opus": {"status": "gated"}}}))
+
+    def spawner(cmd, timeout):
+        write_run_record(config.runs_dir, "go-1", "completed_pr_open",
+                         pr="https://pr/1")
+        return SpawnOutcome(0)
+
+    summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
+    assert summary["stopped"].startswith("queue_empty")
+    assert [i["kind"] for i in summary["iterations"]] == ["success"]
+
+
+def test_drain_routing_all_configured_models_gated_still_capacity_gates(
+        tmp_path, monkeypatch):
+    # The mirror case: once every routing-configured model of the
+    # provider is gated, the drain stops as capacity_gated exactly like the
+    # bare-sentinel case above -- per-model keying narrows what counts as
+    # "gated", it does not weaken the stop condition once it genuinely
+    # applies.
+    fake = FakeQueue([4, 4, 4])
+    install_fake_queue(monkeypatch, fake)
+    monkeypatch.setattr(drain, "machine_wide_routing",
+                         lambda: _ROUTING_TWO_CLAUDE_MODELS)
+    config = make_config(tmp_path, agent="claude")
+    config.capacity_cache.write_text(json.dumps({"providers": {
+        "claude:sonnet": {"status": "gated"},
+        "claude:opus": {"status": "gated"},
+    }}))
 
     def spawner(cmd, timeout):
         write_run_record(config.runs_dir, "go-1", "blocked_external_dependency")
