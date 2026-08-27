@@ -49,11 +49,14 @@ drain's circuit breaker still counts any `blocked_product_decision` one-shot tha
 file a decision.
 
 **Operator config** (`~/.worktrail/routing.yaml`, the same machine-wide file that governs
-agent/model routing — see `worktrail-routing --init`/`--show`). Its `drain:` block holds
-machine-wide preferences for the drain — currently the default provider and fallback chain
-(`drain.agent`, `drain.fallback_agents`) — resolved as CLI flags > config file > built-in
-default, so explicit automation is never affected while config-less manual drains honor the
-operator's stated provider.
+agent/model routing — see `worktrail-routing --init`/`--show`). Its `targets:` (ordered
+harness + account-pool declarations) and `tiers:` (per-target model/effort rows) sections
+are what a drain iteration actually selects from, via the same single selector every other
+spawn path uses — provider/pool preference is target file order, not a separate drain-only
+agent or fallback chain. An explicit CLI flag still wins entirely over the resolved
+selection, so explicit automation is never affected while config-less manual drains honor
+the operator's declared target order. The `drain:` block itself now holds only
+machine-wide non-selection defaults (`max_workers`).
 
 The drain also sweeps for resumable states before and after each pass (budget-exhausted
 quarantines, verify-pending and sync-pending specs, stale bookkeeping), so interrupted pipeline
