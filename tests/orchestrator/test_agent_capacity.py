@@ -156,7 +156,11 @@ def test_gate_snapshot_reports_retry_class_and_all_gated(tmp_path):
             retry_after=now + timedelta(minutes=5), path=path, now=now,
         )
 
-    snapshot = agent_capacity.gate_snapshot(path=path, now=now)
+    snapshot = agent_capacity.gate_snapshot(
+        [agent_capacity.provider_key("claude", "sonnet"),
+         agent_capacity.provider_key("opencode", "safe/model")],
+        path=path, now=now,
+    )
 
     assert snapshot["all_gated"] is True
     assert snapshot["retry_after"] == "2026-07-20T20:05:00+00:00"

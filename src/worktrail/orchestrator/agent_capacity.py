@@ -154,21 +154,20 @@ def configure(providers: Iterable[tuple[str, str]], path: Optional[Path] = None)
         save(data, path)
 
 
-def gate_snapshot(path: Optional[Path] = None, now: Optional[datetime] = None) -> Dict:
-    """Return sanitized active-gate data for the run record/dashboard."""
+def gate_snapshot(
+    providers: Iterable[str], path: Optional[Path] = None, now: Optional[datetime] = None
+) -> Dict:
+    """Return sanitized active-gate data for the run record/dashboard.
+
+    ``providers`` is the caller-supplied provider-key set to evaluate (e.g. the
+    routing-derived set); a stale ``configured_providers`` key left in an
+    existing cache file is never read.
+    """
     now = now or _now()
     data = load(path)
-    configured = [
-        _safe_identifier(value)
-        for value in data.get("configured_providers", [])
-        if isinstance(value, str)
-    ]
-    if not configured:
-        configured = sorted(
-            _safe_identifier(value)
-            for value in data.get("providers", {})
-            if isinstance(value, str)
-        )
+    configured = sorted(
+        {_safe_identifier(value) for value in providers if isinstance(value, str)}
+    )
     gated = []
     for key in configured:
         state = data.get("providers", {}).get(key)
