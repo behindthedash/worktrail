@@ -24,7 +24,9 @@
 - [ ] 3.1 Add `_openspec_delta_drift(change_dir, repo) -> List[Dict[str, str]]` in
       `src/worktrail/router/dashboard.py`: for each `specs/<capability-path>/spec.md` delta file
       under `change_dir`, collect requirement names declared `MODIFIED` or `RENAMED ... TO:` (via
-      the task 1 helpers).
+      the task 1 helpers). Relies only on parsing on-disk delta headings and local `git log`
+      timestamps, never a model call (Requirement: Drift detection compares only requirement
+      names and git commit ordering, never a model call).
 - [ ] 3.2 For each such requirement name, glob
       `repo/openspec/changes/archive/*/specs/<capability-path>/spec.md` for archived changes at
       the same capability path, and collect the requirement names each declares `ADDED`,
@@ -33,7 +35,9 @@
       delta file against `_git_added_commit_time` on the archived change's delta file; when the
       open-change timestamp is `None`, or the archived timestamp is not strictly greater, skip
       (no drift). Otherwise append `{"requirement": name, "capability": <relative-path-str>,
-      "archived_change_id": <archived-dir-name>}` to the result.
+      "archived_change_id": <archived-dir-name>}` to the result (Requirement: A shared
+      requirement name is drifted only when the archived sibling's commit postdates the open
+      change's delta).
 - [ ] 3.4 Wrap the whole function body in `try/except Exception: return []` so a git/filesystem
       error degrades to "no drift" rather than propagating.
 
@@ -42,7 +46,9 @@
 - [ ] 4.1 In `_safe_detect_openspec`, call `_openspec_delta_drift(change_dir, repo)` (repo already
       resolved as `change_dir.parent.parent.parent` in this function's sibling helpers) and set
       `info["delta_drift"] = <result>` only when the result is non-empty, mirroring the existing
-      `stale_task_ids` convention. Do not change `stage` or `next_action` based on the result.
+      `stale_task_ids` convention. Do not change `stage` or `next_action` based on the result
+      (Requirement: Drift is reported as an additive warning, independent of the change's
+      existing dashboard stage).
 
 ## 5. Tests
 
@@ -62,6 +68,6 @@
 - [ ] 5.5 Add a test asserting that a drift finding does not change the reported `stage` for a
       change that is otherwise `ready-to-implement`, `stale-bookkeeping`, or `complete` — the
       `delta_drift` field is additive only.
-- [ ] 5.6 Run `PYTHONPATH=src pytest -q` and
+- [ ] 5.6 [cleanup] Run `PYTHONPATH=src pytest -q` and
       `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` and confirm both are
       green.
