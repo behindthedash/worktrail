@@ -55,7 +55,7 @@
       `routing_candidates(...)`, so capacity gating keys on the real model actually spawned.
       `select_execution_target` itself is NOT modified.
 - [x] 4.4 Delete `src/worktrail/shared/operator_config.py` and `tests/shared/test_operator_config.py`.
-- [ ] 4.5 Tests: drain honors `routing.drain`; a per-model gate no longer gates a whole
+- [x] 4.5 Tests: drain honors `routing.drain`; a per-model gate no longer gates a whole
       provider; CLI flags still win outright.
 
 ## 5. Fail-closed mitigation -- ship with D3, not after it
