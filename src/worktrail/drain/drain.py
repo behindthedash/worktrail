@@ -1611,7 +1611,10 @@ class Outcome:
 
 @dataclass
 class LoopState:
-    iteration: int = 0               # completed iterations
+    iteration: int = 0               # spawned passes (log/transcript numbering)
+    items_completed: int = 0         # passes that produced a real outcome --
+                                      # excludes pending_user_decision handoffs,
+                                      # counted against max_items
     max_items: int = 0               # 0 = unlimited
     deadline: Optional[float] = None  # epoch seconds; None = no budget
     consecutive_failures: int = 0
@@ -1631,11 +1634,12 @@ def decide(state: LoopState, now: float) -> Decision:
     """Decide whether to launch another iteration. Evaluated BEFORE each spawn."""
     last = state.last_outcome
     if last is not None:
-        if last.kind == "pending_user_decision":
-            ids = ", ".join(last.pending_decisions or []) or "(decision id not recorded)"
-            return Decision(False, "pending_user_decision: awaiting human answer(s): "
-                                   f"{ids} -- present/answer the decision, then resume "
-                                   "attended via `worktrail-skill-dispatch --resume-decision <id>`")
+        # pending_user_decision is a per-brief handoff, not a run-wide stop: the
+        # blocked brief is already excluded from `ready_count` (queue.py stamps
+        # `blocked: true` for an open `awaiting-decision`, and auto_pick skips
+        # blocked briefs), so falling through to the normal ready/max_items/
+        # deadline checks below picks a different ready brief instead of
+        # re-claiming this one -- it does not spin.
         if last.kind == "no_pick":
             return Decision(False, "no_pick: worktrail-go auto claimed nothing "
                                    "(null auto_pick or picks not eligible)")
@@ -1647,7 +1651,7 @@ def decide(state: LoopState, now: float) -> Decision:
                                    f"consecutive failed iterations")
     if state.ready_count <= 0:
         return Decision(False, "queue_empty: no ready briefs")
-    if state.max_items and state.iteration >= state.max_items:
+    if state.max_items and state.items_completed >= state.max_items:
         return Decision(False, f"max_items: {state.max_items} iterations done")
     if state.deadline is not None and now >= state.deadline:
         return Decision(False, "budget_exhausted: wall-clock budget reached")
@@ -1944,6 +1948,11 @@ def drain(config: DrainConfig,
                 record_capacity_gate(config.capacity_cache, active_agent,
                                      failure_class, reset_at)
             state.iteration += 1
+            if outcome.kind != "pending_user_decision":
+                # A decision-blocked pass produced no completed item -- don't
+                # consume a max_items slot for it, so the budget goes to
+                # briefs that actually ran.
+                state.items_completed += 1
             state.last_outcome = outcome
             # A blocked_product_decision one-shot that actually FILED a
             # decision record this iteration handled the block cleanly: the
@@ -1960,8 +1969,10 @@ def drain(config: DrainConfig,
                     f"{', '.join(decisions_filed)} (worktrail-decision list)")
             if outcome.kind == "pending_user_decision":
                 # Fail-closed, recoverable handoff: record the exact ids for
-                # the summary, tell the operator how to resume, and let the
-                # decide() check at the top of the next pass stop the drain.
+                # the summary and tell the operator how to resume. The queue
+                # already excludes this brief from ready_count (blocked by
+                # its own awaiting-decision stamp), so the loop moves on to
+                # other ready briefs rather than stopping here.
                 surfaced = list(outcome.pending_decisions or [])
                 pending_user_decisions.extend(surfaced)
                 log(f"pending user decision ({outcome.brief_id or 'no brief claimed'}): "
@@ -1981,8 +1992,9 @@ def drain(config: DrainConfig,
             transcript_path = write_iteration_transcript(
                 config.transcript_dir, state.iteration, active_agent,
                 exit_code, outcome, spawned.stdout, spawned.stderr)
-            line = (f"[{state.iteration}"
-                    f"{'/' + str(config.max_items) if config.max_items else ''}] "
+            line = (f"[{state.items_completed}"
+                    f"{'/' + str(config.max_items) if config.max_items else ''} "
+                    f"pass={state.iteration}] "
                     f"agent={active_agent} "
                     f"outcome={outcome.state or outcome.kind} "
                     f"brief={outcome.brief_id or '-'} pr={outcome.pr_url or '-'} "

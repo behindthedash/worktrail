@@ -693,7 +693,7 @@ def test_write_iteration_transcript_write_failure_returns_none(tmp_path):
 
 
 def make_state(**kw):
-    defaults = dict(iteration=0, max_items=0, deadline=None,
+    defaults = dict(iteration=0, items_completed=0, max_items=0, deadline=None,
                     consecutive_failures=0, failure_threshold=2,
                     ready_count=3, last_outcome=None, agent_capacity_gated=False)
     defaults.update(kw)
@@ -714,13 +714,31 @@ def test_decide_stops_on_no_pick():
     assert d.proceed is False and d.reason.startswith("no_pick")
 
 
-def test_decide_stops_on_pending_user_decision():
+def test_decide_continues_past_pending_user_decision_when_ready_briefs_remain():
+    # A pending_user_decision handoff is per-brief, not a run-wide stop: the
+    # blocked brief is already excluded from ready_count by the queue's own
+    # awaiting-decision contract, so other ready briefs should still run.
     d = decide(make_state(last_outcome=Outcome(
         "pending_user_decision", "pending_user_decision",
-        pending_decisions=["dec-x"])), now=0)
-    assert d.proceed is False
-    assert d.reason.startswith("pending_user_decision")
-    assert "dec-x" in d.reason
+        pending_decisions=["dec-x"]), ready_count=2), now=0)
+    assert d.proceed is True
+
+
+def test_decide_stops_on_pending_user_decision_when_queue_empty():
+    d = decide(make_state(last_outcome=Outcome(
+        "pending_user_decision", "pending_user_decision",
+        pending_decisions=["dec-x"]), ready_count=0), now=0)
+    assert d.proceed is False and d.reason.startswith("queue_empty")
+
+
+def test_decide_pending_user_decision_does_not_consume_max_items():
+    # items_completed (not the raw pass count) is what max_items counts
+    # against -- a decision-blocked pass must not consume a slot.
+    d = decide(make_state(iteration=3, items_completed=1, max_items=3,
+                          last_outcome=Outcome(
+                              "pending_user_decision", "pending_user_decision",
+                              pending_decisions=["dec-x"])), now=0)
+    assert d.proceed is True
 
 
 def test_decide_stops_on_circuit_breaker():
@@ -750,7 +768,7 @@ def test_decide_capacity_gate_alone_without_blocked_outcome_continues():
 
 
 def test_decide_stops_on_max_items():
-    d = decide(make_state(iteration=3, max_items=3,
+    d = decide(make_state(iteration=3, items_completed=3, max_items=3,
                           last_outcome=Outcome("success", "completed_pr_open")), now=0)
     assert d.proceed is False and d.reason.startswith("max_items")
 
@@ -3212,7 +3230,7 @@ def test_pending_decision_entries_parse_indented_list_items():
     ]
 
 
-def test_drain_pending_user_decision_stops_fail_closed_and_reports_ids(tmp_path, monkeypatch):
+def test_drain_pending_user_decision_fails_closed_and_reports_ids(tmp_path, monkeypatch):
     fake = FakeQueue([1, 0])
     install_fake_queue(monkeypatch, fake)
     config = make_config(tmp_path)
@@ -3228,13 +3246,74 @@ def test_drain_pending_user_decision_stops_fail_closed_and_reports_ids(tmp_path,
 
     logs = []
     summary = drain.drain(config, spawner=spawner, log=logs.append)
-    assert summary["stopped"].startswith("pending_user_decision")
+    # The blocked brief's own awaiting-decision stamp is what actually ends
+    # the run here (this queue has only the one brief, so it goes to
+    # queue_empty next pass) -- not a hardcoded pending_user_decision stop.
+    assert summary["stopped"].startswith("queue_empty")
     assert summary["pending_user_decisions"] == ["dec-e2e-000001"]
     assert len(summary["iterations"]) == 1
     iteration = summary["iterations"][0]
     assert iteration["kind"] == "pending_user_decision"
     assert iteration["state"] == "pending_user_decision"
     assert any("--resume-decision" in line for line in logs)
+
+
+def test_drain_continues_past_pending_user_decision_to_next_ready_brief(tmp_path, monkeypatch):
+    # pre-iter1=2 ready; iter1's brief goes pending and drops out of ready
+    # (post-iter1=pre-iter2=1); iter2 completes the remaining brief
+    # (post-iter2=pre-iter3=0) and the run stops on queue_empty, not the
+    # decision.
+    fake = FakeQueue([2, 1, 1, 0, 0])
+    install_fake_queue(monkeypatch, fake)
+    config = make_config(tmp_path)
+    n = {"spawned": 0}
+
+    def spawner(cmd, timeout):
+        n["spawned"] += 1
+        if n["spawned"] == 1:
+            write_run_record(
+                config.runs_dir, "go-pending", None,
+                decisions=["t [asked] dec-x", "t [presented] dec-x"])
+        else:
+            write_run_record(config.runs_dir, "go-done", "completed_pr_open",
+                             pr="https://pr/1")
+        return SpawnOutcome(0)
+
+    summary = drain.drain(config, spawner=spawner, log=lambda *_a: None)
+    assert n["spawned"] == 2
+    assert summary["stopped"].startswith("queue_empty")
+    assert summary["pending_user_decisions"] == ["dec-x"]
+    assert [i["kind"] for i in summary["iterations"]] == [
+        "pending_user_decision", "success"]
+
+
+def test_drain_pending_user_decision_does_not_consume_max_items_budget(tmp_path, monkeypatch):
+    # post-iter2 ready stays 1 (a brief remains queued) so the stop is
+    # unambiguously max_items, not queue_empty racing it.
+    fake = FakeQueue([2, 1, 1, 1, 1])
+    install_fake_queue(monkeypatch, fake)
+    config = make_config(tmp_path, max_items=1)
+    n = {"spawned": 0}
+
+    def spawner(cmd, timeout):
+        n["spawned"] += 1
+        if n["spawned"] == 1:
+            write_run_record(
+                config.runs_dir, "go-pending", None,
+                decisions=["t [asked] dec-x", "t [presented] dec-x"])
+        else:
+            write_run_record(config.runs_dir, "go-done", "completed_pr_open",
+                             pr="https://pr/1")
+        return SpawnOutcome(0)
+
+    summary = drain.drain(config, spawner=spawner, log=lambda *_a: None)
+    # max_items=1 permits exactly one completed item -- the decision-blocked
+    # pass doesn't count against it, so the second (real) brief still runs,
+    # and the run then stops for max_items, not queue_empty.
+    assert n["spawned"] == 2
+    assert summary["stopped"].startswith("max_items")
+    assert [i["kind"] for i in summary["iterations"]] == [
+        "pending_user_decision", "success"]
 
 
 def test_drain_resolved_audit_entries_do_not_wedge_the_drain(tmp_path, monkeypatch):
@@ -3259,7 +3338,7 @@ def test_drain_resolved_audit_entries_do_not_wedge_the_drain(tmp_path, monkeypat
     assert [i["state"] for i in summary["iterations"]] == ["completed_pr_open"]
 
 
-def test_drain_explicit_pending_state_without_audit_ids_still_stops(tmp_path, monkeypatch):
+def test_drain_explicit_pending_state_without_audit_ids_logs_and_moves_on(tmp_path, monkeypatch):
     fake = FakeQueue([1, 0])
     install_fake_queue(monkeypatch, fake)
     config = make_config(tmp_path)
@@ -3271,10 +3350,13 @@ def test_drain_explicit_pending_state_without_audit_ids_still_stops(tmp_path, mo
 
     logs = []
     summary = drain.drain(config, spawner=spawner, log=logs.append)
-    assert summary["stopped"].startswith("pending_user_decision")
-    assert "(decision id not recorded)" in summary["stopped"]
+    # This queue has only the one brief, so it still stops next pass -- on
+    # queue_empty (the blocked brief's own state), not a hardcoded
+    # pending_user_decision reason.
+    assert summary["stopped"].startswith("queue_empty")
     assert summary["pending_user_decisions"] == []
-    assert any("pending user decision" in line for line in logs)
+    assert any("pending user decision" in line and "(decision id not recorded)" in line
+               for line in logs)
 
 
 # ---------------------------------------------------------------------------
