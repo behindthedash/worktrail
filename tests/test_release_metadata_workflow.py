@@ -46,21 +46,21 @@ def test_trigger_declares_only_pull_request():
     assert set(wf["on"]["pull_request"]) <= {"branches", "types"}
 
 
-def test_ruleset_requires_the_version_bump_check():
-    """The ruleset must keep "Version bump check" required -- the check's
-    display name (what branch protection matches against) is deliberately
-    unchanged from before this fix, even though the underlying file/logic are
-    now release-metadata-flavored, to avoid a rename deadlock: renaming it
-    here would require the live GitHub ruleset to update in lockstep, and
-    until it does every other open PR against main (still running the
-    pre-rename workflow) could never satisfy a required check name that no
-    longer exists on their branch."""
+def test_ruleset_requires_the_release_metadata_check():
+    """The ruleset must require "Release metadata check" -- the check's
+    display name (what branch protection matches against) now matches the
+    release-metadata-flavored file/logic. It was previously left as "Version
+    bump check" to avoid a rename deadlock (renaming it required the live
+    GitHub ruleset to update in lockstep, or every other open PR against main
+    could never satisfy a required check name that no longer existed on
+    their branch); that rename was coordinated with the ruleset update with
+    zero other PRs open against main."""
     ruleset = json.loads(RULESET.read_text(encoding="utf-8"))
     contexts = []
     for rule in ruleset["rules"]:
         if rule["type"] == "required_status_checks":
             contexts = [c["context"] for c in rule["parameters"]["required_status_checks"]]
-    assert "Version bump check" in contexts
+    assert "Release metadata check" in contexts
 
 
 def test_workflow_job_name_matches_the_required_check():
@@ -68,8 +68,8 @@ def test_workflow_job_name_matches_the_required_check():
     required status check against -- it must equal the ruleset's context
     string exactly, or this workflow can never satisfy the requirement."""
     wf = _workflow()
-    job = wf["jobs"]["version-bump-check"]
-    assert job["name"] == "Version bump check"
+    job = wf["jobs"]["release-metadata-check"]
+    assert job["name"] == "Release metadata check"
 
 
 def test_ordinary_pr_passes_without_any_version_change():
