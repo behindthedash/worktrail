@@ -48,11 +48,12 @@ laziness escape hatch: `ask` refuses unstructured records, one open decision per
 drain's circuit breaker still counts any `blocked_product_decision` one-shot that did *not*
 file a decision.
 
-**Operator config** (`~/.worktrail/config.json`). Machine-wide preferences for the drain —
-currently the default provider and fallback chain (`drain.agent`,
-`drain.fallback_agents`) — resolved as CLI flags > config file > built-in default, so
-explicit automation is never affected while config-less manual drains honor the operator's
-stated provider.
+**Operator config** (`~/.worktrail/routing.yaml`, the same machine-wide file that governs
+agent/model routing — see `worktrail-routing --init`/`--show`). Its `drain:` block holds
+machine-wide preferences for the drain — currently the default provider and fallback chain
+(`drain.agent`, `drain.fallback_agents`) — resolved as CLI flags > config file > built-in
+default, so explicit automation is never affected while config-less manual drains honor the
+operator's stated provider.
 
 The drain also sweeps for resumable states before and after each pass (budget-exhausted
 quarantines, verify-pending and sync-pending specs, stale bookkeeping), so interrupted pipeline
