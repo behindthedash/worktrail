@@ -1083,6 +1083,26 @@ def _git_added_commit_time(repo: Path, path: Path) -> Optional[int]:
         return None
 
 
+def _openspec_delta_drift(change_dir: Path, repo: Path) -> List[Dict[str, str]]:
+    """Requirement names an open change's delta MODIFIED/RENAMED that an archived
+    sibling touched more recently.
+
+    Parses on-disk delta headings and compares local `git log` commit ordering only
+    -- never a model call.
+    """
+    drift: List[Dict[str, str]] = []
+    for delta_file in sorted((change_dir / "specs").glob("**/spec.md")):
+        capability = delta_file.relative_to(change_dir / "specs").parent
+        text = delta_file.read_text(errors="ignore")
+        open_names: set[str] = set()
+        for kind, body in _iter_openspec_delta_sections(text):
+            if kind in {"MODIFIED", "RENAMED"}:
+                open_names |= _openspec_delta_current_requirements(kind, body)
+        if not open_names:
+            continue
+    return drift
+
+
 def _openspec_delta_reconciled(change_dir: Path) -> bool:
     """Whether every structural declaration in an OpenSpec delta is canonical.
 
