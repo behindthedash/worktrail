@@ -70,7 +70,7 @@ import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 _HERE = Path(__file__).resolve().parent
 
@@ -1007,6 +1007,14 @@ def _rename_requirement_name(value: str) -> str:
     return value[len(prefix):].strip() if value.startswith(prefix) else value
 
 
+def _iter_openspec_delta_sections(text: str) -> Iterator[tuple[str, str]]:
+    """Yield (kind, body) per `## ADDED|MODIFIED|REMOVED|RENAMED Requirements` section."""
+    sections = list(_OPENSPEC_DELTA_SECTION.finditer(text))
+    for index, section in enumerate(sections):
+        end = sections[index + 1].start() if index + 1 < len(sections) else len(text)
+        yield section.group(1), text[section.end():end]
+
+
 def _openspec_delta_reconciled(change_dir: Path) -> bool:
     """Whether every structural declaration in an OpenSpec delta is canonical.
 
@@ -1028,17 +1036,10 @@ def _openspec_delta_reconciled(change_dir: Path) -> bool:
             canonical_file.read_text(errors="ignore")
         )
         delta_text = delta_file.read_text(errors="ignore")
-        sections = list(_OPENSPEC_DELTA_SECTION.finditer(delta_text))
+        sections = list(_iter_openspec_delta_sections(delta_text))
         if not sections:
             raise ValueError(f"no recognized delta sections in {delta_file}")
-        for index, section in enumerate(sections):
-            end = (
-                sections[index + 1].start()
-                if index + 1 < len(sections)
-                else len(delta_text)
-            )
-            body = delta_text[section.end():end]
-            kind = section.group(1)
+        for kind, body in sections:
             requirements, scenarios = _openspec_headings(body)
             if kind in {"ADDED", "MODIFIED"}:
                 if not requirements.issubset(canonical_requirements):
