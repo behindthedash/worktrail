@@ -14,7 +14,7 @@
 
 - [ ] 3.1 Make orchestrator dispatch reject unresolved decision envelopes and accept only provenance-validated resolved input in `src/worktrail/orchestrator/dispatch.py`, with contract tests in `tests/orchestrator/test_dispatch.py` and `tests/orchestrator/test_dispatch_extras.py`.
   files: src/worktrail/orchestrator/dispatch.py, tests/orchestrator/test_dispatch.py, tests/orchestrator/test_dispatch_extras.py
-- [ ] 3.2 Teach drain to treat `pending_user_decision` as a fail-closed, recoverable handoff that neither guesses nor spins, updating `src/worktrail/drain/summary_contract.py`, `src/worktrail/drain/drain.py`, and `tests/drain/test_drain.py`. (Requirement: Unattended execution fails closed with a recoverable result)
+- [x] 3.2 Teach drain to treat `pending_user_decision` as a fail-closed, recoverable handoff that neither guesses nor spins, updating `src/worktrail/drain/summary_contract.py`, `src/worktrail/drain/drain.py`, and `tests/drain/test_drain.py`. (Requirement: Unattended execution fails closed with a recoverable result)
   files: src/worktrail/drain/summary_contract.py, src/worktrail/drain/drain.py, tests/drain/test_drain.py
 
 ## 4. Procedure contract and provider matrix
