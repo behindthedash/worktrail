@@ -5,12 +5,16 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import timedelta
 from unittest.mock import patch
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 
-from worktrail.router import skill_dispatch
+from worktrail.orchestrator import agent_capacity
+from worktrail.router import run_record, skill_dispatch
+from worktrail.router.run_record import _load as _load_run_record
+from worktrail.runtime.selection import NoExecutionTarget
 from worktrail.workqueue import decisions as decisions_mod
 
 
@@ -845,6 +849,183 @@ class DispatchDepthHermeticityTests(unittest.TestCase):
             "child pytest failed under a poisoned WORKTRAIL_SKILL_DISPATCH_DEPTH "
             f"environment:\n{proc.stdout}\n{proc.stderr}",
         )
+
+
+ROUTING = {
+    "targets": {
+        "claude-sub": {"harness": "claude", "pool": "subscription"},
+        "codex-sub": {"harness": "codex", "pool": "subscription"},
+    },
+    "tiers": {
+        "t2-build": {
+            "claude-sub": {"model": "claude-sonnet-5", "effort": None},
+            "codex-sub": {"model": "gpt-5-codex", "effort": "medium"},
+        },
+    },
+    "roles": {"front-door": {"tier": "t2-build"}},
+    "default_tier": "t1-deep",
+}
+
+
+class SelectDispatchCellTests(unittest.TestCase):
+    """`select_dispatch_cell` (task 5.3): the front-door role's tier wins over
+    `default_tier`, `select_cell` walks that row across targets in
+    preference order, and every cell it skips due to capacity is recorded
+    onto the run record."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.cache_path = Path(self.tmp.name) / "agent-capacity.json"
+
+    def test_resolves_front_door_role_tier_over_default_tier(self):
+        cell = skill_dispatch.select_dispatch_cell(ROUTING, capacity_path=self.cache_path)
+        self.assertEqual(cell.target, "claude-sub")
+        self.assertEqual(cell.harness, "claude")
+        self.assertEqual(cell.model, "claude-sonnet-5")
+
+    def test_falls_back_to_default_tier_when_role_has_no_tier(self):
+        routing = {**ROUTING, "roles": {}, "default_tier": "t2-build"}
+        cell = skill_dispatch.select_dispatch_cell(routing, capacity_path=self.cache_path)
+        self.assertEqual(cell.target, "claude-sub")
+
+    def test_explicit_tier_argument_wins_over_role_and_default(self):
+        routing = {
+            **ROUTING,
+            "tiers": {
+                **ROUTING["tiers"],
+                "t1-deep": {"codex-sub": {"model": "gpt-5-high", "effort": "high"}},
+            },
+        }
+        cell = skill_dispatch.select_dispatch_cell(
+            routing, tier="t1-deep", capacity_path=self.cache_path,
+        )
+        self.assertEqual(cell.target, "codex-sub")
+        self.assertEqual(cell.model, "gpt-5-high")
+
+    def test_walks_past_a_capacity_gated_cell_to_the_next_target(self):
+        now = agent_capacity._now()
+        agent_capacity.record(
+            "claude-sub", "claude-sonnet-5", outcome="unavailable",
+            failure_class="transport", retry_after=now + timedelta(minutes=5),
+            path=self.cache_path, now=now,
+        )
+        cell = skill_dispatch.select_dispatch_cell(ROUTING, capacity_path=self.cache_path)
+        self.assertEqual(cell.target, "codex-sub")
+        self.assertEqual(cell.model, "gpt-5-codex")
+
+    def test_records_skipped_cells_onto_the_run_record(self):
+        now = agent_capacity._now()
+        agent_capacity.record(
+            "claude-sub", "claude-sonnet-5", outcome="unavailable",
+            failure_class="transport", retry_after=now + timedelta(minutes=5),
+            path=self.cache_path, now=now,
+        )
+        run_result = _start_run(self.tmp.name)
+        run_path = run_result["path"]
+
+        skill_dispatch.select_dispatch_cell(
+            ROUTING, run_path=run_path, capacity_path=self.cache_path,
+        )
+
+        record = _load_run_record(Path(run_path))
+        self.assertEqual(len(record["skipped_cells"]), 1)
+        skipped = json.loads(record["skipped_cells"][0])
+        self.assertEqual(skipped["target"], "claude-sub")
+        self.assertEqual(skipped["model"], "claude-sonnet-5")
+        self.assertEqual(skipped["failure_class"], "transport")
+
+    def test_no_capacity_anywhere_raises_no_execution_target(self):
+        now = agent_capacity._now()
+        for target, model in (("claude-sub", "claude-sonnet-5"), ("codex-sub", "gpt-5-codex")):
+            agent_capacity.record(
+                target, model, outcome="unavailable", failure_class="billing",
+                retry_after=now + timedelta(minutes=5), path=self.cache_path, now=now,
+            )
+        with self.assertRaises(NoExecutionTarget):
+            skill_dispatch.select_dispatch_cell(ROUTING, capacity_path=self.cache_path)
+
+
+def _start_run(dir_path):
+    argv = ["start", "--repo", "/tmp/fake-repo", "--request", "dispatch a cell",
+            "--route", "F", "--risk", "low", "--dir", dir_path]
+    out = StringIO()
+    with redirect_stdout(out):
+        rc = run_record.main(argv)
+    assert rc == 0
+    return json.loads(out.getvalue())
+
+
+class MainRoutingIntegrationTests(unittest.TestCase):
+    """`main()`'s `--routing` wiring (task 5.3): the dispatch cell resolved by
+    `select_dispatch_cell` drives `build_command()`'s agent/model, overriding
+    `--agent`/`--model` entirely."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.cache_path = Path(self.tmp.name) / "agent-capacity.json"
+        # main() has no --capacity-cache flag, so isolate the per-test cache
+        # the same way agent_capacity.cache_path() already resolves overrides.
+        env_patcher = patch.dict(
+            os.environ, {"WORKTRAIL_AGENT_CAPACITY_CACHE": str(self.cache_path)},
+        )
+        env_patcher.start()
+        self.addCleanup(env_patcher.stop)
+
+    def _dry_run(self, extra_args):
+        stdout, stderr = StringIO(), StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            rc = skill_dispatch.main([
+                "--skill", "worktrail-sdd-workflow", "--args", "route:F spec:demo",
+                "--routing", json.dumps(ROUTING),
+                "--json", "--dry-run",
+                *extra_args,
+            ])
+        return rc, stdout.getvalue(), stderr.getvalue()
+
+    def test_routing_resolves_agent_and_model_ahead_of_build_command(self):
+        rc, out, err = self._dry_run([])
+        self.assertEqual(rc, 0, err)
+        command = json.loads(out)
+        self.assertEqual(command[0], "claude")
+        self.assertIn("--model", command)
+        self.assertEqual(command[command.index("--model") + 1], "claude-sonnet-5")
+
+    def test_explicit_agent_is_ignored_when_routing_resolves_a_different_harness(self):
+        rc, out, err = self._dry_run(["--agent", "opencode", "--tier", "t2-build",
+                                       "--prefer", "codex-sub"])
+        self.assertEqual(rc, 0, err)
+        command = json.loads(out)
+        self.assertEqual(command[0], "codex")
+
+    def test_invalid_routing_json_fails_closed(self):
+        stdout, stderr = StringIO(), StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            rc = skill_dispatch.main([
+                "--skill", "worktrail-sdd-workflow", "--routing", "{not json",
+                "--dry-run",
+            ])
+        self.assertEqual(rc, 1)
+        self.assertIn("--routing must be valid JSON", stderr.getvalue())
+
+    def test_no_capacity_anywhere_blocks_dispatch_without_spawning(self):
+        now = agent_capacity._now()
+        for target, model in (("claude-sub", "claude-sonnet-5"), ("codex-sub", "gpt-5-codex")):
+            agent_capacity.record(
+                target, model, outcome="unavailable", failure_class="billing",
+                retry_after=now + timedelta(minutes=5), path=self.cache_path, now=now,
+            )
+        rc, out, err = self._dry_run([])
+        self.assertEqual(rc, 2)
+        self.assertIn("blocked_no_capacity", err)
+        self.assertEqual(out, "")
+
+    def test_agent_or_routing_is_required(self):
+        stdout, stderr = StringIO(), StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            with self.assertRaises(SystemExit):
+                skill_dispatch.main(["--skill", "worktrail-sdd-workflow"])
 
 
 if __name__ == "__main__":
