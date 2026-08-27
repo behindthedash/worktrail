@@ -382,7 +382,7 @@ class E2EBackwardCompatTest(unittest.TestCase):
             resolved = policy_mod.resolve_routing(policy, "B", "medium")
             self.assertEqual(resolved, {
                 "agent_cli": None, "agent_model": None, "roles": {}, "fallback": [],
-                "purpose_tiers": {},
+                "purpose_tiers": {}, "agents": {}, "drain": {},
             })
 
             spawn = RoutingFakeSpawn(default_agent="claude")  # no role_agents/tier_map at all
