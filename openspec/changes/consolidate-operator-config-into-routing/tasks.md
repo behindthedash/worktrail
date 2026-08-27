@@ -21,7 +21,7 @@
 - [x] 2.2 Emit a deprecation warning through `meta["warnings"]` when the flat form is used.
 - [x] 2.3 Update `resolve_tier_map()` so `dispatch.agent_for()`'s `<tier>-<agent>` lookup
       resolves identically from either shape -- `dispatch.py` itself is not modified.
-- [ ] 2.4 Tests: nested and flat forms produce byte-identical `resolve_tier_map()` output;
+- [x] 2.4 Tests: nested and flat forms produce byte-identical `resolve_tier_map()` output;
       nested wins when both declare the same tier/agent.
 
 ## 3. Default model resolution from routing (D2, D3)
