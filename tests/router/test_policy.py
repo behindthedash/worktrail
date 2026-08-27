@@ -1266,9 +1266,18 @@ class RoutingAgentsAndDrain(unittest.TestCase):
         self.assertTrue(any("routing.agents" in w and "bogus" in w for w in pol["_meta"]["warnings"]))
 
     def test_load_policy_malformed_drain_raises(self):
-        # 1.2's docstring: routing.drain is stated operator intent, so a
-        # malformed section raises rather than warning-and-dropping, unlike
-        # the sibling _validate_routing_* tables.
+        # KNOWN AC CONFLICT (flagged for planner, see reviews/1.4-review.md):
+        # task 1.4's literal text says "malformed blocks warn without
+        # crashing load_policy" for both agents and drain. But 1.2's own
+        # task text and docstring intentionally give routing.drain
+        # loud-failure semantics (raise, not warn-and-drop), since it is
+        # stated operator intent rather than a permissive table like the
+        # sibling _validate_routing_* blocks. This test asserts the actual,
+        # already-merged 1.2 behavior; it does not satisfy 1.4's AC as
+        # literally worded for drain. Resolving the conflict — narrowing
+        # 1.4's AC to "agents" only, or reconsidering 1.2's raise-on-
+        # malformed design for drain — requires a human/planner decision
+        # and cannot be made silently inside this test-only change.
         repo = _repo_with(
             "routing:\n"
             "  drain:\n"
