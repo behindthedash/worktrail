@@ -29,7 +29,7 @@
         "required_status_checks": [
           { "context": "Lint, Test & Build (3.11)" },
           { "context": "Lint, Test & Build (3.14)" },
-          { "context": "Version bump check" },
+          { "context": "Release metadata check" },
           { "context": "Scope check" }
         ],
         "strict_required_status_checks_policy": false
