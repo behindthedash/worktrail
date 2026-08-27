@@ -430,14 +430,27 @@ def capacity_gated(cache: dict, agent: str, now: Optional[datetime] = None) -> b
 
     The cache (agent_capacity.py) keys entries by provider identifiers like
     'claude' or 'claude:opus'. No entry for the agent means no known gate.
+
+    A model-qualified query (e.g. 'claude:opus') also honors a bare-provider
+    entry ('claude') recorded by record_capacity_gate(), which has no model
+    concept of its own and always writes bare agent-name keys -- a
+    provider-wide gate (account rate limit, billing block) applies to every
+    model of that provider regardless of which model the read side happens
+    to know about.
     """
     now = now or agent_capacity._now()
     providers = cache.get("providers") if isinstance(cache.get("providers"), dict) else cache
     if not isinstance(providers, dict):
         return False
-    bare = providers.get(agent)
-    if isinstance(bare, dict):
-        return _entry_gated(bare, now)
+    exact = providers.get(agent)
+    if isinstance(exact, dict):
+        return _entry_gated(exact, now)
+    if ":" in agent:
+        provider = agent.split(":", 1)[0]
+        bare = providers.get(provider)
+        if isinstance(bare, dict):
+            return _entry_gated(bare, now)
+        return False
     matched = [v for k, v in providers.items()
                if isinstance(v, dict) and str(k).startswith(agent + ":")]
     if not matched:
