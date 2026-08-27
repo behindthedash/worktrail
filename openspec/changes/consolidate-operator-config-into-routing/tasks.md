@@ -60,10 +60,10 @@
 
 ## 5. Fail-closed mitigation -- ship with D3, not after it
 
-- [ ] 5.1 Add `worktrail-routing` console script with `--init` (writes a starter `routing.yaml`
+- [x] 5.1 Add `worktrail-routing` console script with `--init` (writes a starter `routing.yaml`
       covering `agents`, `fallback`, `roles`, `purpose_tiers`, `tiers`, `drain`) and `--show`
       (prints the resolved routing for a repo).
-- [ ] 5.2 Wire `--init` into `onboarding/repo_init.py` so a bootstrapped machine is never left
+- [x] 5.2 Wire `--init` into `onboarding/repo_init.py` so a bootstrapped machine is never left
       unable to spawn.
 - [ ] 5.3 Acceptance test: a fresh `WORKTRAIL_HOME` with no `routing.yaml` produces the
       actionable named error (not a traceback, not a silent paid-model spawn), and
