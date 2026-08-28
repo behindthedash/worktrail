@@ -6,15 +6,30 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 from worktrail.router.policy import (
-    DEFAULTS, OperatorConfigError, _json_safe, _validate_routing_agents,
-    _validate_routing_default_tier, _validate_routing_drain,
-    _validate_routing_purpose_tiers, _validate_routing_targets,
-    _validate_routing_tiers, automerge_eligible, automerge_labels,
-    detect_external_automerge, load_policy, merge_method_for_branch,
-    parse_policy_yaml, resolve_post_merge_smoke_cmd, resolve_routing,
-    resolve_tier_map,
+    DEFAULTS, OperatorConfigError, _json_safe, _reject_legacy_routing_keys,
+    _validate_routing_agents, _validate_routing_default_tier,
+    _validate_routing_drain, _validate_routing_purpose_tiers,
+    _validate_routing_targets, _validate_routing_tiers, automerge_eligible,
+    automerge_labels, detect_external_automerge, load_policy,
+    merge_method_for_branch, parse_policy_yaml, resolve_post_merge_smoke_cmd,
+    resolve_routing, resolve_tier_map,
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_legacy_machine_wide_routing_file_by_default(monkeypatch):
+    """`tests/conftest.py`'s suite-wide `GO_ROUTING_FILE` fixture seeds a
+    legacy `agents:`-shaped routing file (kept for `default_model_for_agent()`,
+    retired in a later task) -- 1.4 makes that shape a hard
+    `OperatorConfigError`. Point the env var at a nonexistent path by
+    default for every test in this module; a test that wants the
+    machine-wide-file fallback path overrides the same env var itself inside
+    its own body (`_mw_env()`/`_no_mw_env()` below), winning since it patches
+    later than this module-level fixture's setup."""
+    monkeypatch.setenv("GO_ROUTING_FILE", "/nonexistent/worktrail-routing-test/routing.yaml")
 
 
 def _repo_with(policy_text):
@@ -702,8 +717,8 @@ class TestPolicyJsonSafetyMatrix(unittest.TestCase):
     must never raise for any valid `routing.*` configuration, so a future
     validator that stores another non-JSON-safe key (following the
     `routing.tiers` precedent) is caught here instead of live during a `/go`
-    Phase 4 policy load. Covers `defaults`/`roles`/`tiers`/`fallback`, each
-    with and without a model/effort segment present."""
+    Phase 4 policy load. Covers `defaults`/`roles`/`tiers`, each with and
+    without a model/effort segment present."""
 
     POLICY_YAMLS = {
         "empty_routing_block": "routing: {}\n",
@@ -751,12 +766,6 @@ class TestPolicyJsonSafetyMatrix(unittest.TestCase):
             "    easy:\n"
             "      claude-main:\n"
             "        model: sonnet\n"),
-        "fallback_only": (
-            "routing:\n"
-            "  fallback:\n"
-            "    - codex\n"
-            "    - agent_cli: opencode\n"
-            "      agent_model: deepseek-v4-flash\n"),
         "all_four_combined": (
             "routing:\n"
             "  defaults:\n"
@@ -780,11 +789,7 @@ class TestPolicyJsonSafetyMatrix(unittest.TestCase):
             "        model: gpt-5.6-sol\n"
             "    t4-trivia:\n"
             "      claude-main:\n"
-            "        model: haiku\n"
-            "  fallback:\n"
-            "    - claude\n"
-            "    - codex\n"
-            "    - opencode\n"),
+            "        model: haiku\n"),
         "multiple_tiers_multi_target": (
             "routing:\n"
             "  targets:\n"
@@ -826,7 +831,12 @@ class TestPolicyJsonSafetyMatrix(unittest.TestCase):
         # A policy with no routing.tiers has nothing for _json_safe to convert;
         # it must still return a plain, json.dumps-able structure unchanged.
         import json
-        repo = _repo_with("routing:\n  roles:\n    review:\n      agent_cli: codex\n")
+        repo = _repo_with(
+            "routing:\n"
+            "  defaults:\n"
+            "    A:\n"
+            "      low:\n"
+            "        agent_cli: codex\n")
         pol = load_policy(repo)
         self.assertEqual(_json_safe(pol), pol)
         json.dumps(_json_safe(pol))  # must not raise
@@ -864,10 +874,7 @@ class Routing(unittest.TestCase):
             "  tiers:\n"
             "    hard:\n"
             "      codex-main:\n"
-            "        model: gpt-5\n"
-            "  fallback:\n"
-            "    - codex\n"
-            "    - opencode\n")
+            "        model: gpt-5\n")
         with self._no_mw_env():
             pol = load_policy(repo)
         self.assertEqual(pol["routing"]["defaults"],
@@ -876,9 +883,6 @@ class Routing(unittest.TestCase):
                          {"reviewer": {"tier": "hard", "prefer": None, "independent": False}})
         self.assertEqual(pol["routing"]["tiers"],
                          {"hard": {"codex-main": {"model": "gpt-5", "effort": None}}})
-        self.assertEqual(pol["routing"]["fallback"],
-                         [{"agent_cli": "codex", "agent_model": None, "effort": None},
-                          {"agent_cli": "opencode", "agent_model": None, "effort": None}])
 
     def test_effort_field_validates_and_resolves(self):
         # AC-CHG-003: an agent entry with a string `effort` validates and
@@ -899,11 +903,16 @@ class Routing(unittest.TestCase):
     def test_effort_field_absent_resolves_to_none(self):
         # AC-CHG-003: an agent entry with no `effort` key resolves with
         # `effort: None`, not a missing key.
-        repo = _repo_with("routing:\n  fallback:\n    - codex\n")
+        repo = _repo_with(
+            "routing:\n"
+            "  defaults:\n"
+            "    A:\n"
+            "      low:\n"
+            "        agent_cli: codex\n")
         with self._no_mw_env():
             pol = load_policy(repo)
-        self.assertEqual(pol["routing"]["fallback"],
-                         [{"agent_cli": "codex", "agent_model": None, "effort": None}])
+        self.assertEqual(pol["routing"]["defaults"],
+                         {"A": {"low": {"agent_cli": "codex", "agent_model": None, "effort": None}}})
 
     def test_effort_field_invalid_type_dropped_with_warning(self):
         # AC-CHG-003: a non-string `effort` is dropped (resolves to None) with
@@ -1056,15 +1065,6 @@ class Routing(unittest.TestCase):
         self.assertTrue(any("routing.tiers" in w and "undeclared target" in w
                             for w in pol["_meta"]["warnings"]))
 
-    def test_invalid_agent_literal_in_fallback_dropped(self):
-        # AC-002
-        repo = _repo_with("routing:\n  fallback:\n    - bogus\n")
-        with self._no_mw_env():
-            pol = load_policy(repo)
-        self.assertEqual(pol["routing"]["fallback"], [])
-        self.assertTrue(any("routing.fallback" in w and "bogus" in w
-                            for w in pol["_meta"]["warnings"]))
-
     def test_no_repo_routing_but_machine_wide_file_present(self):
         # AC-003
         tmp = tempfile.mkdtemp()
@@ -1095,29 +1095,6 @@ class Routing(unittest.TestCase):
         self.assertEqual(pol["agent_cli"], "codex")
         self.assertEqual(pol["agent_model"], "gpt-5.4-mini")
         self.assertEqual(pol["fallback_agent_cli"], "opencode")
-
-    def test_fallback_api_literal_excluded_without_opt_in(self):
-        # AC-005
-        repo = _repo_with("routing:\n  fallback:\n    - codex\n    - openrouter\n")
-        with self._no_mw_env():
-            pol = load_policy(repo)
-        self.assertEqual(pol["routing"]["fallback"], [{"agent_cli": "codex", "agent_model": None, "effort": None}])
-        self.assertTrue(any("openrouter" in w and "excluded" in w
-                            for w in pol["_meta"]["warnings"]))
-
-    def test_fallback_api_literal_included_with_opt_in(self):
-        # AC-005
-        repo = _repo_with(
-            "routing:\n"
-            "  fallback:\n"
-            "    - codex\n"
-            "    - agent_cli: openrouter\n"
-            "      api_opt_in: true\n")
-        with self._no_mw_env():
-            pol = load_policy(repo)
-        self.assertEqual(pol["routing"]["fallback"],
-                         [{"agent_cli": "codex", "agent_model": None, "effort": None},
-                          {"agent_cli": "openrouter", "agent_model": None, "effort": None, "api": True}])
 
     def test_validate_routing_tiers_cell_keyed_by_declared_target(self):
         # 1.2: a row's cell is keyed by declared target name.
@@ -1296,7 +1273,12 @@ class Routing(unittest.TestCase):
                             for w in pol["_meta"]["warnings"]))
 
     def test_load_policy_default_tier_absent_resolves_to_none(self):
-        repo = _repo_with("routing:\n  roles:\n    reviewer:\n      agent_cli: codex\n")
+        repo = _repo_with(
+            "routing:\n"
+            "  defaults:\n"
+            "    A:\n"
+            "      low:\n"
+            "        agent_cli: codex\n")
         with self._no_mw_env():
             pol = load_policy(repo)
         self.assertIsNone(pol["routing"]["default_tier"])
@@ -1317,7 +1299,7 @@ class Routing(unittest.TestCase):
 
     def test_purpose_tiers_unconfigured_resolves_to_empty(self):
         # 3.3: an unconfigured/empty table resolves to {}.
-        repo = _repo_with("routing:\n  fallback:\n    - codex\n")
+        repo = _repo_with("routing:\n  targets: {}\n")
         with self._no_mw_env():
             pol = load_policy(repo)
         self.assertEqual(pol["routing"]["purposes"], {})
@@ -1429,7 +1411,7 @@ class Routing(unittest.TestCase):
         self.assertNotIn("fallback", first)
 
     def test_resolve_routing_purposes_empty_when_unconfigured(self):
-        repo = _repo_with("routing:\n  fallback:\n    - codex\n")
+        repo = _repo_with("routing:\n  targets: {}\n")
         with self._no_mw_env():
             pol = load_policy(repo)
         self.assertEqual(resolve_routing(pol)["purposes"], {})
@@ -1657,39 +1639,20 @@ class RoutingAgentsAndDrain(unittest.TestCase):
 
     # -- load_policy() integration --------------------------------------
 
-    def test_load_policy_valid_agents_and_drain_resolve(self):
+    def test_load_policy_valid_drain_max_workers_resolves(self):
+        # 1.4: routing.agents and routing.drain.agent/fallback_agents are now
+        # retired keys (see LegacyRoutingKeys below) -- only max_workers
+        # remains a valid routing.drain field.
         repo = _repo_with(
             "routing:\n"
-            "  agents:\n"
-            "    claude:\n"
-            "      default_model: sonnet\n"
-            "    codex:\n"
-            "      default_model: gpt-5\n"
             "  drain:\n"
-            "    agent: codex\n"
-            "    fallback_agents:\n"
-            "      - opencode\n"
             "    max_workers: 3\n")
         with self._no_mw_env():
             pol = load_policy(repo)
-        self.assertEqual(pol["routing"]["agents"],
-                         {"claude": {"default_model": "sonnet"}, "codex": {"default_model": "gpt-5"}})
+        self.assertEqual(pol["routing"]["agents"], {})
         self.assertEqual(pol["routing"]["drain"],
-                         {"agent": "codex", "fallback_agents": ["opencode"], "max_workers": 3})
+                         {"agent": None, "fallback_agents": [], "max_workers": 3})
         self.assertEqual(pol["_meta"]["warnings"], [])
-
-    def test_load_policy_malformed_agents_warns_without_crashing(self):
-        repo = _repo_with(
-            "routing:\n"
-            "  agents:\n"
-            "    bogus:\n"
-            "      default_model: sonnet\n"
-            "    codex:\n"
-            "      default_model: gpt-5\n")
-        with self._no_mw_env():
-            pol = load_policy(repo)
-        self.assertEqual(pol["routing"]["agents"], {"codex": {"default_model": "gpt-5"}})
-        self.assertTrue(any("routing.agents" in w and "bogus" in w for w in pol["_meta"]["warnings"]))
 
     def test_load_policy_malformed_drain_raises(self):
         # 1.2's docstring: routing.drain is stated operator intent, so a
@@ -1725,19 +1688,12 @@ class RoutingAgentsAndDrain(unittest.TestCase):
     # no longer part of the selector-facing contract).
 
     def test_resolve_routing_exposes_drain_but_not_agents(self):
-        repo = _repo_with(
-            "routing:\n"
-            "  agents:\n"
-            "    claude:\n"
-            "      default_model: sonnet\n"
-            "  drain:\n"
-            "    agent: codex\n"
-            "    max_workers: 5\n")
+        repo = _repo_with("routing:\n  drain:\n    max_workers: 5\n")
         with self._no_mw_env():
             pol = load_policy(repo)
         result = resolve_routing(pol)
         self.assertNotIn("agents", result)
-        self.assertEqual(result["drain"], {"agent": "codex", "fallback_agents": [], "max_workers": 5})
+        self.assertEqual(result["drain"], {"agent": None, "fallback_agents": [], "max_workers": 5})
 
     def test_resolve_routing_drain_empty_when_absent(self):
         repo = _repo_with("routing:\n  defaults:\n    A:\n      low:\n        agent_cli: claude\n")
@@ -1754,6 +1710,170 @@ class RoutingAgentsAndDrain(unittest.TestCase):
         result = resolve_routing(pol)
         self.assertNotIn("agents", result)
         self.assertEqual(result["drain"], {})
+
+
+class LegacyRoutingKeys(unittest.TestCase):
+    """`_reject_legacy_routing_keys()` (task 1.4): a pre-target-selector
+    `routing:` shape fails loud with `OperatorConfigError` naming the
+    offending key and `worktrail-routing --migrate`, rather than being
+    silently warned-and-dropped."""
+
+    def _no_mw_env(self):
+        return mock.patch.dict(
+            os.environ, {"GO_ROUTING_FILE": "/nonexistent/go-routing-test/routing.yaml"})
+
+    # -- _reject_legacy_routing_keys() directly --------------------------
+
+    def test_agents_key_raises(self):
+        with self.assertRaises(OperatorConfigError) as ctx:
+            _reject_legacy_routing_keys({"agents": {"claude": {"default_model": "sonnet"}}})
+        self.assertIn("routing.agents", str(ctx.exception))
+        self.assertIn("worktrail-routing --migrate", str(ctx.exception))
+
+    def test_fallback_key_raises(self):
+        with self.assertRaises(OperatorConfigError) as ctx:
+            _reject_legacy_routing_keys({"fallback": ["codex"]})
+        self.assertIn("routing.fallback", str(ctx.exception))
+        self.assertIn("worktrail-routing --migrate", str(ctx.exception))
+
+    def test_purpose_tiers_key_raises(self):
+        with self.assertRaises(OperatorConfigError) as ctx:
+            _reject_legacy_routing_keys({"purpose_tiers": {"scaffolding": "t3"}})
+        self.assertIn("routing.purpose_tiers", str(ctx.exception))
+        self.assertIn("worktrail-routing --migrate", str(ctx.exception))
+
+    def test_drain_agent_raises(self):
+        with self.assertRaises(OperatorConfigError) as ctx:
+            _reject_legacy_routing_keys({"drain": {"agent": "codex"}})
+        self.assertIn("routing.drain.agent", str(ctx.exception))
+        self.assertIn("worktrail-routing --migrate", str(ctx.exception))
+
+    def test_drain_fallback_agents_raises(self):
+        with self.assertRaises(OperatorConfigError) as ctx:
+            _reject_legacy_routing_keys({"drain": {"fallback_agents": ["opencode"]}})
+        self.assertIn("routing.drain.fallback_agents", str(ctx.exception))
+        self.assertIn("worktrail-routing --migrate", str(ctx.exception))
+
+    def test_drain_max_workers_only_does_not_raise(self):
+        _reject_legacy_routing_keys({"drain": {"max_workers": 3}})  # must not raise
+
+    def test_harness_keyed_tier_cell_raises(self):
+        with self.assertRaises(OperatorConfigError) as ctx:
+            _reject_legacy_routing_keys(
+                {"tiers": {"hard": {"codex": {"model": "gpt-5"}}}})
+        self.assertIn("routing.tiers.hard", str(ctx.exception))
+        self.assertIn("worktrail-routing --migrate", str(ctx.exception))
+
+    def test_target_keyed_tier_cell_does_not_raise(self):
+        # A declared-target name that happens to differ from any harness
+        # literal is the current (non-legacy) shape.
+        _reject_legacy_routing_keys(
+            {"tiers": {"hard": {"codex-main": {"model": "gpt-5"}}}})  # must not raise
+
+    def test_target_named_after_harness_literal_does_not_raise(self):
+        # A target literally named `codex` is legal (target names are
+        # free-form; only `harness` is constrained to SUPPORTED_AGENTS) and
+        # must not be mistaken for the retired harness-keyed tier form.
+        _reject_legacy_routing_keys(
+            {"targets": {"codex": {"harness": "codex", "pool": "subscription"}},
+             "tiers": {"hard": {"codex": {"model": "gpt-5"}}}})  # must not raise
+
+    def test_undeclared_harness_keyed_tier_cell_still_raises(self):
+        # Without a matching routing.targets declaration, a cell keyed by a
+        # harness literal is still read as the retired form even when other
+        # unrelated targets are declared.
+        with self.assertRaises(OperatorConfigError) as ctx:
+            _reject_legacy_routing_keys(
+                {"targets": {"codex-main": {"harness": "codex", "pool": "subscription"}},
+                 "tiers": {"hard": {"codex": {"model": "gpt-5"}}}})
+        self.assertIn("routing.tiers.hard", str(ctx.exception))
+
+    def test_role_with_agent_cli_raises(self):
+        with self.assertRaises(OperatorConfigError) as ctx:
+            _reject_legacy_routing_keys({"roles": {"reviewer": {"agent_cli": "codex"}}})
+        self.assertIn("routing.roles.reviewer", str(ctx.exception))
+        self.assertIn("worktrail-routing --migrate", str(ctx.exception))
+
+    def test_role_with_agent_model_raises(self):
+        with self.assertRaises(OperatorConfigError) as ctx:
+            _reject_legacy_routing_keys({"roles": {"reviewer": {"agent_model": "opus"}}})
+        self.assertIn("routing.roles.reviewer", str(ctx.exception))
+
+    def test_role_with_tier_prefer_independent_does_not_raise(self):
+        _reject_legacy_routing_keys(
+            {"roles": {"reviewer": {"tier": "hard", "prefer": "codex-main",
+                                     "independent": True}}})  # must not raise
+
+    def test_no_legacy_keys_does_not_raise(self):
+        _reject_legacy_routing_keys(
+            {"targets": {"codex-main": {"harness": "codex", "pool": "subscription"}},
+             "tiers": {"hard": {"codex-main": {"model": "gpt-5"}}},
+             "default_tier": "hard",
+             "roles": {"reviewer": {"tier": "hard"}},
+             "purposes": {"scaffolding": "hard"},
+             "drain": {"max_workers": 2}})  # must not raise
+
+    # -- called first in _validate_routing() / load_policy() ------------
+
+    def test_load_policy_agents_key_raises(self):
+        repo = _repo_with("routing:\n  agents:\n    claude:\n      default_model: sonnet\n")
+        with self._no_mw_env():
+            with self.assertRaises(OperatorConfigError):
+                load_policy(repo)
+
+    def test_load_policy_fallback_key_raises(self):
+        repo = _repo_with("routing:\n  fallback:\n    - codex\n")
+        with self._no_mw_env():
+            with self.assertRaises(OperatorConfigError):
+                load_policy(repo)
+
+    def test_load_policy_purpose_tiers_key_raises(self):
+        repo = _repo_with("routing:\n  purpose_tiers:\n    scaffolding: t3\n")
+        with self._no_mw_env():
+            with self.assertRaises(OperatorConfigError):
+                load_policy(repo)
+
+    def test_load_policy_drain_agent_raises(self):
+        repo = _repo_with("routing:\n  drain:\n    agent: codex\n")
+        with self._no_mw_env():
+            with self.assertRaises(OperatorConfigError):
+                load_policy(repo)
+
+    def test_load_policy_drain_fallback_agents_raises(self):
+        repo = _repo_with("routing:\n  drain:\n    fallback_agents:\n      - opencode\n")
+        with self._no_mw_env():
+            with self.assertRaises(OperatorConfigError):
+                load_policy(repo)
+
+    def test_load_policy_harness_keyed_tier_cell_raises(self):
+        repo = _repo_with(
+            "routing:\n"
+            "  tiers:\n"
+            "    hard:\n"
+            "      codex:\n"
+            "        model: gpt-5\n")
+        with self._no_mw_env():
+            with self.assertRaises(OperatorConfigError):
+                load_policy(repo)
+
+    def test_load_policy_role_agent_cli_raises(self):
+        repo = _repo_with("routing:\n  roles:\n    reviewer:\n      agent_cli: codex\n")
+        with self._no_mw_env():
+            with self.assertRaises(OperatorConfigError):
+                load_policy(repo)
+
+    def test_load_policy_legacy_key_raises_before_reaching_machine_wide_fallback(self):
+        # _reject_legacy_routing_keys() runs on the repo-local block before
+        # _resolve_routing() would otherwise fall through to a machine-wide
+        # routing file -- a legacy repo-local block must not be silently
+        # bypassed by a valid machine-wide file underneath it.
+        tmp = tempfile.mkdtemp()
+        mw = Path(tmp) / "routing.yaml"
+        mw.write_text("targets:\n  codex-main:\n    harness: codex\n    pool: subscription\n")
+        repo = _repo_with("routing:\n  fallback:\n    - codex\n")
+        with mock.patch.dict(os.environ, {"GO_ROUTING_FILE": str(mw)}):
+            with self.assertRaises(OperatorConfigError):
+                load_policy(repo)
 
 
 if __name__ == "__main__":
