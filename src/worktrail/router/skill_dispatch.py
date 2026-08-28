@@ -29,6 +29,9 @@ from pathlib import Path
 from unittest import mock
 from typing import Sequence
 
+from ..orchestrator import agent_capacity
+from ..runtime.selection import Cell, NoExecutionTarget, select_cell
+
 SUPPORTED_AGENTS = ("claude", "codex", "opencode")
 _SKILL_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$")
 _DEFAULT_WORKTRAIL_CODEX_HOME = "~/.worktrail/codex-home"
@@ -183,6 +186,80 @@ def _prompt(agent: str, skill: str, args: str) -> str:
         invocation_skill = _namespaced_invocation_skill(agent, skill)
         return f"/{invocation_skill} {args}".rstrip()
     return f"Use the installed skill {skill!r}. Execute it with these arguments: {args}".rstrip()
+
+
+# --- dispatch cell resolution (design D3: a single selector walks a tier row
+# across targets in preference order) ------------------------------------
+
+
+def _record_skipped_cells(run_path: str | None, skipped: list[dict]) -> None:
+    """Best-effort audit stamp: append each capacity-gated cell `select_cell`
+    walked past onto the run record's `skipped_cells` list. A stamping
+    failure must never affect dispatch -- same degrade-to-warning posture as
+    `_stamp_presented`."""
+    if not run_path:
+        return
+    try:
+        from .run_record import _load, _save
+
+        path = Path(run_path)
+        record = _load(path)
+        entries = record.get("skipped_cells")
+        if entries is None:
+            entries = record["skipped_cells"] = []
+        elif not isinstance(entries, list):
+            return
+        entries.extend(json.dumps(item, sort_keys=True) for item in skipped)
+        _save(path, record)
+    except Exception as exc:  # noqa: BLE001 - audit stamp failure must not lose dispatch
+        print(
+            f"warning: could not record skipped cells onto run record {run_path}: {exc}",
+            file=sys.stderr,
+        )
+
+
+def select_dispatch_cell(
+    routing: dict,
+    *,
+    tier: str | None = None,
+    prefer: str | None = None,
+    run_path: str | None = None,
+    capacity_path=None,
+) -> Cell:
+    """Resolve the dispatch cell for the `front-door` role (design D3).
+
+    `roles["front-door"]["tier"]` wins over `routing["default_tier"]`;
+    `select_cell` then walks that tier row across `routing["targets"]` in
+    preference order, `roles["front-door"]["prefer"]` (if set) moving its
+    target to the front. Every cell it skips because `agent_capacity` gates
+    it is recorded onto `run_path`'s run record (best-effort, never fatal to
+    dispatch) so a capacity outage is visible without re-deriving it from the
+    agent-capacity cache after the fact.
+    """
+    roles = routing.get("roles") or {}
+    front_door = roles.get("front-door") or {}
+    resolved_tier = tier or front_door.get("tier") or routing.get("default_tier")
+    resolved_prefer = prefer or front_door.get("prefer")
+
+    skipped: list[dict] = []
+
+    def _capacity(target: str, model: str, *, now=None):
+        try:
+            agent_capacity.check(target, model, path=capacity_path, now=now)
+        except agent_capacity.ProviderUnavailable as exc:
+            skipped.append({
+                "target": target,
+                "model": model,
+                "failure_class": exc.state.get("failure_class"),
+                "retry_after": exc.state.get("retry_after"),
+            })
+            raise
+
+    try:
+        return select_cell(routing, resolved_tier, prefer=resolved_prefer, capacity=_capacity)
+    finally:
+        if skipped:
+            _record_skipped_cells(run_path, skipped)
 
 
 def build_command(agent: str, skill: str, args: str = "", *, model: str | None = None,
@@ -536,6 +613,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--args", default="")
     parser.add_argument("--model")
     parser.add_argument(
+        "--routing",
+        help="JSON object from resolve_routing() (targets/tiers/roles/"
+             "default_tier); when set, the dispatch cell is resolved via "
+             "select_cell() instead of --agent/--model, which are ignored",
+    )
+    parser.add_argument(
+        "--tier",
+        help="explicit tier row to resolve with --routing, overriding "
+             "roles['front-door'].tier/default_tier",
+    )
+    parser.add_argument(
+        "--prefer",
+        help="target to move to the front of the resolved tier row with "
+             "--routing, overriding roles['front-door'].prefer",
+    )
+    parser.add_argument(
         "--cwd",
         help="run the skill against this directory (e.g. a task worktree) "
              "without relocating the calling session",
@@ -582,14 +675,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--run",
         help="run record whose pending_decisions audit trail receives the "
-             "[presented] hop (with --present-decision)",
+             "[presented] hop (with --present-decision), and whose "
+             "skipped_cells audit trail receives any capacity-gated cell "
+             "select_cell() walked past (with --routing)",
     )
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parsed = parser.parse_args(argv)
-    if parsed.present_decision is None and (not parsed.agent or not parsed.skill):
+    if parsed.present_decision is None and not parsed.skill:
+        parser.error("--skill is required unless --present-decision is used")
+    if parsed.present_decision is None and not parsed.agent and not parsed.routing:
         parser.error(
-            "--agent and --skill are required unless --present-decision is used"
+            "--agent is required unless --present-decision or --routing is used"
         )
     if parsed.no_inherit_codex_auth and parsed.agent != "codex":
         parser.error("--no-inherit-codex-auth is only valid with --agent codex")
@@ -633,6 +730,24 @@ def main(argv: list[str] | None = None) -> int:
             print(f"blocked_pending_decision: {error}", file=sys.stderr)
             return 2
         resume_args = append_decision_token(resume_args, envelope["decision_id"])
+    if parsed.routing is not None:
+        try:
+            routing = json.loads(parsed.routing)
+        except json.JSONDecodeError as exc:
+            print(f"--routing must be valid JSON: {exc}", file=sys.stderr)
+            return 1
+        if not isinstance(routing, dict):
+            print("--routing must be a JSON object", file=sys.stderr)
+            return 1
+        try:
+            cell = select_dispatch_cell(
+                routing, tier=parsed.tier, prefer=parsed.prefer, run_path=parsed.run,
+            )
+        except NoExecutionTarget as exc:
+            print(f"blocked_no_capacity: {exc}", file=sys.stderr)
+            return 2
+        parsed.agent = cell.harness
+        parsed.model = cell.model
     command = build_command(
         parsed.agent, parsed.skill, resume_args, model=parsed.model,
         cwd=parsed.cwd, write=parsed.write, add_dirs=parsed.add_dir,
