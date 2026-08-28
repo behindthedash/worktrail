@@ -78,7 +78,7 @@ from ..router.policy import (
     resolved_routing_file_path,
 )
 from ..router.skill_dispatch import prepare_codex_child_environment
-from ..runtime.selection import Cell
+from ..runtime.selection import Cell, NoExecutionTarget, select_cell
 from ..shared.homedir import env_setting, worktrail_home
 
 
@@ -369,27 +369,6 @@ def is_infra_failure(returncode: int, stdout: Optional[str]) -> bool:
 SUPPORTED_AGENTS = {"claude", "codex", "opencode"}
 
 
-def default_model_for_agent(agent: str) -> str:
-    """The operator's declared default model for `agent`, resolved fresh from
-    `routing.agents.<agent>.default_model` (worktrail_home()/routing.yaml) on
-    every call -- never cached, so an operator edit to routing.yaml takes
-    effect on the very next spawn (see the staleness note on `DEFAULT_AGENT`
-    in live.py). No silent fallback to a hardcoded model: a missing
-    declaration is stated operator intent no configuration file provides,
-    and this is exactly the failure mode ("operator intent has no single
-    home") this consolidation exists to close."""
-    routing_agents = resolve_routing(load_policy(worktrail_home()), route="", risk="")["agents"]
-    model = (routing_agents.get(agent) or {}).get("default_model")
-    if not model:
-        raise OperatorConfigError(
-            f"no default model configured for agent {agent!r} -- "
-            f"add it under routing.agents.{agent}.default_model in "
-            f"{resolved_routing_file_path()}, or run `worktrail-routing --init` "
-            "to write a starter config"
-        )
-    return model
-
-
 def _with_default_setting_sources(
     agent: str, extra_args: Optional[Sequence[str]]
 ) -> List[str]:
@@ -508,14 +487,6 @@ def build_child_env(cell: Cell, base_env: Mapping[str, str]) -> Dict[str, str]:
             )
         env[var_name] = value
     return env
-
-
-def _legacy_spawn_cell(agent: str, model: Optional[str], effort: Optional[str]) -> Cell:
-    """Adapt `spawn_agent`'s pre-selector `agent`/`model`/`effort` locals into a
-    `Cell` for `build_cmd()`. `spawn_agent` does not yet resolve a target/pool
-    (task 3.3 rewrites it onto `select_cell`); `pool="subscription"` reproduces
-    every existing spawn's argv byte-for-byte (no `--bare`)."""
-    return Cell(target=agent, harness=agent, model=model, effort=effort, pool="subscription")
 
 
 # --------------------------------------------------------------------------- #
@@ -698,74 +669,18 @@ def prepare_opencode_child_environment(
     return env, data_dir
 
 
-def _normalize_fallback_chain(
-    agent: str, fallback_agent: "Optional[str | Sequence[str]]"
-) -> List[str]:
-    """Turn `fallback_agent` into an ordered list of hop names.
-
-    Accepts the legacy single-agent shape (`str` or `None`) or an ordered
-    sequence of agent names (a fallback chain), preserving list order. Each
-    hop must be a `SUPPORTED_AGENTS` member (else `ValueError`, matching the
-    legacy single-fallback check); a hop equal to `agent` is dropped rather
-    than raising, mirroring the legacy same-as-primary behavior. Repeated hops
-    are deduplicated while preserving the first-seen order so a spawn never
-    loops back to the same provider.
-    """
-    if fallback_agent is None:
-        hops: List[str] = []
-    elif isinstance(fallback_agent, str):
-        hops = [fallback_agent]
-    else:
-        hops = list(fallback_agent)
-
-    chain: List[str] = []
-    seen = {agent}
-    for hop in hops:
-        if hop not in SUPPORTED_AGENTS:
-            raise ValueError(f"unsupported fallback agent: {hop}")
-        if hop in seen:
-            continue
-        seen.add(hop)
-        chain.append(hop)
-    return chain
-
-
-def _execution_target_values(target: Any) -> "tuple[str, str]":
-    """Read the launcher-facing fields from a resolved execution target.
-
-    This deliberately uses a structural contract instead of importing the
-    selection subsystem's ``ExecutionTarget`` type.  Keeping the adapter seam
-    dependency-free lets selection evolve independently and, importantly,
-    avoids making the provider-specific process launchers responsible for
-    policy resolution.  A target is already resolved; spawnlib only needs its
-    provider and model.
-    """
-    provider = getattr(target, "provider", None)
-    model = getattr(target, "model", None)
-    if not isinstance(provider, str) or not provider:
-        raise TypeError("target.provider must be a non-empty string")
-    if not isinstance(model, str) or not model:
-        raise TypeError("target.model must be a non-empty string")
-    if provider not in SUPPORTED_AGENTS:
-        raise ValueError(f"unsupported target provider: {provider}")
-    return provider, model
-
-
 def spawn_agent(
     prompt: str,
     cwd: "str | Path",
     *,
-    agent: Optional[str] = None,
-    model: Optional[str] = None,
-    effort: Optional[str] = None,
-    fallback_agent: "Optional[str | Sequence[str]]" = None,
+    tier: str,
+    prefer: Optional[str] = None,
+    exclude_harness: Optional[str] = None,
     timeout: int = 3600,
     retries: int = SPAWN_RETRIES_DEFAULT,
     session_limit_waits: int = SESSION_LIMIT_WAITS_DEFAULT,
     extra_args: Optional[Sequence[str]] = None,
     resume_session_id: Optional[str] = None,
-    target: Optional[Any] = None,
-    invocation_context: Optional[Any] = None,
     log: Callable[[str], None] = lambda *_: None,
     sleep: Callable[[float], None] = time.sleep,
 ) -> SpawnResult:
@@ -777,99 +692,43 @@ def spawn_agent(
     plus the diagnostic fields documented on `_parse_stream_json` (subtype,
     is_error, stop_reason, num_turns, permission_denials).
 
-    ``target`` is the preferred integration seam for the selection subsystem:
-    it is an already-resolved object exposing non-empty ``provider`` and
-    ``model`` attributes.  Spawnlib intentionally does not import or invoke
-    selection policy; it remains the provider-launch adapter.  For migration,
-    the legacy ``agent``/``model``/``fallback_agent`` arguments remain fully
-    supported.  Mixing a target with a conflicting explicit legacy value is
-    rejected rather than silently launching something other than the resolved
-    target.  ``invocation_context`` is accepted and logged for auditability but
-    does not influence launch policy.
-
-    `fallback_agent` accepts either the legacy single-agent shape (`str` or
-    `None`) or an ordered sequence of agent names -- a fallback chain. Each
-    hop's persisted capacity gate (`agent_capacity.check`) is walked in list
-    order; the first ungated hop is selected as the running agent. This is a
-    cache-only check, not build-time credential validation -- a hop with no
-    cache entry (never tried, or genuinely broken) is treated as available and
-    is only discovered/gated through the existing failure-classification path
-    below the first time it is actually spawned. Exhausting every hop raises
-    `agent_capacity.AllProvidersUnavailable` listing every configured
-    provider; a single agent with no fallback re-raises the underlying
-    `ProviderUnavailable` unchanged.
+    The launch cell is resolved from `select_cell()` (design D3): `tier` names
+    a `routing.tiers` row and `prefer`/`exclude_harness` are threaded straight
+    through to it, walking that row across its declared targets in preference
+    order. Every outcome below is recorded into `agent_capacity` (the
+    machine-local cooldown cache `select_cell()` itself reads back in) keyed
+    on the SERVED cell's `(target, model)`, never the requested tier/preference.
+    Raises `runtime.selection.NoExecutionTarget` when every cell in the row is
+    already capacity-gated, before any subprocess is spawned.
 
     A "session limit" response (a successful exit whose only output is the usage-cap
-    notice) is NOT a task verdict: the worker never ran. If a fallback chain is
-    configured, we advance through it in order without reusing a hop and without
-    pre-validating any entry. Otherwise we sleep until the reported reset time and
-    retry, up to `session_limit_waits` times, WITHOUT consuming the infra-retry
-    budget. After that many waits the limit message is handed back to the caller
-    (parsed as a missing report-back -> task failure) rather than looping forever.
+    notice) is NOT a task verdict: the worker never ran. It gates the served cell
+    (`failure_class="rate_limit"`, `retry_after` the parsed reset time) and
+    re-selects from the same row -- the fresh gate is exactly what excludes the
+    served cell from that re-selection, so no separate "excluded cell" state is
+    needed. When another cell is available this hop happens immediately and does
+    not consume the infra-retry budget. When the row has nothing else to offer we
+    instead sleep until the reported reset time and retry the SAME cell, up to
+    `session_limit_waits` times (also without consuming the infra-retry budget);
+    a subsequent success un-gates it again via the ordinary outcome recording
+    below. After the wait budget is exhausted the limit message is handed back to
+    the caller (parsed as a missing report-back -> task failure) rather than
+    looping forever.
 
     Raises `subprocess.TimeoutExpired` on a wall-clock timeout.
     """
-    if target is not None:
-        target_agent, target_model = _execution_target_values(target)
-        if agent is not None and agent != target_agent:
-            raise ValueError(
-                f"target provider {target_agent!r} conflicts with agent {agent!r}"
-            )
-        if model is not None and model != target_model:
-            raise ValueError(
-                f"target model {target_model!r} conflicts with model {model!r}"
-            )
-        if fallback_agent is not None:
-            raise ValueError("fallback_agent cannot be combined with a resolved target")
-        agent, model = target_agent, target_model
-    else:
-        agent = agent or "claude"
+    routing = resolve_routing(load_policy(worktrail_home()))
 
-    if agent not in SUPPORTED_AGENTS:
-        raise ValueError(f"unsupported agent: {agent}")
-    model = model or default_model_for_agent(agent)
-    if invocation_context is not None:
-        context_provider = getattr(
-            invocation_context,
-            "provider",
-            getattr(invocation_context, "agent_cli", None),
+    def _select() -> Cell:
+        return select_cell(
+            routing, tier, prefer=prefer, exclude_harness=exclude_harness,
+            capacity=agent_capacity,
         )
-        log(
-            "    invocation context: "
-            f"provider={context_provider or 'unknown'} target={agent}:{model}"
-        )
-    fallback_chain = _normalize_fallback_chain(agent, fallback_agent)
 
-    configured = [(agent, model)] + [
-        (hop, default_model_for_agent(hop)) for hop in fallback_chain
-    ]
-
-    # A persisted gate prevents repeated launches when a provider is known to be
-    # unavailable. Each hop is tried in list order, at most once; the first
-    # ungated hop wins and becomes the running agent for the rest of this call.
-    selected = None
-    last_exc: Optional[agent_capacity.ProviderUnavailable] = None
-    for idx, (candidate_agent, candidate_model) in enumerate(configured):
-        try:
-            agent_capacity.check(candidate_agent, candidate_model)
-        except agent_capacity.ProviderUnavailable as exc:
-            last_exc = exc
-            continue
-        selected = idx
-        break
-    if selected is None:
-        if len(configured) == 1:
-            raise last_exc
-        states = agent_capacity.load().get("providers", {})
-        raise agent_capacity.AllProvidersUnavailable(
-            providers=[agent_capacity.provider_key(a, m) for a, m in configured],
-            states=states,
-        ) from last_exc
-    agent, model = configured[selected]
-    remaining_chain = [hop for hop, _ in configured[selected + 1:]]
+    cell = _select()
 
     output_file = None
-    if agent == "codex":
+    if cell.harness == "codex":
         fd, output_file = tempfile.mkstemp(prefix="orch-codex-last-", suffix=".txt")
         os.close(fd)
 
@@ -882,28 +741,25 @@ def spawn_agent(
 
     cmd = build_cmd(
         prompt,
-        _legacy_spawn_cell(agent, model, effort),
-        # Callers derive extra_args for the requested primary CLI. A persisted
-        # capacity gate can select a different CLI before this first command is
-        # built, so do not leak primary-only flags across that boundary. This
-        # matches the session-limit fallback hop below.
-        extra_args=extra_args if selected == 0 else None,
+        cell,
+        extra_args=extra_args,
         resume_session_id=resume_session_id,
         output_last_message=output_file,
     )
 
-    def _prepare_child_env(current_agent: str) -> "tuple[Dict[str, str], Optional[Path]]":
-        """Agent-specific child environment. Rebuilt on every fallback hop
-        switch so a codex-prepared env (CODEX_HOME) never leaks into an
-        opencode hop and vice versa."""
+    def _prepare_child_env(current_cell: Cell) -> "tuple[Dict[str, str], Optional[Path]]":
+        """Cell-specific child environment. Rebuilt on every session-limit hop
+        so a codex-prepared env (CODEX_HOME) never leaks into an opencode hop
+        and vice versa, and so the auth lane always matches the served cell's
+        pool (`build_child_env`, design D6)."""
         env: Dict[str, str] = {**os.environ, "CC_HEADLESS": "1"}
         oc_data_dir: Optional[Path] = None
-        if current_agent == "codex":
+        if current_cell.harness == "codex":
             env, codex_home, automatic_home = prepare_codex_child_environment()
             env["CC_HEADLESS"] = "1"
             if automatic_home:
                 log(f"    using automatic Worktrail Codex home: {codex_home}")
-        elif current_agent == "opencode":
+        elif current_cell.harness == "opencode":
             env, oc_data_dir = prepare_opencode_child_environment(cwd, env)
             log(f"    opencode state isolated at {oc_data_dir} "
                 "(db + log; removed with the worktree)")
@@ -912,9 +768,9 @@ def spawn_agent(
             env["WORKTRAIL_SKILL_DISPATCH_DEPTH"] = os.environ[
                 "WORKTRAIL_SKILL_DISPATCH_DEPTH"
             ]
-        return env, oc_data_dir
+        return build_child_env(current_cell, env), oc_data_dir
 
-    child_env, opencode_dir = _prepare_child_env(agent)
+    child_env, opencode_dir = _prepare_child_env(cell)
 
     def _persist_transcript(raw: str) -> None:
         """Best-effort raw stream-json JSONL dump, gated by $WORKTRAIL_KEEP_TRANSCRIPTS
@@ -926,7 +782,7 @@ def spawn_agent(
         try:
             out_dir = Path(transcript_dir).expanduser()
             out_dir.mkdir(parents=True, exist_ok=True)
-            name = f"{Path(cwd).name}-{agent}-{int(time.time())}-{os.getpid()}.jsonl"
+            name = f"{Path(cwd).name}-{cell.harness}-{int(time.time())}-{os.getpid()}.jsonl"
             (out_dir / name).write_text(raw)
         except OSError as exc:
             log(f"    WORKTRAIL_KEEP_TRANSCRIPTS write failed (non-fatal): {exc}")
@@ -938,7 +794,7 @@ def spawn_agent(
         auto-rejections occurred, and where the isolated state/logs live."""
         _persist_transcript(raw)
         text, usage, tools_used, skills_used, sid = _parse_stream_json(raw)
-        if agent == "opencode":
+        if cell.harness == "opencode":
             usage = dict(usage) if usage else {}
             denials = usage.get("permission_denials") or []
             usage.setdefault("permission_denials", denials)
@@ -989,42 +845,64 @@ def spawn_agent(
         # last_raw on every successful run. _parse_stream_json falls back to the raw
         # text when the output isn't a stream, so a plain-text real notice still parses.
         reset_at = parse_session_limit_reset(_parse_stream_json(last_raw)[0])
-        if reset_at is not None and remaining_chain:
-            previous_agent = agent
+        if reset_at is not None:
+            served = cell
+            agent_capacity.record(
+                served.target,
+                served.model,
+                outcome="unavailable",
+                failure_class="rate_limit",
+                # reset_at is naive LOCAL wall-clock time (parse_session_limit_reset);
+                # agent_capacity stores/compares as UTC, so a naive value here would
+                # be silently misread as UTC and could gate the served cell for the
+                # wrong instant (or appear already-expired), breaking the re-select
+                # below's only mechanism for excluding it. astimezone() attaches the
+                # system's real local offset without perturbing the wall-clock value.
+                retry_after=reset_at.astimezone(),
+            )
             cleanup_output_file()
-            agent = remaining_chain.pop(0)
-            model = default_model_for_agent(agent)
-            output_file = None
-            if agent == "codex":
-                fd, output_file = tempfile.mkstemp(prefix="orch-codex-last-", suffix=".txt")
-                os.close(fd)
-            cmd = build_cmd(
-                prompt,
-                # effort is a CLI-agnostic tier semantic (build_cmd translates it
-                # per agent) so it carries across the fallback boundary; unlike
-                # extra_args, which are primary-agent-specific and cannot.
-                _legacy_spawn_cell(agent, model, effort),
-                extra_args=None,
-                resume_session_id=None,
-                output_last_message=output_file,
-            )
-            child_env, opencode_dir = _prepare_child_env(agent)
-            log(f"    session limit hit on {previous_agent}; switching once to {agent}")
-            attempt -= 1
-            continue
-        if reset_at is not None and waits_left > 0:
-            waits_left -= 1
-            wait_s = max(0.0, (reset_at - datetime.datetime.now()).total_seconds()) + 5.0
-            log(
-                f"    session limit hit; sleeping {wait_s:.0f}s until "
-                f"{reset_at:%H:%M} then retrying ({waits_left} wait(s) left)"
-            )
-            sleep(wait_s)
-            paused_s_total += wait_s
-            attempt -= 1  # a session-limit wait does not consume an infra attempt
-            continue
+            try:
+                next_cell = _select()
+            except NoExecutionTarget:
+                next_cell = None
+            if next_cell is not None:
+                cell = next_cell
+                output_file = None
+                if cell.harness == "codex":
+                    fd, output_file = tempfile.mkstemp(
+                        prefix="orch-codex-last-", suffix=".txt")
+                    os.close(fd)
+                cmd = build_cmd(
+                    prompt,
+                    cell,
+                    # extra_args/resume_session_id are specific to the FIRST
+                    # cell this call resolved; neither carries across a
+                    # session-limit hop.
+                    extra_args=None,
+                    resume_session_id=None,
+                    output_last_message=output_file,
+                )
+                child_env, opencode_dir = _prepare_child_env(cell)
+                log(f"    session limit hit on {served.target}; switching to "
+                    f"{cell.target} ({cell.harness}:{cell.model})")
+                attempt -= 1
+                continue
+            if waits_left > 0:
+                waits_left -= 1
+                wait_s = max(0.0, (reset_at - datetime.datetime.now()).total_seconds()) + 5.0
+                log(
+                    f"    session limit hit; sleeping {wait_s:.0f}s until "
+                    f"{reset_at:%H:%M} then retrying ({waits_left} wait(s) left)"
+                )
+                sleep(wait_s)
+                paused_s_total += wait_s
+                attempt -= 1  # a session-limit wait does not consume an infra attempt
+                continue
+            log(f"    session limit hit on {served.target}; no alternate cell and "
+                "wait budget exhausted, giving up to caller")
+            return finish(last_raw)
 
-        if agent == "codex" and output_file:
+        if cell.harness == "codex" and output_file:
             try:
                 final_text = Path(output_file).read_text()
             except OSError:
@@ -1032,23 +910,15 @@ def spawn_agent(
             if final_text.strip():
                 last_raw = final_text
 
-        if reset_at is not None:
-            agent_capacity.record(
-                agent,
-                model,
-                outcome="unavailable",
-                failure_class="rate_limit",
-                retry_after=reset_at,
-            )
-        elif not is_infra_failure(proc.returncode, last_raw):
-            agent_capacity.record(agent, model, outcome="available")
+        if not is_infra_failure(proc.returncode, last_raw):
+            agent_capacity.record(cell.target, cell.model, outcome="available")
         elif attempt >= attempts:
             failure_class = agent_capacity.classify_failure(
                 proc.returncode, last_raw, proc.stderr or ""
             )
             agent_capacity.record(
-                agent,
-                model,
+                cell.target,
+                cell.model,
                 outcome="unavailable",
                 failure_class=failure_class,
                 retry_after=agent_capacity.retry_time(failure_class),
@@ -1057,7 +927,7 @@ def spawn_agent(
         if not is_infra_failure(proc.returncode, last_raw):
             return finish(last_raw)
         if proc.returncode != 0:
-            sys.stderr.write(f"[{agent} worker exit {proc.returncode}] {(proc.stderr or '')[-400:]}\n")
+            sys.stderr.write(f"[{cell.harness} worker exit {proc.returncode}] {(proc.stderr or '')[-400:]}\n")
         if attempt >= attempts:
             log(f"    spawn still failing after {attempts} attempt(s); giving up to caller")
             return finish(last_raw)
@@ -1071,34 +941,29 @@ def spawn_claude_p(
     prompt: str,
     cwd: "str | Path",
     *,
-    model: Optional[str] = None,
-    effort: Optional[str] = None,
+    tier: str,
+    prefer: Optional[str] = None,
+    exclude_harness: Optional[str] = None,
     timeout: int = 3600,
     retries: int = SPAWN_RETRIES_DEFAULT,
     session_limit_waits: int = SESSION_LIMIT_WAITS_DEFAULT,
     extra_args: Optional[Sequence[str]] = None,
     resume_session_id: Optional[str] = None,
-    fallback_agent: "Optional[str | Sequence[str]]" = None,
     log: Callable[[str], None] = lambda *_: None,
     sleep: Callable[[float], None] = time.sleep,
 ) -> SpawnResult:
-    """Thin `agent="claude"` wrapper around `spawn_agent` -- the claude-specific
-    transport LiveSpawn's claude task workers call. `fallback_agent` (single
-    agent or an ordered chain) is threaded straight through to `spawn_agent`,
-    which already implements the full session-limit hop; before this
-    parameter existed, LiveSpawn's claude-primary runs had no fallback
-    machinery at all (`--fallback-agent`/`--agent claude` silently did
-    nothing), while a non-claude primary agent got the hop for free via this
-    same underlying `spawn_agent` call (see brief
-    20260723-111700-claude-primary-fallback-inert).
+    """Thin wrapper around `spawn_agent` -- a distinctly-named entry point for
+    claude task workers. The cell it actually spawns (harness/model/effort/
+    pool/auth) is resolved the same way as any other `spawn_agent` call, from
+    `select_cell(tier, prefer, exclude_harness)`; nothing here pins it to the
+    claude harness beyond whatever `tier`/`prefer` the caller supplies.
     """
     return spawn_agent(
         prompt,
         cwd,
-        agent="claude",
-        model=model,
-        effort=effort,
-        fallback_agent=fallback_agent,
+        tier=tier,
+        prefer=prefer,
+        exclude_harness=exclude_harness,
         timeout=timeout,
         retries=retries,
         session_limit_waits=session_limit_waits,
