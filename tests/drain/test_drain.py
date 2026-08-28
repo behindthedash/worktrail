@@ -593,30 +593,37 @@ def test_select_available_agent_single_candidate_no_fallback_configured():
 
 
 # ---------------------------------------------------------------------------
-# agent fallback selection with routing-sourced (real) models (task 4.3/4.5)
+# agent fallback selection with routing-sourced (real) models (task 4.3/4.5,
+# updated for routing-target-selector: routing.targets/routing.tiers, cells
+# keyed by target name)
 #
-# routing_candidates(routing) turns routing.agents/routing.tiers into real
-# (provider, model) pairs; select_available_agent then keys the capacity
-# check on the real model (agent_capacity.provider_key) instead of the old
-# "configured-default" sentinel, so a gate on ONE model no longer gates
-# every model of that provider (D4).
+# routing_candidates(routing) turns routing.targets/routing.tiers into real
+# {target, harness, model, ...} cells; select_available_agent then keys the
+# capacity check on the real target:model (agent_capacity.provider_key)
+# instead of the old "configured-default" sentinel, so a gate on ONE model no
+# longer gates every model of that harness (D4). "claude-sub" appears in two
+# tier rows with two different models, so routing_candidates() yields it
+# twice -- once per model -- exactly like an operator's real two-tier config.
 
 _ROUTING_TWO_CLAUDE_MODELS = {
-    "agents": {"claude": {"default_model": "sonnet"}},
-    "tiers": {"heavy-claude": {"agent_cli": "claude", "agent_model": "opus"}},
+    "targets": {"claude-sub": {"harness": "claude", "pool": "subscription"}},
+    "tiers": {
+        "t2-build": {"claude-sub": {"model": "sonnet"}},
+        "t1-deep": {"claude-sub": {"model": "opus"}},
+    },
 }
 
 
 def test_select_available_agent_per_model_gate_does_not_gate_whole_provider():
-    cache = {"providers": {"claude:opus": {"status": "gated"}}}
+    cache = {"providers": {"claude-sub:opus": {"status": "gated"}}}
     assert select_available_agent(
         cache, ["claude"], routing=_ROUTING_TWO_CLAUDE_MODELS) == "claude"
 
 
 def test_select_available_agent_routing_all_models_gated_falls_back():
     cache = {"providers": {
-        "claude:sonnet": {"status": "gated"},
-        "claude:opus": {"status": "gated"},
+        "claude-sub:sonnet": {"status": "gated"},
+        "claude-sub:opus": {"status": "gated"},
     }}
     assert select_available_agent(
         cache, ["claude", "codex"], routing=_ROUTING_TWO_CLAUDE_MODELS) == "codex"
@@ -624,8 +631,8 @@ def test_select_available_agent_routing_all_models_gated_falls_back():
 
 def test_select_available_agent_routing_all_models_gated_none_when_no_fallback():
     cache = {"providers": {
-        "claude:sonnet": {"status": "gated"},
-        "claude:opus": {"status": "gated"},
+        "claude-sub:sonnet": {"status": "gated"},
+        "claude-sub:opus": {"status": "gated"},
     }}
     assert select_available_agent(
         cache, ["claude"], routing=_ROUTING_TWO_CLAUDE_MODELS) is None
@@ -634,7 +641,7 @@ def test_select_available_agent_routing_all_models_gated_none_when_no_fallback()
 def test_select_available_agent_routing_candidate_absent_uses_bare_sentinel():
     # "codex" has no routing entry of its own here -- falls back to the
     # bare-agent sentinel key exactly like routing=None, so an operator who
-    # has not configured that agent in routing.yaml sees no behavior change.
+    # has not configured that harness in routing.yaml sees no behavior change.
     cache = {"providers": {"codex": {"status": "gated"}}}
     assert select_available_agent(
         cache, ["codex"], routing=_ROUTING_TWO_CLAUDE_MODELS) is None
@@ -1261,8 +1268,8 @@ def test_drain_routing_all_configured_models_gated_still_capacity_gates(
                          lambda: _ROUTING_TWO_CLAUDE_MODELS)
     config = make_config(tmp_path, agent="claude")
     config.capacity_cache.write_text(json.dumps({"providers": {
-        "claude:sonnet": {"status": "gated"},
-        "claude:opus": {"status": "gated"},
+        "claude-sub:sonnet": {"status": "gated"},
+        "claude-sub:opus": {"status": "gated"},
     }}))
 
     def spawner(cmd, timeout):
@@ -3391,35 +3398,35 @@ def test_main_defaults_to_claude_without_config(tmp_path, monkeypatch):
     assert config.fallback_agents == []
 
 
-def test_main_honors_operator_config_agents(tmp_path, monkeypatch):
+def test_main_rejects_any_operator_config_agent_key(tmp_path, monkeypatch, capsys):
+    """routing.drain.agent/fallback_agents are retired keys (routing-target-
+    selector task 5.1: drain agent selection is now candidate-priority-order
+    plus capacity gating, not a single configured default) -- the loader
+    rejects the key outright, valid-looking agent name or not, rather than
+    reading a value from it. Supersedes the pre-migration
+    test_main_honors_operator_config_agents/test_main_cli_flags_override_
+    operator_config (asserted a config-sourced agent/fallback default that no
+    longer exists) and test_main_rejects_unsupported_config_agent (asserted
+    per-value rejection; the whole key is rejected now, valid values included)."""
     rc, config = _run_main(
         tmp_path, monkeypatch,
-        config_payload='{"drain": {"agent": "opencode", '
-                       '"fallback_agents": ["claude", "codex"]}}')
-    assert rc == 0
-    assert config.agent == "opencode"
-    assert config.fallback_agents == ["claude", "codex"]
-
-
-def test_main_cli_flags_override_operator_config(tmp_path, monkeypatch):
-    rc, config = _run_main(
-        tmp_path, monkeypatch,
-        argv_extra=["--agent", "codex", "--fallback-agent", "claude"],
-        config_payload='{"drain": {"agent": "opencode", '
-                       '"fallback_agents": ["codex"]}}')
-    assert rc == 0
-    assert config.agent == "codex"
-    assert config.fallback_agents == ["claude"]
-
-
-def test_main_rejects_unsupported_config_agent(tmp_path, monkeypatch, capsys):
-    rc, config = _run_main(
-        tmp_path, monkeypatch,
-        config_payload='{"drain": {"agent": "deepseek"}}')
+        config_payload='{"drain": {"agent": "opencode"}}')
     assert rc == 2
     assert config is None
     err = capsys.readouterr().err
-    assert "deepseek" in err and "routing.yaml" in err
+    assert "routing.drain.agent is a retired key" in err
+
+
+def test_main_cli_agent_and_fallback_flags_still_work(tmp_path, monkeypatch):
+    """--agent/--fallback-agent (harness names, matching select_available_agent's
+    own candidate shape) are unaffected by the config key's retirement -- they
+    never read routing.drain.agent in the first place."""
+    rc, config = _run_main(
+        tmp_path, monkeypatch,
+        argv_extra=["--agent", "codex", "--fallback-agent", "claude"])
+    assert rc == 0
+    assert config.agent == "codex"
+    assert config.fallback_agents == ["claude"]
 
 
 def test_main_fails_loud_on_malformed_config(tmp_path, monkeypatch, capsys):

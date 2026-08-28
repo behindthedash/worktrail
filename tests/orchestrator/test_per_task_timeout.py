@@ -209,16 +209,23 @@ class TestConcurrencyNoBleed(unittest.TestCase):
 
         def run(task):
             thread_ids[task["id"]] = threading.get_ident()
-            with patch.object(dispatch, "build_worker_prompt", return_value="fake"), patch.object(
-                spawnlib, "spawn_claude_p", fake_spawn
-            ):
-                spawn("implement", task, Path("/fake/wt"))
+            spawn("implement", task, Path("/fake/wt"))
 
-        with ThreadPoolExecutor(max_workers=2) as ex:
-            fa = ex.submit(run, task_a)
-            fb = ex.submit(run, task_b)
-            fa.result()
-            fb.result()
+        # Install both patches ONCE, before the threads start, not one pair
+        # per thread inside run(): unittest.mock.patch.object's start()/stop()
+        # push/pop a per-target stack that is not safe for two threads to
+        # enter and exit concurrently on the SAME target -- confirmed live,
+        # a per-thread `with patch.object(...)` here left spawnlib.spawn_claude_p
+        # permanently monkey-patched to this test's own closure afterward,
+        # breaking every later test in the suite that spawns for real.
+        with patch.object(dispatch, "build_worker_prompt", return_value="fake"), patch.object(
+            spawnlib, "spawn_claude_p", fake_spawn
+        ):
+            with ThreadPoolExecutor(max_workers=2) as ex:
+                fa = ex.submit(run, task_a)
+                fb = ex.submit(run, task_b)
+                fa.result()
+                fb.result()
 
         self.assertEqual(received[thread_ids["T001"]], 900)
         self.assertEqual(received[thread_ids["T002"]], 3600)
