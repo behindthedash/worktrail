@@ -9,13 +9,14 @@ from unittest import mock
 import pytest
 
 from worktrail.router.policy import (
-    DEFAULTS, OperatorConfigError, _json_safe, _reject_legacy_routing_keys,
-    _validate_routing_agents, _validate_routing_default_tier,
-    _validate_routing_drain, _validate_routing_purpose_tiers,
-    _validate_routing_targets, _validate_routing_tiers, automerge_eligible,
-    automerge_labels, detect_external_automerge, load_policy,
-    merge_method_for_branch, parse_policy_yaml, resolve_post_merge_smoke_cmd,
-    resolve_routing, resolve_tier_map,
+    DEFAULTS, EFFORT_VOCABULARY, OperatorConfigError, _json_safe,
+    _reject_legacy_routing_keys, _validate_routing_agents,
+    _validate_routing_default_tier, _validate_routing_drain,
+    _validate_routing_purpose_tiers, _validate_routing_targets,
+    _validate_routing_tiers, automerge_eligible, automerge_labels,
+    detect_external_automerge, load_policy, merge_method_for_branch,
+    parse_policy_yaml, resolve_post_merge_smoke_cmd, resolve_routing,
+    resolve_tier_map,
 )
 
 
@@ -1173,6 +1174,96 @@ class Routing(unittest.TestCase):
         resolved = _validate_routing_tiers(["hard"], {}, meta)
         self.assertEqual(resolved, {})
         self.assertTrue(any("routing.tiers must be a mapping" in w for w in meta["warnings"]))
+
+    def test_effort_vocabulary_shape(self):
+        # 1.5: EFFORT_VOCABULARY covers every SUPPORTED_AGENTS harness;
+        # claude/codex declare their reasoning-effort literals, opencode
+        # declares none (its `effort` maps to a model-variant flag, not a
+        # reasoning-effort level).
+        self.assertEqual(set(EFFORT_VOCABULARY), {"claude", "codex", "opencode"})
+        self.assertIn("high", EFFORT_VOCABULARY["claude"])
+        self.assertIn("high", EFFORT_VOCABULARY["codex"])
+        self.assertIsNone(EFFORT_VOCABULARY["opencode"])
+
+    def test_validate_routing_tiers_effort_in_vocabulary_no_warning(self):
+        meta = {"warnings": []}
+        targets = {"claude-main": {"harness": "claude", "pool": "subscription",
+                                    "api_opt_in": False, "auth": None}}
+        resolved = _validate_routing_tiers(
+            {"hard": {"claude-main": {"model": "opus", "effort": "high"}}}, targets, meta)
+        self.assertEqual(
+            resolved, {"hard": {"claude-main": {"model": "opus", "effort": "high"}}})
+        self.assertEqual(meta["warnings"], [])
+
+    def test_validate_routing_tiers_effort_outside_vocabulary_warns_but_kept(self):
+        meta = {"warnings": []}
+        targets = {"claude-main": {"harness": "claude", "pool": "subscription",
+                                    "api_opt_in": False, "auth": None}}
+        resolved = _validate_routing_tiers(
+            {"hard": {"claude-main": {"model": "opus", "effort": "xhigh"}}}, targets, meta)
+        # kept, not dropped -- an unsupported effort literal doesn't make the
+        # target unusable for the tier.
+        self.assertEqual(
+            resolved, {"hard": {"claude-main": {"model": "opus", "effort": "xhigh"}}})
+        self.assertTrue(any(
+            "routing.tiers.hard.claude-main.effort" in w and "xhigh" in w
+            and "claude" in w for w in meta["warnings"]))
+
+    def test_validate_routing_tiers_codex_effort_outside_vocabulary_warns(self):
+        meta = {"warnings": []}
+        targets = {"codex-main": {"harness": "codex", "pool": "subscription",
+                                   "api_opt_in": False, "auth": None}}
+        resolved = _validate_routing_tiers(
+            {"hard": {"codex-main": {"model": "gpt-5", "effort": "extreme"}}}, targets, meta)
+        self.assertEqual(
+            resolved, {"hard": {"codex-main": {"model": "gpt-5", "effort": "extreme"}}})
+        self.assertTrue(any(
+            "routing.tiers.hard.codex-main.effort" in w and "extreme" in w
+            and "codex" in w for w in meta["warnings"]))
+
+    def test_validate_routing_tiers_opencode_effort_always_ignored_by_harness(self):
+        # opencode has no effort vocabulary at all -- any declared effort
+        # warns "ignored by harness", even a literal that's valid elsewhere.
+        meta = {"warnings": []}
+        targets = {"opencode-main": {"harness": "opencode", "pool": "subscription",
+                                      "api_opt_in": False, "auth": None}}
+        resolved = _validate_routing_tiers(
+            {"hard": {"opencode-main": {"model": "big-model", "effort": "high"}}}, targets, meta)
+        self.assertEqual(
+            resolved, {"hard": {"opencode-main": {"model": "big-model", "effort": "high"}}})
+        self.assertTrue(any(
+            "routing.tiers.hard.opencode-main.effort" in w and "ignored by harness" in w
+            for w in meta["warnings"]))
+
+    def test_validate_routing_tiers_no_effort_no_vocabulary_warning(self):
+        meta = {"warnings": []}
+        targets = {"opencode-main": {"harness": "opencode", "pool": "subscription",
+                                      "api_opt_in": False, "auth": None}}
+        resolved = _validate_routing_tiers(
+            {"hard": {"opencode-main": {"model": "big-model"}}}, targets, meta)
+        self.assertEqual(
+            resolved, {"hard": {"opencode-main": {"model": "big-model", "effort": None}}})
+        self.assertEqual(meta["warnings"], [])
+
+    def test_load_policy_effort_outside_vocabulary_warns(self):
+        repo = _repo_with(
+            "routing:\n"
+            "  targets:\n"
+            "    opencode-main:\n"
+            "      harness: opencode\n"
+            "      pool: subscription\n"
+            "  tiers:\n"
+            "    hard:\n"
+            "      opencode-main:\n"
+            "        model: big-model\n"
+            "        effort: high\n")
+        with self._no_mw_env():
+            pol = load_policy(repo)
+        self.assertEqual(
+            pol["routing"]["tiers"],
+            {"hard": {"opencode-main": {"model": "big-model", "effort": "high"}}})
+        self.assertTrue(any(
+            "ignored by harness" in w for w in pol["_meta"]["warnings"]))
 
     def test_load_policy_undeclared_target_in_tiers_reports_which_row(self):
         repo = _repo_with(
