@@ -242,6 +242,19 @@ API_AGENT_LITERALS = ("openrouter", "api")
 # subscription capacity system entirely, so it requires an explicit
 # `api_opt_in: true` on the same target (see _validate_routing_targets()).
 VALID_POOLS = ("subscription", "free", "api")
+# routing.tiers.<row>.<target>.effort vocabulary, keyed by that target's
+# harness (SUPPORTED_AGENTS): the reasoning-effort literals each CLI actually
+# understands. `claude` and `codex` both translate `effort` straight into a
+# reasoning-effort flag (spawnlib.build_cmd's `--effort` / `-c
+# model_reasoning_effort=...`); `opencode` maps it to `--variant` instead,
+# which selects a model variant, not a reasoning-effort level, so it has no
+# effort vocabulary at all -- `None` means every value is out of vocabulary,
+# not "unconstrained".
+EFFORT_VOCABULARY: Dict[str, Optional[Tuple[str, ...]]] = {
+    "claude": ("low", "medium", "high"),
+    "codex": ("minimal", "low", "medium", "high"),
+    "opencode": None,
+}
 
 
 def _parse_scalar(raw: str) -> Any:
@@ -597,6 +610,14 @@ def _validate_routing_tiers(
     — `routing.targets` is the single source of truth for what a target *is*,
     so a typo'd or removed target name here is a local, per-cell mistake, not
     a `routing.targets` problem.
+
+    A cell whose `effort` falls outside its target's harness's
+    `EFFORT_VOCABULARY` gets a warning but is *kept*, not dropped -- an
+    unsupported effort literal is a hint the CLI ignores or errors on, not a
+    reason to make the whole target unusable for that tier. `opencode`'s
+    vocabulary is `None` (it has none: its `effort` maps to a model-variant
+    flag, not a reasoning-effort level), so any `effort` set on an opencode
+    target always warns "ignored by harness".
     """
     if raw is None:
         return {}
@@ -636,6 +657,17 @@ def _validate_routing_tiers(
                 meta["warnings"].append(
                     f"routing.tiers.{row}.{target}.effort must be a string; dropped")
                 effort = None
+            if effort is not None:
+                harness = targets[target]["harness"]
+                vocabulary = EFFORT_VOCABULARY.get(harness)
+                if vocabulary is None:
+                    meta["warnings"].append(
+                        f"routing.tiers.{row}.{target}.effort {effort!r}: "
+                        f"ignored by harness {harness!r}")
+                elif effort not in vocabulary:
+                    meta["warnings"].append(
+                        f"routing.tiers.{row}.{target}.effort {effort!r} is outside "
+                        f"{harness!r}'s effort vocabulary (allowed: {vocabulary})")
             row_resolved[target] = {"model": model, "effort": effort}
         if row_resolved:
             resolved[row] = row_resolved
