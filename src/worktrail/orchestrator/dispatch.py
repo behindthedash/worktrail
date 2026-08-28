@@ -210,6 +210,75 @@ def agent_for(
     return {"agent_cli": default_agent or "claude", "agent_model": None, "effort": None}
 
 
+# review's tier when no `routing.roles.review` is configured (spec "Review
+# role defaults to claude:opus"): a `t1-deep` row when the operator declared
+# one, else `default_tier`. Not hardcoded to a harness/model -- the actual
+# claude:opus behavior comes from what the starter template puts in `t1-deep`.
+REVIEW_DEFAULT_TIER = "t1-deep"
+
+
+def tier_for(
+    role: str,
+    task: Dict[str, Any],
+    *,
+    roles: Optional[Dict[str, Dict[str, Any]]] = None,
+    purposes: Optional[Dict[str, str]] = None,
+    default_tier: Optional[str] = None,
+    available_tiers: Optional[Any] = None,
+) -> Tuple[Optional[str], Optional[str], bool]:
+    """Resolve `(tier, prefer, independent)` for one spawn -- the tier-row
+    name `select_cell()` walks, an optional target to prefer within it, and
+    whether the implementer's own harness should be excluded from it
+    (routing-target-selector task 4.1, spec "Roles resolve to a tier, with
+    optional preference and independence"). Pure, deterministic: same inputs
+    always produce the same output.
+
+    Precedence: the task's own explicit `tier` override, else
+    `roles.<role>.tier` for JUDGMENT_ROLES, else `purposes[task.purpose]`,
+    else the task's own `complexity` (used directly as a tier row name), else
+    `default_tier`. JUDGMENT_ROLES never consult purpose/complexity at all
+    (DEC-003 independent-reviewer guarantee) -- a judgment role with no
+    `roles.<role>` entry falls straight to its own default (review:
+    `REVIEW_DEFAULT_TIER` when declared, else `default_tier`, independent;
+    every other judgment role: `default_tier`, not independent) rather than
+    through the implement/fix/cleanup precedence chain below it.
+
+    `available_tiers`, when given, is the operator's actual declared
+    `routing.tiers` key set -- passed so review's `t1-deep`-or-`default_tier`
+    fallback can tell whether `t1-deep` is really declared instead of always
+    assuming it is (this function has no other visibility into `routing.tiers`
+    by design, matching its documented signature: role/task/roles/purposes/
+    default_tier only). Omitted, `t1-deep` is used unconditionally for review
+    -- correct for any repo using the shipped starter template, which always
+    declares it.
+    """
+    roles = roles or {}
+    purposes = purposes or {}
+
+    explicit_tier = task.get("tier")
+    if isinstance(explicit_tier, str) and explicit_tier:
+        return explicit_tier, None, False
+
+    if role in JUDGMENT_ROLES:
+        entry = roles.get(role)
+        if isinstance(entry, dict) and isinstance(entry.get("tier"), str) and entry["tier"]:
+            return entry["tier"], entry.get("prefer"), bool(entry.get("independent", False))
+        if role == ROLE_REVIEW:
+            if available_tiers is None or REVIEW_DEFAULT_TIER in available_tiers:
+                return REVIEW_DEFAULT_TIER, None, True
+            return default_tier, None, True
+        return default_tier, None, False
+
+    # implement / fix / cleanup
+    purpose = task.get("purpose")
+    if purpose and purpose in purposes:
+        return purposes[purpose], None, False
+    complexity = task.get("complexity")
+    if isinstance(complexity, str) and complexity:
+        return complexity, None, False
+    return default_tier, None, False
+
+
 # --------------------------------------------------------------------------- #
 # Prompt building (cold-worker brief, design doc section 6)
 # --------------------------------------------------------------------------- #

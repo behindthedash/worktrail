@@ -38,7 +38,6 @@ Run: python3 scripts/test_routing_e2e.py
 
 from __future__ import annotations
 
-import datetime
 import inspect
 import io
 import json
@@ -49,7 +48,6 @@ import sys
 import tempfile
 import time
 import unittest
-from collections import namedtuple
 from pathlib import Path
 from unittest import mock
 
@@ -71,10 +69,7 @@ _HERE = Path(__file__).resolve().parent
 # the routing seam compose correctly, so it imports router directly, test-only.
 from worktrail.router import dashboard
 from worktrail.router import policy as policy_mod
-from worktrail.router import run_record as run_record_mod
 from worktrail.router import tier_accuracy as tier_accuracy_mod
-
-_Proc = namedtuple("_Proc", "returncode stdout stderr")
 
 
 # --------------------------------------------------------------------------- #
@@ -134,52 +129,6 @@ def _fake_report(task_id: str, role: str, sha: str) -> spawnlib.SpawnResult:
     return spawnlib.SpawnResult(text=text, usage=usage)
 
 
-class RoutingFakeSpawn:
-    """Resolves every spawn through the REAL `dispatch.agent_for()` precedence
-    function -- the exact function `LiveSpawn.__call__` calls (TASK-007) -- then
-    makes a real git commit and returns a valid report-back, without a real
-    subprocess. `last_agent` is set every call, mirroring `LiveSpawn.last_agent`
-    (read by live.py's journal-entry write sites, REQ-027) so the journal's
-    `agent` label reflects genuine precedence resolution, not a hardcoded value.
-    """
-
-    def __init__(self, default_agent="claude", role_agents=None, tier_map=None, fail_task=None):
-        self.agent = default_agent
-        self.role_agents = role_agents or {}
-        self.tier_map = tier_map or {}
-        self.fail_task = fail_task
-        self.calls: list[tuple[str, str, str]] = []  # (task_id, role, resolved_agent)
-        self.last_agent: str | None = None
-
-    def __call__(self, role: str, task: dict, wt: Path) -> spawnlib.SpawnResult:
-        tid = task["id"]
-        resolved = dispatch.agent_for(
-            role, task,
-            reviewer_agent=self.agent, default_agent=self.agent,
-            role_agent_map=self.role_agents, tier_map=self.tier_map,
-        )
-        agent = resolved["agent_cli"] or self.agent
-        self.last_agent = agent
-        self.calls.append((tid, role, agent))
-
-        if role in (dispatch.ROLE_IMPLEMENT, dispatch.ROLE_FIX):
-            if tid == self.fail_task:
-                return spawnlib.SpawnResult(
-                    text=f'```json\n{{"task":"{tid}","step":"{role}","status":"failed"}}\n```',
-                    usage={},
-                )
-            f = Path(wt) / "src" / f"{tid.lower()}.txt"
-            f.parent.mkdir(parents=True, exist_ok=True)
-            f.write_text(f"{tid}\n")
-            _git(Path(wt), "add", "-A")
-            _git(Path(wt), "commit", "-q", "-m", f"feat({tid})")
-        sha = subprocess.run(
-            ["git", "-C", str(wt), "rev-parse", "HEAD"],
-            capture_output=True, text=True,
-        ).stdout.strip()[:8] or "00000000"
-        return _fake_report(tid, role, sha)
-
-
 class _LegacySpawn:
     """A spawn callable with NO `last_agent` attribute at all -- mirrors a spawn
     object from before TASK-007 landed (AC-029: pre-spec journals carry no
@@ -200,178 +149,38 @@ class _LegacySpawn:
         return _fake_report(tid, role, sha)
 
 
-def _gate_capacity_cache(test: unittest.TestCase) -> None:
-    """Point GO_AGENT_CAPACITY_CACHE at a fresh tempdir for the duration of one
-    test, restoring the prior value afterward (mirrors test_spawnlib.py's
-    FallbackChain fixture)."""
-    cache_dir = tempfile.TemporaryDirectory()
-    old = os.environ.get("GO_AGENT_CAPACITY_CACHE")
-    os.environ["GO_AGENT_CAPACITY_CACHE"] = os.path.join(cache_dir.name, "capacity.json")
-
-    def _restore():
-        if old is None:
-            os.environ.pop("GO_AGENT_CAPACITY_CACHE", None)
-        else:
-            os.environ["GO_AGENT_CAPACITY_CACHE"] = old
-        cache_dir.cleanup()
-
-    test.addCleanup(_restore)
-
-
 # --------------------------------------------------------------------------- #
 # Happy-path journey (Acceptance Criteria bullet 1 + malformed-entry handling)
 # --------------------------------------------------------------------------- #
+#
+# The routed-dispatch-journey and fallback-chain E2E classes formerly here
+# (RoutingFakeSpawn + E2ERoutedDispatchJourneyTest, E2EFallbackChainTest) tested
+# spec 023 concepts the routing-target-selector redesign retired outright:
+# route/risk-keyed `routing.defaults`, `dispatch.agent_for()`'s `(complexity,
+# domain) -> agent` tier_map, and explicit multi-hop `--fallback-agent` chains
+# (spawn_agent's own same-row re-selection replaces it, task 3.4). No task in
+# routing-target-selector's tasks.md ever claimed this file; the underlying
+# concerns they covered are exercised elsewhere: per-role tier/target
+# resolution and journal agent-label correctness by
+# tests/orchestrator/test_live_extras.py's LiveSpawnTierRoutingTests/
+# LiveSpawnPreSpecParityTests/LiveSpawnServedTargetCorrectionTests, and a
+# row's own hop-on-exhaustion behavior by tests/orchestrator/test_spawnlib.py.
+# NOT re-verified here: run_record.py's `capacity-gate` CLI subcommand against
+# a real `NoExecutionTarget` (the new design's replacement for the retired
+# `AllProvidersUnavailable`, which is now unreferenced by any real call site --
+# confirmed live, `rg AllProvidersUnavailable` outside tests/agent_capacity.py
+# itself returns nothing) -- worth a follow-up if that CLI path matters going
+# forward.
 
-class E2ERoutedDispatchJourneyTest(unittest.TestCase):
-    """A go-policy routing table + tier-stamped tasks -> per-task resolution
-    matches the documented precedence, journal entries carry agent labels, the
-    usage report groups by pool, the run record captures the decision."""
-
-    def test_full_journey_resolution_journal_usage_run_record(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = _init_routing_repo(Path(tmp), tier_stamps=True)
-            (repo / "docs" / "specs" / "go-policy.yaml").write_text(
-                "agent_cli: claude\n"
-                "routing:\n"
-                "  roles:\n"
-                "    review: opencode\n"
-                "  tiers:\n"
-                "    hard/backend:\n"
-                "      agent: codex\n"
-            )
-            policy = policy_mod.load_policy(repo)
-            resolved = policy_mod.resolve_routing(policy, "B", "medium")
-            self.assertEqual(resolved["agent_cli"], "claude")
-            self.assertEqual(resolved["roles"], {"review": {"agent_cli": "opencode", "agent_model": None, "effort": None}})
-
-            # `routing.tiers` now validates to the `(complexity, domain) -> agent`
-            # shape documented in
-            # docs/specs/023-subscription-aware-routing/contracts/routing-policy-schema.md
-            # (fixed by TASK-CHG-001, wired to dispatch by TASK-CHG-002); drive it
-            # from the real `go-policy.yaml` block above via `resolve_tier_map()`
-            # rather than hand-building the dict.
-            tier_map = policy_mod.resolve_tier_map(policy)
-            self.assertEqual(tier_map, {("hard", "backend"): {"agent_cli": "codex", "agent_model": None, "effort": None}})
-
-            spawn = RoutingFakeSpawn(
-                default_agent=resolved["agent_cli"],
-                role_agents=resolved["roles"],
-                tier_map=tier_map,
-            )
-            journal_path = str(Path(tmp) / "journal.json")
-            result = live.live_run_real(
-                repo, "docs/specs/023-x", max_workers=1,
-                out_cassette=journal_path, run_id="e2e-routing", spawn=spawn,
-            )
-
-            self.assertEqual(result["done"], 3, f"all 3 tasks should reach done; tasks={result['tasks']}")
-
-            # Per-task resolution matches the documented precedence: tier match
-            # wins for implement on the ONE task whose (complexity, domain)
-            # matches (TASK-002); the role override always wins for review
-            # regardless of tier; no-match tasks fall through to the run
-            # default. `cleanup` is deliberately absent from both `spawn.calls`
-            # and the journal's `agent` label: live.py's fan-out loop runs
-            # cleanup entirely in Python ("Deterministic cleanup (#14): status
-            # write-back + commit, no spawn" -- live.py ~line 1901, pre-dating
-            # spec 023) and never calls `spawn()`/dispatch.agent_for for it, so
-            # dispatch.agent_for's own "implement/fix/cleanup" precedence
-            # table (correct for the pure function's contract) is exercised by
-            # this fixture only for implement/review, matching what the real
-            # fan-out loop actually dispatches.
-            expected = {
-                ("TASK-001", "implement"): "claude", ("TASK-001", "review"): "opencode",
-                ("TASK-002", "implement"): "codex", ("TASK-002", "review"): "opencode",
-                ("TASK-003", "implement"): "claude", ("TASK-003", "review"): "opencode",
-            }
-            actual = {(tid, role): agent for tid, role, agent in spawn.calls}
-            self.assertEqual(actual, expected)
-
-            # Journal entries carry the resolved agent label on spawned roles
-            # (REQ-027/AC-026); the deterministic cleanup entries carry none.
-            journal = json.loads(Path(journal_path).read_text())
-            self.assertTrue(journal["entries"])
-            for entry in journal["entries"]:
-                key = (entry["task"], entry["role"])
-                if entry["role"] == dispatch.ROLE_CLEANUP:
-                    self.assertNotIn("agent", entry, f"cleanup entry {key} must carry no agent label")
-                    continue
-                self.assertEqual(
-                    entry.get("agent"), expected[key],
-                    f"journal entry for {key} should carry agent label {expected[key]!r}",
-                )
-
-            # Usage report groups by pool (AC-027): claude/codex -> subscription,
-            # opencode -> free.
-            rendered = progress.render_usage(journal)
-            self.assertIn("usage by pool:", rendered)
-            pool_usage = progress.summarize_pool_usage(journal)
-            self.assertEqual(set(pool_usage["pools"]["subscription"]), {"claude", "codex"})
-            self.assertEqual(set(pool_usage["pools"]["free"]), {"opencode"})
-
-            # Run record captures the resolved routing decision (AC-020),
-            # composing TASK-001's resolve_routing() output directly with
-            # TASK-008's run_record.py consumer.
-            with tempfile.TemporaryDirectory() as run_dir:
-                out = io.StringIO()
-                with mock.patch("sys.stdout", out):
-                    rc = run_record_mod.main([
-                        "start", "--repo", str(repo), "--request", "routed dispatch",
-                        "--route", "B", "--risk", "medium", "--dir", run_dir,
-                        "--routing-decision", json.dumps(resolved),
-                    ])
-                self.assertEqual(rc, 0)
-                start_res = json.loads(out.getvalue())
-                record = run_record_mod._load(Path(start_res["path"]))
-                self.assertEqual(record["routing_decision"], resolved)
-
-    def test_malformed_routing_entry_dropped_dispatch_proceeds(self):
-        """Test Instructions #2: a malformed entry mid-journey -> warning,
-        dispatch proceeds on the remaining valid entries."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = _init_routing_repo(Path(tmp), tier_stamps=False)
-            (repo / "docs" / "specs" / "go-policy.yaml").write_text(
-                "agent_cli: claude\n"
-                "routing:\n"
-                "  defaults:\n"
-                "    B:\n"
-                "      medium:\n"
-                "        agent_cli: not-a-real-agent\n"  # malformed
-                "  roles:\n"
-                "    review: opencode\n"  # valid, sits alongside the malformed entry
-            )
-            policy = policy_mod.load_policy(repo)
-            self.assertTrue(
-                any("routing.defaults" in w for w in policy["_meta"]["warnings"]),
-                f"expected a routing.defaults warning; got {policy['_meta']['warnings']}",
-            )
-            resolved = policy_mod.resolve_routing(policy, "B", "medium")
-            # The malformed (route, risk) entry is dropped -> falls back to the
-            # flat agent_cli default; the valid roles entry still applies.
-            self.assertEqual(resolved["agent_cli"], "claude")
-            self.assertEqual(resolved["roles"]["review"]["agent_cli"], "opencode")
-
-            spawn = RoutingFakeSpawn(default_agent=resolved["agent_cli"], role_agents=resolved["roles"])
-            journal_path = str(Path(tmp) / "journal.json")
-            result = live.live_run_real(
-                repo, "docs/specs/023-x", max_workers=1,
-                out_cassette=journal_path, run_id="e2e-malformed", spawn=spawn,
-            )
-            self.assertEqual(result["done"], 3, "dispatch must proceed on the valid entries")
-
-
-# --------------------------------------------------------------------------- #
-# AC-016: backward compatibility
-# --------------------------------------------------------------------------- #
 
 class E2EBackwardCompatTest(unittest.TestCase):
     """AC-016: with no routing: policy and no task tier metadata, every existing
     orchestrator cassette/golden test still passes unchanged."""
 
-    def test_no_routing_no_tier_matches_pre_spec_dispatch(self):
+    def test_no_routing_configured_resolves_to_the_empty_shape(self):
         # Isolate the machine-wide routing file: an operator-configured
-        # routing.yaml under worktrail_home() (e.g. a claude/codex/opencode fallback chain) must
-        # not leak into a test asserting "no routing configured anywhere".
+        # routing.yaml under worktrail_home() must not leak into a test
+        # asserting "no routing configured anywhere".
         with tempfile.TemporaryDirectory() as tmp, \
                 mock.patch.dict(os.environ,
                                 {"GO_ROUTING_FILE": str(Path(tmp) / "no-such-routing.yaml")}):
@@ -379,33 +188,21 @@ class E2EBackwardCompatTest(unittest.TestCase):
             # No go-policy.yaml at all -- the "no routing anywhere" case.
             policy = policy_mod.load_policy(repo)
             self.assertIsNone(policy["routing"])
-            resolved = policy_mod.resolve_routing(policy, "B", "medium")
+            resolved = policy_mod.resolve_routing(policy)
             self.assertEqual(resolved, {
-                "agent_cli": None, "agent_model": None, "roles": {}, "fallback": [],
-                "purpose_tiers": {}, "agents": {}, "drain": {},
+                "targets": {}, "tiers": {}, "roles": {}, "purposes": {},
+                "default_tier": None, "drain": {},
             })
-
-        # REQ-016 (tier/role dispatch, not model-default resolution): with
-        # only an `agents:` default configured -- no `defaults`/`tiers`/
-        # `roles` -- every role of every task still resolves to exactly the
-        # run default, byte-identical to pre-spec dispatch. `agents:` must be
-        # present for the run to spawn at all now (task 3.3: no silent
-        # fallback), so this half of the test uses its own isolated routing
-        # file instead of the fully-empty one above.
-        with tempfile.TemporaryDirectory() as tmp:
-            routing_file = Path(tmp) / "routing.yaml"
-            routing_file.write_text("agents:\n  claude:\n    default_model: sonnet\n")
-            with mock.patch.dict(os.environ, {"GO_ROUTING_FILE": str(routing_file)}):
-                repo = _init_routing_repo(Path(tmp), tier_stamps=False)
-                spawn = RoutingFakeSpawn(default_agent="claude")  # no role_agents/tier_map at all
-                journal_path = str(Path(tmp) / "journal.json")
-                result = live.live_run_real(
-                    repo, "docs/specs/023-x", max_workers=1,
-                    out_cassette=journal_path, run_id="e2e-backcompat", spawn=spawn,
-                )
-                self.assertEqual(result["done"], 3)
-                self.assertTrue(
-                    all(agent == "claude" for _, _, agent in spawn.calls), spawn.calls)
+            # dispatch.tier_for() must not raise on this empty shape either --
+            # every role falls through to default_tier (None), never a KeyError.
+            tier, prefer, independent = dispatch.tier_for(
+                dispatch.ROLE_IMPLEMENT, {"id": "TASK-001"},
+                roles=resolved["roles"], purposes=resolved["purposes"],
+                default_tier=resolved["default_tier"],
+            )
+            self.assertIsNone(tier)
+            self.assertIsNone(prefer)
+            self.assertFalse(independent)
 
     def test_orchestrate_golden_check_passes(self):
         """AC-016 [EXT]: `orchestrate.py check` must exit 0 (golden unchanged)."""
@@ -474,130 +271,20 @@ class E2EDashboardAdditiveJSONTest(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------- #
-# AC-025/AC-024/AC-028: fallback chain (legacy single entry + full exhaustion)
-# --------------------------------------------------------------------------- #
-
-class E2EFallbackChainTest(unittest.TestCase):
-    def setUp(self):
-        _gate_capacity_cache(self)
-
-    def test_single_entry_fallback_from_policy_resolves_and_spawns(self):
-        """AC-025: a repo with only the legacy flat fallback_agent_cli key (no
-        routing.fallback list) resolves through policy.resolve_routing() to a
-        single-entry chain -- today's shape -- and spawn_agent walks exactly
-        that one hop when the primary is gated, unchanged from pre-spec."""
-        # Isolate the machine-wide routing file: this test asserts the LEGACY
-        # single-entry shape specifically, which only holds when no machine-wide
-        # fallback chain (e.g. an operator's real machine-wide routing.yaml) is in play.
-        with tempfile.TemporaryDirectory() as tmp:
-            routing_file = Path(tmp) / "routing.yaml"
-            routing_file.write_text(
-                "agents:\n"
-                "  claude:\n    default_model: sonnet\n"
-                "  opencode:\n    default_model: opencode/deepseek-v4-flash-free\n"
-            )
-            os_environ_patch = mock.patch.dict(os.environ, {"GO_ROUTING_FILE": str(routing_file)})
-            os_environ_patch.start()
-            self.addCleanup(os_environ_patch.stop)
-            repo = Path(tmp) / "repo"
-            specs = repo / "docs" / "specs"
-            specs.mkdir(parents=True)
-            (specs / "go-policy.yaml").write_text(
-                "agent_cli: claude\nfallback_agent_cli: opencode\n"
-            )
-            policy = policy_mod.load_policy(repo)
-            resolved = policy_mod.resolve_routing(policy, "B", "medium")
-            self.assertEqual(resolved["fallback"], [{"agent_cli": "opencode", "agent_model": None}])
-
-            agent_capacity.record(
-                "claude", spawnlib.default_model_for_agent("claude"),
-                outcome="unavailable", failure_class="transport",
-                retry_after=datetime.datetime.now(datetime.timezone.utc)
-                + datetime.timedelta(seconds=60),
-            )
-            calls = []
-
-            def fake_run(cmd, **kwargs):
-                calls.append(cmd)
-                return _Proc(0, json.dumps({"type": "result", "result": "done", "usage": {}}) + "\n", "")
-
-            original_run = spawnlib.subprocess.run
-            spawnlib.subprocess.run = fake_run
-            try:
-                out = spawnlib.spawn_agent(
-                    "prompt", "/tmp", agent="claude",
-                    fallback_agent=[e["agent_cli"] for e in resolved["fallback"]],
-                )
-            finally:
-                spawnlib.subprocess.run = original_run
-
-            self.assertEqual(out.text, "done")
-            self.assertEqual(len(calls), 1)
-            self.assertIn("opencode", calls[0])
-
-    def test_whole_chain_gated_raises_and_capacity_gate_recorded(self):
-        """AC-024/AC-028 re-verified end to end: exhausting every hop of a
-        routing-resolved fallback chain raises AllProvidersUnavailable naming
-        every provider, and `run_record.py capacity-gate` still succeeds
-        against the run record the routing decision was started with."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp) / "repo"
-            specs = repo / "docs" / "specs"
-            specs.mkdir(parents=True)
-            (specs / "go-policy.yaml").write_text(
-                "agent_cli: claude\n"
-                "routing:\n"
-                "  fallback:\n"
-                "    - codex\n"
-                "    - opencode\n"
-            )
-            policy = policy_mod.load_policy(repo)
-            resolved = policy_mod.resolve_routing(policy, "B", "medium")
-            self.assertEqual([e["agent_cli"] for e in resolved["fallback"]], ["codex", "opencode"])
-
-            now = datetime.datetime.now(datetime.timezone.utc)
-            for agent in ("claude", "codex", "opencode"):
-                agent_capacity.record(
-                    agent, spawnlib.default_model_for_agent(agent),
-                    outcome="unavailable", failure_class="transport",
-                    retry_after=now + datetime.timedelta(seconds=60),
-                )
-
-            with self.assertRaises(agent_capacity.AllProvidersUnavailable) as ctx:
-                spawnlib.spawn_agent(
-                    "prompt", "/tmp", agent="claude",
-                    fallback_agent=[e["agent_cli"] for e in resolved["fallback"]],
-                )
-
-            with tempfile.TemporaryDirectory() as run_dir:
-                out = io.StringIO()
-                with mock.patch("sys.stdout", out):
-                    rc = run_record_mod.main([
-                        "start", "--repo", str(repo), "--request", "routed dispatch",
-                        "--route", "B", "--risk", "medium", "--dir", run_dir,
-                        "--routing-decision", json.dumps(resolved),
-                    ])
-                self.assertEqual(rc, 0)
-                start_res = json.loads(out.getvalue())
-
-                out2 = io.StringIO()
-                with mock.patch("sys.stdout", out2):
-                    rc2 = run_record_mod.main([
-                        "capacity-gate", start_res["path"],
-                        *[f"--provider={p}" for p in ctx.exception.providers],
-                        "--failure-class", "transport",
-                    ])
-                self.assertEqual(rc2, 0)
-
-                record = run_record_mod._load(Path(start_res["path"]))
-                self.assertEqual(record["capacity_gate"]["status"], "blocked")
-                self.assertEqual(set(record["capacity_gate"]["providers"]), set(ctx.exception.providers))
-                self.assertEqual(record["routing_decision"], resolved)
-
-
-# --------------------------------------------------------------------------- #
 # AC-029: usage report degrades gracefully on a pool-label-less journal
 # --------------------------------------------------------------------------- #
+#
+# The fallback-chain E2E class formerly here (E2EFallbackChainTest) called
+# spawnlib.spawn_agent(agent=, fallback_agent=) and
+# spawnlib.default_model_for_agent() -- both fully deleted by task 3.3 -- and
+# asserted agent_capacity.AllProvidersUnavailable, which no real call site
+# raises any more (spawn_agent's row-based re-selection raises
+# runtime.selection.NoExecutionTarget instead; confirmed live, `rg
+# AllProvidersUnavailable` outside its own definition and tests returns
+# nothing). See the note above E2EBackwardCompatTest for where the underlying
+# concerns live now; the run_record.py `capacity-gate` CLI integration this
+# class also exercised against a real NoExecutionTarget is not yet
+# re-verified anywhere.
 
 class E2EPoolUsageDegradationTest(unittest.TestCase):
     def test_pre_spec_journal_no_agent_labels_usage_report_no_crash(self):

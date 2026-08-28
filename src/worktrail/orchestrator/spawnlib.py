@@ -59,6 +59,7 @@ auto-rejected. See the "opencode headless worker environment" section below.
 
 from __future__ import annotations
 
+import contextlib
 import datetime
 import json
 import os
@@ -73,6 +74,7 @@ from typing import Any, Callable, Dict, List, Mapping, NamedTuple, Optional, Seq
 from . import agent_capacity
 from ..router import routing_cli
 from ..router.policy import (
+    ROUTING_FILE_ENV,
     OperatorConfigError,
     load_policy,
     resolve_routing,
@@ -96,6 +98,13 @@ class SpawnResult(NamedTuple):
     # Session ID returned by the result event; populated for every live spawn.
     # Callers can pass this as resume_session_id to build_cmd to fork from this session.
     session_id: str = ""
+    # The (target, model) cell that actually served this spawn -- may differ
+    # from the caller's requested `prefer` after a session-limit/infra hop.
+    # Empty strings for callers that never resolve a Cell (e.g. a caller
+    # patching spawn_agent/spawn_claude_p out entirely in a test).
+    served_target: str = ""
+    served_model: str = ""
+    served_harness: str = ""
 
 
 # verified from `claude --help`: bypass perms so a headless worker can edit/commit
@@ -729,6 +738,58 @@ def _preflight_primary_target(
     return candidates[0] if candidates else None
 
 
+@contextlib.contextmanager
+def explicit_cell_override(target: str, model: str, *, effort: Optional[str] = None):
+    """Temporarily point `WORKTRAIL_ROUTING_FILE` at a throwaway routing file
+    declaring exactly one target/tier ("explicit") that reuses `target`'s
+    already-declared harness/pool but serves `model`/`effort` instead of its
+    configured tier cell -- so `spawn_agent(tier="explicit", ...)` resolves to
+    exactly that cell for the duration of the `with` block. Never writes to
+    the operator's real routing file. Shared by `conductor.compile`'s
+    `--agent`/`--model` override and `LiveSpawn.__call__`'s `--model-map`/
+    `--effort` override -- same mechanism, same guarantee.
+
+    Raises `OperatorConfigError` when `target` does not already name a
+    declared `routing.targets` entry: an explicit override reuses a real
+    target's harness/pool, it never invents one.
+    """
+    routing = resolve_routing(load_policy(worktrail_home()))
+    declared = (routing.get("targets") or {}).get(target)
+    if not isinstance(declared, dict):
+        raise OperatorConfigError(
+            f"{target!r} does not name a declared routing.targets entry -- "
+            "an explicit model/effort override requires the target already exist"
+        )
+    fd, path = tempfile.mkstemp(prefix="worktrail-explicit-cell-", suffix=".yaml")
+    os.close(fd)
+    explicit_file = Path(path)
+    try:
+        effort_line = f"      effort: {effort}\n" if effort else ""
+        explicit_file.write_text(
+            "targets:\n"
+            f"  {target}:\n"
+            f"    harness: {declared['harness']}\n"
+            f"    pool: {declared.get('pool', 'subscription')}\n"
+            "tiers:\n"
+            "  explicit:\n"
+            f"    {target}:\n"
+            f"      model: {model}\n"
+            f"{effort_line}",
+            encoding="utf-8",
+        )
+        previous = os.environ.get(ROUTING_FILE_ENV)
+        os.environ[ROUTING_FILE_ENV] = str(explicit_file)
+        try:
+            yield
+        finally:
+            if previous is None:
+                os.environ.pop(ROUTING_FILE_ENV, None)
+            else:
+                os.environ[ROUTING_FILE_ENV] = previous
+    finally:
+        explicit_file.unlink(missing_ok=True)
+
+
 def spawn_agent(
     prompt: str,
     cwd: "str | Path",
@@ -891,6 +952,8 @@ def spawn_agent(
         return SpawnResult(
             text=text, usage=usage, tools_used=tools_used, skills_used=skills_used,
             paused_s=paused_s_total, session_id=sid,
+            served_target=cell.target, served_model=cell.model,
+            served_harness=cell.harness,
         )
     attempts = max(1, retries + 1)
     waits_left = max(0, session_limit_waits)

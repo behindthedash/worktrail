@@ -450,15 +450,23 @@ class ReviewerIndependence(unittest.TestCase):
             prompt,
             wt,
             *,
-            model=None,
-            effort=None,
+            tier=None,
+            prefer=None,
+            exclude_harness=None,
             timeout=None,
             extra_args=None,
             resume_session_id=None,
-            fallback_agent=None,
             log=None,
         ):
-            self.captured = {"extra_args": extra_args, "model": model}
+            # A role_models override routes through explicit_cell_override(),
+            # which threads the model via a swapped WORKTRAIL_ROUTING_FILE, not
+            # a kwarg -- read the swapped file's content the same way
+            # spawn_claude_p's own real implementation would.
+            routing_path = os.environ.get("WORKTRAIL_ROUTING_FILE")
+            self.captured = {
+                "extra_args": extra_args,
+                "routing_text": Path(routing_path).read_text(encoding="utf-8") if routing_path else None,
+            }
             return (
                 '```json\n{"task":"TASK-001","step":"review","status":"success",'
                 '"review_status":"PASSED"}\n```'
@@ -474,21 +482,21 @@ class ReviewerIndependence(unittest.TestCase):
             "001-x",
             "docs/specs/001-x/",
             agent="claude",
-            model="haiku",
             role_models={"review": "sonnet"},
         )
         ls("review", {"id": "TASK-001", "files": ["a.py"]}, Path("/tmp/wt"))
         self.assertIsNotNone(self.captured["extra_args"])
         self.assertIn("--append-system-prompt", self.captured["extra_args"])
-        self.assertEqual(self.captured["model"], "sonnet")  # role override
+        self.assertIn("model: sonnet", self.captured["routing_text"])  # role override
 
     def test_implement_keeps_default_system_prompt(self):
-        ls = live.LiveSpawn("001-x", "docs/specs/001-x/", agent="claude", model="haiku")
+        ls = live.LiveSpawn("001-x", "docs/specs/001-x/", agent="claude")
         ls("implement", {"id": "TASK-001", "files": ["a.py"]}, Path("/tmp/wt"))
         # --append-system-prompt must NOT be present for non-review roles (cache reuse)
         args = self.captured["extra_args"] or []
         self.assertNotIn("--append-system-prompt", args)
-        self.assertEqual(self.captured["model"], "haiku")
+        # No role_models/effort override configured -- no routing file swap.
+        self.assertIsNone(self.captured["routing_text"])
 
 
 class CleanupInPython(unittest.TestCase):

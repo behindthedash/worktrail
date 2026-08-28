@@ -425,54 +425,15 @@ def _spawn_with_explicit_cell(
     """The `--agent`/`--model` explicit-cell override: reuse `target`'s
     declared harness/pool from the operator's real machine-wide routing, but
     serve `model` instead of that target's configured tier cell, for this one
-    spawn only. Never writes to the operator's real routing file -- a
-    throwaway single-target/single-tier file is swapped in via
-    `WORKTRAIL_ROUTING_FILE` for the duration of the call, exactly the
-    override mechanism `spawn_agent()` already exposes to any caller."""
-    import os
-    import tempfile
-
-    from worktrail.router.policy import ROUTING_FILE_ENV, load_policy, resolve_routing
+    spawn only. Delegates to `spawnlib.explicit_cell_override()` -- the same
+    mechanism `LiveSpawn.__call__`'s `--model-map`/`--effort` override uses --
+    which raises `OperatorConfigError` (a `ValueError`) when `target` isn't
+    already declared."""
     from worktrail.orchestrator import spawnlib
-    from worktrail.shared.homedir import worktrail_home
 
-    machine_routing = resolve_routing(load_policy(worktrail_home()))
-    declared = (machine_routing.get("targets") or {}).get(target)
-    if not isinstance(declared, dict):
-        raise ValueError(
-            f"--agent {target!r} does not name a declared routing.targets entry -- "
-            "an explicit --model override requires the target already exist"
-        )
-
-    fd, path = tempfile.mkstemp(prefix="worktrail-compile-explicit-cell-", suffix=".yaml")
-    os.close(fd)
-    explicit_file = Path(path)
-    try:
-        explicit_file.write_text(
-            "targets:\n"
-            f"  {target}:\n"
-            f"    harness: {declared['harness']}\n"
-            f"    pool: {declared.get('pool', 'subscription')}\n"
-            "tiers:\n"
-            "  explicit:\n"
-            f"    {target}:\n"
-            f"      model: {model}\n",
-            encoding="utf-8",
-        )
-        previous = os.environ.get(ROUTING_FILE_ENV)
-        os.environ[ROUTING_FILE_ENV] = str(explicit_file)
-        try:
-            log(f"run plan: spawn policy resolved explicit cell target={target} model={model}")
-            return spawnlib.spawn_agent(
-                prompt, cwd, tier="explicit", timeout=timeout, log=log
-            ).text
-        finally:
-            if previous is None:
-                os.environ.pop(ROUTING_FILE_ENV, None)
-            else:
-                os.environ[ROUTING_FILE_ENV] = previous
-    finally:
-        explicit_file.unlink(missing_ok=True)
+    log(f"run plan: spawn policy resolved explicit cell target={target} model={model}")
+    with spawnlib.explicit_cell_override(target, model):
+        return spawnlib.spawn_agent(prompt, cwd, tier="explicit", timeout=timeout, log=log).text
 
 
 def _parse_fallback_chain(value: Optional[str]) -> Optional[List[str]]:

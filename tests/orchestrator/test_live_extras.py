@@ -368,57 +368,6 @@ class LiveSpawnLeanFlagsTests(unittest.TestCase):
             self.assertEqual(args[idx + 1], "project,local", role)
 
 
-class LiveSpawnClaudeFallbackTests(unittest.TestCase):
-    """brief 20260723-111700-claude-primary-fallback-inert: a claude-primary
-    LiveSpawn must thread --fallback-agent through to spawn_claude_p, the same
-    way a non-claude primary already threads it to spawn_agent."""
-
-    def _make_task(self):
-        return {"id": "TASK-001", "status": "pending", "files": ["src/foo.py"]}
-
-    def _call(self, agent="claude", fallback_agent=None):
-        captured = {}
-        fake_result = type(
-            "R", (), {"text": "ok", "usage": {}, "tools_used": [], "skills_used": [],
-                      "paused_s": 0.0, "session_id": ""}
-        )()
-        with patch("worktrail.orchestrator.live.dispatch.build_worker_prompt", return_value="prompt"), \
-             patch("worktrail.orchestrator.live.spawnlib.spawn_claude_p",
-                   side_effect=lambda *_, **kw: captured.update(kw) or fake_result):
-            spawn = live.LiveSpawn(
-                "spec-001", "docs/specs/001-spec", agent=agent, fallback_agent=fallback_agent
-            )
-            spawn("implement", self._make_task(), Path("/tmp/wt"))
-        return captured
-
-    def test_configured_fallback_agent_reaches_spawn_claude_p(self):
-        captured = self._call(agent="claude", fallback_agent="codex")
-        self.assertEqual(
-            captured.get("fallback_agent"), "codex",
-            "spawn_claude_p must receive --fallback-agent for a claude-primary run",
-        )
-
-    def test_no_fallback_configured_passes_none(self):
-        captured = self._call(agent="claude", fallback_agent=None)
-        self.assertIsNone(captured.get("fallback_agent"))
-
-    def test_fallback_chain_reaches_spawn_claude_p(self):
-        captured = {}
-        fake_result = type(
-            "R", (), {"text": "ok", "usage": {}, "tools_used": [], "skills_used": [],
-                      "paused_s": 0.0, "session_id": ""}
-        )()
-        with patch("worktrail.orchestrator.live.dispatch.build_worker_prompt", return_value="prompt"), \
-             patch("worktrail.orchestrator.live.spawnlib.spawn_claude_p",
-                   side_effect=lambda *_, **kw: captured.update(kw) or fake_result):
-            spawn = live.LiveSpawn(
-                "spec-001", "docs/specs/001-spec", agent="claude",
-                fallback_chain=["codex", "opencode"],
-            )
-            spawn("implement", self._make_task(), Path("/tmp/wt"))
-        self.assertEqual(captured.get("fallback_agent"), ["codex", "opencode"])
-
-
 class RunResearchSessionExcludesUserSettingSourceTests(unittest.TestCase):
     """Regression for handoff 20260712-214530: run_research_session's
     --fork-research pre-load spawn calls spawnlib.spawn_agent directly,
@@ -458,27 +407,18 @@ class RunResearchSessionExcludesUserSettingSourceTests(unittest.TestCase):
 
 class LiveSpawnCodexTests(unittest.TestCase):
     def test_codex_worker_skips_claude_only_flags(self):
+        # conftest.py seeds codex-sub (harness=codex) at t2-build; agent="codex"
+        # with no roles.review/role_agents override falls back to self.agent's
+        # own declared target (LiveSpawn.__call__'s _target_for_harness).
         captured = {}
         fake_result = type("R", (), {"text": "ok", "usage": {}, "tools_used": [], "skills_used": [], "paused_s": 0.0})()
         with patch("worktrail.orchestrator.live.dispatch.build_worker_prompt", return_value="prompt"), \
              patch("worktrail.orchestrator.live.spawnlib.spawn_agent", side_effect=lambda *_, **kw: captured.update(kw) or fake_result):
-            spawn = live.LiveSpawn("spec-001", "docs/specs/001-spec", agent="codex", model="gpt-5.3-codex")
+            spawn = live.LiveSpawn("spec-001", "docs/specs/001-spec", agent="codex")
             spawn("review", {"id": "TASK-001", "status": "pending", "files": ["src/foo.py"]}, Path("/tmp/wt"))
-        self.assertEqual(captured["agent"], "codex")
+        self.assertEqual(captured["prefer"], "codex-sub")
         self.assertEqual(captured["extra_args"], [])
         self.assertIsNone(captured["resume_session_id"])
-
-    def test_default_agent_threads_fallback_to_spawnlib(self):
-        captured = {}
-        fake_result = type("R", (), {"text": "ok", "usage": {}, "tools_used": [], "skills_used": [], "paused_s": 0.0})()
-        with patch("worktrail.orchestrator.live.dispatch.build_worker_prompt", return_value="prompt"), \
-             patch("worktrail.orchestrator.live.spawnlib.spawn_agent", side_effect=lambda *_, **kw: captured.update(kw) or fake_result):
-            spawn = live.LiveSpawn(
-                "spec-001", "docs/specs/001-spec", agent="codex",
-                model="gpt-5.4-mini", fallback_agent="opencode",
-            )
-            spawn("implement", {"id": "TASK-001", "status": "pending", "files": ["src/foo.py"]}, Path("/tmp/wt"))
-        self.assertEqual(captured["fallback_agent"], "opencode")
 
 
 class LiveSpawnRoleAgentsTests(unittest.TestCase):
@@ -517,31 +457,48 @@ class LiveSpawnRoleAgentsTests(unittest.TestCase):
         self.assertIn("--append-system-prompt", claude_captured.get("extra_args", []))
 
     def test_review_role_override_resolves_claude_default_model_not_run_model(self):
-        # No explicit role_models entry for "review" -- must fall back to
-        # claude's OWN default model, not the run's opencode default model
-        # (which would be an invalid model id for the claude CLI).
+        # No explicit role_models entry for "review" -- must resolve claude-sub's
+        # OWN configured tier cell (via tier/prefer), not carry over the run's
+        # opencode default in any way. role_agents translates the harness name
+        # to its declared target (LiveSpawn.__call__'s _target_for_harness).
         claude_captured, _ = self._call("review", agent="opencode", role_agents={"review": "claude"})
-        self.assertEqual(claude_captured.get("model"), live._default_model_for_agent("claude"))
+        self.assertEqual(claude_captured.get("prefer"), "claude-sub")
 
     def test_review_role_override_honors_explicit_role_model(self):
-        claude_captured, _ = self._call(
-            "review", agent="opencode",
-            role_agents={"review": "claude"}, role_models={"review": "opus"},
-        )
-        self.assertEqual(claude_captured.get("model"), "opus")
+        # role_models forces the explicit-cell-override path: the model reaches
+        # the (mocked-out) spawn_claude_p via a swapped WORKTRAIL_ROUTING_FILE,
+        # not a kwarg -- read the swapped file's content to verify it, the same
+        # way spawn_claude_p's own real implementation would.
+        written = {}
+
+        def _capture(*_a, **_kw):
+            path = os.environ.get("WORKTRAIL_ROUTING_FILE")
+            written["text"] = Path(path).read_text(encoding="utf-8") if path else None
+            return type("R", (), {"text": "ok", "usage": {}, "tools_used": [], "skills_used": [], "paused_s": 0.0})()
+
+        with patch("worktrail.orchestrator.live.dispatch.build_worker_prompt", return_value="prompt"), \
+             patch("worktrail.orchestrator.live.spawnlib.spawn_claude_p", side_effect=_capture):
+            spawn = live.LiveSpawn(
+                "spec-001", "docs/specs/001-spec", agent="opencode",
+                role_agents={"review": "claude"}, role_models={"review": "opus"},
+            )
+            spawn("review", self._make_task(), Path("/tmp/wt"))
+        self.assertIsNotNone(written["text"])
+        self.assertIn("model: opus", written["text"])
+        self.assertIn("claude-sub:", written["text"])
 
     def test_implement_role_stays_on_default_agent_when_only_review_overridden(self):
         claude_captured, agent_captured = self._call(
             "implement", agent="opencode", role_agents={"review": "claude"}
         )
         self.assertEqual(claude_captured, {}, "implement must not be routed to claude")
-        self.assertEqual(agent_captured.get("agent"), "opencode")
+        self.assertEqual(agent_captured.get("prefer"), "opencode-free")
 
     def test_no_role_agents_falls_back_to_run_agent_for_every_role(self):
         for role in ("implement", "review", "fix", "cleanup"):
             claude_captured, agent_captured = self._call(role, agent="opencode", role_agents=None)
             self.assertEqual(claude_captured, {}, role)
-            self.assertEqual(agent_captured.get("agent"), "opencode", role)
+            self.assertEqual(agent_captured.get("prefer"), "opencode-free", role)
 
 
 class RoleAgentModelHelperTests(unittest.TestCase):
@@ -662,212 +619,179 @@ class FormatAutomergeEvidenceNoteTests(unittest.TestCase):
 
 
 class LiveSpawnTierRoutingTests(unittest.TestCase):
-    """TASK-007: LiveSpawn.__call__ resolves every implement/fix/cleanup spawn's
-    (agent, model) via dispatch.agent_for's precedence (per-task override > role
-    override > tier match > run default); judgment roles (review here --
-    resolve/ci-fix/assembly-resolve never reach LiveSpawn.__call__) never
-    consult task["agent"] or self.tier_map (AC-011..AC-015)."""
+    """routing-target-selector task 4.1/4.2: LiveSpawn.__call__ resolves every
+    implement/fix/cleanup spawn's tier via dispatch.tier_for()'s precedence
+    (explicit task tier > purpose > complexity > default_tier); judgment
+    roles (review here -- resolve/ci-fix/assembly-resolve never reach
+    LiveSpawn.__call__) never consult task["tier"]/purpose/complexity."""
 
-    TIER_MAP = {("complex", "backend"): {"agent_cli": "codex", "agent_model": None}}
+    ROUTING = (
+        "targets:\n"
+        "  claude-sub: {harness: claude, pool: subscription}\n"
+        "  codex-sub: {harness: codex, pool: subscription}\n"
+        "tiers:\n"
+        "  complex:\n"
+        "    codex-sub: {model: codex-complex-model}\n"
+        "  trivial:\n"
+        "    claude-sub: {model: claude-trivial-model}\n"
+        "default_tier: trivial\n"
+    )
 
     def _make_task(self, **overrides):
         task = {"id": "TASK-001", "status": "pending", "files": ["src/foo.py"]}
         task.update(overrides)
         return task
 
-    def _call(self, role, task, agent="claude", role_agents=None, role_models=None, tier_map=None):
+    def _call(self, role, task, agent="claude", role_agents=None, role_models=None, purposes=None):
         claude_captured = {}
         agent_captured = {}
         fake_result = type(
             "R", (), {"text": "ok", "usage": {}, "tools_used": [], "skills_used": [], "paused_s": 0.0}
         )()
-        with patch("worktrail.orchestrator.live.dispatch.build_worker_prompt", return_value="prompt"), \
-             patch("worktrail.orchestrator.live.spawnlib.spawn_claude_p",
-                   side_effect=lambda *_, **kw: claude_captured.update(kw) or fake_result), \
-             patch("worktrail.orchestrator.live.spawnlib.spawn_agent",
-                   side_effect=lambda *_, **kw: agent_captured.update(kw) or fake_result):
-            spawn = live.LiveSpawn(
-                "spec-001", "docs/specs/001-spec",
-                agent=agent, role_agents=role_agents, role_models=role_models, tier_map=tier_map,
-            )
-            spawn(role, task, Path("/tmp/wt"))
+        with tempfile.TemporaryDirectory() as tmp:
+            routing_file = Path(tmp) / "routing.yaml"
+            routing_file.write_text(self.ROUTING, encoding="utf-8")
+            with patch.dict(os.environ, {"GO_ROUTING_FILE": str(routing_file)}), \
+                 patch("worktrail.orchestrator.live.dispatch.build_worker_prompt", return_value="prompt"), \
+                 patch("worktrail.orchestrator.live.spawnlib.spawn_claude_p",
+                       side_effect=lambda *_, **kw: claude_captured.update(kw) or fake_result), \
+                 patch("worktrail.orchestrator.live.spawnlib.spawn_agent",
+                       side_effect=lambda *_, **kw: agent_captured.update(kw) or fake_result):
+                spawn = live.LiveSpawn(
+                    "spec-001", "docs/specs/001-spec",
+                    agent=agent, role_agents=role_agents, role_models=role_models,
+                    purpose_tier_map=purposes,
+                )
+                spawn(role, task, Path("/tmp/wt"))
         return spawn, claude_captured, agent_captured
 
-    def test_tier_match_selects_tier_agent_for_implement(self):
-        """AC-011: tier match, no per-task/role override -> tier's agent, and its
-        OWN default model when the tier entry left the model unpinned."""
-        task = self._make_task(complexity="complex", domain="backend")
-        _, claude_captured, agent_captured = self._call(
-            "implement", task, agent="claude", tier_map=self.TIER_MAP,
-        )
+    def test_complexity_selects_tier_row_for_implement(self):
+        task = self._make_task(complexity="complex")
+        _, claude_captured, agent_captured = self._call("implement", task, agent="claude")
         self.assertEqual(claude_captured, {}, "must not spawn via the claude path")
-        self.assertEqual(agent_captured.get("agent"), "codex")
-        self.assertEqual(agent_captured.get("model"), live._default_model_for_agent("codex"))
+        self.assertEqual(agent_captured.get("tier"), "complex")
 
-    def test_tier_match_honors_a_pinned_model(self):
-        tier_map = {("complex", "backend"): {"agent_cli": "codex", "agent_model": "gpt-tier"}}
-        task = self._make_task(complexity="complex", domain="backend")
-        _, _, agent_captured = self._call("implement", task, agent="claude", tier_map=tier_map)
-        self.assertEqual(agent_captured.get("model"), "gpt-tier")
-
-    def test_no_tier_match_falls_through_to_run_default(self):
-        task = self._make_task(complexity="trivial", domain="frontend")
-        _, claude_captured, agent_captured = self._call(
-            "implement", task, agent="claude", tier_map=self.TIER_MAP,
-        )
+    def test_no_complexity_falls_through_to_default_tier(self):
+        task = self._make_task()
+        _, claude_captured, agent_captured = self._call("implement", task, agent="claude")
         self.assertEqual(agent_captured, {})
-        self.assertTrue(claude_captured)
+        self.assertEqual(claude_captured.get("tier"), "trivial")
 
-    def test_per_task_override_outranks_tier_match(self):
-        """AC-012."""
-        task = self._make_task(complexity="complex", domain="backend", agent="opencode")
+    def test_explicit_task_tier_outranks_complexity(self):
+        task = self._make_task(complexity="complex", tier="trivial")
+        _, claude_captured, agent_captured = self._call("implement", task, agent="claude")
+        self.assertEqual(agent_captured, {})
+        self.assertEqual(claude_captured.get("tier"), "trivial")
+
+    def test_purpose_outranks_complexity(self):
+        task = self._make_task(complexity="trivial", purpose="scaffolding")
         _, claude_captured, agent_captured = self._call(
-            "implement", task, agent="claude", tier_map=self.TIER_MAP,
+            "implement", task, agent="claude", purposes={"scaffolding": "complex"},
         )
         self.assertEqual(claude_captured, {})
-        self.assertEqual(agent_captured.get("agent"), "opencode")
+        self.assertEqual(agent_captured.get("tier"), "complex")
 
-    def test_role_override_outranks_tier_match(self):
-        """AC-013."""
-        task = self._make_task(complexity="complex", domain="backend")
-        _, claude_captured, agent_captured = self._call(
-            "implement", task, agent="claude",
-            role_agents={"implement": "opencode"}, tier_map=self.TIER_MAP,
-        )
-        self.assertEqual(claude_captured, {})
-        self.assertEqual(agent_captured.get("agent"), "opencode")
-
-    def test_fix_and_cleanup_also_consult_tier_map(self):
+    def test_fix_and_cleanup_also_consult_complexity(self):
         """Only review/resolve/ci-fix/assembly-resolve are judgment roles;
-        implement/fix/cleanup all consult the tier map the same way."""
+        implement/fix/cleanup all consult complexity the same way."""
         for role in ("fix", "cleanup"):
-            task = self._make_task(complexity="complex", domain="backend")
-            _, claude_captured, agent_captured = self._call(
-                role, task, agent="claude", tier_map=self.TIER_MAP,
-            )
+            task = self._make_task(complexity="complex")
+            _, claude_captured, agent_captured = self._call(role, task, agent="claude")
             self.assertEqual(claude_captured, {}, role)
-            self.assertEqual(agent_captured.get("agent"), "codex", role)
+            self.assertEqual(agent_captured.get("tier"), "complex", role)
 
-    def test_review_ignores_tier_match_and_per_task_override(self):
-        """AC-014: review stays on self.agent (its run default) even with a
-        matching tier AND a per-task override both present."""
-        task = self._make_task(complexity="complex", domain="backend", agent="opencode")
+    def test_review_ignores_complexity_and_purpose(self):
+        """review (judgment role) never consults task purpose/complexity --
+        only routing.roles.review, else its own review-specific default
+        (t1-deep when declared, else default_tier; ROUTING declares neither
+        routing.roles.review nor a t1-deep row, so this falls to trivial)."""
+        task = self._make_task(complexity="complex", purpose="scaffolding")
         _, claude_captured, agent_captured = self._call(
-            "review", task, agent="claude", tier_map=self.TIER_MAP,
+            "review", task, agent="claude", purposes={"scaffolding": "complex"},
         )
         self.assertEqual(agent_captured, {})
-        self.assertTrue(claude_captured, "review must still spawn via self.agent (claude)")
+        self.assertEqual(claude_captured.get("tier"), "trivial")
 
-    def test_review_role_override_still_applies_over_tier(self):
-        """A role_agents override for review IS still consulted (only the tier
-        match and the per-task override are skipped for judgment roles)."""
-        task = self._make_task(complexity="complex", domain="backend", agent="opencode")
-        _, claude_captured, agent_captured = self._call(
-            "review", task, agent="opencode",
-            role_agents={"review": "claude"}, tier_map=self.TIER_MAP,
-        )
-        self.assertEqual(agent_captured, {})
-        self.assertTrue(claude_captured)
-
-    def test_missing_complexity_domain_keys_no_keyerror(self):
-        """Edge case (REQ-013): a ScriptedSpawn-style task dict with no
-        complexity/domain keys at all falls through to the run default,
-        never raising KeyError."""
+    def test_missing_complexity_no_keyerror(self):
+        """Edge case: a ScriptedSpawn-style task dict with no complexity key
+        at all falls through to default_tier, never raising KeyError."""
         task = {"id": "TASK-001", "status": "pending", "files": ["src/foo.py"]}
-        _, claude_captured, agent_captured = self._call(
-            "implement", task, agent="claude", tier_map=self.TIER_MAP,
-        )
+        _, claude_captured, agent_captured = self._call("implement", task, agent="claude")
         self.assertEqual(agent_captured, {})
-        self.assertTrue(claude_captured)
+        self.assertEqual(claude_captured.get("tier"), "trivial")
 
 
 class LiveSpawnEffortTests(unittest.TestCase):
-    """model-tier-routing 3.3: LiveSpawn threads effort through the same
-    dispatch.agent_for() resolution as agent/model, down to the spawn call."""
+    """LiveSpawn.__call__'s own effort responsibility is now narrow: a tier
+    cell's own declared effort is resolved entirely inside spawn_agent/
+    spawn_claude_p (opaque to LiveSpawn, covered by spawnlib's own test
+    suite) -- the only effort behavior LiveSpawn itself owns is the explicit
+    `--effort`/`--model-map` override path, which threads its value through
+    `spawnlib.explicit_cell_override()`'s throwaway routing file, not a kwarg."""
 
     def _make_task(self, **overrides):
         task = {"id": "TASK-001", "status": "pending", "files": ["src/foo.py"]}
         task.update(overrides)
         return task
 
-    def _call(self, role, task, agent="claude", effort=None, role_agents=None, tier_map=None):
-        claude_captured = {}
-        agent_captured = {}
-        fake_result = type(
-            "R", (), {"text": "ok", "usage": {}, "tools_used": [], "skills_used": [], "paused_s": 0.0}
-        )()
+    def _call_capturing_routing_file(self, role, task, **kwargs):
+        written = {}
+
+        def _capture(*_a, **_kw):
+            path = os.environ.get("WORKTRAIL_ROUTING_FILE")
+            written["text"] = Path(path).read_text(encoding="utf-8") if path else None
+            return type("R", (), {"text": "ok", "usage": {}, "tools_used": [], "skills_used": [], "paused_s": 0.0})()
+
         with patch("worktrail.orchestrator.live.dispatch.build_worker_prompt", return_value="prompt"), \
-             patch("worktrail.orchestrator.live.spawnlib.spawn_claude_p",
-                   side_effect=lambda *_, **kw: claude_captured.update(kw) or fake_result), \
-             patch("worktrail.orchestrator.live.spawnlib.spawn_agent",
-                   side_effect=lambda *_, **kw: agent_captured.update(kw) or fake_result):
-            spawn = live.LiveSpawn(
-                "spec-001", "docs/specs/001-spec",
-                agent=agent, effort=effort, role_agents=role_agents, tier_map=tier_map,
-            )
+             patch("worktrail.orchestrator.live.spawnlib.spawn_claude_p", side_effect=_capture), \
+             patch("worktrail.orchestrator.live.spawnlib.spawn_agent", side_effect=_capture):
+            spawn = live.LiveSpawn("spec-001", "docs/specs/001-spec", **kwargs)
             spawn(role, task, Path("/tmp/wt"))
-        return claude_captured, agent_captured
+        return written.get("text")
 
-    def test_run_default_effort_reaches_spawn_claude_p(self):
-        task = self._make_task()
-        claude_captured, _ = self._call("implement", task, agent="claude", effort="high")
-        self.assertEqual(claude_captured.get("effort"), "high")
-
-    def test_no_effort_configured_passes_none(self):
-        task = self._make_task()
-        claude_captured, _ = self._call("implement", task, agent="claude")
-        self.assertIsNone(claude_captured.get("effort"))
-
-    def test_tier_effort_reaches_spawn_agent(self):
-        """A configured tier's effort (model-tier-routing 3.2's dispatch.agent_for
-        resolved shape) reaches the spawned command."""
-        tier_map = {
-            ("complex", "backend"): {"agent_cli": "codex", "agent_model": None, "effort": "low"}
-        }
-        task = self._make_task(complexity="complex", domain="backend")
-        _, agent_captured = self._call(
-            "implement", task, agent="claude", tier_map=tier_map,
+    def test_run_default_effort_triggers_explicit_override(self):
+        text = self._call_capturing_routing_file(
+            "implement", self._make_task(), agent="claude", effort="high",
         )
-        self.assertEqual(agent_captured.get("agent"), "codex")
-        self.assertEqual(agent_captured.get("effort"), "low")
+        self.assertIsNotNone(text, "an effort override must route through explicit_cell_override")
+        self.assertIn("effort: high", text)
 
-    def test_tier_effort_outranks_run_default(self):
-        tier_map = {
-            ("complex", "backend"): {"agent_cli": "codex", "agent_model": None, "effort": "low"}
-        }
-        task = self._make_task(complexity="complex", domain="backend")
-        _, agent_captured = self._call(
-            "implement", task, agent="claude", effort="high", tier_map=tier_map,
-        )
-        self.assertEqual(agent_captured.get("effort"), "low")
+    def test_no_effort_or_model_configured_skips_the_override_path(self):
+        text = self._call_capturing_routing_file("implement", self._make_task(), agent="claude")
+        self.assertIsNone(text, "no override configured -- no routing file should be swapped in")
 
-    def test_role_override_effort_reaches_spawn_agent(self):
-        role_agents = {"implement": {"agent_cli": "opencode", "agent_model": None, "effort": "medium"}}
-        task = self._make_task()
-        _, agent_captured = self._call(
-            "implement", task, agent="claude", role_agents=role_agents,
+    def test_role_model_override_triggers_explicit_override(self):
+        text = self._call_capturing_routing_file(
+            "implement", self._make_task(), agent="claude",
+            role_models={"implement": "opus"},
         )
-        self.assertEqual(agent_captured.get("agent"), "opencode")
-        self.assertEqual(agent_captured.get("effort"), "medium")
+        self.assertIn("model: opus", text)
 
-    def test_run_default_effort_not_carried_to_a_different_pinned_agent(self):
-        """No default_effort_for_agent() equivalent exists (unlike model): a
-        role/tier pinned to a different agent than the run default only gets
-        an effort when the resolution itself carried one."""
-        tier_map = {("complex", "backend"): {"agent_cli": "codex", "agent_model": None}}
-        task = self._make_task(complexity="complex", domain="backend")
-        _, agent_captured = self._call(
-            "implement", task, agent="claude", effort="high", tier_map=tier_map,
+    def test_run_default_effort_not_applied_to_judgment_roles(self):
+        """Unlike role_models (still consulted for review), the RUN-level
+        --effort default is a per-task-worker concept and does not apply to
+        judgment roles (review here -- resolve/ci-fix/assembly-resolve never
+        reach LiveSpawn.__call__) -- no override configured means no swap."""
+        text = self._call_capturing_routing_file(
+            "review", self._make_task(), agent="claude", effort="high",
         )
-        self.assertEqual(agent_captured.get("agent"), "codex")
-        self.assertIsNone(agent_captured.get("effort"))
+        self.assertIsNone(text)
+
+    def test_review_role_model_override_still_applies(self):
+        """role_models has no JUDGMENT_ROLES restriction -- an explicit
+        --model-map review=... override still works."""
+        text = self._call_capturing_routing_file(
+            "review", self._make_task(), agent="claude",
+            role_models={"review": "opus"},
+        )
+        self.assertIn("model: opus", text)
 
 
 class LiveSpawnPreSpecParityTests(unittest.TestCase):
-    """AC-016/REQ-016/REQ-019: with no tier_map/fallback_chain configured, every
-    role's resolved agent is exactly `self.role_agents.get(role, self.agent)` --
-    the pre-spec truth table -- so an existing cassette/golden run (built before
-    TASK-007) still dispatches identically."""
+    """With no role_agents/role_models/purpose_tier_map configured, every
+    role's resolved target is exactly the run's own --agent, translated to
+    its declared routing.targets entry -- the pre-spec parity every
+    construction site that never configures roles/role_agents depends on."""
 
     def _make_task(self):
         return {"id": "TASK-001", "status": "pending", "files": ["src/foo.py"]}
@@ -886,231 +810,62 @@ class LiveSpawnPreSpecParityTests(unittest.TestCase):
             spawn = live.LiveSpawn("spec-001", "docs/specs/001-spec", agent=agent, role_agents=role_agents)
             spawn(role, self._make_task(), Path("/tmp/wt"))
         if claude_captured:
-            return "claude"
-        return agent_captured.get("agent")
+            return claude_captured.get("prefer")
+        return agent_captured.get("prefer")
 
     def test_parity_formula_for_every_role(self):
+        # conftest.py seeds opencode-free/claude-sub; role_agents overrides
+        # review to claude, everything else stays on the run's own agent.
         role_agents = {"review": "claude"}
         for role in ("implement", "review", "fix", "cleanup"):
-            expected = role_agents.get(role, "opencode")
+            expected = "claude-sub" if role == "review" else "opencode-free"
             self.assertEqual(self._resolved(role, "opencode", role_agents), expected, role)
 
     def test_parity_formula_with_no_role_agents_at_all(self):
         for role in ("implement", "review", "fix", "cleanup"):
-            self.assertEqual(self._resolved(role, "codex", None), "codex", role)
+            self.assertEqual(self._resolved(role, "codex", None), "codex-sub", role)
 
 
-class LiveSpawnFallbackChainTests(unittest.TestCase):
-    """AC-017/REQ-018: a configured ordered fallback chain reaches spawn_agent
-    intact; with no chain configured, the legacy single --fallback-agent
-    behavior is unchanged."""
+class LiveSpawnServedTargetCorrectionTests(unittest.TestCase):
+    """last_agent (read by the journal-entry write sites in _commit_step)
+    reflects the actually-served HARNESS -- SpawnResult.served_harness, task
+    4.2's "record the served cell" -- correcting the pre-call peek label when
+    spawn_agent's own internal same-row re-selection (task 3.4) hops to a
+    different cell than the one peeked."""
 
-    def _call(self, agent="opencode", fallback_agent=None, fallback_chain=None):
-        captured = {}
+    def _call(self, served_harness):
         fake_result = type(
-            "R", (), {"text": "ok", "usage": {}, "tools_used": [], "skills_used": [], "paused_s": 0.0}
+            "R", (), {
+                "text": "ok", "usage": {}, "tools_used": [], "skills_used": [], "paused_s": 0.0,
+                "served_target": "whatever", "served_harness": served_harness,
+            },
         )()
-        with patch("worktrail.orchestrator.live.dispatch.build_worker_prompt", return_value="prompt"), \
-             patch("worktrail.orchestrator.live.spawnlib.spawn_agent",
-                   side_effect=lambda *_, **kw: captured.update(kw) or fake_result):
-            spawn = live.LiveSpawn(
-                "spec-001", "docs/specs/001-spec", agent=agent,
-                fallback_agent=fallback_agent, fallback_chain=fallback_chain,
-            )
-            spawn("implement", {"id": "TASK-001", "status": "pending", "files": ["src/foo.py"]}, Path("/tmp/wt"))
-        return captured
-
-    def test_configured_three_entry_chain_reaches_spawn_agent_intact(self):
-        # "opencode-2" is a synthetic hop name (this test only proves the
-        # chain list threads through unmodified, it isn't a real agent, and
-        # `routing.agents` validation would drop it as an unsupported literal
-        # anyway) -- `_serving_agent_guess`'s best-effort model lookup for
-        # each hop must tolerate that (task 3.3 made an unconfigured/unknown
-        # agent raise instead of silently defaulting).
-        chain = ["codex", "opencode-2", "claude"]
-        captured = self._call(agent="opencode", fallback_chain=chain)
-        self.assertEqual(captured.get("fallback_agent"), chain)
-
-    def test_no_chain_falls_back_to_legacy_single_fallback_agent(self):
-        captured = self._call(agent="opencode", fallback_agent="codex", fallback_chain=None)
-        self.assertEqual(captured.get("fallback_agent"), "codex")
-
-    def test_chain_wins_over_legacy_single_fallback_when_both_configured(self):
-        captured = self._call(agent="opencode", fallback_agent="claude", fallback_chain=["codex"])
-        self.assertEqual(captured.get("fallback_agent"), ["codex"])
-
-    def test_no_fallback_at_all_passes_none(self):
-        captured = self._call(agent="opencode", fallback_agent=None, fallback_chain=None)
-        self.assertIsNone(captured.get("fallback_agent"))
-
-    def test_role_overridden_non_judgment_agent_still_gets_fallback(self):
-        """A role/tier override on a non-judgment role (implement/fix/cleanup)
-        away from self.agent still gets the run's configured fallback chain --
-        a pinned tier/role model going unavailable must not leave the task with
-        zero automatic recovery (brief 20260805-144349)."""
-        captured = {}
-        fake_result = type(
-            "R", (), {"text": "ok", "usage": {}, "tools_used": [], "skills_used": [], "paused_s": 0.0}
-        )()
-        with patch("worktrail.orchestrator.live.dispatch.build_worker_prompt", return_value="prompt"), \
-             patch("worktrail.orchestrator.live.spawnlib.spawn_agent",
-                   side_effect=lambda *_, **kw: captured.update(kw) or fake_result):
-            spawn = live.LiveSpawn(
-                "spec-001", "docs/specs/001-spec", agent="claude",
-                role_agents={"implement": "opencode"}, fallback_chain=["codex"],
-            )
-            spawn("implement", {"id": "TASK-001", "status": "pending", "files": ["src/foo.py"]}, Path("/tmp/wt"))
-        self.assertEqual(captured.get("fallback_agent"), ["codex"])
-
-    def test_tier_overridden_fix_and_cleanup_also_get_fallback(self):
-        """Same as implement above, for fix/cleanup -- all non-judgment roles
-        share the extended gate."""
-        tier_map = {("complex", "backend"): {"agent_cli": "opencode", "agent_model": None}}
-        for role in ("fix", "cleanup"):
-            captured = {}
-            fake_result = type(
-                "R", (), {"text": "ok", "usage": {}, "tools_used": [], "skills_used": [], "paused_s": 0.0}
-            )()
-            with patch("worktrail.orchestrator.live.dispatch.build_worker_prompt", return_value="prompt"), \
-                 patch("worktrail.orchestrator.live.spawnlib.spawn_agent",
-                       side_effect=lambda *_, **kw: captured.update(kw) or fake_result):
-                spawn = live.LiveSpawn(
-                    "spec-001", "docs/specs/001-spec", agent="claude",
-                    tier_map=tier_map, fallback_chain=["codex"],
-                )
-                spawn(
-                    role,
-                    {
-                        "id": "TASK-001", "status": "pending", "files": ["src/foo.py"],
-                        "complexity": "complex", "domain": "backend",
-                    },
-                    Path("/tmp/wt"),
-                )
-            self.assertEqual(captured.get("fallback_agent"), ["codex"], role)
-
-    def test_role_overridden_judgment_agent_gets_no_fallback(self):
-        """A judgment role (review here -- resolve/ci-fix/assembly-resolve never
-        reach LiveSpawn.__call__) pinned to a different agent than self.agent
-        keeps the old no-fallback gating: a silent fallback must never erode
-        the independent-reviewer guarantee (13.3, DEC-003)."""
-        claude_captured = {}
-        agent_captured = {}
-        fake_result = type(
-            "R", (), {"text": "ok", "usage": {}, "tools_used": [], "skills_used": [], "paused_s": 0.0}
-        )()
-        with patch("worktrail.orchestrator.live.dispatch.build_worker_prompt", return_value="prompt"), \
-             patch("worktrail.orchestrator.live.spawnlib.spawn_claude_p",
-                   side_effect=lambda *_, **kw: claude_captured.update(kw) or fake_result), \
-             patch("worktrail.orchestrator.live.spawnlib.spawn_agent",
-                   side_effect=lambda *_, **kw: agent_captured.update(kw) or fake_result):
-            spawn = live.LiveSpawn(
-                "spec-001", "docs/specs/001-spec", agent="opencode",
-                role_agents={"review": "claude"}, fallback_chain=["codex"],
-            )
-            spawn("review", {"id": "TASK-001", "status": "pending", "files": ["src/foo.py"]}, Path("/tmp/wt"))
-        self.assertEqual(agent_captured, {}, "review must spawn via the claude path")
-        self.assertIsNone(claude_captured.get("fallback_agent"))
-
-    def test_review_on_run_default_agent_still_gets_fallback(self):
-        """A judgment role NOT pinned away from self.agent (the common case --
-        no role_agents override for review) is unaffected: fallback still
-        applies exactly as it did pre-spec."""
-        claude_captured = {}
-        fake_result = type(
-            "R", (), {"text": "ok", "usage": {}, "tools_used": [], "skills_used": [], "paused_s": 0.0}
-        )()
-        with patch("worktrail.orchestrator.live.dispatch.build_worker_prompt", return_value="prompt"), \
-             patch("worktrail.orchestrator.live.spawnlib.spawn_claude_p",
-                   side_effect=lambda *_, **kw: claude_captured.update(kw) or fake_result):
-            spawn = live.LiveSpawn(
-                "spec-001", "docs/specs/001-spec", agent="claude", fallback_chain=["codex"],
-            )
-            spawn("review", {"id": "TASK-001", "status": "pending", "files": ["src/foo.py"]}, Path("/tmp/wt"))
-        self.assertEqual(claude_captured.get("fallback_agent"), ["codex"])
-
-
-class LiveSpawnServingAgentLabelTests(unittest.TestCase):
-    """AC-026/REQ-027: self.last_agent (read by the journal-entry write sites in
-    _commit_step) reflects the actual capacity-gated serving agent, including
-    when the primary hop is gated and a configured fallback hop serves instead."""
-
-    def _call(self, agent="opencode", fallback_chain=None, gated_agents=()):
-        fake_result = type(
-            "R", (), {"text": "ok", "usage": {}, "tools_used": [], "skills_used": [], "paused_s": 0.0}
-        )()
-
-        def fake_check(cand_agent, cand_model, *a, **kw):
-            if cand_agent in gated_agents:
-                raise agent_capacity.ProviderUnavailable(f"{cand_agent}:{cand_model}", {})
-
         with patch("worktrail.orchestrator.live.dispatch.build_worker_prompt", return_value="prompt"), \
              patch("worktrail.orchestrator.live.spawnlib.spawn_agent", return_value=fake_result), \
-             patch("worktrail.orchestrator.live.agent_capacity.check", side_effect=fake_check):
-            spawn = live.LiveSpawn(
-                "spec-001", "docs/specs/001-spec", agent=agent, fallback_chain=fallback_chain,
-            )
+             patch("worktrail.orchestrator.live.spawnlib.spawn_claude_p", return_value=fake_result):
+            spawn = live.LiveSpawn("spec-001", "docs/specs/001-spec", agent="opencode")
             spawn("implement", {"id": "TASK-001", "status": "pending", "files": ["src/foo.py"]}, Path("/tmp/wt"))
         return spawn
 
-    def test_no_gate_serving_agent_is_the_primary(self):
-        spawn = self._call(agent="opencode", fallback_chain=["codex"], gated_agents=())
-        self.assertEqual(spawn.last_agent, "opencode")
-
-    def test_primary_gated_serving_agent_is_the_fallback_hop(self):
-        spawn = self._call(agent="opencode", fallback_chain=["codex"], gated_agents=("opencode",))
+    def test_served_harness_corrects_the_peeked_label_after_a_hop(self):
+        spawn = self._call(served_harness="codex")
         self.assertEqual(spawn.last_agent, "codex")
 
-    def test_no_fallback_configured_label_stays_the_primary_even_if_gated(self):
-        # No chain configured -- spawn_agent's own internal check is authoritative
-        # here (this is a best-effort label, not a re-implementation of gating).
-        spawn = self._call(agent="opencode", fallback_chain=None, gated_agents=("opencode",))
+    def test_served_harness_matching_the_peek_is_a_no_op(self):
+        spawn = self._call(served_harness="opencode")
         self.assertEqual(spawn.last_agent, "opencode")
 
-    def test_tier_resolved_primary_gated_serving_agent_is_fallback_hop(self):
-        """Cost-visibility (brief 20260805-144349): a cheap tier-pinned agent
-        that falls back to a more expensive configured hop must show up as
-        such in the journal's `agent` label (last_agent), not silently stay
-        labeled as the (never-actually-serving) tier-pinned agent -- this is
-        the existing last_agent/_serving_agent_guess machinery, now reachable
-        for tier-resolved spawns since the fallback gate covers them too."""
-        tier_map = {("cheap", "trivia"): {"agent_cli": "opencode", "agent_model": None}}
-        fake_result = type(
-            "R", (), {"text": "ok", "usage": {}, "tools_used": [], "skills_used": [], "paused_s": 0.0}
-        )()
-
-        def fake_check(cand_agent, cand_model, *_a, **_kw):
-            if cand_agent == "opencode":
-                raise agent_capacity.ProviderUnavailable("opencode:x", {})
-
-        with patch("worktrail.orchestrator.live.dispatch.build_worker_prompt", return_value="prompt"), \
-             patch("worktrail.orchestrator.live.spawnlib.spawn_agent", return_value=fake_result), \
-             patch("worktrail.orchestrator.live.agent_capacity.check", side_effect=fake_check):
-            spawn = live.LiveSpawn(
-                "spec-001", "docs/specs/001-spec", agent="claude",
-                tier_map=tier_map, fallback_chain=["codex"],
-            )
-            spawn(
-                "implement",
-                {
-                    "id": "TASK-001", "status": "pending", "files": ["src/foo.py"],
-                    "complexity": "cheap", "domain": "trivia",
-                },
-                Path("/tmp/wt"),
-            )
-        self.assertEqual(spawn.last_agent, "codex")
-
-    def test_serving_agent_guess_never_raises_on_capacity_error(self):
-        """Best-effort: an unexpected error reading the capacity cache must not
-        propagate out of __call__ -- last_agent just stays the primary."""
+    def test_a_result_double_with_no_served_harness_field_keeps_the_peeked_label(self):
+        """A caller/test double patching spawn_agent out with its own minimal
+        fake result object (no served_harness attribute) must not crash --
+        the peeked label from before the call is kept as-is."""
         fake_result = type(
             "R", (), {"text": "ok", "usage": {}, "tools_used": [], "skills_used": [], "paused_s": 0.0}
         )()
         with patch("worktrail.orchestrator.live.dispatch.build_worker_prompt", return_value="prompt"), \
              patch("worktrail.orchestrator.live.spawnlib.spawn_agent", return_value=fake_result), \
-             patch("worktrail.orchestrator.live.agent_capacity.check", side_effect=RuntimeError("cache corrupted")):
-            spawn = live.LiveSpawn(
-                "spec-001", "docs/specs/001-spec", agent="opencode", fallback_chain=["codex"],
-            )
+             patch("worktrail.orchestrator.live.spawnlib.spawn_claude_p", return_value=fake_result):
+            spawn = live.LiveSpawn("spec-001", "docs/specs/001-spec", agent="opencode")
             result = spawn(
                 "implement", {"id": "TASK-001", "status": "pending", "files": ["src/foo.py"]}, Path("/tmp/wt")
             )
