@@ -369,8 +369,10 @@ class ProposeTests(unittest.TestCase):
         with mock.patch.dict("os.environ", {"WORKTRAIL_ROUTING_FILE": str(routing_path)}):
             rc, result = self._run_propose(repo)
         self.assertEqual(rc, 0)
-        self.assertIn(
-            "routing.yaml (machine-wide, worktrail-routing --init)", result["written"])
+        written_routing = next(
+            w for w in result["written"] if w.startswith("routing.yaml"))
+        self.assertIn("worktrail-routing --init", written_routing)
+        self.assertIn("worktrail-routing --check", written_routing)
         self.assertTrue(routing_path.is_file())
         self.assertEqual(routing_path.read_text(), STARTER_ROUTING_YAML)
 
@@ -381,8 +383,8 @@ class ProposeTests(unittest.TestCase):
         with mock.patch.dict("os.environ", {"WORKTRAIL_ROUTING_FILE": str(routing_path)}):
             rc, result = self._run_propose(repo)
         self.assertEqual(rc, 0)
-        self.assertNotIn(
-            "routing.yaml (machine-wide, worktrail-routing --init)", result["written"])
+        self.assertFalse(
+            any(w.startswith("routing.yaml") for w in result["written"]))
         self.assertTrue(
             any("routing.yaml" in s and "already exists" in s for s in result["skipped"]))
         self.assertEqual(

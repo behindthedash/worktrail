@@ -1063,7 +1063,9 @@ def cmd_propose(args: argparse.Namespace) -> int:
     if warn:
         warnings.append(warn)
     elif changed:
-        written.append("routing.yaml (machine-wide, worktrail-routing --init)")
+        written.append(
+            "routing.yaml (machine-wide, worktrail-routing --init -- run "
+            "`worktrail-routing --check` to validate)")
     else:
         skipped.append("routing.yaml (machine-wide, already exists)")
 
