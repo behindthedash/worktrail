@@ -153,3 +153,19 @@ test pins that the template passes the loader and contains no `opencode/` model 
 - Should `purposes` gain a per-repo override (repo-local `routing:` block already wins whole)?
   Not needed for this change; the front-end/back-end/design/explore/categorize entries land in
   the machine-wide file.
+
+## Operator follow-ups (outside this repo)
+
+- **Done (2026-08-28):** ran `worktrail-routing --migrate` against this machine's live
+  `~/.worktrail/routing.yaml` (backed up to `routing.yaml.bak`); `worktrail-routing --check`
+  now passes with one pre-existing warning (an `opencode-free` t1-deep cell's model id lacks a
+  `-free`/`:free` suffix -- not a gate). The operator had already swapped the file's
+  `opencode/x-preview-f-free` id for `opencode/muse-spark-1.2-contributor-free` before this
+  migration ran (a 2026-08-27 hand-edit, per the file's own comment), so `--check` reported no
+  `model_unavailable` gates on this pass -- the retired id named in task 8.2 was already gone
+  from the live file by the time `--migrate` shipped.
+- **Still open:** `~/bin/worktrail-drain-nightly.sh` (devops repo) hardcodes `--agent`/
+  `--fallback-agent` flags. These still work post-migration since `drain.py`'s CLI flags
+  continued to accept a harness name, but the script should be updated to name a target
+  (e.g. `claude-sub`) once operator habits catch up, per this change's own migration away
+  from bare harness identity.
