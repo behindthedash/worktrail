@@ -25,6 +25,73 @@ os.environ.setdefault("GO_AGENT_CAPACITY_CACHE", os.path.join(tempfile.mkdtemp()
 
 Proc = namedtuple("Proc", "returncode stdout stderr")
 
+
+def _cell(harness="claude", model=None, effort=None, pool="subscription", auth=None, target=None):
+    """Build a `Cell` for a `build_cmd`/`build_child_env` test without every
+    call site spelling out all six fields."""
+    return spawnlib.Cell(
+        target=target or harness, harness=harness, model=model, effort=effort,
+        pool=pool, auth=auth,
+    )
+
+
+def _target(harness, pool="subscription", api_opt_in=False, auth=None):
+    return {"harness": harness, "pool": pool, "api_opt_in": api_opt_in, "auth": auth}
+
+
+def _routing(targets, tiers, default_tier=None):
+    """A `resolve_routing()`-shaped dict (`{targets, tiers, roles, purposes,
+    default_tier, drain}`) for patching `spawnlib.resolve_routing` in a
+    `spawn_agent`/`spawn_claude_p` test -- mirrors `tests/runtime/test_selection.py`'s
+    own `_routing`/`_target` helpers."""
+    return {
+        "targets": targets, "tiers": tiers, "roles": {}, "purposes": {},
+        "default_tier": default_tier, "drain": {},
+    }
+
+
+# Single-target row: every session-limit hit on it has nowhere else to hop,
+# so it exercises the sleep-and-retry-the-same-cell path.
+SINGLE_CLAUDE_ROUTING = _routing(
+    {"claude-sub": _target("claude")},
+    {"t2-build": {"claude-sub": {"model": "sonnet", "effort": None}}},
+    default_tier="t2-build",
+)
+
+# Two-target row (claude first, opencode second): a session-limit hit on the
+# first cell has somewhere to hop.
+CLAUDE_THEN_OPENCODE_ROUTING = _routing(
+    {
+        "claude-sub": _target("claude"),
+        "opencode-free": _target("opencode", pool="free"),
+    },
+    {"t2-build": {
+        "claude-sub": {"model": "sonnet", "effort": None},
+        "opencode-free": {"model": "opencode/deepseek-v4-flash-free", "effort": None},
+    }},
+    default_tier="t2-build",
+)
+
+SINGLE_CODEX_ROUTING = _routing(
+    {"codex-sub": _target("codex")},
+    {"t2-build": {"codex-sub": {"model": "gpt-5.3-codex", "effort": None}}},
+    default_tier="t2-build",
+)
+
+SINGLE_OPENCODE_ROUTING = _routing(
+    {"opencode-free": _target("opencode", pool="free")},
+    {"t2-build": {"opencode-free": {"model": "opencode/deepseek-v4-flash-free", "effort": None}}},
+    default_tier="t2-build",
+)
+
+
+def _patch_routing(routing):
+    """Context manager/decorator making `spawnlib.resolve_routing(...)` return
+    *routing* regardless of the (real) `load_policy(worktrail_home())` it's
+    called with, so `spawn_agent`/`spawn_claude_p` resolve a deterministic
+    `Cell` without a real routing.yaml on disk."""
+    return patch.object(spawnlib, "resolve_routing", return_value=routing)
+
 # Claude-only argv tokens (spec spawnlib-cross-hop-argv-invariant): every
 # element here is legal ONLY on a `claude -p` command line; a codex or opencode
 # argv carrying any of them as an exact element means the primary's extra_args
@@ -95,8 +162,11 @@ class SpawnRetry(unittest.TestCase):
         self._cache = tempfile.TemporaryDirectory()
         self._old_cache = os.environ.get("GO_AGENT_CAPACITY_CACHE")
         os.environ["GO_AGENT_CAPACITY_CACHE"] = os.path.join(self._cache.name, "capacity.json")
+        self._routing_patch = _patch_routing(SINGLE_CLAUDE_ROUTING)
+        self._routing_patch.start()
 
     def tearDown(self):
+        self._routing_patch.stop()
         spawnlib.subprocess.run = self._orig
         if self._old_cache is None:
             os.environ.pop("GO_AGENT_CAPACITY_CACHE", None)
@@ -107,7 +177,9 @@ class SpawnRetry(unittest.TestCase):
     def _run(self, outcomes, **kw):
         fr = FakeRun(outcomes)
         spawnlib.subprocess.run = fr
-        out = spawnlib.spawn_claude_p("prompt", "/tmp", retries=2, sleep=lambda *_: None, **kw)
+        out = spawnlib.spawn_claude_p(
+            "prompt", "/tmp", tier="t2-build", retries=2, sleep=lambda *_: None, **kw
+        )
         return out, fr
 
     def test_success_first_try_no_retry(self):
@@ -142,7 +214,7 @@ class SpawnRetry(unittest.TestCase):
     def test_timeout_propagates(self):
         spawnlib.subprocess.run = FakeRun([subprocess.TimeoutExpired(cmd="claude", timeout=1)])
         with self.assertRaises(subprocess.TimeoutExpired):
-            spawnlib.spawn_claude_p("p", "/tmp", retries=2, sleep=lambda *_: None)
+            spawnlib.spawn_claude_p("p", "/tmp", tier="t2-build", retries=2, sleep=lambda *_: None)
 
 
 class KeepTranscripts(unittest.TestCase):
@@ -152,8 +224,11 @@ class KeepTranscripts(unittest.TestCase):
         self._old_cache = os.environ.get("GO_AGENT_CAPACITY_CACHE")
         os.environ["GO_AGENT_CAPACITY_CACHE"] = os.path.join(self._cache.name, "capacity.json")
         self._old_keep = os.environ.get("WORKTRAIL_KEEP_TRANSCRIPTS")
+        self._routing_patch = _patch_routing(SINGLE_CLAUDE_ROUTING)
+        self._routing_patch.start()
 
     def tearDown(self):
+        self._routing_patch.stop()
         spawnlib.subprocess.run = self._orig
         if self._old_cache is None:
             os.environ.pop("GO_AGENT_CAPACITY_CACHE", None)
@@ -169,7 +244,7 @@ class KeepTranscripts(unittest.TestCase):
         os.environ.pop("WORKTRAIL_KEEP_TRANSCRIPTS", None)
         with tempfile.TemporaryDirectory() as would_be_dir:
             spawnlib.subprocess.run = FakeRun([Proc(0, "ok report", "")])
-            spawnlib.spawn_claude_p("prompt", "/tmp", retries=0, sleep=lambda *_: None)
+            spawnlib.spawn_claude_p("prompt", "/tmp", tier="t2-build", retries=0, sleep=lambda *_: None)
             # Nothing is written anywhere when the flag is unset -- there is no
             # target dir to inspect, so this only asserts the spawn itself succeeds.
             self.assertTrue(os.path.isdir(would_be_dir))
@@ -180,7 +255,9 @@ class KeepTranscripts(unittest.TestCase):
             os.environ["WORKTRAIL_KEEP_TRANSCRIPTS"] = tdir
             raw = '{"type": "result", "result": "ok report"}'
             spawnlib.subprocess.run = FakeRun([Proc(0, raw, "")])
-            spawnlib.spawn_claude_p("prompt", "/some/task-worktree", retries=0, sleep=lambda *_: None)
+            spawnlib.spawn_claude_p(
+                "prompt", "/some/task-worktree", tier="t2-build", retries=0, sleep=lambda *_: None
+            )
             files = os.listdir(tdir)
             self.assertEqual(len(files), 1)
             self.assertTrue(files[0].startswith("task-worktree-claude-"))
@@ -192,7 +269,9 @@ class KeepTranscripts(unittest.TestCase):
             open(blocked, "w").close()  # a file, not a dir -- mkdir(parents=True) raises
             os.environ["WORKTRAIL_KEEP_TRANSCRIPTS"] = blocked
             spawnlib.subprocess.run = FakeRun([Proc(0, "ok report", "")])
-            out = spawnlib.spawn_claude_p("prompt", "/tmp", retries=0, sleep=lambda *_: None)
+            out = spawnlib.spawn_claude_p(
+                "prompt", "/tmp", tier="t2-build", retries=0, sleep=lambda *_: None
+            )
             self.assertEqual(out.text, "ok report")
 
 
@@ -249,13 +328,19 @@ class SessionLimitParse(unittest.TestCase):
 
 
 class SessionLimitRetry(unittest.TestCase):
+    """Single-target row throughout: every session-limit hit has nowhere to
+    hop, so these exercise the sleep-and-retry-the-same-cell path."""
+
     def setUp(self):
         self._orig = spawnlib.subprocess.run
         self._cache = tempfile.TemporaryDirectory()
         self._old_cache = os.environ.get("GO_AGENT_CAPACITY_CACHE")
         os.environ["GO_AGENT_CAPACITY_CACHE"] = os.path.join(self._cache.name, "capacity.json")
+        self._routing_patch = _patch_routing(SINGLE_CLAUDE_ROUTING)
+        self._routing_patch.start()
 
     def tearDown(self):
+        self._routing_patch.stop()
         spawnlib.subprocess.run = self._orig
         if self._old_cache is None:
             os.environ.pop("GO_AGENT_CAPACITY_CACHE", None)
@@ -268,7 +353,7 @@ class SessionLimitRetry(unittest.TestCase):
         spawnlib.subprocess.run = fr
         slept = []
         out = spawnlib.spawn_claude_p(
-            "p", "/tmp", retries=2, sleep=lambda s: slept.append(s), **kw
+            "p", "/tmp", tier="t2-build", retries=2, sleep=lambda s: slept.append(s), **kw
         )
         return out, fr, slept
 
@@ -339,7 +424,9 @@ class Helpers(unittest.TestCase):
         self.assertFalse(spawnlib.is_infra_failure(0, "real"))
 
     def test_build_cmd_includes_model_and_extra(self):
-        c = spawnlib.build_cmd("hi", model="haiku", extra_args=["--append-system-prompt", "x"])
+        c = spawnlib.build_cmd(
+            "hi", _cell(model="haiku"), extra_args=["--append-system-prompt", "x"]
+        )
         self.assertEqual(c[:3], ["claude", "-p", "hi"])
         self.assertIn("--permission-mode", c)
         self.assertIn("bypassPermissions", c)
@@ -348,17 +435,17 @@ class Helpers(unittest.TestCase):
         self.assertIn("--append-system-prompt", c)
 
     def test_build_cmd_no_model(self):
-        c = spawnlib.build_cmd("hi")
+        c = spawnlib.build_cmd("hi", _cell())
         self.assertNotIn("--model", c)
 
     def test_build_cmd_uses_stream_json(self):
-        c = spawnlib.build_cmd("hi")
+        c = spawnlib.build_cmd("hi", _cell())
         self.assertIn("--output-format", c)
         idx = c.index("--output-format")
         self.assertEqual(c[idx + 1], "stream-json")
 
     def test_build_cmd_opencode(self):
-        c = spawnlib.build_cmd("hi", agent="opencode", model="opencode/claude-sonnet-4-6")
+        c = spawnlib.build_cmd("hi", _cell(harness="opencode", model="opencode/claude-sonnet-4-6"))
         self.assertEqual(c[:3], ["opencode", "run", "--format"])
         self.assertEqual(c[3], "json")
         self.assertIn("--model", c)
@@ -366,7 +453,10 @@ class Helpers(unittest.TestCase):
         self.assertEqual(c[-1], "hi")
 
     def test_build_cmd_codex(self):
-        c = spawnlib.build_cmd("hi", agent="codex", model="gpt-5.3-codex", output_last_message="/tmp/out")
+        c = spawnlib.build_cmd(
+            "hi", _cell(harness="codex", model="gpt-5.3-codex"),
+            output_last_message="/tmp/out",
+        )
         self.assertEqual(c[:2], ["codex", "exec"])
         self.assertIn("--json", c)
         self.assertIn("-s", c)
@@ -379,33 +469,51 @@ class Helpers(unittest.TestCase):
 
     def test_build_cmd_rejects_unknown_agent(self):
         with self.assertRaises(ValueError):
-            spawnlib.build_cmd("hi", agent="bogus")
+            spawnlib.build_cmd("hi", _cell(harness="bogus"))
 
     def test_build_cmd_no_effort_byte_identical_to_pre_change(self):
         # model-tier-routing 3.4: effort=None must not perturb any agent's
         # command line -- byte-identical to the pre-effort build_cmd() output.
         for agent in ("claude", "opencode", "codex"):
-            with_effort_none = spawnlib.build_cmd("hi", agent=agent, effort=None)
-            without_effort_kwarg = spawnlib.build_cmd("hi", agent=agent)
+            with_effort_none = spawnlib.build_cmd("hi", _cell(harness=agent, effort=None))
+            without_effort_kwarg = spawnlib.build_cmd("hi", _cell(harness=agent))
             self.assertEqual(with_effort_none, without_effort_kwarg)
             self.assertNotIn("--effort", with_effort_none)
             self.assertNotIn("--variant", with_effort_none)
             self.assertFalse(any("model_reasoning_effort" in part for part in with_effort_none))
 
     def test_build_cmd_claude_effort_flag(self):
-        c = spawnlib.build_cmd("hi", agent="claude", effort="high")
+        c = spawnlib.build_cmd("hi", _cell(effort="high"))
         self.assertIn("--effort", c)
         self.assertEqual(c[c.index("--effort") + 1], "high")
 
     def test_build_cmd_opencode_effort_variant_flag(self):
-        c = spawnlib.build_cmd("hi", agent="opencode", effort="max")
+        c = spawnlib.build_cmd("hi", _cell(harness="opencode", effort="max"))
         self.assertIn("--variant", c)
         self.assertEqual(c[c.index("--variant") + 1], "max")
 
     def test_build_cmd_codex_effort_reasoning_config(self):
-        c = spawnlib.build_cmd("hi", agent="codex", effort="xhigh")
+        c = spawnlib.build_cmd("hi", _cell(harness="codex", effort="xhigh"))
         self.assertIn("-c", c)
         self.assertEqual(c[c.index("-c") + 1], "model_reasoning_effort=xhigh")
+
+    def test_build_cmd_claude_subscription_omits_bare(self):
+        c = spawnlib.build_cmd("hi", _cell(pool="subscription"))
+        self.assertNotIn("--bare", c)
+
+    def test_build_cmd_claude_api_appends_bare(self):
+        c = spawnlib.build_cmd("hi", _cell(pool="api"))
+        self.assertIn("--bare", c)
+
+    def test_build_cmd_opencode_api_pool_does_not_add_bare(self):
+        # --bare is a claude-only auth-lane flag (D6); pool never perturbs
+        # opencode/codex argv beyond the model/effort translation they already do.
+        c = spawnlib.build_cmd("hi", _cell(harness="opencode", model="m", pool="api"))
+        self.assertNotIn("--bare", c)
+
+    def test_build_cmd_codex_api_pool_does_not_add_bare(self):
+        c = spawnlib.build_cmd("hi", _cell(harness="codex", model="m", pool="api"))
+        self.assertNotIn("--bare", c)
 
 
 class DefaultSettingSourcesStructural(unittest.TestCase):
@@ -418,13 +526,13 @@ class DefaultSettingSourcesStructural(unittest.TestCase):
     passes, so a brand-new call site is covered for free."""
 
     def test_claude_gets_default_with_no_extra_args(self):
-        c = spawnlib.build_cmd("hi")  # simulates a hypothetical new call site
+        c = spawnlib.build_cmd("hi", _cell())  # simulates a hypothetical new call site
         self.assertIn("--setting-sources", c)
         idx = c.index("--setting-sources")
         self.assertEqual(c[idx + 1], "project,local")
 
     def test_claude_gets_default_with_unrelated_extra_args(self):
-        c = spawnlib.build_cmd("hi", extra_args=["--append-system-prompt", "x"])
+        c = spawnlib.build_cmd("hi", _cell(), extra_args=["--append-system-prompt", "x"])
         self.assertIn("--setting-sources", c)
         idx = c.index("--setting-sources")
         self.assertEqual(c[idx + 1], "project,local")
@@ -432,14 +540,14 @@ class DefaultSettingSourcesStructural(unittest.TestCase):
     def test_caller_supplied_setting_sources_is_not_overridden(self):
         # A caller that genuinely wants the operator's user-level settings opts
         # out by passing its own value; the default must never clobber it.
-        c = spawnlib.build_cmd("hi", extra_args=["--setting-sources", "all"])
+        c = spawnlib.build_cmd("hi", _cell(), extra_args=["--setting-sources", "all"])
         self.assertEqual(c.count("--setting-sources"), 1)
         idx = c.index("--setting-sources")
         self.assertEqual(c[idx + 1], "all")
 
     def test_codex_and_opencode_never_get_the_claude_only_flag(self):
         for agent, model in (("codex", "gpt-5.3-codex"), ("opencode", "opencode/claude-sonnet-4-6")):
-            c = spawnlib.build_cmd("hi", agent=agent, model=model)
+            c = spawnlib.build_cmd("hi", _cell(harness=agent, model=model))
             self.assertNotIn("--setting-sources", c, agent)
 
     def test_spawn_agent_reaches_the_default_through_to_subprocess(self):
@@ -454,7 +562,8 @@ class DefaultSettingSourcesStructural(unittest.TestCase):
         orig = spawnlib.subprocess.run
         spawnlib.subprocess.run = fake_run
         try:
-            spawnlib.spawn_agent("prompt", "/tmp", sleep=lambda *_: None)
+            with _patch_routing(SINGLE_CLAUDE_ROUTING):
+                spawnlib.spawn_agent("prompt", "/tmp", tier="t2-build", sleep=lambda *_: None)
         finally:
             spawnlib.subprocess.run = orig
         cmd = captured_cmd["cmd"]
@@ -463,7 +572,11 @@ class DefaultSettingSourcesStructural(unittest.TestCase):
         self.assertEqual(cmd[idx + 1], "project,local")
 
 
-class ResolvedExecutionTarget(unittest.TestCase):
+class SpawnAgentSelection(unittest.TestCase):
+    """spawn_agent resolves its Cell from select_cell(tier, prefer,
+    exclude_harness) -- no agent/model/target/fallback_agent params exist
+    anymore; the caller only names a tier row and an optional preference."""
+
     def setUp(self):
         self._cache = tempfile.TemporaryDirectory()
         self._old_cache = os.environ.get("GO_AGENT_CAPACITY_CACHE")
@@ -478,47 +591,134 @@ class ResolvedExecutionTarget(unittest.TestCase):
             os.environ["GO_AGENT_CAPACITY_CACHE"] = self._old_cache
         self._cache.cleanup()
 
-    def test_resolved_target_drives_existing_provider_adapter(self):
-        target = namedtuple("ExecutionTarget", "provider model rationale capacity_evidence")(
-            "claude", "opus", "inherited provider", {}
-        )
-        context = namedtuple("InvocationContext", "agent_cli")("codex")
+    def test_tier_resolves_the_only_declared_cell(self):
         captured = {}
-        logs = []
 
         def fake_run(cmd, **kwargs):
             captured["cmd"] = cmd
             return Proc(0, "ok", "")
 
-        with patch.object(spawnlib.subprocess, "run", side_effect=fake_run):
-            result = spawnlib.spawn_agent(
-                "prompt",
-                "/tmp",
-                target=target,
-                invocation_context=context,
-                retries=0,
-                log=logs.append,
-            )
+        with _patch_routing(SINGLE_CLAUDE_ROUTING), \
+                patch.object(spawnlib.subprocess, "run", side_effect=fake_run):
+            result = spawnlib.spawn_agent("prompt", "/tmp", tier="t2-build", retries=0)
 
         self.assertEqual(result.text, "ok")
         self.assertEqual(captured["cmd"][0:3], ["claude", "-p", "prompt"])
-        self.assertEqual(captured["cmd"][captured["cmd"].index("--model") + 1], "opus")
-        self.assertTrue(
-            any("provider=codex target=claude:opus" in entry for entry in logs)
+        self.assertEqual(captured["cmd"][captured["cmd"].index("--model") + 1], "sonnet")
+
+    def test_prefer_moves_a_declared_target_to_the_front(self):
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            return Proc(0, json.dumps({
+                "type": "text", "sessionID": "s", "part": {"type": "text", "text": "opencode ok"},
+            }) + "\n", "")
+
+        with _patch_routing(CLAUDE_THEN_OPENCODE_ROUTING), \
+                patch.object(spawnlib.subprocess, "run", side_effect=fake_run):
+            result = spawnlib.spawn_agent(
+                "prompt", "/tmp", tier="t2-build", prefer="opencode-free", retries=0
+            )
+
+        self.assertEqual(result.text, "opencode ok")
+        self.assertEqual(captured["cmd"][0:2], ["opencode", "run"])
+
+    def test_exclude_harness_is_soft_and_still_wins_if_nothing_else_has_capacity(self):
+        spawnlib.agent_capacity.save({"version": 1, "providers": {}})
+        spawnlib.agent_capacity.record(
+            "opencode-free", "opencode/deepseek-v4-flash-free",
+            outcome="unavailable", failure_class="billing",
+            retry_after=datetime.datetime.now(datetime.timezone.utc)
+            + datetime.timedelta(seconds=300),
         )
+        captured = {}
 
-    def test_target_rejects_conflicting_legacy_arguments(self):
-        target = namedtuple("ExecutionTarget", "provider model")("codex", "gpt-x")
-        with self.assertRaisesRegex(ValueError, "conflicts with agent"):
-            spawnlib.spawn_agent("prompt", "/tmp", target=target, agent="claude")
-        with self.assertRaisesRegex(ValueError, "conflicts with model"):
-            spawnlib.spawn_agent("prompt", "/tmp", target=target, model="gpt-y")
-        with self.assertRaisesRegex(ValueError, "fallback_agent"):
-            spawnlib.spawn_agent("prompt", "/tmp", target=target, fallback_agent="claude")
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            return Proc(0, "ok", "")
 
-    def test_target_requires_launcher_fields(self):
-        with self.assertRaisesRegex(TypeError, "target.provider"):
-            spawnlib.spawn_agent("prompt", "/tmp", target=object())
+        with _patch_routing(CLAUDE_THEN_OPENCODE_ROUTING), \
+                patch.object(spawnlib.subprocess, "run", side_effect=fake_run):
+            result = spawnlib.spawn_agent(
+                "prompt", "/tmp", tier="t2-build", exclude_harness="claude", retries=0
+            )
+
+        # opencode-free is the only one with capacity, so the soft exclusion
+        # of claude still lets it win as a last resort.
+        self.assertEqual(result.text, "ok")
+        self.assertEqual(captured["cmd"][0], "claude")
+
+    def test_preflight_gate_on_prefer_drops_primary_only_extra_args(self):
+        """Regression: if `prefer`'s cell is already capacity-gated BEFORE the
+        first subprocess ever runs, select_cell() resolves straight to the
+        next cell in the row -- the caller's extra_args (derived for the
+        harness it *asked* for via `prefer`) must not leak onto that
+        different harness's argv (was `test_preflight_fallback_drops_primary_agent_extra_args`
+        pre-select_cell; --setting-sources is claude-only, opencode rejects it)."""
+        spawnlib.agent_capacity.save({"version": 1, "providers": {}})
+        spawnlib.agent_capacity.record(
+            "claude-sub", "sonnet", outcome="unavailable", failure_class="billing",
+            retry_after=datetime.datetime.now(datetime.timezone.utc)
+            + datetime.timedelta(seconds=300),
+        )
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            return Proc(0, json.dumps({
+                "type": "text", "sessionID": "s", "part": {"type": "text", "text": "opencode ok"},
+            }) + "\n", "")
+
+        with _patch_routing(CLAUDE_THEN_OPENCODE_ROUTING), \
+                patch.object(spawnlib.subprocess, "run", side_effect=fake_run):
+            result = spawnlib.spawn_agent(
+                "prompt", "/tmp", tier="t2-build", prefer="claude-sub",
+                extra_args=["--setting-sources", "project,local"], retries=0,
+            )
+
+        self.assertEqual(result.text, "opencode ok")
+        self.assertEqual(captured["cmd"][0:2], ["opencode", "run"])
+        self.assertNotIn("--setting-sources", captured["cmd"])
+
+    def test_preflight_no_gate_still_forwards_primary_extra_args(self):
+        """Positive control for the above: when the preferred cell is NOT
+        gated, its extra_args still reach the argv unchanged."""
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            return Proc(0, "ok", "")
+
+        with _patch_routing(CLAUDE_THEN_OPENCODE_ROUTING), \
+                patch.object(spawnlib.subprocess, "run", side_effect=fake_run):
+            result = spawnlib.spawn_agent(
+                "prompt", "/tmp", tier="t2-build", prefer="claude-sub",
+                extra_args=["--setting-sources", "project,local"], retries=0,
+            )
+
+        self.assertEqual(result.text, "ok")
+        self.assertEqual(captured["cmd"][0], "claude")
+        self.assertIn("--setting-sources", captured["cmd"])
+
+    def test_every_cell_gated_raises_no_execution_target_before_any_subprocess(self):
+        spawnlib.agent_capacity.save({"version": 1, "providers": {}})
+        spawnlib.agent_capacity.record(
+            "claude-sub", "sonnet", outcome="unavailable", failure_class="billing",
+            retry_after=datetime.datetime.now(datetime.timezone.utc)
+            + datetime.timedelta(seconds=300),
+        )
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return Proc(0, "unused", "")
+
+        with _patch_routing(SINGLE_CLAUDE_ROUTING), \
+                patch.object(spawnlib.subprocess, "run", side_effect=fake_run):
+            with self.assertRaises(spawnlib.NoExecutionTarget):
+                spawnlib.spawn_agent("prompt", "/tmp", tier="t2-build")
+        self.assertEqual(calls, [])
 
 
 class ParseStreamJson(unittest.TestCase):
@@ -819,12 +1019,12 @@ class CodexSpawn(unittest.TestCase):
             return Proc(0, '{"type":"event"}\n', "")
 
         spawnlib.subprocess.run = fake_run
-        with patch.object(
+        with _patch_routing(SINGLE_CODEX_ROUTING), patch.object(
             spawnlib,
             "prepare_codex_child_environment",
             return_value=(os.environ.copy(), "/tmp/worktrail-codex-child", False),
         ):
-            out = spawnlib.spawn_agent("prompt", "/tmp", agent="codex", model="gpt-5.3-codex")
+            out = spawnlib.spawn_agent("prompt", "/tmp", tier="t2-build")
         self.assertEqual(out.text, "codex final report")
         self.assertEqual(seen["cmd"][:2], ["codex", "exec"])
 
@@ -840,12 +1040,12 @@ class CodexSpawn(unittest.TestCase):
             return Proc(0, '{"type":"event"}\n', "")
 
         spawnlib.subprocess.run = fake_run
-        with patch.object(
+        with _patch_routing(SINGLE_CODEX_ROUTING), patch.object(
             spawnlib,
             "prepare_codex_child_environment",
             return_value=(child_env.copy(), child_env["CODEX_HOME"], False),
         ) as prepare:
-            spawnlib.spawn_agent("prompt", "/tmp", agent="codex", model="gpt-5.3-codex")
+            spawnlib.spawn_agent("prompt", "/tmp", tier="t2-build")
 
         prepare.assert_called_once_with()
         self.assertEqual(seen["env"]["CODEX_HOME"], child_env["CODEX_HOME"])
@@ -855,9 +1055,20 @@ class CodexSpawn(unittest.TestCase):
 class OpenCodeSpawn(unittest.TestCase):
     def setUp(self):
         self._orig = spawnlib.subprocess.run
+        self._cache = tempfile.TemporaryDirectory()
+        self._old_cache = os.environ.get("GO_AGENT_CAPACITY_CACHE")
+        os.environ["GO_AGENT_CAPACITY_CACHE"] = os.path.join(self._cache.name, "capacity.json")
+        self._routing_patch = _patch_routing(SINGLE_OPENCODE_ROUTING)
+        self._routing_patch.start()
 
     def tearDown(self):
+        self._routing_patch.stop()
         spawnlib.subprocess.run = self._orig
+        if self._old_cache is None:
+            os.environ.pop("GO_AGENT_CAPACITY_CACHE", None)
+        else:
+            os.environ["GO_AGENT_CAPACITY_CACHE"] = self._old_cache
+        self._cache.cleanup()
 
     def test_opencode_uses_json_mode_and_default_model(self):
         # Fixture uses opencode's REAL event shape ("text" event, "part.text"),
@@ -883,20 +1094,8 @@ class OpenCodeSpawn(unittest.TestCase):
             )
 
         spawnlib.subprocess.run = fake_run
-        with tempfile.TemporaryDirectory() as cache_dir, \
-                tempfile.TemporaryDirectory() as cwd:
-            routing_file = os.path.join(cwd, "routing.yaml")
-            with open(routing_file, "w", encoding="utf-8") as f:
-                f.write("agents:\n  opencode:\n    default_model: opencode/deepseek-v4-flash-free\n")
-            with patch.dict(
-                os.environ,
-                {
-                    "GO_AGENT_CAPACITY_CACHE": os.path.join(cache_dir, "capacity.json"),
-                    "GO_ROUTING_FILE": routing_file,
-                },
-                clear=True,
-            ):
-                out = spawnlib.spawn_agent("prompt", cwd, agent="opencode")
+        with tempfile.TemporaryDirectory() as cwd:
+            out = spawnlib.spawn_agent("prompt", cwd, tier="t2-build")
         self.assertEqual(out.text, "opencode final report")
         self.assertEqual(out.session_id, "ses_abc123")
         self.assertEqual(seen["cmd"][:2], ["opencode", "run"])
@@ -927,7 +1126,7 @@ class OpenCodeSpawn(unittest.TestCase):
 
         spawnlib.subprocess.run = fake_run
         with tempfile.TemporaryDirectory() as cwd:
-            out = spawnlib.spawn_agent("prompt", cwd, agent="opencode")
+            out = spawnlib.spawn_agent("prompt", cwd, tier="t2-build")
         self.assertEqual(out.text, "opencode report")
         self.assertEqual(out.usage["input_tokens"], 60)
         self.assertEqual(out.usage["output_tokens"], 20)
@@ -958,7 +1157,7 @@ class OpenCodeSpawn(unittest.TestCase):
         spawnlib.subprocess.run = fr
         with tempfile.TemporaryDirectory() as cwd:
             out = spawnlib.spawn_agent(
-                "prompt", cwd, agent="opencode", retries=2, sleep=lambda *_: None
+                "prompt", cwd, tier="t2-build", retries=2, sleep=lambda *_: None
             )
         self.assertEqual(out.text, "opencode retried report")
         self.assertEqual(fr.calls, 2)
@@ -1069,8 +1268,8 @@ class OpencodeHeadlessEnvironment(unittest.TestCase):
             }) + "\n", "")
 
         spawnlib.subprocess.run = fake_run
-        with tempfile.TemporaryDirectory() as cwd:
-            out = spawnlib.spawn_agent("p", cwd, agent="opencode")
+        with tempfile.TemporaryDirectory() as cwd, _patch_routing(SINGLE_OPENCODE_ROUTING):
+            out = spawnlib.spawn_agent("p", cwd, tier="t2-build")
             self.assertTrue(seen["env"]["XDG_DATA_HOME"].startswith(cwd))
         self.assertEqual(seen["env"]["CC_HEADLESS"], "1")
         self.assertIn("OPENCODE_CONFIG_CONTENT", seen["env"])
@@ -1097,8 +1296,8 @@ class OpencodeHeadlessEnvironment(unittest.TestCase):
         raw = "\n".join(json.dumps(e) for e in events) + "\n"
         logs = []
         spawnlib.subprocess.run = lambda cmd, **kw: Proc(0, raw, "")
-        with tempfile.TemporaryDirectory() as cwd:
-            out = spawnlib.spawn_agent("p", cwd, agent="opencode", log=logs.append)
+        with tempfile.TemporaryDirectory() as cwd, _patch_routing(SINGLE_OPENCODE_ROUTING):
+            out = spawnlib.spawn_agent("p", cwd, tier="t2-build", log=logs.append)
             data_dir = str(spawnlib.opencode_data_dir(cwd))
         self.assertEqual(out.usage["permission_denials"], [{
             "tool": "bash",
@@ -1138,15 +1337,16 @@ class OpencodeHeadlessEnvironment(unittest.TestCase):
         ]
         raw = "\n".join(json.dumps(e) for e in events) + "\n"
         spawnlib.subprocess.run = lambda cmd, **kw: Proc(0, raw, "")
-        with tempfile.TemporaryDirectory() as cwd:
-            out = spawnlib.spawn_agent("p", cwd, agent="opencode")
+        with tempfile.TemporaryDirectory() as cwd, _patch_routing(SINGLE_OPENCODE_ROUTING):
+            out = spawnlib.spawn_agent("p", cwd, tier="t2-build")
         self.assertEqual(out.text, report)
         self.assertEqual(out.usage["permission_denials"], [])
         self.assertEqual(out.session_id, "ses_ok")
 
-    def test_fallback_hop_to_opencode_rebuilds_child_env(self):
-        # claude primary hits a session limit; the opencode hop must get the
-        # isolated opencode environment, not the env prepared for claude.
+    def test_session_limit_hop_to_opencode_rebuilds_child_env(self):
+        # claude primary hits a session limit; the opencode hop it re-selects
+        # into must get the isolated opencode environment, not the env
+        # prepared for claude.
         calls = []
 
         def fake_run(cmd, **kwargs):
@@ -1161,10 +1361,9 @@ class OpencodeHeadlessEnvironment(unittest.TestCase):
 
         spawnlib.agent_capacity.save({"version": 1, "providers": {}})
         spawnlib.subprocess.run = fake_run
-        with tempfile.TemporaryDirectory() as cwd:
+        with tempfile.TemporaryDirectory() as cwd, _patch_routing(CLAUDE_THEN_OPENCODE_ROUTING):
             out = spawnlib.spawn_agent(
-                "p", cwd, agent="claude", fallback_agent="opencode",
-                sleep=lambda *_: None,
+                "p", cwd, tier="t2-build", sleep=lambda *_: None,
             )
             claude_env, opencode_env = calls[0][1], calls[1][1]
             self.assertFalse(claude_env.get("XDG_DATA_HOME", "").startswith(cwd))
@@ -1177,7 +1376,7 @@ class SessionLimitFallback(unittest.TestCase):
     def setUp(self):
         spawnlib.agent_capacity.save({"version": 1, "providers": {}})
 
-    def test_switches_to_configured_fallback_without_sleeping(self):
+    def test_hops_to_the_next_cell_in_the_row_without_sleeping(self):
         calls = []
         sleeps = []
 
@@ -1190,9 +1389,10 @@ class SessionLimitFallback(unittest.TestCase):
         original = spawnlib.subprocess.run
         spawnlib.subprocess.run = fake_run
         try:
-            with tempfile.TemporaryDirectory() as cwd:
+            with tempfile.TemporaryDirectory() as cwd, \
+                    _patch_routing(CLAUDE_THEN_OPENCODE_ROUTING):
                 out = spawnlib.spawn_agent(
-                    "prompt", cwd, agent="claude", fallback_agent="opencode",
+                    "prompt", cwd, tier="t2-build",
                     extra_args=["--append-system-prompt", "claude-only"],
                     sleep=lambda seconds: sleeps.append(seconds),
                 )
@@ -1201,21 +1401,22 @@ class SessionLimitFallback(unittest.TestCase):
         self.assertEqual(out.text, "done")
         self.assertEqual(calls[0][0], "claude")
         self.assertEqual(calls[1][:2], ["opencode", "run"])
+        # extra_args are specific to the first cell this call resolved and do
+        # not carry across the session-limit hop.
         self.assertNotIn("--append-system-prompt", calls[1])
         self.assertEqual(sleeps, [])
 
 
 class SpawnClaudePFallback(unittest.TestCase):
-    """brief 20260723-111700-claude-primary-fallback-inert: spawn_claude_p's
-    fallback_agent param must actually switch, the same as spawn_agent's own
-    session-limit hop -- before this, spawn_claude_p had NO fallback_agent
-    parameter at all, so a claude-primary run's --fallback-agent was silently
-    ignored regardless of what LiveSpawn passed."""
+    """brief 20260723-111700-claude-primary-fallback-inert: a claude-primary
+    run's session-limit hit must actually hop to another cell in the row when
+    one exists -- before spawn_agent grew this, LiveSpawn's claude-primary
+    runs had no fallback machinery at all."""
 
     def setUp(self):
         spawnlib.agent_capacity.save({"version": 1, "providers": {}})
 
-    def test_switches_to_configured_fallback_without_sleeping(self):
+    def test_hops_to_the_next_cell_in_the_row_without_sleeping(self):
         calls = []
         sleeps = []
 
@@ -1228,9 +1429,10 @@ class SpawnClaudePFallback(unittest.TestCase):
         original = spawnlib.subprocess.run
         spawnlib.subprocess.run = fake_run
         try:
-            with tempfile.TemporaryDirectory() as cwd:
+            with tempfile.TemporaryDirectory() as cwd, \
+                    _patch_routing(CLAUDE_THEN_OPENCODE_ROUTING):
                 out = spawnlib.spawn_claude_p(
-                    "prompt", cwd, fallback_agent="opencode",
+                    "prompt", cwd, tier="t2-build",
                     sleep=lambda seconds: sleeps.append(seconds),
                 )
         finally:
@@ -1240,8 +1442,8 @@ class SpawnClaudePFallback(unittest.TestCase):
         self.assertEqual(calls[1][:2], ["opencode", "run"])
         self.assertEqual(sleeps, [])
 
-    def test_no_fallback_configured_preserves_legacy_sleep_behavior(self):
-        """Without fallback_agent, spawn_claude_p keeps its pre-existing
+    def test_no_alternate_cell_preserves_legacy_sleep_behavior(self):
+        """A single-target row keeps spawn_claude_p's pre-existing
         sleep-until-reset behavior unchanged."""
         calls = []
         sleeps = []
@@ -1255,10 +1457,11 @@ class SpawnClaudePFallback(unittest.TestCase):
         original = spawnlib.subprocess.run
         spawnlib.subprocess.run = fake_run
         try:
-            out = spawnlib.spawn_claude_p(
-                "prompt", "/tmp",
-                sleep=lambda seconds: sleeps.append(seconds),
-            )
+            with _patch_routing(SINGLE_CLAUDE_ROUTING):
+                out = spawnlib.spawn_claude_p(
+                    "prompt", "/tmp", tier="t2-build",
+                    sleep=lambda seconds: sleeps.append(seconds),
+                )
         finally:
             spawnlib.subprocess.run = original
         self.assertEqual(out.text, "done")
@@ -1268,221 +1471,68 @@ class SpawnClaudePFallback(unittest.TestCase):
         self.assertEqual(len(sleeps), 1)
 
 
-class FallbackChain(unittest.TestCase):
-    """TASK-005: fallback_agent as an ordered chain of pools, not just one hop."""
-
-    HOP_MODELS = {"claude": "sonnet", "hopA": "model-a", "hopB": "model-b", "hopC": "model-c"}
-
-    def setUp(self):
-        self._cache = tempfile.TemporaryDirectory()
-        self._old_cache = os.environ.get("GO_AGENT_CAPACITY_CACHE")
-        os.environ["GO_AGENT_CAPACITY_CACHE"] = os.path.join(self._cache.name, "capacity.json")
-        self._orig_run = spawnlib.subprocess.run
-        self._orig_supported = spawnlib.SUPPORTED_AGENTS
-        self._orig_model_fn = spawnlib.default_model_for_agent
-        # Synthetic hop names (SUPPORTED_AGENTS only has 3 real agents) so a
-        # multi-entry chain can gate/select distinct providers deterministically.
-        spawnlib.SUPPORTED_AGENTS = frozenset(self._orig_supported | set(self.HOP_MODELS))
-        spawnlib.default_model_for_agent = lambda a: self.HOP_MODELS.get(a, "sonnet")
-
-    def tearDown(self):
-        spawnlib.subprocess.run = self._orig_run
-        spawnlib.SUPPORTED_AGENTS = self._orig_supported
-        spawnlib.default_model_for_agent = self._orig_model_fn
-        if self._old_cache is None:
-            os.environ.pop("GO_AGENT_CAPACITY_CACHE", None)
-        else:
-            os.environ["GO_AGENT_CAPACITY_CACHE"] = self._old_cache
-        self._cache.cleanup()
-
-    def _gate(self, agent, model, failure_class="transport", seconds=60):
-        spawnlib.agent_capacity.record(
-            agent, model, outcome="unavailable", failure_class=failure_class,
-            retry_after=datetime.datetime.now(datetime.timezone.utc)
-            + datetime.timedelta(seconds=seconds),
-        )
-
-    def test_three_entry_chain_rolls_to_third_entry_in_order(self):
-        # AC-017: primary + first two chain hops gated -> rolls to the third.
-        self._gate("claude", "sonnet")
-        self._gate("hopA", "model-a")
-        self._gate("hopB", "model-b")
-
-        calls = []
-
-        def fake_run(cmd, **kwargs):
-            calls.append(cmd)
-            return Proc(0, "ok", "")
-
-        spawnlib.subprocess.run = fake_run
-        out = spawnlib.spawn_agent(
-            "prompt", "/tmp", agent="claude", fallback_agent=["hopA", "hopB", "hopC"],
-        )
-        self.assertEqual(out.text, "ok")
-        self.assertEqual(len(calls), 1)
-        self.assertIn("model-c", calls[0])
-
-    def test_session_limit_advances_through_remaining_chain_in_order(self):
-        # A session-limit on the active hop should continue through the ordered
-        # remainder of the configured chain instead of stopping at the first
-        # fallback.
-        calls = []
-
-        def fake_run(cmd, **kwargs):
-            calls.append(cmd)
-            if len(calls) < 3:
-                return Proc(0, "hit your session limit resets 3:00pm", "")
-            return Proc(
-                0,
-                json.dumps({"type": "result", "result": "done", "usage": {}}) + "\n",
-                "",
-            )
-
-        spawnlib.subprocess.run = fake_run
-        out = spawnlib.spawn_agent(
-            "prompt", "/tmp", agent="claude", fallback_agent=["hopA", "hopB", "hopC"],
-            sleep=lambda *_: None,
-        )
-        self.assertEqual(out.text, "done")
-        self.assertIn("model-a", calls[1])
-        self.assertIn("model-b", calls[2])
-
-    def test_unauthenticated_hop_gated_on_first_attempt_not_prevalidated(self):
-        # AC-023: hopA has no cache entry (not pre-validated) so it is selected
-        # after the gated primary; a simulated auth failure at spawn time is
-        # recorded through the existing failure-classification path.
-        self._gate("claude", "sonnet")
-
-        fr = FakeRun([Proc(1, "", "invalid api key")])
-        spawnlib.subprocess.run = fr
-        out = spawnlib.spawn_agent(
-            "prompt", "/tmp", agent="claude", fallback_agent=["hopA"], retries=0,
-        )
-        # Existing semantics: an infra failure that exhausts retries is handed
-        # back to the caller as-is (no exception), same as today's single fallback.
-        self.assertEqual(out.text, "")
-        state = spawnlib.agent_capacity.load()["providers"]["hopA:model-a"]
-        self.assertEqual(state["status"], "unavailable")
-        self.assertEqual(state["failure_class"], "auth")
-
-    def test_chain_exhausted_raises_all_providers_unavailable_with_every_hop(self):
-        # AC-024: primary and every chain hop gated -> AllProvidersUnavailable
-        # lists every configured provider; no subprocess is spawned.
-        self._gate("claude", "sonnet")
-        self._gate("hopA", "model-a")
-        self._gate("hopB", "model-b")
-
-        fr = FakeRun([Proc(0, "unused", "")])
-        spawnlib.subprocess.run = fr
-        with self.assertRaises(spawnlib.agent_capacity.AllProvidersUnavailable) as ctx:
-            spawnlib.spawn_agent(
-                "prompt", "/tmp", agent="claude", fallback_agent=["hopA", "hopB"],
-            )
-        self.assertEqual(
-            set(ctx.exception.providers), {"claude:sonnet", "hopA:model-a", "hopB:model-b"},
-        )
-        self.assertEqual(fr.calls, 0)
-
-    def test_single_string_fallback_matches_single_entry_list(self):
-        # AC-025: the legacy `str` shape and an equivalent 1-entry list select
-        # the same provider when the primary is gated.
-        for shape in ("hopA", ["hopA"]):
-            with self.subTest(shape=shape):
-                spawnlib.agent_capacity.save({"version": 1, "providers": {}})
-                self._gate("claude", "sonnet")
-                fr = FakeRun([Proc(0, "ok", "")])
-                spawnlib.subprocess.run = fr
-                out = spawnlib.spawn_agent(
-                    "prompt", "/tmp", agent="claude", fallback_agent=shape,
-                )
-                self.assertEqual(out.text, "ok")
-
-    def test_empty_chain_is_no_fallback(self):
-        # Edge case: an empty ordered chain behaves like fallback_agent=None --
-        # a gated primary re-raises the bare ProviderUnavailable, not the
-        # all-providers-unavailable wrapper.
-        self._gate("claude", "sonnet")
-        fr = FakeRun([Proc(0, "unused", "")])
-        spawnlib.subprocess.run = fr
-        with self.assertRaises(spawnlib.agent_capacity.ProviderUnavailable) as ctx:
-            spawnlib.spawn_agent("prompt", "/tmp", agent="claude", fallback_agent=[])
-        self.assertNotIsInstance(ctx.exception, spawnlib.agent_capacity.AllProvidersUnavailable)
-        self.assertEqual(fr.calls, 0)
-
-    def test_duplicate_of_primary_in_chain_is_dropped(self):
-        # A chain entry equal to the primary is dropped, mirroring the legacy
-        # same-as-primary rule: a gated primary rolls straight to "hopA",
-        # never re-trying the duplicated "claude" entry.
-        self._gate("claude", "sonnet")
-        calls = []
-
-        def fake_run(cmd, **kwargs):
-            calls.append(cmd)
-            return Proc(0, "ok", "")
-
-        spawnlib.subprocess.run = fake_run
-        out = spawnlib.spawn_agent(
-            "prompt", "/tmp", agent="claude", fallback_agent=["claude", "hopA"],
-        )
-        self.assertEqual(out.text, "ok")
-        self.assertEqual(len(calls), 1)
-        self.assertIn("model-a", calls[0])
-
-    def test_repeated_chain_entry_is_tried_once(self):
-        # A repeated hop in the configured chain is normalized away so the walk
-        # stays bounded and never loops back to the same provider.
-        self._gate("claude", "sonnet")
-        calls = []
-
-        def fake_run(cmd, **kwargs):
-            calls.append(cmd)
-            return Proc(0, "ok", "")
-
-        spawnlib.subprocess.run = fake_run
-        out = spawnlib.spawn_agent(
-            "prompt", "/tmp", agent="claude", fallback_agent=["hopA", "hopA", "hopB"],
-        )
-        self.assertEqual(out.text, "ok")
-        self.assertEqual(len(calls), 1)
-        self.assertIn("model-a", calls[0])
-        self.assertNotIn("model-b", calls[0])
-
-    def test_unsupported_chain_entry_raises_value_error(self):
-        with self.assertRaises(ValueError):
-            spawnlib.spawn_agent(
-                "prompt", "/tmp", agent="claude", fallback_agent=["hopA", "bogus"],
-            )
-
-
 class CrossHopArgvInvariant(unittest.TestCase):
     """Hermetic harness for the cross-hop argv invariant (spec
-    spawnlib-cross-hop-argv-invariant): a spawn whose requested primary agent
-    is claude must never leak claude-only flags (CLAUDE_ONLY_ARGV_TOKENS) into
-    a codex/opencode hop's command line -- no matter which mechanism selected
-    the hop: a persisted capacity gate consulted before the first command is
-    built, or an in-flight session-limit switch. Mirrors FallbackChain's
-    isolation so each test owns its capacity cache and provider models."""
+    spawnlib-cross-hop-argv-invariant): a spawn's caller-supplied extra_args
+    (claude-only lean-worker flags, CLAUDE_ONLY_ARGV_TOKENS) must never leak
+    into a codex/opencode cell's command line reached via an IN-FLIGHT
+    session-limit hop within the same `spawn_agent()` call -- extra_args are
+    specific to the FIRST cell a call resolves and are dropped on every
+    re-select. `--effort` is no longer a caller-passable kwarg at all: it is
+    baked into each row's cell (only claude-sub's carries one below), so a
+    hop can't leak it even in principle."""
 
-    # Deterministic per-agent models so argv assertions can identify which hop
-    # ran by model; pinning default_model_for_agent also keeps the tests
-    # hermetic against a developer machine's model-defaults.yaml.
+    # Deterministic per-target models so argv assertions can identify which
+    # cell ran by model, independent of the routing fixture's target names.
     HOP_MODELS = {
         "claude": "pin-claude-model",
         "codex": "pin-codex-model",
         "opencode": "pin-opencode-model",
     }
 
+    CLAUDE_CODEX_ROUTING = _routing(
+        {"claude-sub": _target("claude"), "codex-sub": _target("codex")},
+        {"t2-build": {
+            "claude-sub": {"model": HOP_MODELS["claude"], "effort": "high"},
+            "codex-sub": {"model": HOP_MODELS["codex"], "effort": None},
+        }},
+        default_tier="t2-build",
+    )
+    CLAUDE_OPENCODE_ROUTING = _routing(
+        {"claude-sub": _target("claude"), "opencode-free": _target("opencode", pool="free")},
+        {"t2-build": {
+            "claude-sub": {"model": HOP_MODELS["claude"], "effort": "high"},
+            "opencode-free": {"model": HOP_MODELS["opencode"], "effort": None},
+        }},
+        default_tier="t2-build",
+    )
+    THREE_TARGET_ROUTING = _routing(
+        {
+            "claude-sub": _target("claude"),
+            "codex-sub": _target("codex"),
+            "opencode-free": _target("opencode", pool="free"),
+        },
+        {"t2-build": {
+            "claude-sub": {"model": HOP_MODELS["claude"], "effort": "high"},
+            "codex-sub": {"model": HOP_MODELS["codex"], "effort": None},
+            "opencode-free": {"model": HOP_MODELS["opencode"], "effort": None},
+        }},
+        default_tier="t2-build",
+    )
+    SINGLE_CLAUDE = _routing(
+        {"claude-sub": _target("claude")},
+        {"t2-build": {"claude-sub": {"model": HOP_MODELS["claude"], "effort": "high"}}},
+        default_tier="t2-build",
+    )
+
     def setUp(self):
         self._cache = tempfile.TemporaryDirectory()
         self._old_cache = os.environ.get("GO_AGENT_CAPACITY_CACHE")
         os.environ["GO_AGENT_CAPACITY_CACHE"] = os.path.join(self._cache.name, "capacity.json")
         self._orig_run = spawnlib.subprocess.run
-        self._orig_model_fn = spawnlib.default_model_for_agent
-        spawnlib.default_model_for_agent = lambda a: self.HOP_MODELS.get(a, "pin-claude-model")
 
     def tearDown(self):
         spawnlib.subprocess.run = self._orig_run
-        spawnlib.default_model_for_agent = self._orig_model_fn
         if self._old_cache is None:
             os.environ.pop("GO_AGENT_CAPACITY_CACHE", None)
         else:
@@ -1526,9 +1576,9 @@ class CrossHopArgvInvariant(unittest.TestCase):
                     )
 
     # ---------------------------------------------------------------- #
-    # Cross-path scenario sweep: the FULL CLAUDE_ONLY_ARGV_TOKENS-derived
-    # payload rides on every scenario below; no codex/opencode argv may
-    # carry any of it, whichever mechanism selected the hop.
+    # Cross-path scenario sweep: the FULL extra_args-derived payload rides
+    # on every scenario below; no codex/opencode argv may carry any of it,
+    # no matter how many hops it takes to reach that cell.
     # ---------------------------------------------------------------- #
 
     # The caller-passable slice of CLAUDE_ONLY_ARGV_TOKENS, shaped exactly as
@@ -1536,92 +1586,56 @@ class CrossHopArgvInvariant(unittest.TestCase):
     # --append-system-prompt pair. The remaining claude-only tokens reach an
     # ungated claude argv through build_cmd()'s own structural additions
     # (PERM_FLAGS, JSON_OUTPUT_FLAGS, the _with_default_setting_sources
-    # default) or the paired effort=/resume_session_id= kwargs -- the positive
-    # control pins every token, keeping the negative assertions honest.
+    # default), the routing fixtures' claude-sub effort="high" above, or the
+    # resume_session_id kwarg below -- the positive control pins every
+    # token, keeping the negative assertions honest.
     SWEEP_EXTRA_ARGS = [
         "--strict-mcp-config",
         "--tools", "Read", "Edit", "Write", "Bash", "Grep", "Glob",
         "--append-system-prompt", "lean worker system prompt",
     ]
-    SWEEP_EFFORT = "high"
     SWEEP_RESUME_SESSION_ID = "sess-sweep-0001"
 
     # Short (<600 chars) genuine usage-cap notice: exit 0, non-empty stdout,
-    # no report-back -- the in-flight trigger for a fallback hop.
+    # no report-back -- the in-flight trigger for a session-limit hop.
     LIMIT_NOTICE = Proc(0, "You've hit your session limit. Your limit resets at 11:59pm.", "")
 
-    def _gate(self, agent):
-        """Persist a transport-class capacity gate for *agent* under its
-        pinned model, the mechanism FallbackChain exercises."""
-        spawnlib.agent_capacity.record(
-            agent,
-            spawnlib.default_model_for_agent(agent),
-            outcome="unavailable",
-            failure_class="transport",
-            retry_after=datetime.datetime.now(datetime.timezone.utc)
-            + datetime.timedelta(seconds=300),
-        )
-
-    def _sweep(self, outcomes, **kw):
-        """Script *outcomes* and run one claude-primary spawn_agent carrying
-        the full payload (extra_args + effort + resume_session_id). The codex
+    def _sweep(self, outcomes, routing, **kw):
+        """Script *outcomes* and run one spawn_agent call carrying the full
+        extra_args + resume_session_id payload against *routing*. The codex
         child-env prep is patched out (as in CodexSpawn) so scenarios reaching
-        a codex hop stay hermetic. Returns (out, captured argvs, slept)."""
+        a codex cell stay hermetic. Returns (out, captured argvs, slept)."""
         kw.setdefault("extra_args", list(self.SWEEP_EXTRA_ARGS))
-        kw.setdefault("effort", self.SWEEP_EFFORT)
         kw.setdefault("resume_session_id", self.SWEEP_RESUME_SESSION_ID)
         kw.setdefault("retries", 0)
         sleeps = []
         kw.setdefault("sleep", lambda seconds: sleeps.append(seconds))
         calls = self._script_run(list(outcomes))
-        with tempfile.TemporaryDirectory() as cwd, patch.object(
-            spawnlib,
-            "prepare_codex_child_environment",
-            return_value=(os.environ.copy(), "/tmp/worktrail-codex-child", False),
-        ):
-            out = spawnlib.spawn_agent("prompt", cwd, agent="claude", **kw)
+        with tempfile.TemporaryDirectory() as cwd, \
+                _patch_routing(routing), \
+                patch.object(
+                    spawnlib,
+                    "prepare_codex_child_environment",
+                    return_value=(os.environ.copy(), "/tmp/worktrail-codex-child", False),
+                ):
+            out = spawnlib.spawn_agent("prompt", cwd, tier="t2-build", **kw)
         return out, calls, sleeps
-
-    def test_capacity_gate_first_hop_claude_gated_selects_codex(self):
-        # Persisted gate consulted BEFORE the first command is built: claude
-        # is gated, so codex is hop zero and the claude-only payload must
-        # never reach the single argv this spawn builds.
-        self._gate("claude")
-        out, calls, _sleeps = self._sweep(
-            [Proc(0, "codex report", "")], fallback_agent="codex"
-        )
-        self.assertEqual(out.text, "codex report")
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0][0], "codex")
-        self.assertIn(self.HOP_MODELS["codex"], calls[0])
-        self.assert_no_claude_only_flags(calls)
-
-    def test_capacity_gate_first_hop_claude_gated_selects_opencode(self):
-        self._gate("claude")
-        out, calls, _sleeps = self._sweep(
-            [Proc(0, "opencode report", "")], fallback_agent="opencode"
-        )
-        self.assertEqual(out.text, "opencode report")
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0][0], "opencode")
-        self.assertIn(self.HOP_MODELS["opencode"], calls[0])
-        self.assert_no_claude_only_flags(calls)
 
     def test_session_limit_hop_claude_to_codex(self):
         out, calls, sleeps = self._sweep(
             [self.LIMIT_NOTICE, Proc(0, "codex report", "")],
-            fallback_agent="codex",
+            self.CLAUDE_CODEX_ROUTING,
         )
         self.assertEqual(out.text, "codex report")
         self.assertEqual([c[0] for c in calls], ["claude", "codex"])
-        self.assertEqual(sleeps, [])  # the chain hop replaces sleep-until-reset
+        self.assertEqual(sleeps, [])  # the hop replaces sleep-until-reset
         self.assertIn(self.HOP_MODELS["codex"], calls[1])
         self.assert_no_claude_only_flags(calls)
 
     def test_session_limit_hop_claude_to_opencode(self):
         out, calls, sleeps = self._sweep(
             [self.LIMIT_NOTICE, Proc(0, "opencode report", "")],
-            fallback_agent="opencode",
+            self.CLAUDE_OPENCODE_ROUTING,
         )
         self.assertEqual(out.text, "opencode report")
         self.assertEqual([c[0] for c in calls], ["claude", "opencode"])
@@ -1629,13 +1643,13 @@ class CrossHopArgvInvariant(unittest.TestCase):
         self.assertIn(self.HOP_MODELS["opencode"], calls[1])
         self.assert_no_claude_only_flags(calls)
 
-    def test_multi_hop_chain_hitting_limit_twice_sweeps_second_hop(self):
+    def test_multi_hop_row_hitting_limit_twice_sweeps_second_hop(self):
         # claude -> (limit) -> codex -> (limit) -> opencode: the SECOND hop
         # transition is itself swept -- the rebuilt codex command carried no
         # payload, and the codex->opencode rebuild must not resurrect one.
         out, calls, sleeps = self._sweep(
             [self.LIMIT_NOTICE, self.LIMIT_NOTICE, Proc(0, "opencode report", "")],
-            fallback_agent=["codex", "opencode"],
+            self.THREE_TARGET_ROUTING,
         )
         self.assertEqual(out.text, "opencode report")
         self.assertEqual([c[0] for c in calls], ["claude", "codex", "opencode"])
@@ -1645,11 +1659,11 @@ class CrossHopArgvInvariant(unittest.TestCase):
         self.assert_no_claude_only_flags(calls)
 
     def test_positive_control_ungated_claude_receives_every_payload_token(self):
-        # Positive control: with no gate and no limit hit, the ungated claude
-        # primary receives EVERY CLAUDE_ONLY_ARGV_TOKENS element -- proving
-        # the sweep payload really spans the whole token set (values intact),
-        # i.e. the negative assertions above are testing something.
-        out, calls, _sleeps = self._sweep([Proc(0, "claude report", "")])
+        # Positive control: with no limit hit, the served claude cell
+        # receives EVERY CLAUDE_ONLY_ARGV_TOKENS element -- proving the sweep
+        # payload really spans the whole token set (values intact), i.e. the
+        # negative assertions above are testing something.
+        out, calls, _sleeps = self._sweep([Proc(0, "claude report", "")], self.SINGLE_CLAUDE)
         self.assertEqual(out.text, "claude report")
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0][0], "claude")
@@ -1702,25 +1716,96 @@ class BuildCmdForkSession(unittest.TestCase):
     """Tests for fork-session path in build_cmd (TASK-007)."""
 
     def test_build_cmd_fork_session(self):
-        cmd = spawnlib.build_cmd("p", resume_session_id="sid-42")
+        cmd = spawnlib.build_cmd("p", _cell(), resume_session_id="sid-42")
         self.assertIn("--resume", cmd)
         idx = cmd.index("--resume")
         self.assertEqual(cmd[idx + 1], "sid-42")
         self.assertIn("--fork-session", cmd)
 
     def test_build_cmd_no_fork(self):
-        cmd = spawnlib.build_cmd("p")
+        cmd = spawnlib.build_cmd("p", _cell())
         self.assertNotIn("--fork-session", cmd)
         self.assertNotIn("--resume", cmd)
 
     def test_build_cmd_fork_session_none(self):
-        cmd = spawnlib.build_cmd("p", resume_session_id=None)
+        cmd = spawnlib.build_cmd("p", _cell(), resume_session_id=None)
         self.assertNotIn("--fork-session", cmd)
 
     def test_build_cmd_fork_session_empty_string(self):
         # Empty string is falsy — should not add fork args
-        cmd = spawnlib.build_cmd("p", resume_session_id="")
+        cmd = spawnlib.build_cmd("p", _cell(), resume_session_id="")
         self.assertNotIn("--fork-session", cmd)
+
+
+class BuildChildEnv(unittest.TestCase):
+    """Tests for build_child_env(cell, base_env) -- design D6: claude
+    subscription drops any ambient ANTHROPIC_API_KEY, claude api requires and
+    copies through its declared auth.env, and every other harness/pool is a
+    no-op (routing-target-selector 3.2)."""
+
+    def test_claude_subscription_removes_ambient_api_key(self):
+        base = {"ANTHROPIC_API_KEY": "sk-ambient", "PATH": "/usr/bin"}
+        env = spawnlib.build_child_env(_cell(pool="subscription"), base)
+        self.assertNotIn("ANTHROPIC_API_KEY", env)
+        self.assertEqual(env["PATH"], "/usr/bin")
+
+    def test_claude_subscription_is_a_noop_when_key_already_absent(self):
+        base = {"PATH": "/usr/bin"}
+        env = spawnlib.build_child_env(_cell(pool="subscription"), base)
+        self.assertEqual(env, base)
+
+    def test_base_env_is_not_mutated(self):
+        base = {"ANTHROPIC_API_KEY": "sk-ambient"}
+        spawnlib.build_child_env(_cell(pool="subscription"), base)
+        self.assertIn("ANTHROPIC_API_KEY", base)
+
+    def test_claude_api_copies_named_auth_var_through(self):
+        base = {"ANTHROPIC_API_KEY": "sk-real", "PATH": "/usr/bin"}
+        cell = _cell(pool="api", auth={"env": "ANTHROPIC_API_KEY"})
+        env = spawnlib.build_child_env(cell, base)
+        self.assertEqual(env["ANTHROPIC_API_KEY"], "sk-real")
+
+    def test_claude_api_copies_a_differently_named_auth_var(self):
+        base = {"CLAUDE_API_KEY_PROD": "sk-prod"}
+        cell = _cell(pool="api", auth={"env": "CLAUDE_API_KEY_PROD"})
+        env = spawnlib.build_child_env(cell, base)
+        self.assertEqual(env["CLAUDE_API_KEY_PROD"], "sk-prod")
+
+    def test_claude_api_raises_when_auth_env_var_is_unset(self):
+        base = {"PATH": "/usr/bin"}  # ANTHROPIC_API_KEY not present
+        cell = _cell(pool="api", auth={"env": "ANTHROPIC_API_KEY"}, target="claude-api")
+        with self.assertRaises(spawnlib.OperatorConfigError) as ctx:
+            spawnlib.build_child_env(cell, base)
+        self.assertIn("claude-api", str(ctx.exception))
+        self.assertIn("ANTHROPIC_API_KEY", str(ctx.exception))
+
+    def test_claude_api_raises_when_auth_env_var_is_empty(self):
+        base = {"ANTHROPIC_API_KEY": ""}
+        cell = _cell(pool="api", auth={"env": "ANTHROPIC_API_KEY"})
+        with self.assertRaises(spawnlib.OperatorConfigError):
+            spawnlib.build_child_env(cell, base)
+
+    def test_claude_api_raises_when_auth_is_not_configured(self):
+        base = {"ANTHROPIC_API_KEY": "sk-real"}
+        cell = _cell(pool="api", auth=None, target="claude-api")
+        with self.assertRaises(spawnlib.OperatorConfigError) as ctx:
+            spawnlib.build_child_env(cell, base)
+        self.assertIn("claude-api", str(ctx.exception))
+        self.assertIn("auth.env", str(ctx.exception))
+
+    def test_opencode_is_a_noop_regardless_of_pool(self):
+        base = {"ANTHROPIC_API_KEY": "sk-ambient"}
+        for pool in ("subscription", "free", "api"):
+            with self.subTest(pool=pool):
+                env = spawnlib.build_child_env(_cell(harness="opencode", pool=pool), base)
+                self.assertEqual(env, base)
+
+    def test_codex_is_a_noop_regardless_of_pool(self):
+        base = {"ANTHROPIC_API_KEY": "sk-ambient"}
+        for pool in ("subscription", "api"):
+            with self.subTest(pool=pool):
+                env = spawnlib.build_child_env(_cell(harness="codex", pool=pool), base)
+                self.assertEqual(env, base)
 
 
 if __name__ == "__main__":

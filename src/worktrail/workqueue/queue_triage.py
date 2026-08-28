@@ -33,6 +33,10 @@ _FOCUS_BODY_RE = re.compile(r"^##\s+Focus\s*$\r?\n(.+)$", re.MULTILINE)
 
 NO_REPO_KEY = "__none__"
 
+# Tier the evaluator worker spawns under (design D3): routing, not this
+# caller, owns the harness/model choice for a given tier.
+DEFAULT_TIER = "t2-build"
+
 VALID_VERDICT_TYPES = {"keep", "stale-close", "needs-update", "duplicate-of"}
 
 _TRIAGE_HEADING_RE = re.compile(r"^##\s+Triage\s+(\d{4}-\d{2}-\d{2})\s*$", re.MULTILINE)
@@ -224,7 +228,6 @@ def evaluate_group(
     briefs: List[Path],
     *,
     agent: str = "claude",
-    model: Optional[str] = None,
     cwd: "str | Path",
 ) -> List[dict]:
     """Spawn one evaluator agent over `repo`'s brief group, per the pilot's grouping.
@@ -232,7 +235,9 @@ def evaluate_group(
     Builds `EVALUATOR_PROMPT_TEMPLATE` for this group (one `{id, focus, created}`
     line per brief, `path.stem` as `id` -- matching `work_queue.resolve()`'s
     primary identifier) and spawns one cold headless worker via
-    `spawnlib.spawn_agent()` in `cwd`. `cwd` is the group's target repo checkout
+    `spawnlib.spawn_agent()` in `cwd`, under `DEFAULT_TIER` with `agent` passed
+    through as a soft `prefer` hint (design D3: routing, not this caller, owns
+    the tier's harness/model choice). `cwd` is the group's target repo checkout
     when `repo` is not `NO_REPO_KEY` (so the evaluator's `git`/`gh` calls run
     against real repo state), else the worktrail repo itself.
 
@@ -280,7 +285,7 @@ def evaluate_group(
         no_repo_key=NO_REPO_KEY,
         memory_index=_memory_index_path(cwd),
     )
-    result = spawnlib.spawn_agent(prompt, cwd, agent=agent, model=model)
+    result = spawnlib.spawn_agent(prompt, cwd, tier=DEFAULT_TIER, prefer=agent)
     return [{"repo": repo, "brief_ids": brief_ids, "raw_text": result.text}]
 
 
