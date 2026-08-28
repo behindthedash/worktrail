@@ -9,7 +9,7 @@ from unittest import mock
 from worktrail.router.policy import (
     DEFAULTS, OperatorConfigError, _json_safe, _validate_routing_agents,
     _validate_routing_drain, _validate_routing_purpose_tiers,
-    _validate_routing_tiers, automerge_eligible,
+    _validate_routing_targets, _validate_routing_tiers, automerge_eligible,
     automerge_labels, detect_external_automerge, load_policy,
     merge_method_for_branch, parse_policy_yaml,
     resolve_post_merge_smoke_cmd, resolve_routing, resolve_tier_map,
@@ -1229,6 +1229,102 @@ class Routing(unittest.TestCase):
         with self._no_mw_env():
             pol = load_policy(repo)
         self.assertIsNone(pol["routing"])
+
+
+class TestValidateRoutingTargets(unittest.TestCase):
+    """`_validate_routing_targets()` (1.1): the ordered `routing.targets`
+    mapping into `{name: {harness, pool, api_opt_in, auth}}`."""
+
+    def test_absent_resolves_to_empty(self):
+        meta = {"warnings": []}
+        self.assertEqual(_validate_routing_targets(None, meta), {})
+        self.assertEqual(meta["warnings"], [])
+
+    def test_non_mapping_warns_and_ignored(self):
+        meta = {"warnings": []}
+        resolved = _validate_routing_targets(["claude-sub"], meta)
+        self.assertEqual(resolved, {})
+        self.assertTrue(any("routing.targets must be a mapping" in w for w in meta["warnings"]))
+
+    def test_valid_entry_resolves(self):
+        meta = {"warnings": []}
+        resolved = _validate_routing_targets(
+            {"claude-sub": {"harness": "claude", "pool": "subscription"}}, meta)
+        self.assertEqual(
+            resolved,
+            {"claude-sub": {"harness": "claude", "pool": "subscription",
+                             "api_opt_in": False, "auth": None}})
+        self.assertEqual(meta["warnings"], [])
+
+    def test_auth_passed_through(self):
+        meta = {"warnings": []}
+        resolved = _validate_routing_targets(
+            {"claude-api": {"harness": "claude", "pool": "api", "api_opt_in": True,
+                             "auth": {"env": "ANTHROPIC_API_KEY"}}}, meta)
+        self.assertEqual(resolved["claude-api"]["auth"], {"env": "ANTHROPIC_API_KEY"})
+        self.assertEqual(meta["warnings"], [])
+
+    def test_file_order_preserved(self):
+        meta = {"warnings": []}
+        resolved = _validate_routing_targets(
+            {"codex-sub": {"harness": "codex", "pool": "subscription"},
+             "claude-sub": {"harness": "claude", "pool": "subscription"},
+             "opencode-free": {"harness": "opencode", "pool": "free"}}, meta)
+        self.assertEqual(list(resolved), ["codex-sub", "claude-sub", "opencode-free"])
+
+    def test_entry_not_mapping_dropped(self):
+        meta = {"warnings": []}
+        resolved = _validate_routing_targets({"claude-sub": "claude"}, meta)
+        self.assertEqual(resolved, {})
+        self.assertTrue(any("routing.targets.claude-sub must be a mapping" in w
+                             for w in meta["warnings"]))
+
+    def test_invalid_harness_dropped(self):
+        meta = {"warnings": []}
+        resolved = _validate_routing_targets(
+            {"bogus": {"harness": "gemini", "pool": "subscription"}}, meta)
+        self.assertEqual(resolved, {})
+        self.assertTrue(any("routing.targets.bogus.harness" in w and "gemini" in w
+                             for w in meta["warnings"]))
+
+    def test_missing_harness_dropped(self):
+        meta = {"warnings": []}
+        resolved = _validate_routing_targets({"claude-sub": {"pool": "subscription"}}, meta)
+        self.assertEqual(resolved, {})
+        self.assertTrue(any("routing.targets.claude-sub.harness" in w for w in meta["warnings"]))
+
+    def test_invalid_pool_dropped(self):
+        meta = {"warnings": []}
+        resolved = _validate_routing_targets(
+            {"claude-sub": {"harness": "claude", "pool": "enterprise"}}, meta)
+        self.assertEqual(resolved, {})
+        self.assertTrue(any("routing.targets.claude-sub.pool" in w and "enterprise" in w
+                             for w in meta["warnings"]))
+
+    def test_api_pool_without_opt_in_kept_but_warns_ineligible(self):
+        meta = {"warnings": []}
+        resolved = _validate_routing_targets(
+            {"claude-api": {"harness": "claude", "pool": "api"}}, meta)
+        self.assertEqual(
+            resolved,
+            {"claude-api": {"harness": "claude", "pool": "api",
+                             "api_opt_in": False, "auth": None}})
+        self.assertTrue(any("claude-api" in w and "api_opt_in" in w for w in meta["warnings"]))
+
+    def test_api_pool_with_opt_in_resolves_no_warning(self):
+        meta = {"warnings": []}
+        resolved = _validate_routing_targets(
+            {"claude-api": {"harness": "claude", "pool": "api", "api_opt_in": True}}, meta)
+        self.assertEqual(resolved["claude-api"]["api_opt_in"], True)
+        self.assertEqual(meta["warnings"], [])
+
+    def test_mixed_valid_and_invalid_entries(self):
+        meta = {"warnings": []}
+        resolved = _validate_routing_targets(
+            {"claude-sub": {"harness": "claude", "pool": "subscription"},
+             "bogus": {"harness": "gemini", "pool": "subscription"}}, meta)
+        self.assertEqual(list(resolved), ["claude-sub"])
+        self.assertTrue(any("bogus" in w for w in meta["warnings"]))
 
 
 class RoutingAgentsAndDrain(unittest.TestCase):

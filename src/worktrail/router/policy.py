@@ -30,6 +30,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 
 from ..shared.homedir import env_setting, worktrail_home
+from .invocation_context import SUPPORTED_AGENTS
 
 
 class OperatorConfigError(ValueError):
@@ -236,6 +237,11 @@ VALID_AGENT_CLIS = ("claude", "codex", "opencode")
 # bypass the per-subscription capacity system entirely, so silently falling
 # back to one would mask capacity/quota assumptions the rest of GO makes.
 API_AGENT_LITERALS = ("openrouter", "api")
+# routing.targets.<name>.pool literals (design D3): `subscription`/`free` are
+# harness-native capacity-gated pools; `api` bypasses the harness's own
+# subscription capacity system entirely, so it requires an explicit
+# `api_opt_in: true` on the same target (see _validate_routing_targets()).
+VALID_POOLS = ("subscription", "free", "api")
 
 
 def _parse_scalar(raw: str) -> Any:
@@ -340,6 +346,67 @@ def _validate_agent_entry(value: Any, meta: Dict[str, Any], label: str) -> Optio
         meta["warnings"].append(f"{label}: effort must be a string; dropped")
         effort = None
     return {"agent_cli": agent_cli, "agent_model": agent_model, "effort": effort}
+
+
+def _validate_routing_targets(raw: Any, meta: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """`routing.targets`: the ordered `{name: {harness, pool, api_opt_in?, auth?}}`
+    mapping (design D3) that separates *harness* (which CLI runs the task) from
+    *pool* (which capacity/auth surface it draws from) -- the schema `tiers`
+    rows and `roles` entries key against by target name.
+
+    File order is preserved: `raw` comes from `yaml.safe_load` (real YAML, via
+    `_resolve_routing()`), whose mapping keys already iterate in declaration
+    order, and this function only ever assigns into `resolved` while walking
+    `raw.items()` -- never re-sorts or re-inserts.
+
+    A target is dropped (with a `meta["warnings"]` entry) when `harness` is
+    outside `SUPPORTED_AGENTS` or `pool` is outside `VALID_POOLS` -- both are
+    load-bearing identity fields the selector cannot fall back on. A `pool:
+    api` target without `api_opt_in: true` is *kept*, not dropped: its
+    `api_opt_in` stays `False` so downstream selection (`select_cell`, task
+    2.1) can skip it as ineligible while still surfacing it (e.g. in
+    `worktrail-routing --check` diagnostics); a warning is appended either way.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        meta["warnings"].append(f"routing.targets must be a mapping; got {raw!r} — ignored")
+        return {}
+    resolved: Dict[str, Dict[str, Any]] = {}
+    for name, entry in raw.items():
+        if not isinstance(name, str):
+            meta["warnings"].append(f"routing.targets: key must be a string; got {name!r} — ignored")
+            continue
+        if not isinstance(entry, dict):
+            meta["warnings"].append(
+                f"routing.targets.{name} must be a mapping ({{harness, pool, api_opt_in?, auth?}}); "
+                f"got {entry!r} — dropped")
+            continue
+        harness = entry.get("harness")
+        if harness not in SUPPORTED_AGENTS:
+            meta["warnings"].append(
+                f"routing.targets.{name}.harness: invalid harness {harness!r} "
+                f"(allowed: {SUPPORTED_AGENTS}); dropped")
+            continue
+        pool = entry.get("pool")
+        if pool not in VALID_POOLS:
+            meta["warnings"].append(
+                f"routing.targets.{name}.pool: invalid pool {pool!r} "
+                f"(allowed: {VALID_POOLS}); dropped")
+            continue
+        api_opt_in = bool(entry.get("api_opt_in", False))
+        if pool == "api" and not api_opt_in:
+            meta["warnings"].append(
+                f"routing.targets.{name}: pool 'api' requires explicit api_opt_in: true; "
+                "target kept but ineligible until opted in")
+        auth = entry.get("auth")
+        resolved[name] = {
+            "harness": harness,
+            "pool": pool,
+            "api_opt_in": api_opt_in,
+            "auth": auth,
+        }
+    return resolved
 
 
 def _validate_routing_agents(raw: Any, meta: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
