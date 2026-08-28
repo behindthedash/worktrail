@@ -521,7 +521,7 @@ class LiveSpawnRoleAgentsTests(unittest.TestCase):
         # claude's OWN default model, not the run's opencode default model
         # (which would be an invalid model id for the claude CLI).
         claude_captured, _ = self._call("review", agent="opencode", role_agents={"review": "claude"})
-        self.assertEqual(claude_captured.get("model"), spawnlib.default_model_for_agent("claude"))
+        self.assertEqual(claude_captured.get("model"), live._default_model_for_agent("claude"))
 
     def test_review_role_override_honors_explicit_role_model(self):
         claude_captured, _ = self._call(
@@ -562,7 +562,7 @@ class RoleAgentModelHelperTests(unittest.TestCase):
             self.ROLE, "opencode", "oc-model", {self.ROLE: "claude"}, None
         )
         self.assertEqual(agent, "claude")
-        self.assertEqual(model, spawnlib.default_model_for_agent("claude"))
+        self.assertEqual(model, live._default_model_for_agent("claude"))
 
     def test_explicit_role_model_wins(self):
         self.assertEqual(
@@ -614,9 +614,9 @@ class VerifierRoleSpawnsTests(unittest.TestCase):
             role_agents={"resolve": "claude", "ci-fix": "claude"}
         )
         self.assertEqual(resolve["agent"], "claude")
-        self.assertEqual(resolve["model"], spawnlib.default_model_for_agent("claude"))
+        self.assertEqual(resolve["model"], live._default_model_for_agent("claude"))
         self.assertEqual(ci_fix["agent"], "claude")
-        self.assertEqual(ci_fix["model"], spawnlib.default_model_for_agent("claude"))
+        self.assertEqual(ci_fix["model"], live._default_model_for_agent("claude"))
 
     def test_explicit_role_models_win(self):
         resolve, ci_fix = self._captured(
@@ -702,7 +702,7 @@ class LiveSpawnTierRoutingTests(unittest.TestCase):
         )
         self.assertEqual(claude_captured, {}, "must not spawn via the claude path")
         self.assertEqual(agent_captured.get("agent"), "codex")
-        self.assertEqual(agent_captured.get("model"), spawnlib.default_model_for_agent("codex"))
+        self.assertEqual(agent_captured.get("model"), live._default_model_for_agent("codex"))
 
     def test_tier_match_honors_a_pinned_model(self):
         tier_map = {("complex", "backend"): {"agent_cli": "codex", "agent_model": "gpt-tier"}}

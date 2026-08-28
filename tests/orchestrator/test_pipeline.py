@@ -1161,7 +1161,7 @@ class AssemblyResolveRoleAgentMapTest(unittest.TestCase):
         self.assertEqual(got["agent"], "claude")
         # Overridden agent resolves its OWN default model, not the run's
         # opencode model (an invalid model id for the claude CLI).
-        self.assertEqual(got["model"], spawnlib.default_model_for_agent("claude"))
+        self.assertEqual(got["model"], live._default_model_for_agent("claude"))
 
     def test_explicit_role_model_wins_over_override_agent_default(self):
         got = self._captured_make_live_spawn(

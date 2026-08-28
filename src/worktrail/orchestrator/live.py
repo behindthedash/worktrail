@@ -154,10 +154,49 @@ def _default_post_merge_smoke_cmd(repo: Path) -> "str | None":
 # --agent, policy agent_cli, and GO_AGENT_CLI env var all override this.
 DEFAULT_AGENT = _detect_default_agent()
 
-# Every codex role defaults to the SAME model (spawnlib.default_model_for_agent
+
+def _default_model_for_agent(agent: str) -> str:
+    """Replacement for the retired `spawnlib.default_model_for_agent()`
+    (deleted by task 3.3, which moved per-agent default-model resolution onto
+    `runtime.selection.select_cell()`): task 4.2's own AC describes this as
+    "DEFAULT_AGENT detection becomes a default-target lookup" -- resolve
+    `agent`'s model by finding a `routing.targets` entry whose harness
+    matches it, then reading that target's cell in the operator's configured
+    `default_tier` row. Resolved fresh per call, not a frozen snapshot, for
+    the same reason the old function was (an operator edit to routing.yaml
+    takes effect on the very next spawn). No silent fallback to a hardcoded
+    model: a missing declaration is stated operator intent no configuration
+    file provides."""
+    from ..router.policy import (
+        OperatorConfigError,
+        load_policy,
+        resolve_routing,
+        resolved_routing_file_path,
+    )
+    from ..shared.homedir import worktrail_home
+
+    routing = resolve_routing(load_policy(worktrail_home()))
+    tier = routing.get("default_tier")
+    targets = routing.get("targets") or {}
+    row = ((routing.get("tiers") or {}).get(tier) or {}) if tier else {}
+    for name, target in targets.items():
+        if isinstance(target, dict) and target.get("harness") == agent:
+            cell = row.get(name)
+            if isinstance(cell, dict) and cell.get("model"):
+                return cell["model"]
+    raise OperatorConfigError(
+        f"no default model configured for agent {agent!r} -- add a "
+        f"routing.targets entry with harness {agent!r} and a "
+        f"routing.tiers.{tier or '<default_tier>'} cell for it in "
+        f"{resolved_routing_file_path()}, or run `worktrail-routing --init` "
+        "to write a starter config"
+    )
+
+
+# Every codex role defaults to the SAME model (_default_model_for_agent
 # resolved fresh per call, not a frozen snapshot -- a stale frozen copy of
-# spawnlib's default here is exactly the staleness bug spawnlib.py itself was
-# just fixed for; see _effective_role_models below).
+# the default here is exactly the staleness bug the function itself avoids;
+# see _effective_role_models below).
 _CODEX_DEFAULT_ROLES = ("implement", "review", "fix", "cleanup", "ci-fix")
 
 # Reviewer independence (locked decision 13.3): the headless review worker is the
@@ -2140,7 +2179,7 @@ def run_research_session(
     4. Run a single agent session with those files as context.
     5. Return the session_id from SpawnResult so workers can fork from it.
     """
-    model = model or spawnlib.default_model_for_agent(agent)
+    model = model or _default_model_for_agent(agent)
     # --- collect spec content ---
     spec_lines: list[str] = []
     for candidate in sorted(spec_folder.glob("*.md")):
@@ -2228,7 +2267,7 @@ def _serving_agent_guess(agent: str, model: str, fallback) -> str:
         if not hop or hop == agent:
             continue
         try:
-            candidates.append((hop, spawnlib.default_model_for_agent(hop)))
+            candidates.append((hop, _default_model_for_agent(hop)))
         except Exception:
             continue
     try:
@@ -2264,7 +2303,7 @@ class LiveSpawn:
         self.spec_id = spec_id
         self.spec_folder_rel = spec_folder_rel.rstrip("/") + "/"
         self.timeout = timeout
-        self.model = model or spawnlib.default_model_for_agent(agent)
+        self.model = model or _default_model_for_agent(agent)
         # Run-level default effort (model-tier-routing 3.3). Unlike `model`, effort
         # has no per-agent default to fall back to -- omitting it is always a valid,
         # common state (spawnlib.build_cmd only adds the flag `if effort:`), so no
@@ -2377,7 +2416,7 @@ class LiveSpawn:
         if agent == self.agent:
             default_model = resolved["agent_model"] or self.model
         else:
-            default_model = resolved["agent_model"] or spawnlib.default_model_for_agent(agent)
+            default_model = resolved["agent_model"] or _default_model_for_agent(agent)
         model = self.role_models.get(role, default_model)
         # Effort mirrors the model precedence above, minus the cross-agent default
         # fallback: there's no `default_effort_for_agent()` (no agent requires one),
@@ -2502,7 +2541,7 @@ def live_run(
     (e2e/cleanup) are skipped unless --with-tail, since faithful e2e needs the
     impl branches integrated first (next phase).
     """
-    model = model or spawnlib.default_model_for_agent(agent)
+    model = model or _default_model_for_agent(agent)
     repo = instantiate(SAMPLE_TEMPLATE, dest)
     spec_id, tasks = taskformats.load_spec(str(repo / SAMPLE_SPEC_REL))
     if only:
@@ -2632,7 +2671,7 @@ def full(
     the integrated branch -> final PR -> cleanup. Records the real cassette."""
     from . import integrate
 
-    model = model or spawnlib.default_model_for_agent(agent)
+    model = model or _default_model_for_agent(agent)
     out_cassette = str(_SKILL / ".fixtures" / "sample-spec" / "cassette.live.json")
 
     res = live_run(DEFAULT_DEST, max_workers, out_cassette, None, False, agent, model)  # fan-out
@@ -3215,7 +3254,7 @@ def live_run_real(
     heartbeat) is mutated only under a lock; the slow `claude -p` spawns run
     outside it.
     """
-    model = model or spawnlib.default_model_for_agent(agent)
+    model = model or _default_model_for_agent(agent)
     from . import verify as verify_module
 
     repo = repo.resolve()
@@ -3852,7 +3891,7 @@ def full_real(
     on process exit even if this returns early; a held lock aborts with a clear
     message rather than racing.
     """
-    model = model or spawnlib.default_model_for_agent(agent)
+    model = model or _default_model_for_agent(agent)
     repo = Path(repo_path).resolve()
     role_models = _effective_role_models(agent, role_models)
     journal_path = str(journal_path_for(repo, spec_rel))
@@ -4041,7 +4080,7 @@ def _pipeline_scheduler(
     _write_group_journal to use progress.atomic_write_text, or pass an atomic-write
     callback through the integrate_one seam.
     """
-    model = model or spawnlib.default_model_for_agent(agent)
+    model = model or _default_model_for_agent(agent)
     from . import integrate as integrate_module
     from . import verify as verify_module
     from ..router.gitnexus_preflight import check as gitnexus_check
@@ -5037,7 +5076,7 @@ def _full_real_inner(
     out N tasks then blocks on each PR's CI, routinely exceeding a 10-minute
     foreground timeout. If killed, the journal makes the next run resumable.
     """
-    model = model or spawnlib.default_model_for_agent(agent)
+    model = model or _default_model_for_agent(agent)
     from . import integrate
     from . import verify
 
@@ -5245,7 +5284,7 @@ def _full_real_inner(
 
 
 def smoke(agent: str = DEFAULT_AGENT, model: str | None = None) -> bool:
-    model = model or spawnlib.default_model_for_agent(agent)
+    model = model or _default_model_for_agent(agent)
     result = spawnlib.spawn_agent(
         "Reply with exactly: PONG",
         Path.cwd(),
@@ -5321,7 +5360,7 @@ def _role_agent_model(
     role_agent = (role_agents or {}).get(role, agent)
     role_model = (role_models or {}).get(
         role,
-        model if role_agent == agent else spawnlib.default_model_for_agent(role_agent),
+        model if role_agent == agent else _default_model_for_agent(role_agent),
     )
     return role_agent, role_model
 
@@ -5371,7 +5410,7 @@ def _effective_role_models(agent: str, role_models: dict | None) -> dict | None:
     if role_models is not None:
         return role_models
     if agent == "codex":
-        model = spawnlib.default_model_for_agent("codex")
+        model = _default_model_for_agent("codex")
         return {role: model for role in _CODEX_DEFAULT_ROLES}
     return None
 
@@ -5740,7 +5779,7 @@ def main(argv=None) -> int:
 
     args = p.parse_args(argv)
     if getattr(args, "model", None) is None:
-        args.model = spawnlib.default_model_for_agent(getattr(args, "agent", DEFAULT_AGENT))
+        args.model = _default_model_for_agent(getattr(args, "agent", DEFAULT_AGENT))
     role_models = _effective_role_models(
         getattr(args, "agent", DEFAULT_AGENT), _parse_model_map(getattr(args, "model_map", None))
     )

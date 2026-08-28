@@ -436,10 +436,15 @@ class E2EDashboardAdditiveJSONTest(unittest.TestCase):
             (specs / "go-policy.yaml").write_text(
                 "agent_cli: claude\n"
                 "routing:\n"
-                "  defaults:\n"
-                "    B:\n"
-                "      medium:\n"
-                "        agent_cli: codex\n"
+                "  targets:\n"
+                "    codex-sub:\n"
+                "      harness: codex\n"
+                "      pool: subscription\n"
+                "  tiers:\n"
+                "    t3-bulk:\n"
+                "      codex-sub:\n"
+                "        model: gpt-5.4-mini\n"
+                "  default_tier: t3-bulk\n"
             )
             spec = {
                 "id": "001", "stage": "ready-to-implement", "next_action": "orchestrator",
@@ -448,9 +453,12 @@ class E2EDashboardAdditiveJSONTest(unittest.TestCase):
             rows = [{"repo": "repo-a", "path": str(repo), "active_specs": [spec]}]
 
             # AC-021: category_items additively carries a real, policy-resolved
-            # planned-agent -- not a stub/None.
+            # planned-agent (the configured default_tier's winning target) --
+            # not a stub/None. Route/risk no longer select routing (retired by
+            # the target/tier/role redesign), which is why this test's routing
+            # config no longer keys on them either.
             items = dashboard.build_category_items(rows, None, inflight=[], queue_briefs=[])
-            self.assertEqual(items["ready"][0]["planned-agent"], "codex")
+            self.assertEqual(items["ready"][0]["planned-agent"], "codex-sub")
 
             # AC-022: the SAME repo_rows, rendered as text, is byte-identical
             # whether or not route/risk (hence planned-agent resolution) is

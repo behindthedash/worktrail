@@ -33,6 +33,7 @@ import time
 import unittest
 from collections import namedtuple
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -198,13 +199,47 @@ class SpawnlibPausedSeconds(unittest.TestCase):
     def test_no_session_limit_returns_zero_paused(self):
         Proc = namedtuple("Proc", "returncode stdout stderr")
         spawnlib.subprocess.run = lambda *a, **k: Proc(0, "ok output", "")
-        out = spawnlib.spawn_claude_p("p", "/tmp", retries=1, sleep=lambda *_: None)
+        out = spawnlib.spawn_claude_p("p", "/tmp", tier="t2-build", retries=1, sleep=lambda *_: None)
         self.assertEqual(out.paused_s, 0.0)
 
+    @staticmethod
+    def _solo_target_routing_file(tmp_dir):
+        """A tier row with exactly ONE target -- conftest.py's own 3-target
+        t2-build row lets a session-limit hit HOP to a sibling target instead
+        of sleeping (select_cell's documented behavior: hop when another cell
+        is available, sleep only when the row has nothing else to offer), so
+        these tests -- which specifically exercise the sleep-and-retry path --
+        need a row with no alternative to hop to."""
+        routing_file = Path(tmp_dir) / "solo-routing.yaml"
+        routing_file.write_text(
+            "targets:\n"
+            "  claude-sub:\n"
+            "    harness: claude\n"
+            "    pool: subscription\n"
+            "tiers:\n"
+            "  solo:\n"
+            "    claude-sub:\n"
+            "      model: sonnet\n"
+            "default_tier: solo\n"
+        )
+        return routing_file
+
     def test_session_limit_sleep_accumulates_paused(self):
-        # Use a fixed fake datetime so the reset window is deterministic.
+        # No fixed/frozen "now" here on purpose (see the note this replaced,
+        # confirmed live: a hardcoded absolute fixed_now used only to drive
+        # parse_session_limit_reset(), while agent_capacity's own re-select
+        # gate check always uses REAL wall-clock time, rots the moment real
+        # time passes that hardcoded value -- the gate then sees the parsed
+        # reset_at as already-expired and select_cell HOPS to a "fresh" cell
+        # instead of sleeping, exactly the failure this test exists to catch).
+        # parse_session_limit_reset()'s own real (unpatched) `now` default
+        # keeps both call sites -- reset-time parsing and the capacity gate --
+        # sharing the same real clock, so this never rots.
         Proc = namedtuple("Proc", "returncode stdout stderr")
-        limit_msg = "You've hit your session limit. Your limit resets at 10:05am."
+        reset_at = (datetime.datetime.now() + datetime.timedelta(minutes=5)).strftime(
+            "%I:%M%p"
+        ).lstrip("0").lower()
+        limit_msg = f"You've hit your session limit. Your limit resets at {reset_at}."
 
         # Script: 1 session-limit response, then 1 success.
         outcomes = [
@@ -214,24 +249,14 @@ class SpawnlibPausedSeconds(unittest.TestCase):
         fake_i = iter(outcomes)
         spawnlib.subprocess.run = lambda *a, **k: next(fake_i)
 
-        # Inject a now that's BEFORE 10:05am so the parse works without wrap-to-tomorrow.
-        fixed_now = datetime.datetime(2026, 6, 10, 10, 0, 0)
-
-        # Patch parse_session_limit_reset default now via a wrapper.
-        orig_parse = spawnlib.parse_session_limit_reset
-
-        def _parse(text, now=None):
-            return orig_parse(text, now=fixed_now)
-
-        spawnlib.parse_session_limit_reset = _parse
-        try:
-            slept = []
-            out = spawnlib.spawn_claude_p(
-                "p", "/tmp", retries=1, sleep=lambda s: slept.append(s),
-                session_limit_waits=2,
-            )
-        finally:
-            spawnlib.parse_session_limit_reset = orig_parse
+        with tempfile.TemporaryDirectory() as tmp:
+            routing_file = self._solo_target_routing_file(tmp)
+            with mock.patch.dict(os.environ, {"GO_ROUTING_FILE": str(routing_file)}):
+                slept = []
+                out = spawnlib.spawn_claude_p(
+                    "p", "/tmp", tier="solo", retries=1, sleep=lambda s: slept.append(s),
+                    session_limit_waits=2,
+                )
 
         self.assertEqual(out.text, "ok output")
         # paused_s matches the cumulative sleep amount.
@@ -240,31 +265,30 @@ class SpawnlibPausedSeconds(unittest.TestCase):
 
     def test_multiple_session_limit_waits_accumulate(self):
         Proc = namedtuple("Proc", "returncode stdout stderr")
+        # See test_session_limit_sleep_accumulates_paused for why this uses
+        # the real clock rather than a hardcoded fixed "now".
+        reset_at = (datetime.datetime.now() + datetime.timedelta(minutes=5)).strftime(
+            "%I:%M%p"
+        ).lstrip("0").lower()
+        limit_msg = f"hit your session limit, resets {reset_at}"
         # 3 session-limit hits then success: all 3 sleeps accumulate.
         outcomes = [
-            Proc(0, "hit your session limit, resets 10:05am", ""),
-            Proc(0, "hit your session limit, resets 10:05am", ""),
-            Proc(0, "hit your session limit, resets 10:05am", ""),
+            Proc(0, limit_msg, ""),
+            Proc(0, limit_msg, ""),
+            Proc(0, limit_msg, ""),
             Proc(0, "ok output", ""),
         ]
         fake_i = iter(outcomes)
         spawnlib.subprocess.run = lambda *a, **k: next(fake_i)
 
-        fixed_now = datetime.datetime(2026, 6, 10, 10, 0, 0)
-        orig_parse = spawnlib.parse_session_limit_reset
-
-        def _parse(text, now=None):
-            return orig_parse(text, now=fixed_now)
-
-        spawnlib.parse_session_limit_reset = _parse
-        try:
-            slept = []
-            out = spawnlib.spawn_claude_p(
-                "p", "/tmp", retries=1, sleep=lambda s: slept.append(s),
-                session_limit_waits=5,
-            )
-        finally:
-            spawnlib.parse_session_limit_reset = orig_parse
+        with tempfile.TemporaryDirectory() as tmp:
+            routing_file = self._solo_target_routing_file(tmp)
+            with mock.patch.dict(os.environ, {"GO_ROUTING_FILE": str(routing_file)}):
+                slept = []
+                out = spawnlib.spawn_claude_p(
+                    "p", "/tmp", tier="solo", retries=1, sleep=lambda s: slept.append(s),
+                    session_limit_waits=5,
+                )
 
         self.assertEqual(out.text, "ok output")
         self.assertEqual(len(slept), 3)

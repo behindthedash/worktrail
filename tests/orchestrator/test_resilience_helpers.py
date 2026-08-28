@@ -173,14 +173,20 @@ class ParseModelMap(unittest.TestCase):
 
 
 class DefaultModelSelection(unittest.TestCase):
+    """`live._default_model_for_agent()` (task 4.2's replacement for the
+    retired `spawnlib.default_model_for_agent()`, task 3.3) resolves a
+    harness's model from `routing.targets`/`routing.tiers`/`default_tier`,
+    not the retired `routing.agents.<agent>.default_model` table."""
+
     def test_claude_defaults_to_sonnet(self):
-        self.assertEqual(spawnlib.default_model_for_agent("claude"), "sonnet")
+        # conftest.py seeds claude-sub/codex-sub/opencode-free at t2-build.
+        self.assertEqual(live._default_model_for_agent("claude"), "sonnet")
         self.assertEqual(
             live.LiveSpawn("001-x", "docs/specs/001-x/", agent="claude").model, "sonnet"
         )
 
     def test_codex_defaults_to_mini_and_explicit_override_still_wins(self):
-        self.assertEqual(spawnlib.default_model_for_agent("codex"), "gpt-5.4-mini")
+        self.assertEqual(live._default_model_for_agent("codex"), "gpt-5.4-mini")
         self.assertEqual(
             live.LiveSpawn("001-x", "docs/specs/001-x/", agent="codex").model,
             "gpt-5.4-mini",
@@ -196,11 +202,19 @@ class DefaultModelSelection(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             routing_file = Path(tmp) / "routing.yaml"
             routing_file.write_text(
-                "agents:\n  opencode:\n    default_model: opencode/deepseek-v4-flash-free\n"
+                "targets:\n"
+                "  opencode-free:\n"
+                "    harness: opencode\n"
+                "    pool: free\n"
+                "tiers:\n"
+                "  t2-build:\n"
+                "    opencode-free:\n"
+                "      model: opencode/deepseek-v4-flash-free\n"
+                "default_tier: t2-build\n"
             )
             with patch.dict(os.environ, {"GO_ROUTING_FILE": str(routing_file)}, clear=True):
                 self.assertEqual(
-                    spawnlib.default_model_for_agent("opencode"),
+                    live._default_model_for_agent("opencode"),
                     "opencode/deepseek-v4-flash-free",
                 )
                 self.assertEqual(
@@ -210,15 +224,26 @@ class DefaultModelSelection(unittest.TestCase):
 
     def test_env_var_overrides_are_ignored_returns_routing_configured_model(self):
         # ORCH_*_MODEL was never a real override layer for this resolution;
-        # routing.agents.<agent>.default_model is the only source, so even
-        # with both vars patched into the environment the answer comes from
-        # the seeded routing file.
+        # the operator's routing.targets/routing.tiers is the only source, so
+        # even with both vars patched into the environment the answer comes
+        # from the seeded routing file.
         with tempfile.TemporaryDirectory() as tmp:
             routing_file = Path(tmp) / "routing.yaml"
             routing_file.write_text(
-                "agents:\n"
-                "  codex:\n    default_model: gpt-5.4-mini\n"
-                "  opencode:\n    default_model: opencode/deepseek-v4-flash-free\n"
+                "targets:\n"
+                "  codex-sub:\n"
+                "    harness: codex\n"
+                "    pool: subscription\n"
+                "  opencode-free:\n"
+                "    harness: opencode\n"
+                "    pool: free\n"
+                "tiers:\n"
+                "  t2-build:\n"
+                "    codex-sub:\n"
+                "      model: gpt-5.4-mini\n"
+                "    opencode-free:\n"
+                "      model: opencode/deepseek-v4-flash-free\n"
+                "default_tier: t2-build\n"
             )
             with patch.dict(
                 os.environ,
@@ -229,21 +254,31 @@ class DefaultModelSelection(unittest.TestCase):
                 },
                 clear=True,
             ):
-                self.assertEqual(spawnlib.default_model_for_agent("codex"), "gpt-5.4-mini")
+                self.assertEqual(live._default_model_for_agent("codex"), "gpt-5.4-mini")
                 self.assertEqual(
-                    spawnlib.default_model_for_agent("opencode"),
+                    live._default_model_for_agent("opencode"),
                     "opencode/deepseek-v4-flash-free",
                 )
 
     def test_raises_when_agent_has_no_configured_default(self):
         with tempfile.TemporaryDirectory() as tmp:
             routing_file = Path(tmp) / "routing.yaml"
-            routing_file.write_text("agents:\n  claude:\n    default_model: opus\n")
+            routing_file.write_text(
+                "targets:\n"
+                "  claude-sub:\n"
+                "    harness: claude\n"
+                "    pool: subscription\n"
+                "tiers:\n"
+                "  t2-build:\n"
+                "    claude-sub:\n"
+                "      model: opus\n"
+                "default_tier: t2-build\n"
+            )
             with patch.dict(os.environ, {"GO_ROUTING_FILE": str(routing_file)}, clear=True):
                 with self.assertRaises(policy.OperatorConfigError) as ctx:
-                    spawnlib.default_model_for_agent("codex")
+                    live._default_model_for_agent("codex")
                 self.assertIn("codex", str(ctx.exception))
-                self.assertIn("routing.agents.codex.default_model", str(ctx.exception))
+                self.assertIn("routing.targets", str(ctx.exception))
 
 
 class RunLockTest(unittest.TestCase):
