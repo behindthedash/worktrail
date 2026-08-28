@@ -649,6 +649,58 @@ class SpawnAgentSelection(unittest.TestCase):
         self.assertEqual(result.text, "ok")
         self.assertEqual(captured["cmd"][0], "claude")
 
+    def test_preflight_gate_on_prefer_drops_primary_only_extra_args(self):
+        """Regression: if `prefer`'s cell is already capacity-gated BEFORE the
+        first subprocess ever runs, select_cell() resolves straight to the
+        next cell in the row -- the caller's extra_args (derived for the
+        harness it *asked* for via `prefer`) must not leak onto that
+        different harness's argv (was `test_preflight_fallback_drops_primary_agent_extra_args`
+        pre-select_cell; --setting-sources is claude-only, opencode rejects it)."""
+        spawnlib.agent_capacity.save({"version": 1, "providers": {}})
+        spawnlib.agent_capacity.record(
+            "claude-sub", "sonnet", outcome="unavailable", failure_class="billing",
+            retry_after=datetime.datetime.now(datetime.timezone.utc)
+            + datetime.timedelta(seconds=300),
+        )
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            return Proc(0, json.dumps({
+                "type": "text", "sessionID": "s", "part": {"type": "text", "text": "opencode ok"},
+            }) + "\n", "")
+
+        with _patch_routing(CLAUDE_THEN_OPENCODE_ROUTING), \
+                patch.object(spawnlib.subprocess, "run", side_effect=fake_run):
+            result = spawnlib.spawn_agent(
+                "prompt", "/tmp", tier="t2-build", prefer="claude-sub",
+                extra_args=["--setting-sources", "project,local"], retries=0,
+            )
+
+        self.assertEqual(result.text, "opencode ok")
+        self.assertEqual(captured["cmd"][0:2], ["opencode", "run"])
+        self.assertNotIn("--setting-sources", captured["cmd"])
+
+    def test_preflight_no_gate_still_forwards_primary_extra_args(self):
+        """Positive control for the above: when the preferred cell is NOT
+        gated, its extra_args still reach the argv unchanged."""
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            return Proc(0, "ok", "")
+
+        with _patch_routing(CLAUDE_THEN_OPENCODE_ROUTING), \
+                patch.object(spawnlib.subprocess, "run", side_effect=fake_run):
+            result = spawnlib.spawn_agent(
+                "prompt", "/tmp", tier="t2-build", prefer="claude-sub",
+                extra_args=["--setting-sources", "project,local"], retries=0,
+            )
+
+        self.assertEqual(result.text, "ok")
+        self.assertEqual(captured["cmd"][0], "claude")
+        self.assertIn("--setting-sources", captured["cmd"])
+
     def test_every_cell_gated_raises_no_execution_target_before_any_subprocess(self):
         spawnlib.agent_capacity.save({"version": 1, "providers": {}})
         spawnlib.agent_capacity.record(

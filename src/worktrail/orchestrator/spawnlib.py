@@ -669,6 +669,46 @@ def prepare_opencode_child_environment(
     return env, data_dir
 
 
+def _preflight_primary_target(
+    routing: Mapping[str, Any],
+    tier: str,
+    prefer: Optional[str],
+    exclude_harness: Optional[str],
+) -> Optional[str]:
+    """The target `select_cell()` would try FIRST for this (tier, prefer,
+    exclude_harness), ignoring capacity (mirrors `select_cell`'s steps 1-3:
+    order + prefer promotion, drop unconfigured/opted-out targets, soft
+    `exclude_harness` partition). Used only so `spawn_agent` can tell whether
+    a persisted capacity gate has already moved selection past the cell the
+    caller derived its `extra_args` for, before the first subprocess ever
+    runs -- see the call site below."""
+    targets: Mapping[str, Any] = routing.get("targets") or {}
+    row: Mapping[str, Any] = (routing.get("tiers") or {}).get(tier) or {}
+
+    order = list(targets.keys())
+    if prefer and prefer in order and prefer in row:
+        order.remove(prefer)
+        order.insert(0, prefer)
+
+    candidates: List[str] = []
+    for name in order:
+        target = targets.get(name)
+        if not isinstance(target, Mapping):
+            continue
+        if target.get("pool") == "api" and not target.get("api_opt_in"):
+            continue
+        if not row.get(name):
+            continue
+        candidates.append(name)
+
+    if exclude_harness:
+        other = [n for n in candidates if targets[n].get("harness") != exclude_harness]
+        excluded = [n for n in candidates if targets[n].get("harness") == exclude_harness]
+        candidates = other + excluded
+
+    return candidates[0] if candidates else None
+
+
 def spawn_agent(
     prompt: str,
     cwd: "str | Path",
@@ -726,6 +766,7 @@ def spawn_agent(
         )
 
     cell = _select()
+    primary_target = _preflight_primary_target(routing, tier, prefer, exclude_harness)
 
     output_file = None
     if cell.harness == "codex":
@@ -742,7 +783,12 @@ def spawn_agent(
     cmd = build_cmd(
         prompt,
         cell,
-        extra_args=extra_args,
+        # Callers derive extra_args for the requested primary cell. A
+        # persisted capacity gate can already have moved select_cell() past
+        # it before this first command is built, so do not leak
+        # primary-only flags onto whatever cell actually got served (matches
+        # the session-limit fallback hop below, which always drops them).
+        extra_args=extra_args if cell.target == primary_target else None,
         resume_session_id=resume_session_id,
         output_last_message=output_file,
     )
