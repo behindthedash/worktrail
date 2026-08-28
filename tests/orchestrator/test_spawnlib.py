@@ -1162,6 +1162,64 @@ class OpenCodeSpawn(unittest.TestCase):
         self.assertEqual(out.text, "opencode retried report")
         self.assertEqual(fr.calls, 2)
 
+    def test_unknown_error_exhausted_records_model_unavailable_when_id_absent(self):
+        # Requirement: a retired model gates its own cell with a distinct
+        # failure class. `list_opencode_models()` no longer serves this cell's
+        # model id, so the exhausted UnknownError is classified
+        # model_unavailable (a long cooldown), not the generic "transport".
+        error_line = json.dumps({
+            "type": "error",
+            "sessionID": "ses_retired",
+            "error": {
+                "name": "UnknownError",
+                "data": {"message": "Unexpected server error.", "ref": "err_retired"},
+            },
+        })
+        fr = FakeRun([Proc(0, error_line, "")])
+        spawnlib.subprocess.run = fr
+        with patch.object(
+            spawnlib.routing_cli, "list_opencode_models", return_value=set()
+        ) as list_models:
+            with tempfile.TemporaryDirectory() as cwd:
+                spawnlib.spawn_agent(
+                    "prompt", cwd, tier="t2-build", retries=0, sleep=lambda *_: None
+                )
+        list_models.assert_called_once_with()
+        key = spawnlib.agent_capacity.provider_key(
+            "opencode-free", "opencode/deepseek-v4-flash-free"
+        )
+        state = spawnlib.agent_capacity.load()["providers"][key]
+        self.assertEqual(state["failure_class"], "model_unavailable")
+
+    def test_unknown_error_exhausted_records_transport_when_id_present(self):
+        # The same top-level UnknownError, but the cell's model id is still
+        # listed -- a transient provider-side blip, not a retired model, so
+        # the short "transport" cooldown applies instead.
+        error_line = json.dumps({
+            "type": "error",
+            "sessionID": "ses_blip",
+            "error": {
+                "name": "UnknownError",
+                "data": {"message": "Unexpected server error.", "ref": "err_blip"},
+            },
+        })
+        fr = FakeRun([Proc(0, error_line, "")])
+        spawnlib.subprocess.run = fr
+        with patch.object(
+            spawnlib.routing_cli, "list_opencode_models",
+            return_value={"opencode/deepseek-v4-flash-free"},
+        ) as list_models:
+            with tempfile.TemporaryDirectory() as cwd:
+                spawnlib.spawn_agent(
+                    "prompt", cwd, tier="t2-build", retries=0, sleep=lambda *_: None
+                )
+        list_models.assert_called_once_with()
+        key = spawnlib.agent_capacity.provider_key(
+            "opencode-free", "opencode/deepseek-v4-flash-free"
+        )
+        state = spawnlib.agent_capacity.load()["providers"][key]
+        self.assertEqual(state["failure_class"], "transport")
+
 
 class OpencodeHeadlessEnvironment(unittest.TestCase):
     """Brief 20260811-220340: concurrent opencode workers must never share one

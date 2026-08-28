@@ -71,6 +71,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, NamedTuple, Optional, Sequence
 
 from . import agent_capacity
+from ..router import routing_cli
 from ..router.policy import (
     OperatorConfigError,
     load_policy,
@@ -364,6 +365,25 @@ def is_infra_failure(returncode: int, stdout: Optional[str]) -> bool:
     if returncode != 0 or not (stdout or "").strip():
         return True
     return _opencode_error_event(stdout) is not None
+
+
+def _opencode_unknown_error_failure_class(cell: "Cell", raw: Optional[str]) -> Optional[str]:
+    """When *cell*'s exhausted-retries raw output carries a top-level opencode
+    `UnknownError` (see `_opencode_error_event`), distinguish a retired/renamed
+    model id from a transient provider-side error by checking whether
+    `routing_cli.list_opencode_models()` (task 6.1) still serves it: absent ->
+    `model_unavailable` (the long cooldown in `agent_capacity.DEFAULT_COOLDOWNS`,
+    since a retired model will not come back on its own); present -> `transport`
+    (an ordinary blip, short cooldown). Returns None for every other
+    harness/error shape, so the caller falls back to
+    `agent_capacity.classify_failure`'s generic text matching."""
+    if cell.harness != "opencode":
+        return None
+    error = _opencode_error_event(raw)
+    if not error or error.get("name") != "UnknownError":
+        return None
+    known_models = routing_cli.list_opencode_models()
+    return "model_unavailable" if cell.model not in known_models else "transport"
 
 
 SUPPORTED_AGENTS = {"claude", "codex", "opencode"}
@@ -969,9 +989,11 @@ def spawn_agent(
         if not is_infra_failure(proc.returncode, last_raw):
             agent_capacity.record(cell.target, cell.model, outcome="available")
         elif attempt >= attempts:
-            failure_class = agent_capacity.classify_failure(
-                proc.returncode, last_raw, proc.stderr or ""
-            )
+            failure_class = _opencode_unknown_error_failure_class(cell, last_raw)
+            if failure_class is None:
+                failure_class = agent_capacity.classify_failure(
+                    proc.returncode, last_raw, proc.stderr or ""
+                )
             agent_capacity.record(
                 cell.target,
                 cell.model,
