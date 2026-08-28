@@ -440,33 +440,6 @@ class Helpers(unittest.TestCase):
         self.assertNotIn("--bare", c)
 
 
-class BuildCmdLegacyFallback(unittest.TestCase):
-    """`build_cmd()` accepts a bare `agent=`/`model=`/`effort=` call (no
-    `Cell`) for call sites that predate the routing selector
-    (`check_agent_contract.py`, `provider_command_compatibility.py`) --
-    adapted onto a `subscription`-pool `Cell` via `_legacy_spawn_cell` so
-    argv stays byte-identical to the pre-`Cell` build_cmd() (routing-target-
-    selector 3.2)."""
-
-    def test_legacy_agent_kwarg_matches_equivalent_cell(self):
-        legacy = spawnlib.build_cmd("hi", agent="claude", model="haiku", effort="high")
-        via_cell = spawnlib.build_cmd("hi", _cell(model="haiku", effort="high"))
-        self.assertEqual(legacy, via_cell)
-
-    def test_legacy_agent_kwarg_defaults_to_subscription_pool(self):
-        c = spawnlib.build_cmd("hi", agent="claude")
-        self.assertNotIn("--bare", c)
-
-    def test_legacy_agent_kwarg_opencode(self):
-        c = spawnlib.build_cmd("hi", agent="opencode", model="opencode/claude-sonnet-4-6")
-        self.assertEqual(c[:3], ["opencode", "run", "--format"])
-        self.assertIn("opencode/claude-sonnet-4-6", c)
-
-    def test_no_cell_and_no_agent_raises_type_error(self):
-        with self.assertRaises(TypeError):
-            spawnlib.build_cmd("hi")
-
-
 class DefaultSettingSourcesStructural(unittest.TestCase):
     """Structural guard for handoff 20260714-120009 item 3: three PRs
     (#251/#252/#253) each patched a DIFFERENT direct spawnlib call site to add
