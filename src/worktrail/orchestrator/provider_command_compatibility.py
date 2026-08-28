@@ -11,6 +11,7 @@ from typing import Dict, List, Sequence, Tuple
 from worktrail.drain.drain import build_command as build_drain_command
 from worktrail.router.cluster_detect import _AGENT_VERIFY_CMD
 from worktrail.router.skill_dispatch import build_command as build_skill_command
+from worktrail.runtime.selection import Cell
 
 from .spawnlib import build_cmd as build_spawn_command
 
@@ -46,9 +47,13 @@ def command_matrix() -> Dict[Tuple[str, str], List[str]]:
         )
         commands[(provider, "spawnlib")] = build_spawn_command(
             _PROMPT,
-            agent=provider,
-            model="worktrail-compat-probe",
-            effort="high",
+            Cell(
+                target=provider,
+                harness=provider,
+                model="worktrail-compat-probe",
+                effort="high",
+                pool="subscription",
+            ),
             output_last_message="/dev/null",
         )
     return commands
