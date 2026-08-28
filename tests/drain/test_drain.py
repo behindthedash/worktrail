@@ -102,6 +102,19 @@ def test_build_command_unknown_agent_rejected():
         build_command("gemini", [])
 
 
+def test_build_command_model_appended_per_harness():
+    assert build_command("claude", [], model="opus") == [
+        "claude", "-p", PROMPT, "--model", "opus"]
+    assert build_command("opencode", [], model="opencode/x") == [
+        "opencode", "run", "--model", "opencode/x", PROMPT]
+    assert build_command("codex", [], model="gpt-5") == [
+        "codex", "exec", "-s", "danger-full-access", "--model", "gpt-5", PROMPT]
+
+
+def test_build_command_no_model_omits_flag():
+    assert build_command("claude", [], model=None) == ["claude", "-p", PROMPT]
+
+
 def test_build_agent_environment_adds_supported_user_runtime_dirs(tmp_path, monkeypatch):
     home = tmp_path / "home"
     node_bin = home / ".nvm" / "versions" / "node" / "v24.16.0" / "bin"
@@ -558,7 +571,8 @@ def test_select_available_agent_picks_agent_back_up_after_retry_after_expires():
         "opencode": {"status": "unavailable",
                      "retry_after": (now - timedelta(hours=1)).isoformat()},
     }}
-    assert select_available_agent(cache, ["claude", "codex", "opencode"], now=now) == "claude"
+    assert select_available_agent(
+        cache, ["claude", "codex", "opencode"], now=now) == ("claude", None)
 
 
 # ---------------------------------------------------------------------------
@@ -567,12 +581,12 @@ def test_select_available_agent_picks_agent_back_up_after_retry_after_expires():
 
 def test_select_available_agent_prefers_primary_when_ungated():
     cache = {"providers": {"claude": {"status": "gated"}}}
-    assert select_available_agent(cache, ["codex", "claude"]) == "codex"
+    assert select_available_agent(cache, ["codex", "claude"]) == ("codex", None)
 
 
 def test_select_available_agent_skips_gated_primary_for_fallback():
     cache = {"providers": {"codex": {"status": "unavailable"}}}
-    assert select_available_agent(cache, ["codex", "claude"]) == "claude"
+    assert select_available_agent(cache, ["codex", "claude"]) == ("claude", None)
 
 
 def test_select_available_agent_none_when_every_candidate_gated():
@@ -584,7 +598,7 @@ def test_select_available_agent_none_when_every_candidate_gated():
 
 
 def test_select_available_agent_never_tried_counts_as_available():
-    assert select_available_agent({}, ["codex", "claude"]) == "codex"
+    assert select_available_agent({}, ["codex", "claude"]) == ("codex", None)
 
 
 def test_select_available_agent_single_candidate_no_fallback_configured():
@@ -617,7 +631,7 @@ _ROUTING_TWO_CLAUDE_MODELS = {
 def test_select_available_agent_per_model_gate_does_not_gate_whole_provider():
     cache = {"providers": {"claude-sub:opus": {"status": "gated"}}}
     assert select_available_agent(
-        cache, ["claude"], routing=_ROUTING_TWO_CLAUDE_MODELS) == "claude"
+        cache, ["claude"], routing=_ROUTING_TWO_CLAUDE_MODELS) == ("claude", "sonnet")
 
 
 def test_select_available_agent_routing_all_models_gated_falls_back():
@@ -626,7 +640,7 @@ def test_select_available_agent_routing_all_models_gated_falls_back():
         "claude-sub:opus": {"status": "gated"},
     }}
     assert select_available_agent(
-        cache, ["claude", "codex"], routing=_ROUTING_TWO_CLAUDE_MODELS) == "codex"
+        cache, ["claude", "codex"], routing=_ROUTING_TWO_CLAUDE_MODELS) == ("codex", None)
 
 
 def test_select_available_agent_routing_all_models_gated_none_when_no_fallback():

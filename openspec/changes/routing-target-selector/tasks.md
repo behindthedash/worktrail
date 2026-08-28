@@ -43,10 +43,10 @@
 ## 7. Docs
 
 - [x] 7.1 [docs] Update `skills/worktrail-go/SKILL.md` routing section (helper output → flags mapping now `tier`/`prefer`/`independent`, no `fallback` list), `README.md` routing example, and `docs/` references to `agents`/`fallback`/`drain.agent` to the targets/rows form; add the purposes `frontend`, `backend`, `design`, `explore`, `categorize` to the worked example. (Requirement: Routing declares ordered execution targets that separate harness from pool)
-- [ ] 7.2 [docs] Record in `openspec/changes/routing-target-selector/design.md` the operator follow-ups outside this repo: run `worktrail-routing --migrate` on this machine, and drop the hardcoded `--agent/--fallback-agent` from `~/bin/worktrail-drain-nightly.sh` (devops). (Requirement: Drain agent selection resolves CLI over config over built-in)
+- [x] 7.2 [docs] Record in `openspec/changes/routing-target-selector/design.md` the operator follow-ups outside this repo: run `worktrail-routing --migrate` on this machine, and drop the hardcoded `--agent/--fallback-agent` from `~/bin/worktrail-drain-nightly.sh` (devops). (Requirement: Drain agent selection resolves CLI over config over built-in)
 
 ## 8. Verification
 
-- [ ] 8.1 [e2e] `PYTHONPATH=src pytest -q` green, including the golden `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` replay. (Requirement: A single selector walks a tier row across targets in preference order)
+- [x] 8.1 [e2e] `PYTHONPATH=src pytest -q` green, including the golden `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` replay. (Requirement: A single selector walks a tier row across targets in preference order)
 - [ ] 8.2 [e2e] On this machine: `worktrail-routing --migrate` on the live file, `worktrail-routing --check` reports the retired `opencode/x-preview-f-free` cells as `model_unavailable`, and a `worktrail-drain --dry-run` selects a `claude-sub` cell with its model on the front-door command line. (Requirement: A retired model gates its own cell with a distinct failure class)
 - [ ] 8.3 [e2e] Repo-wide `rg "default_model_for_agent|fallback_agents|purpose_tiers|routing\.agents|judgment_pinned" .` returns no hits outside `openspec/changes/archive/`. (Requirement: Legacy routing keys fail loud and migrate deterministically)

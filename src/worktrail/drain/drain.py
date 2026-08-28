@@ -118,7 +118,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from . import stuck_remediation
 from ..orchestrator import agent_capacity
@@ -188,9 +188,17 @@ FAILED_STATES = frozenset({"failed_recoverable", "failed_terminal"})
 
 def build_command(agent: str, permission_args: List[str],
                   template: Optional[str] = None,
-                  go_repo: Optional[str] = None) -> List[str]:
+                  go_repo: Optional[str] = None,
+                  model: Optional[str] = None) -> List[str]:
     """Build the one-shot CLI argv. A template with {prompt} overrides the
-    per-agent shape entirely (permission args are the caller's job then)."""
+    per-agent shape entirely (permission args are the caller's job then).
+
+    `model` is the routing-selected cell's model (task 5.1); a per-harness
+    `--model` flag is appended in the same position `spawnlib.build_cmd()`
+    uses for the orchestrator's own spawns, so drain's front-door session
+    honors the same routing.yaml the rest of the system does instead of
+    falling back to whatever the CLI's own default resolves to.
+    """
     prompt = (PROMPT.replace("worktrail-go auto", f"worktrail-go {go_repo} auto", 1)
               if go_repo else PROMPT)
     if template:
@@ -200,11 +208,12 @@ def build_command(agent: str, permission_args: List[str],
         return [prompt if p == "{prompt}" else p for p in parts]
     if agent not in BASE_CMDS:
         raise ValueError(f"unsupported agent {agent!r}; one of {SUPPORTED_AGENTS}")
+    model_flag = ["--model", model] if model else []
     if agent == "claude":
-        return ["claude", "-p", prompt, *permission_args]
+        return ["claude", "-p", prompt, *permission_args, *model_flag]
     if agent == "opencode":
-        return ["opencode", "run", *permission_args, prompt]
-    return ["codex", "exec", "-s", "danger-full-access", *permission_args, prompt]
+        return ["opencode", "run", *permission_args, *model_flag, prompt]
+    return ["codex", "exec", "-s", "danger-full-access", *permission_args, *model_flag, prompt]
 
 
 def _version_key(path: Path) -> tuple[int, ...]:
@@ -482,12 +491,16 @@ def machine_wide_routing() -> Optional[Dict[str, Any]]:
 
 def select_available_agent(cache: dict, candidates: List[str],
                             routing: Optional[Dict[str, Any]] = None,
-                            now: Optional[datetime] = None) -> Optional[str]:
-    """First candidate (in configured order) that is not capacity-gated; None
-    when every candidate is gated. A candidate with no cache entry at all
-    counts as available, matching capacity_gated()'s own semantics -- an
-    agent never tried, or genuinely broken in a way that has not yet been
-    classified, is not pre-emptively excluded.
+                            now: Optional[datetime] = None) -> Optional[Tuple[str, Optional[str]]]:
+    """First candidate (in configured order) that is not capacity-gated, paired
+    with the model routing.yaml resolved for it (task 5.1) -- `None` for the
+    model when routing is unset or that harness has no routing entry, so the
+    caller falls back to the CLI's own default instead of passing a sentinel
+    string as `--model`. Returns `None` when every candidate is gated. A
+    candidate with no cache entry at all counts as available, matching
+    capacity_gated()'s own semantics -- an agent never tried, or genuinely
+    broken in a way that has not yet been classified, is not pre-emptively
+    excluded.
 
     Called fresh every iteration (not cached across the drain run), so a
     higher-priority agent is picked back up automatically once its persisted
@@ -536,9 +549,11 @@ def select_available_agent(cache: dict, candidates: List[str],
         }
 
     try:
-        return select_execution_target(catalog, capacity=available, now=now).provider
+        target = select_execution_target(catalog, capacity=available, now=now)
     except NoExecutionTarget:
         return None
+    model = None if target.model == "configured-default" else target.model
+    return target.provider, model
 
 
 MAX_TRANSCRIPT_FILES = 50  # bounded like agent_capacity.py's audit log / dashboard.py's miss log
@@ -1506,13 +1521,14 @@ def sweep_remediations(
     for remediation in selected:
         applied: List[Dict[str, Any]] = []
         for finding in remediation.finder(repos_root, go_repo):
-            chosen = select_available_agent(
+            selection = select_available_agent(
                 read_capacity_cache(capacity_cache), candidates, routing=routing)
-            if chosen is None:
+            if selection is None:
                 log(f"{remediation.label}: {finding.get('repo_name')} "
                     f"{finding.get('spec_id')}: skipped, every candidate agent "
                     f"is capacity-gated ({', '.join(candidates)})")
                 continue
+            chosen, _chosen_model = selection
             if chosen != current_agent:
                 log(f"agent switch: {current_agent or candidates[0]} -> "
                     f"{chosen} (capacity)")
@@ -1849,6 +1865,7 @@ def drain(config: DrainConfig,
     # picks it back up automatically, no restart or config edit required.
     candidates = [config.agent] + list(config.fallback_agents)
     active_agent = config.agent
+    active_model: Optional[str] = None
     seeded_backlog: Dict[str, Any] = {}
     routing = machine_wide_routing()
     try:
@@ -1877,16 +1894,20 @@ def drain(config: DrainConfig,
             # A templated --agent-cmd has no per-agent identity to switch, so
             # fallback selection only applies to the named-agent shapes.
             if config.agent_cmd is None:
-                chosen = select_available_agent(cache, candidates, routing)
-                if chosen is None:
+                selection = select_available_agent(cache, candidates, routing)
+                if selection is None:
                     state.agent_capacity_gated = True
                 else:
+                    chosen, chosen_model = selection
                     state.agent_capacity_gated = False
-                    if chosen != active_agent:
-                        log(f"agent switch: {active_agent} -> {chosen} (capacity)")
+                    if chosen != active_agent or chosen_model != active_model:
+                        if chosen != active_agent:
+                            log(f"agent switch: {active_agent} -> {chosen} (capacity)")
                         active_agent = chosen
+                        active_model = chosen_model
                         cmd = build_command(active_agent, config.permission_args,
-                                            config.agent_cmd, config.go_repo)
+                                            config.agent_cmd, config.go_repo,
+                                            model=active_model)
             else:
                 state.agent_capacity_gated = capacity_gated(cache, active_agent)
             decision = decide(state, clock())
