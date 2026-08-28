@@ -48,6 +48,7 @@ from . import orchestrate
 from . import progress
 from . import spawnlib
 from ..router import invocation_context
+from ..runtime.selection import select_cell
 from ..taskformats import resolve as taskformats
 
 
@@ -149,16 +150,15 @@ def _default_post_merge_smoke_cmd(repo: Path) -> "str | None":
 
 
 # DEFAULT_AGENT is resolved from the launching host via _detect_default_agent()
-# so that Claude Code, Codex, and OpenCode each use their own headless CLI
-# without an invocation-wide env var or a per-call --agent flag. Explicit
-# --agent, policy agent_cli, and GO_AGENT_CLI env var all override this.
+# so that Claude Code, Codex, and OpenCode each use their own headless CLI as
+# their default preference. It no longer names the harness a spawn runs on
+# directly (routing-target-selector: harness/model come from the SERVED cell,
+# resolved fresh per spawn by `select_cell()`) -- it is now only a soft
+# default-TARGET hint threaded through as `prefer`, which `select_cell()`
+# moves to the front of a tier row when it names a configured target and
+# otherwise ignores (a harness name with no matching target is a harmless
+# miss, never an error).
 DEFAULT_AGENT = _detect_default_agent()
-
-# Every codex role defaults to the SAME model (spawnlib.default_model_for_agent
-# resolved fresh per call, not a frozen snapshot -- a stale frozen copy of
-# spawnlib's default here is exactly the staleness bug spawnlib.py itself was
-# just fixed for; see _effective_role_models below).
-_CODEX_DEFAULT_ROLES = ("implement", "review", "fix", "cleanup", "ci-fix")
 
 # Reviewer independence (locked decision 13.3): the headless review worker is the
 # same binary as the implementer, so we enforce independence with an appended
@@ -795,6 +795,15 @@ def reconcile_from_journal(tasks: list, journal: dict) -> list:
             # entry references a task outside this spec slice, or is malformed --
             # reconciliation is best-effort and must never block a resume.
             continue
+        if (
+            task
+            and e.get("role") in (dispatch.ROLE_IMPLEMENT, dispatch.ROLE_FIX)
+            and e.get("agent")
+        ):
+            # Restore the served harness recorded on the journal (LiveSpawn.__call__)
+            # so a resumed run's independent review still excludes the harness that
+            # implemented the task, not just a same-process one.
+            task["_served_harness"] = e["agent"]
     return entries
 
 
@@ -2123,9 +2132,8 @@ def instantiate(template: Path = SAMPLE_TEMPLATE, dest: Path = DEFAULT_DEST) -> 
 
 def run_research_session(
     spec_folder: Path,
-    agent: str = DEFAULT_AGENT,
-    model: str | None = None,
-    effort: str | None = None,
+    tier: str | None = None,
+    prefer: str | None = DEFAULT_AGENT,
     timeout: int = WORKER_TIMEOUT_DEFAULT,
 ) -> str:
     """Pre-load shared source files into a single agent session and return its session_id.
@@ -2140,7 +2148,9 @@ def run_research_session(
     4. Run a single agent session with those files as context.
     5. Return the session_id from SpawnResult so workers can fork from it.
     """
-    model = model or spawnlib.default_model_for_agent(agent)
+    routing = spawnlib.resolve_routing(spawnlib.load_policy(spawnlib.worktrail_home()))
+    tier = tier or routing.get("default_tier")
+    cell = select_cell(routing, tier, prefer=prefer, capacity=agent_capacity)
     # --- collect spec content ---
     spec_lines: list[str] = []
     for candidate in sorted(spec_folder.glob("*.md")):
@@ -2195,13 +2205,12 @@ def run_research_session(
     # 20260711-130900 mechanism as _LEAN_WORKER_FLAGS below, applied here since
     # this call bypassed LiveSpawn.__call__ entirely. No --tools restriction:
     # this is a read-only context pre-load, not a worker that edits/commits.
-    extra_args = ["--setting-sources", "project,local"] if agent == "claude" else []
+    extra_args = ["--setting-sources", "project,local"] if cell.harness == "claude" else []
     result = spawnlib.spawn_agent(
         prompt,
         spec_folder.parent.parent,
-        agent=agent,
-        model=model,
-        effort=effort,
+        tier=tier,
+        prefer=prefer,
         timeout=timeout,
         extra_args=extra_args,
         log=print,
@@ -2213,83 +2222,24 @@ def run_research_session(
     return result.session_id
 
 
-def _serving_agent_guess(agent: str, model: str, fallback) -> str:
-    """Best-effort guess at which configured hop will actually serve a spawn,
-    mirroring `spawn_agent`'s own capacity-gate walk (REQ-027) -- used ONLY to
-    label the journal entry; `spawn_agent` performs the authoritative selection
-    itself. `fallback` is either a single agent name, an ordered sequence of
-    names, or falsy (no chain configured). Never raises: any error while
-    reading the capacity cache just falls back to the primary `agent`."""
-    hops = (
-        list(fallback) if isinstance(fallback, (list, tuple)) else ([fallback] if fallback else [])
-    )
-    candidates = [(agent, model)]
-    for hop in hops:
-        if not hop or hop == agent:
-            continue
-        try:
-            candidates.append((hop, spawnlib.default_model_for_agent(hop)))
-        except Exception:
-            continue
-    try:
-        for cand_agent, cand_model in candidates:
-            try:
-                agent_capacity.check(cand_agent, cand_model)
-            except agent_capacity.ProviderUnavailable:
-                continue
-            return cand_agent
-    except Exception:
-        pass
-    return agent
-
-
 class LiveSpawn:
     def __init__(
         self,
         spec_id: str,
         spec_folder_rel: str,
         timeout: int = WORKER_TIMEOUT_DEFAULT,
-        agent: str = DEFAULT_AGENT,
-        model: str | None = None,
-        role_models: dict | None = None,
-        role_agents: dict | None = None,
-        fallback_agent: str | None = None,
-        tier_map: dict | None = None,
-        purpose_tier_map: dict | None = None,
-        fallback_chain: "list[str] | None" = None,
-        effort: str | None = None,
+        prefer: str | None = None,
     ) -> None:
-        self.agent = agent
-        self.label = f"LIVE {agent}"
+        self.label = f"LIVE {prefer or 'routed'}"
         self.spec_id = spec_id
         self.spec_folder_rel = spec_folder_rel.rstrip("/") + "/"
         self.timeout = timeout
-        self.model = model or spawnlib.default_model_for_agent(agent)
-        # Run-level default effort (model-tier-routing 3.3). Unlike `model`, effort
-        # has no per-agent default to fall back to -- omitting it is always a valid,
-        # common state (spawnlib.build_cmd only adds the flag `if effort:`), so no
-        # `spawnlib.default_effort_for_agent()` equivalent exists or is needed.
-        self.effort = effort
-        self.role_models = role_models or {}  # per-role overrides (production)
-        # per-role agent CLI overrides (e.g. review=claude while implement/fix
-        # stay on a cheaper --agent) -- lets the reviewer run on a genuinely
-        # different/independent headless CLI instead of the same one that wrote
-        # the code. Falls back to `agent` for any role not listed.
-        self.role_agents = role_agents or {}
-        self.fallback_agent = fallback_agent
-        # TASK-007: resolved routing table pieces, consumed as plain data (no
-        # policy.py import -- see live.py's cross-plugin note). tier_map is
-        # {(complexity, domain): agent-entry}, the exact shape dispatch.agent_for
-        # expects; fallback_chain is an ordered list of agent names that -- when
-        # configured -- takes precedence over the legacy single fallback_agent
-        # (REQ-018). Both default to "off" so a caller that never sets them gets
-        # byte-identical pre-spec dispatch (REQ-016).
-        self.tier_map = tier_map or {}
-        # {purpose: tier} -- routing.purpose_tiers, consulted by dispatch.agent_for
-        # ahead of task.get("complexity") when resolving self.tier_map's key
-        # (task-purpose-classification 4.2/5.1). Defaults to "off" like tier_map.
-        self.purpose_tier_map = purpose_tier_map or {}
-        self.fallback_chain = list(fallback_chain) if fallback_chain else None
+        # Operator-level target preference (e.g. `--agent`/`--prefer` on the
+        # full-real CLI): wins over whatever `dispatch.tier_for()` resolves for
+        # a given role, exactly like `select_cell()`'s own `prefer` promotes a
+        # named target to the front of a tier row. None -> no blanket
+        # preference; each role's own resolved `prefer` (if any) applies.
+        self.prefer = prefer
         self.research_session_id: str = ""  # set by --fork-research before fan-out
         # task-id -> task dict for the whole spec; set by the caller (drive loop
         # already has it built) so build_worker_prompt can surface a dependency's
@@ -2301,10 +2251,13 @@ class LiveSpawn:
         # way as by_id, via build_external_deps_by_ref(). None is safe -- dispatch
         # just skips the injection.
         self.external_deps_by_ref: dict | None = None
-        # Best-effort label for the journal entry (REQ-027): which agent actually
-        # served the most recently completed __call__. Set every call; read by
-        # the caller (drive()/_commit_step) right after the call returns.
+        # Served-cell labels for the journal entry (REQ-027): which harness/target
+        # actually served the most recently completed __call__. Set every call
+        # from the SAME `select_cell()` walk `spawn_agent()` performs internally
+        # (authoritative, not a guess); read by the caller (drive()/_commit_step)
+        # right after the call returns.
         self.last_agent: str | None = None
+        self.last_target: str | None = None
 
     def _task_brief_ctx(self) -> dict:
         """Format templates for where a worker reads its brief.
@@ -2332,13 +2285,44 @@ class LiveSpawn:
         extra_reads = (
             list(task.pop("_extra_reads", None) or []) if role == dispatch.ROLE_FIX else []
         )
+        # A single selector walks a tier row across targets in preference order
+        # (routing-target-selector D3/D4): resolve which row to walk (tier_for,
+        # consulting the operator's routing.roles/purposes/default_tier), then
+        # let select_cell() -- the exact same walk spawn_agent() performs
+        # internally -- resolve the SERVED cell authoritatively. This replaces
+        # the old dispatch.agent_for()/fallback-chain machinery entirely: harness,
+        # model, and effort all come from the cell, never from a per-agent default.
+        routing = spawnlib.resolve_routing(spawnlib.load_policy(spawnlib.worktrail_home()))
+        tier, role_prefer, independent = dispatch.tier_for(
+            role,
+            task,
+            roles=routing.get("roles"),
+            purposes=routing.get("purposes"),
+            default_tier=routing.get("default_tier"),
+        )
+        # self.prefer (an operator-level override, e.g. --agent/--prefer on the
+        # full-real CLI) wins entirely over whatever the role/task resolved.
+        prefer = self.prefer or role_prefer
+        # Independent judgment roles (review is the only one that reaches
+        # LiveSpawn.__call__ -- resolve/ci-fix/assembly-resolve never do, see
+        # dispatch.JUDGMENT_ROLES) exclude the harness that implemented this
+        # task, so a headless reviewer is never the same CLI that wrote the
+        # code (locked decision 13.3). `_served_harness` is stamped onto the
+        # task dict by this same method after an implement/fix spawn below.
+        exclude_harness = task.get("_served_harness") if independent else None
+        cell = select_cell(
+            routing, tier, prefer=prefer, exclude_harness=exclude_harness,
+            capacity=agent_capacity,
+        )
+        self.last_agent = cell.harness
+        self.last_target = cell.target
         ctx = {
             "spec_id": self.spec_id,
             "spec_folder": self.spec_folder_rel,
             "worktree_path": str(worktree),
             "branch": "(checked out)",
             "base_commit": "HEAD",
-            "default_agent": self.agent,
+            "default_agent": cell.harness,
             "spec_root_prefix": taskformats.spec_root_prefix_for(self.spec_folder_rel),
             "task_brief": self._task_brief_ctx(),
         }
@@ -2350,101 +2334,35 @@ class LiveSpawn:
             by_id=self.by_id,
             external_deps_by_ref=self.external_deps_by_ref,
         )
-        # TASK-007: resolve every spawn's agent through the shared precedence
-        # function (per-task override > role override > tier match > run
-        # default) instead of the old bare `role_agents.get(role, self.agent)`.
-        # Judgment roles (review here -- resolve/ci-fix/assembly-resolve never
-        # reach LiveSpawn.__call__, see dispatch.JUDGMENT_ROLES) only ever
-        # consult the role override / run default, never task["agent"] or
-        # self.tier_map (AC-014). Passing reviewer_agent=self.agent (not
-        # dispatch.DEFAULT_REVIEWER_AGENT) preserves the pre-spec fallback
-        # (self.agent) when review has no role_agents override (REQ-016).
-        resolved = dispatch.agent_for(
-            role,
-            task,
-            reviewer_agent=self.agent,
-            default_agent=self.agent,
-            role_agent_map=self.role_agents,
-            tier_map=self.tier_map,
-            purpose_tier_map=self.purpose_tier_map,
-        )
-        agent = resolved["agent_cli"] or self.agent
-        # A role/tier pinned to a different agent than the run's default has no
-        # sensible fallback model in `self.model` (resolved for the DEFAULT
-        # agent) -- resolve that agent's own default instead (live.py:934-935
-        # pattern), unless the resolution itself carried an explicit model (a
-        # pinned tier/role entry, AC-011).
-        if agent == self.agent:
-            default_model = resolved["agent_model"] or self.model
-        else:
-            default_model = resolved["agent_model"] or spawnlib.default_model_for_agent(agent)
-        model = self.role_models.get(role, default_model)
-        # Effort mirrors the model precedence above, minus the cross-agent default
-        # fallback: there's no `default_effort_for_agent()` (no agent requires one),
-        # so a role/tier pinned to a different agent than the run's default only
-        # gets an effort when the resolution itself carried one (AC-011 parity).
-        effort = resolved["effort"] or (self.effort if agent == self.agent else None)
         # Claude workers get lean flags (bare + measured tool set).
         # Reviewer independence (13.3): review role additionally gets an appended
         # system prompt; implement/fix/cleanup keep the DEFAULT system prompt so
         # prompt-cache reuse stays active across the run's many cold workers.
-        extra_args = list(_LEAN_WORKER_FLAGS) if agent == "claude" else []
+        extra_args = list(_LEAN_WORKER_FLAGS) if cell.harness == "claude" else []
         resume_session_id = self.research_session_id or None
         if role == dispatch.ROLE_REVIEW:
-            if agent == "claude":
+            if cell.harness == "claude":
                 extra_args += ["--append-system-prompt", _REVIEWER_SYSTEM_PROMPT]
             else:
                 prompt = f"{_REVIEWER_SYSTEM_PROMPT}\n\n{prompt}"
-        if agent != "claude":
+        if cell.harness != "claude":
             resume_session_id = None
-        # An ordered fallback chain (routing-table-resolved) wins over the
-        # legacy single --fallback-agent when configured (REQ-018). It applies
-        # to every spawn EXCEPT judgment roles pinned to a non-default agent:
-        # a role/tier override on implement/fix/cleanup still deserves the
-        # run's configured recovery path (a pinned tier model going unavailable
-        # for any reason should not leave the task with zero automatic
-        # recovery), but a JUDGMENT_ROLES spawn (review is the only one that
-        # reaches this call -- resolve/ci-fix/assembly-resolve never do, see
-        # dispatch.JUDGMENT_ROLES) deliberately pinned to a different reviewer
-        # agent keeps the old no-fallback gating so a silent fallback can never
-        # erode the independent-reviewer guarantee (13.3, DEC-003). spawn_agent/
-        # spawn_claude_p already drop any hop equal to the spawned `agent`
-        # itself (spawnlib._normalize_fallback_chain), so passing the run-level
-        # chain through unchanged for a tier-resolved agent is safe as-is.
-        fallback = self.fallback_chain if self.fallback_chain else self.fallback_agent
-        judgment_pinned = role in dispatch.JUDGMENT_ROLES and agent != self.agent
-        effective_fallback = None if judgment_pinned else fallback
-        self.last_agent = agent
-        if effective_fallback:
-            # Claude task workers now carry real fallback machinery too (see
-            # spawn_claude_p's fallback_agent param, brief
-            # 20260723-111700-claude-primary-fallback-inert) -- this guess is
-            # accurate for claude the same way it already was for codex/opencode.
-            self.last_agent = _serving_agent_guess(agent, model, effective_fallback)
-        if agent == "claude":
-            return spawnlib.spawn_claude_p(
-                prompt,
-                worktree,
-                model=model,
-                effort=effort,
-                timeout=effective_timeout,
-                extra_args=extra_args,
-                resume_session_id=resume_session_id,
-                fallback_agent=effective_fallback,
-                log=print,
-            )
-        return spawnlib.spawn_agent(
+        result = spawnlib.spawn_agent(
             prompt,
             worktree,
-            agent=agent,
-            model=model,
-            effort=effort,
-            fallback_agent=effective_fallback,
+            tier=tier,
+            prefer=prefer,
+            exclude_harness=exclude_harness,
             timeout=effective_timeout,
             extra_args=extra_args,
             resume_session_id=resume_session_id,
             log=print,
         )
+        if role in (dispatch.ROLE_IMPLEMENT, dispatch.ROLE_FIX):
+            # Recorded so a later independent review of THIS task excludes the
+            # harness that wrote the code, above.
+            task["_served_harness"] = cell.harness
+        return result
 
 
 def spawn_one(
@@ -2490,8 +2408,7 @@ def live_run(
     out_cassette: str | None = None,
     only: list | None = None,
     with_tail: bool = False,
-    agent: str = DEFAULT_AGENT,
-    model: str | None = None,
+    prefer: str | None = DEFAULT_AGENT,
     spawn=None,
 ) -> dict:
     """Drive the spec with LIVE workers, recording a REAL cassette.
@@ -2502,7 +2419,6 @@ def live_run(
     (e2e/cleanup) are skipped unless --with-tail, since faithful e2e needs the
     impl branches integrated first (next phase).
     """
-    model = model or spawnlib.default_model_for_agent(agent)
     repo = instantiate(SAMPLE_TEMPLATE, dest)
     spec_id, tasks = taskformats.load_spec(str(repo / SAMPLE_SPEC_REL))
     if only:
@@ -2511,7 +2427,7 @@ def live_run(
     for t in tasks:
         t["status"], t["retry_count"] = "pending", 0
     by_id = {t["id"]: t for t in tasks}
-    spawn = spawn or LiveSpawn(spec_id, SAMPLE_SPEC_REL, agent=agent, model=model)
+    spawn = spawn or LiveSpawn(spec_id, SAMPLE_SPEC_REL, prefer=prefer)
     wt_base = repo.parent / f"{repo.name}-wt"
     entries: list = []
 
@@ -2585,6 +2501,11 @@ def live_run(
                         if getattr(spawn, "last_agent", None)
                         else {}
                     ),
+                    **(
+                        {"target": getattr(spawn, "last_target", None)}
+                        if getattr(spawn, "last_target", None)
+                        else {}
+                    ),
                 }
             )
             record()
@@ -2622,8 +2543,7 @@ def live_run(
 
 
 def full(
-    agent: str = DEFAULT_AGENT,
-    model: str | None = None,
+    prefer: str | None = DEFAULT_AGENT,
     sandbox: str = "behindthedash/orch-sandbox",
     keep_prs: bool = False,
     max_workers: int = 3,
@@ -2632,10 +2552,9 @@ def full(
     the integrated branch -> final PR -> cleanup. Records the real cassette."""
     from . import integrate
 
-    model = model or spawnlib.default_model_for_agent(agent)
     out_cassette = str(_SKILL / ".fixtures" / "sample-spec" / "cassette.live.json")
 
-    res = live_run(DEFAULT_DEST, max_workers, out_cassette, None, False, agent, model)  # fan-out
+    res = live_run(DEFAULT_DEST, max_workers, out_cassette, None, False, prefer)  # fan-out
     repo = Path(DEFAULT_DEST)
     spec_id, tasks = res["spec_id"], res["tasks"]  # carry real per-task statuses
     by_id = {t["id"]: t for t in tasks}
@@ -2662,7 +2581,7 @@ def full(
             print(f"  integration conflict merging {gb} -- skipped from final branch")
 
     print("=== TAIL (e2e + cleanup) live on integrated branch ===")
-    spawn = LiveSpawn(spec_id, SAMPLE_SPEC_REL, agent=agent, model=model)
+    spawn = LiveSpawn(spec_id, SAMPLE_SPEC_REL, prefer=prefer)
     pending_tail = [t for t in tasks if t.get("kind") in ("e2e", "cleanup")]
     while pending_tail:
         progressed = False
@@ -3101,6 +3020,7 @@ def _apply_step_commit(
     tools_used: list | None = None,
     skills_used: list | None = None,
     agent: str | None = None,
+    target: str | None = None,
 ) -> tuple:
     """Append the journal entry, persist, drop the heartbeat, apply the state
     transition. Caller must hold state_lock for the duration."""
@@ -3136,10 +3056,15 @@ def _apply_step_commit(
         entry["scope_escalated"] = True
         entry["scope_added_files"] = list(task["_scope_added_files"])
     # TASK-007 (REQ-027, AC-026): best-effort agent label -- a lookup
-    # problem here must never fail the run, only omit the key.
+    # problem here must never fail the run, only omit the key. `target` (the
+    # served cell's routing.targets name) is the routing-target-selector
+    # complement: `agent` stays a harness name (progress.py's pool inference
+    # reads it), `target` is the more specific cell record.
     try:
         if agent:
             entry["agent"] = agent
+        if target:
+            entry["target"] = target
     except Exception:
         pass
     entries.append(entry)
@@ -3156,18 +3081,10 @@ def live_run_real(
     out_cassette: str | None = None,
     only: list | None = None,
     with_tail: bool = False,
-    agent: str = DEFAULT_AGENT,
-    model: str | None = None,
+    prefer: str | None = None,
     timeout: int = WORKER_TIMEOUT_DEFAULT,
     resume: bool = False,
     run_id: str | None = None,
-    role_models: dict | None = None,
-    role_agents: dict | None = None,
-    fallback_agent: str | None = None,
-    tier_map: dict | None = None,
-    purpose_tier_map: dict | None = None,
-    fallback_chain: "list[str] | None" = None,
-    effort: str | None = None,
     run_budget: float | None = None,
     spawn=None,
     git_lock=None,
@@ -3192,20 +3109,13 @@ def live_run_real(
                (and re-paying for) completed work.
     run_id   — stable run identity; passed by full_real to ensure persistence
                in the run journal across invocations.
-    role_models — optional {role: model} overrides (e.g. review on a stronger
-               model than implement); falls back to `model` per role.
-    role_agents — optional {role: agent} overrides (e.g. review="claude" while
-               implement/fix stay on a cheaper `agent`); falls back to `agent` per role.
-    tier_map — optional {(complexity, domain): agent-entry} routing table match
-               (TASK-001/006), threaded straight into LiveSpawn's construction.
-    purpose_tier_map — optional {purpose: tier} table (routing.purpose_tiers),
-               threaded straight into LiveSpawn's construction alongside tier_map
-               (task-purpose-classification 5.1).
-    fallback_chain — optional ordered fallback agent list; wins over the legacy
-               single `fallback_agent` when configured (REQ-018).
-    effort — optional run-level default effort, threaded straight into LiveSpawn's
-               construction (model-tier-routing 3.3); a configured tier's own
-               `effort` still wins per dispatch.agent_for's precedence.
+    prefer   — optional operator-level target preference (e.g. the full-real CLI's
+               `--agent`), threaded straight into LiveSpawn's construction; wins
+               over whatever `dispatch.tier_for()` resolves per role/task (design
+               D3/D4). Every other routing knob (which tier a role/task/purpose
+               maps to, harness, model, effort) now comes from the routing file
+               itself, resolved fresh by LiveSpawn/select_cell on every spawn --
+               no longer threaded through this function's parameters.
     run_budget — optional whole-run wall-clock cap (s); once exceeded the fan-out
                stops dispatching NEW tasks. None -> RUN_BUDGET_DEFAULT (0 = off).
 
@@ -3215,18 +3125,15 @@ def live_run_real(
     heartbeat) is mutated only under a lock; the slow `claude -p` spawns run
     outside it.
     """
-    model = model or spawnlib.default_model_for_agent(agent)
     from . import verify as verify_module
 
     repo = repo.resolve()
     from ..router.gitnexus_preflight import check as gitnexus_check
 
     gitnexus_capability = gitnexus_check(repo)
-    role_models = _effective_role_models(agent, role_models)
-    _ar_agent, _ar_model = _role_agent_model(
-        dispatch.ROLE_ASSEMBLY_RESOLVE, agent, model, role_agents, role_models
+    assembly_resolve_spawn_fn = verify_module._make_live_spawn(
+        timeout=timeout, agent=prefer or DEFAULT_AGENT
     )
-    assembly_resolve_spawn_fn = verify_module._make_live_spawn(_ar_model, timeout, agent=_ar_agent)
     spec_id, tasks = taskformats.load_spec(str(repo / spec_rel))
     tasks = apply_run_plan(repo, spec_rel, spec_id, tasks)
     for t in tasks:
@@ -3258,15 +3165,7 @@ def live_run_real(
         spec_id,
         spec_rel.rstrip("/") + "/",
         timeout=timeout,
-        agent=agent,
-        model=model,
-        role_models=role_models,
-        role_agents=role_agents,
-        fallback_agent=fallback_agent,
-        tier_map=tier_map,
-        purpose_tier_map=purpose_tier_map,
-        fallback_chain=fallback_chain,
-        effort=effort,
+        prefer=prefer,
     )
     # Set unconditionally (default-constructed or caller-injected, e.g. the
     # --fork-research spawn built by the live-run-real CLI handler) so
@@ -3434,6 +3333,7 @@ def live_run_real(
         tools_used: list | None = None,
         skills_used: list | None = None,
         agent: str | None = None,
+        target: str | None = None,
     ) -> tuple:
         """Append the journal entry, persist, drop the heartbeat, apply the state
         transition -- all under the lock so concurrent workers never race."""
@@ -3452,6 +3352,7 @@ def live_run_real(
                 tools_used=tools_used,
                 skills_used=skills_used,
                 agent=agent,
+                target=target,
             )
             _publish_actives()
             if notify_cmd:
@@ -3613,6 +3514,7 @@ def live_run_real(
                 tools_used=_tools_used,
                 skills_used=_skills_used,
                 agent=getattr(spawn, "last_agent", None),
+                target=getattr(spawn, "last_target", None),
             )
             if scope_files:
                 task["status"] = new = "fixing"
@@ -3818,20 +3720,12 @@ def full_real(
     spec_rel: str,
     remote: str = "origin",
     base: str = "dev",
-    agent: str = DEFAULT_AGENT,
-    model: str | None = None,
+    prefer: str | None = None,
     max_workers: int = 3,
     timeout: int = WORKER_TIMEOUT_DEFAULT,
     resume: bool = True,
     from_verify: bool = False,
     only: list | None = None,
-    role_models: dict | None = None,
-    role_agents: dict | None = None,
-    fallback_agent: str | None = None,
-    tier_map: dict | None = None,
-    purpose_tier_map: dict | None = None,
-    fallback_chain: "list[str] | None" = None,
-    effort: str | None = None,
     run_budget: int | None = None,
     re_integrate: bool = False,
     smoke_cmd: str | None = None,
@@ -3852,9 +3746,7 @@ def full_real(
     on process exit even if this returns early; a held lock aborts with a clear
     message rather than racing.
     """
-    model = model or spawnlib.default_model_for_agent(agent)
     repo = Path(repo_path).resolve()
-    role_models = _effective_role_models(agent, role_models)
     journal_path = str(journal_path_for(repo, spec_rel))
     try:
         _lock = RunLock(journal_path).acquire()
@@ -3867,21 +3759,13 @@ def full_real(
             spec_rel,
             remote,
             base,
-            agent,
-            model,
+            prefer,
             max_workers,
             timeout,
             resume,
             from_verify,
             only,
-            role_models,
             run_budget,
-            role_agents=role_agents,
-            fallback_agent=fallback_agent,
-            tier_map=tier_map,
-            purpose_tier_map=purpose_tier_map,
-            fallback_chain=fallback_chain,
-            effort=effort,
             re_integrate=re_integrate,
             smoke_cmd=smoke_cmd,
             post_merge_smoke_cmd=post_merge_smoke_cmd,
@@ -3904,16 +3788,8 @@ def _dispatch_pending_tail(
     run_id: str,
     tasks: list,
     max_workers: int,
-    agent: str,
-    model: str | None,
+    prefer: str | None,
     timeout: int,
-    role_models: dict | None,
-    role_agents: dict | None,
-    fallback_agent: str | None,
-    tier_map: dict | None,
-    purpose_tier_map: dict | None,
-    fallback_chain: "list[str] | None",
-    effort: str | None,
     run_budget: int | None,
     bootstrap_cmd: str | None = None,
     spawn=None,
@@ -3958,18 +3834,10 @@ def _dispatch_pending_tail(
         out_cassette=journal_path,
         only=only,
         with_tail=True,
-        agent=agent,
-        model=model,
+        prefer=prefer,
         timeout=timeout,
         resume=True,
         run_id=run_id,
-        role_models=role_models,
-        role_agents=role_agents,
-        fallback_agent=fallback_agent,
-        tier_map=tier_map,
-        purpose_tier_map=purpose_tier_map,
-        fallback_chain=fallback_chain,
-        effort=effort,
         run_budget=run_budget,
         bootstrap_cmd=bootstrap_cmd,
         spawn=spawn,
@@ -3983,12 +3851,10 @@ def _pipeline_scheduler(
     spec_rel: str,
     remote: str,
     base: str,
-    model: str | None,
     max_workers: int,
     timeout: int,
     resume: bool,
     only: list | None,
-    role_models: dict | None,
     run_budget: int | None,
     journal_path: str,
     run_id: str,
@@ -4000,13 +3866,7 @@ def _pipeline_scheduler(
     pr_pacing_wait: int = 0,
     route: str | None = None,
     gates: str = "",
-    agent: str = DEFAULT_AGENT,
-    role_agents: dict | None = None,
-    fallback_agent: str | None = None,
-    tier_map: dict | None = None,
-    purpose_tier_map: dict | None = None,
-    fallback_chain: "list[str] | None" = None,
-    effort: str | None = None,
+    prefer: str | None = None,
     re_integrate: bool = False,
     migration_patterns: "list[str] | None" = None,
     # Injectable seams (default to production implementations)
@@ -4041,13 +3901,11 @@ def _pipeline_scheduler(
     _write_group_journal to use progress.atomic_write_text, or pass an atomic-write
     callback through the integrate_one seam.
     """
-    model = model or spawnlib.default_model_for_agent(agent)
     from . import integrate as integrate_module
     from . import verify as verify_module
     from ..router.gitnexus_preflight import check as gitnexus_check
 
     gitnexus_capability = gitnexus_check(repo)
-    role_models = _effective_role_models(agent, role_models)
     spec_id, tasks = taskformats.load_spec(str(repo / spec_rel))
     tasks = apply_run_plan(repo, spec_rel, spec_id, tasks)
     pre_only_done = {t["id"] for t in tasks if t.get("status") in coordinator.DONE}
@@ -4124,15 +3982,7 @@ def _pipeline_scheduler(
         spec_id,
         spec_rel.rstrip("/") + "/",
         timeout=timeout,
-        agent=agent,
-        model=model,
-        role_models=role_models,
-        role_agents=role_agents,
-        fallback_agent=fallback_agent,
-        tier_map=tier_map,
-        purpose_tier_map=purpose_tier_map,
-        fallback_chain=fallback_chain,
-        effort=effort,
+        prefer=prefer,
     )
     # See live_run_real's identical guard: surfaces dependency files to
     # ROLE_IMPLEMENT prompts, default-constructed or caller-injected alike.
@@ -4171,19 +4021,14 @@ def _pipeline_scheduler(
                 return result
 
         integrate_one_fn = _paced_integrate_one
-    _ar_agent, _ar_model = _role_agent_model(
-        dispatch.ROLE_ASSEMBLY_RESOLVE, agent, model, role_agents, role_models
-    )
     assembly_resolve_spawn_fn = (
         _assembly_resolve_spawn
         if _assembly_resolve_spawn is not None
-        else verify_module._make_live_spawn(_ar_model, timeout, agent=_ar_agent)
+        else verify_module._make_live_spawn(timeout=timeout, agent=prefer or DEFAULT_AGENT)
     )
 
     def _default_make_verifier() -> "verify_module.Verifier":
-        resolve_spawn, ci_fix_spawn = _verifier_role_spawns(
-            agent, model, timeout, role_agents, role_models
-        )
+        resolve_spawn, ci_fix_spawn = _verifier_role_spawns(timeout, prefer=prefer)
         return verify_module.Verifier(
             repo,
             remote,
@@ -4595,6 +4440,7 @@ def _pipeline_scheduler(
         tools_used: list | None = None,
         skills_used: list | None = None,
         agent: str | None = None,
+        target: str | None = None,
     ) -> tuple:
         with state_lock:
             return _apply_step_commit(
@@ -4611,6 +4457,7 @@ def _pipeline_scheduler(
                 tools_used=tools_used,
                 skills_used=skills_used,
                 agent=agent,
+                target=target,
             )
 
     def _drive(task: dict) -> None:
@@ -4713,6 +4560,7 @@ def _pipeline_scheduler(
                 tools_used=_tools_used,
                 skills_used=_skills_used,
                 agent=getattr(spawn_fn, "last_agent", None),
+                target=getattr(spawn_fn, "last_target", None),
             )
             if scope_files:
                 task["status"] = "fixing"
@@ -4872,16 +4720,8 @@ def _pipeline_scheduler(
             run_id,
             tasks,
             max_workers,
-            agent,
-            model,
+            prefer,
             timeout,
-            role_models,
-            role_agents,
-            fallback_agent,
-            tier_map,
-            purpose_tier_map,
-            fallback_chain,
-            effort,
             run_budget,
             bootstrap_cmd=bootstrap_cmd,
             spawn=spawn_fn,
@@ -4970,21 +4810,13 @@ def _full_real_inner(
     spec_rel: str,
     remote: str = "origin",
     base: str = "dev",
-    agent: str = DEFAULT_AGENT,
-    model: str | None = None,
+    prefer: str | None = None,
     max_workers: int = 3,
     timeout: int = WORKER_TIMEOUT_DEFAULT,
     resume: bool = True,
     from_verify: bool = False,
     only: list | None = None,
-    role_models: dict | None = None,
     run_budget: int | None = None,
-    role_agents: dict | None = None,
-    fallback_agent: str | None = None,
-    tier_map: dict | None = None,
-    purpose_tier_map: dict | None = None,
-    fallback_chain: "list[str] | None" = None,
-    effort: str | None = None,
     re_integrate: bool = False,
     smoke_cmd: str | None = None,
     post_merge_smoke_cmd: str | None = None,
@@ -5010,16 +4842,12 @@ def _full_real_inner(
     from_verify — if True, skip fan-out and integrate entirely, read per-group
                   integrate records from the journal, and run only verify_and_cleanup.
                   Requires an existing journal with integrate_complete set.
-    role_models — optional {role: model} overrides threaded to the fan-out workers.
-    role_agents — optional {role: agent} overrides threaded to the fan-out workers
-                  (e.g. review="claude" for an independent reviewer while
-                  implement/fix stay on a cheaper `agent`).
+    prefer      — optional operator-level target preference (e.g. the full-real
+                  CLI's `--agent`), threaded straight to every LiveSpawn this run
+                  constructs; wins over whatever `dispatch.tier_for()` resolves per
+                  role/task. Every other routing knob now comes from the routing
+                  file itself, resolved fresh per spawn (design D3/D4).
     run_budget  — optional whole-run wall-clock cap (s) for the fan-out (0 = off).
-    effort      — optional run-level default effort, threaded to every LiveSpawn
-                  this run constructs.
-    purpose_tier_map — optional {purpose: tier} table (routing.purpose_tiers),
-                  threaded to every LiveSpawn this run constructs alongside
-                  tier_map (task-purpose-classification 5.1).
     migration_patterns — optional fnmatch glob list (worktrail-go-policy.yaml's
                   migration_path_patterns) identifying schema-migration file paths;
                   any task touching one is folded into coordinator.plan_groups()'s
@@ -5037,7 +4865,6 @@ def _full_real_inner(
     out N tasks then blocks on each PR's CI, routinely exceeding a 10-minute
     foreground timeout. If killed, the journal makes the next run resumable.
     """
-    model = model or spawnlib.default_model_for_agent(agent)
     from . import integrate
     from . import verify
 
@@ -5133,9 +4960,7 @@ def _full_real_inner(
         delivered = {
             g["name"]: coordinator.deliverable_subset(g["tasks"], tasks, status)[0] for g in groups
         }
-        resolve_spawn, ci_fix_spawn = _verifier_role_spawns(
-            agent, model, timeout, role_agents, role_models
-        )
+        resolve_spawn, ci_fix_spawn = _verifier_role_spawns(timeout, prefer=prefer)
         vres = verify.verify_and_cleanup(
             repo,
             remote,
@@ -5216,19 +5041,11 @@ def _full_real_inner(
         spec_rel=spec_rel,
         remote=remote,
         base=base,
-        agent=agent,
-        model=model,
+        prefer=prefer,
         max_workers=max_workers,
         timeout=timeout,
         resume=resume,
         only=only,
-        role_models=role_models,
-        role_agents=role_agents,
-        fallback_agent=fallback_agent,
-        tier_map=tier_map,
-        purpose_tier_map=purpose_tier_map,
-        fallback_chain=fallback_chain,
-        effort=effort,
         run_budget=run_budget,
         journal_path=journal_path,
         run_id=run_id,
@@ -5244,136 +5061,38 @@ def _full_real_inner(
     )
 
 
-def smoke(agent: str = DEFAULT_AGENT, model: str | None = None) -> bool:
-    model = model or spawnlib.default_model_for_agent(agent)
+def smoke(tier: str | None = None, prefer: str | None = DEFAULT_AGENT) -> bool:
+    """Trivial plumbing check: spawn a real headless worker on *tier* (default:
+    routing.default_tier) and confirm it round-trips. Harness/model come from
+    whichever cell `select_cell()` serves, never a bare agent/model pair."""
+    routing = spawnlib.resolve_routing(spawnlib.load_policy(spawnlib.worktrail_home()))
+    tier = tier or routing.get("default_tier")
+    cell = select_cell(routing, tier, prefer=prefer, capacity=agent_capacity)
     result = spawnlib.spawn_agent(
         "Reply with exactly: PONG",
         Path.cwd(),
-        agent=agent,
-        model=model,
+        tier=tier,
+        prefer=prefer,
         timeout=120,
         retries=0,
     )
     out = result.text.strip()
     ok = "PONG" in out
-    print(f"{agent} smoke -> {out!r}  [{'OK' if ok else 'UNEXPECTED'}]")
+    print(f"{cell.target} ({cell.harness}:{cell.model}) smoke -> {out!r}  [{'OK' if ok else 'UNEXPECTED'}]")
     return ok
 
 
-def _parse_model_map(spec: str | None) -> dict | None:
-    """Parse a `role=model,role=model` string into a {role: model} dict (#20)."""
-    out: dict = {}
-    for part in (spec or "").split(","):
-        part = part.strip()
-        if not part:
-            continue
-        key, _, val = part.partition("=")
-        key, val = key.strip(), val.strip()
-        if key and val:
-            out[key] = val
-    return out or None
-
-
-def _parse_tier_map(spec: str | None) -> dict | None:
-    """Parse `--tier-map`'s `complexity:domain=agent[:model],...` string into the
-    `{(complexity, domain): {"agent_cli":.., "agent_model":..}}` shape
-    dispatch.agent_for's tier_map expects (TASK-006).
-
-    Fed in production by Phase 7's CLI-string round-trip of `policy.py`'s
-    `resolve_tier_map(policy)` output (TASK-CHG-002) -- see `--tier-map`'s
-    help text for the domain-less-tier caveat that string round-trip carries."""
-    out: dict = {}
-    for part in (spec or "").split(","):
-        part = part.strip()
-        if not part:
-            continue
-        key, _, val = part.partition("=")
-        key, val = key.strip(), val.strip()
-        if not key or not val:
-            continue
-        complexity, _, domain = key.partition(":")
-        agent_cli, _, agent_model = val.partition(":")
-        out[(complexity.strip(), domain.strip())] = {
-            "agent_cli": agent_cli.strip(),
-            "agent_model": agent_model.strip() or None,
-        }
-    return out or None
-
-
-def _parse_fallback_chain(spec: str | None) -> "list[str] | None":
-    """Parse `--fallback-chain`'s ordered comma-separated agent list."""
-    chain = [a.strip() for a in (spec or "").split(",") if a.strip()]
-    return chain or None
-
-
-def _role_agent_model(
-    role: str,
-    agent: str,
-    model: str,
-    role_agents: dict | None,
-    role_models: dict | None,
-) -> tuple[str, str]:
-    """Resolve the (agent, model) pair for a role the same way LiveSpawn.__call__
-    does: --role-agent-map wins for the agent; an explicit --model-map entry wins
-    for the model; a role pinned to a different agent than the run's default falls
-    back to that agent's OWN default model, not the run's (which would be an
-    invalid model id for the other CLI)."""
-    role_agent = (role_agents or {}).get(role, agent)
-    role_model = (role_models or {}).get(
-        role,
-        model if role_agent == agent else spawnlib.default_model_for_agent(role_agent),
-    )
-    return role_agent, role_model
-
-
-def _verifier_role_spawns(
-    agent: str,
-    model: str,
-    timeout: int,
-    role_agents: dict | None,
-    role_models: dict | None,
-) -> tuple:
-    """Build the (resolve, ci-fix) spawn pair for a Verifier, honoring
-    --role-agent-map / --model-map for the group-level verify roles. Unmapped
-    roles keep the pipeline path's historical defaults: resolve on the run
-    agent/model with the worker timeout; ci-fix on its role-model default
-    (--model-map ci-fix=..., else verify.DEFAULT_MODEL) with the shorter
-    CI_FIX_TIMEOUT."""
+def _verifier_role_spawns(timeout: int, prefer: str | None = None) -> tuple:
+    """Build the (resolve, ci-fix) spawn pair for a Verifier. `prefer` is a soft
+    target-name hint threaded to both (design D3) -- the row/model/harness a
+    group-level judgment spawn actually serves on come from routing.tiers via
+    `verify._make_live_spawn`'s own `select_cell()` call, not from here."""
     from . import verify
 
-    rs_agent, rs_model = _role_agent_model(
-        dispatch.ROLE_RESOLVE, agent, model, role_agents, role_models
-    )
-    cf_agent, cf_model = _role_agent_model(
-        dispatch.ROLE_CI_FIX, agent, verify.DEFAULT_MODEL, role_agents, role_models
-    )
     return (
-        verify._make_live_spawn(rs_model, timeout, agent=rs_agent),
-        verify._make_live_spawn(cf_model, verify.CI_FIX_TIMEOUT, agent=cf_agent),
+        verify._make_live_spawn(timeout=timeout, agent=prefer or DEFAULT_AGENT),
+        verify._make_live_spawn(timeout=verify.CI_FIX_TIMEOUT, agent=prefer or DEFAULT_AGENT),
     )
-
-
-def _effective_role_models(agent: str, role_models: dict | None) -> dict | None:
-    # model-tier-routing 3.3: this function has no `effort` equivalent, and none
-    # is needed -- verified, not assumed. Its whole job is auto-populating a
-    # PER-ROLE MODEL override for codex (every codex role otherwise shares one
-    # model, see the module comment above LiveSpawn) when the caller passed
-    # none, working around a gap in `role_models`'s own precedence (it has no
-    # per-agent default to fall back to, unlike `self.model`). A per-role
-    # EFFORT override already exists through a different, already-shipped path:
-    # `role_agents` (routing.roles / --role-agent-map) entries carry their own
-    # `effort` key, resolved by `dispatch.agent_for()` into `resolved["effort"]`
-    # and consumed directly in `LiveSpawn.spawn()` -- see
-    # `test_role_override_effort_reaches_spawn_agent` in test_live_extras.py.
-    # `role_models`/`_effective_role_models()` is a separate, narrower {role:
-    # model} convenience surface with no `role_agents`-equivalent precedence
-    # gap for effort to fill, so there is nothing for this function to thread.
-    if role_models is not None:
-        return role_models
-    if agent == "codex":
-        model = spawnlib.default_model_for_agent("codex")
-        return {role: model for role in _CODEX_DEFAULT_ROLES}
-    return None
 
 
 def main(argv=None) -> int:
@@ -5390,8 +5109,11 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="Live spawn via a headless agent CLI")
     sub = p.add_subparsers(dest="cmd", required=True)
     sm = sub.add_parser("smoke")
-    sm.add_argument("--agent", choices=sorted(spawnlib.SUPPORTED_AGENTS), default=DEFAULT_AGENT)
-    sm.add_argument("--model", default=None)
+    sm.add_argument("--tier", default=None, help="routing.tiers row (default: routing.default_tier)")
+    sm.add_argument(
+        "--agent", dest="prefer", default=DEFAULT_AGENT,
+        help="soft target-name preference (routing-target-selector D3)",
+    )
     ip = sub.add_parser("instantiate")
     ip.add_argument("--dest", default=str(DEFAULT_DEST))
     so = sub.add_parser("spawn-one")
@@ -5407,11 +5129,9 @@ def main(argv=None) -> int:
     lr.add_argument("--max-workers", type=int, default=2)
     lr.add_argument("--only", default=None, help="comma-separated task IDs subset")
     lr.add_argument("--with-tail", action="store_true")
-    lr.add_argument("--agent", choices=sorted(spawnlib.SUPPORTED_AGENTS), default=DEFAULT_AGENT)
-    lr.add_argument("--model", default=None)
+    lr.add_argument("--agent", dest="prefer", default=DEFAULT_AGENT)
     fu = sub.add_parser("full", help="End-to-end: fan-out -> integrate -> grouped PRs -> tail")
-    fu.add_argument("--agent", choices=sorted(spawnlib.SUPPORTED_AGENTS), default=DEFAULT_AGENT)
-    fu.add_argument("--model", default=None)
+    fu.add_argument("--agent", dest="prefer", default=DEFAULT_AGENT)
     fu.add_argument("--sandbox", default="behindthedash/orch-sandbox")
     fu.add_argument("--keep-prs", action="store_true")
     fu.add_argument("--max-workers", type=int, default=3)
@@ -5426,8 +5146,7 @@ def main(argv=None) -> int:
     lrr.add_argument("--max-workers", type=int, default=2)
     lrr.add_argument("--only", default=None, help="Comma-separated task IDs subset")
     lrr.add_argument("--with-tail", action="store_true")
-    lrr.add_argument("--agent", choices=sorted(spawnlib.SUPPORTED_AGENTS), default=DEFAULT_AGENT)
-    lrr.add_argument("--model", default=None)
+    lrr.add_argument("--agent", dest="prefer", default=DEFAULT_AGENT)
     lrr.add_argument(
         "--timeout",
         type=int,
@@ -5477,23 +5196,14 @@ def main(argv=None) -> int:
         "--remote", default="origin", help="Git remote to push branches and open PRs against"
     )
     fr.add_argument("--base", default="dev", help="Base branch for PRs (default: dev)")
-    fr.add_argument("--agent", choices=sorted(spawnlib.SUPPORTED_AGENTS), default=DEFAULT_AGENT)
     fr.add_argument(
-        "--fallback-agent",
-        choices=sorted(spawnlib.SUPPORTED_AGENTS),
-        default=None,
-        help="Switch once to this worker CLI when the primary reports a session limit. "
-        "Covers every --agent choice, including claude (spawn_claude_p threads this "
-        "through to spawn_agent's fallback machinery).",
-    )
-    fr.add_argument("--model", default=None)
-    fr.add_argument(
-        "--effort",
-        default=None,
-        help="Run-level default reasoning effort (e.g. 'high'), threaded to every "
-        "LiveSpawn this run constructs; a configured tier's own effort still wins "
-        "per dispatch.agent_for's precedence (model-tier-routing 3.3). Omit for "
-        "no effort flag (pre-spec behavior).",
+        "--agent",
+        dest="prefer",
+        default=DEFAULT_AGENT,
+        help="Soft target-name preference (routing-target-selector D3/D4): wins over "
+        "whatever tier_for() resolves per role/task. Harness, model, and effort come "
+        "from the served routing.tiers cell, never from this flag directly. Names a "
+        "routing.targets entry; an unmatched name is a harmless no-op.",
     )
     fr.add_argument(
         "--max-workers",
@@ -5526,60 +5236,6 @@ def main(argv=None) -> int:
         "--only",
         default=None,
         help="Comma-separated task IDs to run; all others are pre-marked done.",
-    )
-    fr.add_argument(
-        "--model-map",
-        default=None,
-        help="Per-role model overrides, e.g. 'implement=sonnet,review=haiku,fix=sonnet,ci-fix=sonnet'. "
-        "Roles not listed fall back to --model (ci-fix defaults to sonnet regardless).",
-    )
-    fr.add_argument(
-        "--role-agent-map",
-        default=None,
-        help="Per-role agent CLI overrides, e.g. 'review=claude,implement=opencode,fix=opencode'. "
-        "Roles not listed fall back to --agent. Lets the reviewer run on a genuinely "
-        "different/independent headless CLI (its own subscription/model) than the one "
-        "writing the code -- e.g. review on claude/sonnet while implement/fix stay on "
-        "a cheaper opencode model. Covered roles: implement, review, fix, cleanup "
-        "(task-level workers), assembly-resolve (merge-conflict resolution during "
-        "group integration), and the group-level verify workers resolve and ci-fix "
-        "(pipeline and non-pipeline paths alike).",
-    )
-    fr.add_argument(
-        "--tier-map",
-        default=None,
-        help="Resolved routing-table tier matches, e.g. "
-        "'hard:backend=codex:gpt-tier,standard:frontend=opencode'. Each entry is "
-        "'complexity:domain=agent[:model]'; matched tasks route implement/fix/cleanup "
-        "spawns to that agent (its own default model unless one is given here). "
-        "Never consulted for review/resolve/ci-fix/assembly-resolve (DEC-003). "
-        "Sourced from worktrail-go-policy.yaml's routing.tiers by the sdd-workflow conductor "
-        "(policy.py's resolve_tier_map()); a domain-less tier (resolve_tier_map()'s "
-        "(complexity, None) key) has no CLI-string representation -- _parse_tier_map() "
-        "always yields an empty-string domain, never None -- so domain-less tiers only "
-        "reach dispatch.agent_for via a native tier_map dict, not this flag (TASK-CHG-002). "
-        "Omit for pre-spec behavior (REQ-016).",
-    )
-    fr.add_argument(
-        "--purpose-tier-map",
-        dest="purpose_tier_map",
-        default=None,
-        help="Resolved purpose-to-tier table, e.g. 'security-review=t1,bulk-mechanical=t4'. "
-        "Each entry is 'purpose=tier'; a matched task's tier (looked up in --tier-map) is "
-        "the mapped tier instead of its complexity, for implement/fix/cleanup spawns only "
-        "(task.get('purpose') wins over task.get('complexity') when it resolves here). "
-        "Never consulted for review/resolve/ci-fix/assembly-resolve (DEC-003). Sourced from "
-        "worktrail-go-policy.yaml's routing.purpose_tiers via policy.py's resolve_routing() "
-        "(task-purpose-classification 3.2/5.1). Omit for pre-spec behavior (REQ-016).",
-    )
-    fr.add_argument(
-        "--fallback-chain",
-        default=None,
-        dest="fallback_chain",
-        help="Ordered comma-separated fallback agent chain, e.g. 'codex,opencode'; "
-        "walked in order when the primary agent is capacity-gated (REQ-018). Wins "
-        "over --fallback-agent when both are given; omit to keep the legacy "
-        "single-fallback behavior.",
     )
     fr.add_argument(
         "--run-budget",
@@ -5739,20 +5395,8 @@ def main(argv=None) -> int:
     ct.add_argument("--tasks", required=True, help="Comma-separated task IDs to clear")
 
     args = p.parse_args(argv)
-    if getattr(args, "model", None) is None:
-        args.model = spawnlib.default_model_for_agent(getattr(args, "agent", DEFAULT_AGENT))
-    role_models = _effective_role_models(
-        getattr(args, "agent", DEFAULT_AGENT), _parse_model_map(getattr(args, "model_map", None))
-    )
-    role_agents = _parse_model_map(getattr(args, "role_agent_map", None))
-    tier_map = _parse_tier_map(getattr(args, "tier_map", None))
-    # {purpose: tier} is a plain string-to-string map, the same "key=value,..." shape
-    # _parse_model_map already parses (task-purpose-classification 5.1) -- no
-    # dedicated parser needed, unlike --tier-map's agent-entry-shaped value.
-    purpose_tier_map = _parse_model_map(getattr(args, "purpose_tier_map", None))
-    fallback_chain = _parse_fallback_chain(getattr(args, "fallback_chain", None))
     if args.cmd == "smoke":
-        return 0 if smoke(args.agent, args.model) else 1
+        return 0 if smoke(args.tier, args.prefer) else 1
     if args.cmd == "instantiate":
         print(instantiate(SAMPLE_TEMPLATE, Path(args.dest)))
         return 0
@@ -5767,29 +5411,25 @@ def main(argv=None) -> int:
             args.out,
             only,
             args.with_tail,
-            args.agent,
-            args.model,
+            args.prefer,
         )
         return 0
     if args.cmd == "full":
-        full(args.agent, args.model, args.sandbox, args.keep_prs, args.max_workers)
+        full(args.prefer, args.sandbox, args.keep_prs, args.max_workers)
         return 0
     if args.cmd == "live-run-real":
         only = args.only.split(",") if args.only else None
         spawn = None
         if getattr(args, "fork_research", False):
             spec_folder = Path(args.repo) / args.spec
-            sid = run_research_session(
-                spec_folder, agent=args.agent, model=args.model, timeout=args.timeout
-            )
+            sid = run_research_session(spec_folder, prefer=args.prefer, timeout=args.timeout)
             if sid:
                 spec_id_tmp, _ = taskformats.load_spec(str(spec_folder))
                 spawn = LiveSpawn(
                     spec_id_tmp,
                     args.spec.rstrip("/") + "/",
                     timeout=args.timeout,
-                    agent=args.agent,
-                    model=args.model,
+                    prefer=args.prefer,
                 )
                 spawn.research_session_id = sid
         live_run_real(
@@ -5799,8 +5439,7 @@ def main(argv=None) -> int:
             out_cassette=args.out,
             only=only,
             with_tail=args.with_tail,
-            agent=args.agent,
-            model=args.model,
+            prefer=args.prefer,
             timeout=args.timeout,
             resume=args.resume,
             spawn=spawn,
@@ -5861,20 +5500,12 @@ def main(argv=None) -> int:
             args.spec,
             args.remote,
             args.base,
-            args.agent,
-            args.model,
+            args.prefer,
             args.max_workers,
             args.timeout,
             resume=not args.fresh,
             from_verify=args.from_verify,
             only=only,
-            role_models=role_models,
-            role_agents=role_agents,
-            fallback_agent=args.fallback_agent,
-            tier_map=tier_map,
-            purpose_tier_map=purpose_tier_map,
-            fallback_chain=fallback_chain,
-            effort=args.effort,
             run_budget=args.run_budget * 60 if args.run_budget else args.run_budget,
             re_integrate=args.re_integrate,
             smoke_cmd=smoke_cmd,
