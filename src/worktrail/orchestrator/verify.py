@@ -125,6 +125,9 @@ DEFAULT_MODEL = "sonnet"
 # ci-fix workers cap at 900s: if the root cause isn't found in 15 min, a 3rd
 # attempt won't help. resolve workers use the caller-injected timeout (default 1800s).
 CI_FIX_TIMEOUT = 900
+# Tier these group-level workers spawn under (design D3): routing, not this
+# caller, now owns the harness/model choice for a given tier.
+DEFAULT_TIER = "t2-build"
 
 # Substrings that signal a branch-protection merge block (not a transient error).
 # On these, retry with --auto so GitHub queues the merge for when requirements are met.
@@ -201,6 +204,12 @@ def _make_live_spawn(model: str = DEFAULT_MODEL,
     """A spawn that drives a headless agent worker in the worktree, with
     bounded retry on a transient (non-zero/empty) spawn failure (spawnlib).
 
+    `model`/`agent` no longer pin the launch cell directly (design D3: routing
+    owns harness/model choice for a tier) -- `agent` is kept only as a soft
+    `prefer` hint and to decide the claude-only --setting-sources flag below;
+    `model` is accepted for caller signature compatibility and otherwise
+    unused.
+
     --setting-sources project,local excludes the operator's USER-level
     ~/.claude/settings.json (and its Stop hook) from these group-level
     resolve/ci-fix/assembly-resolve workers, the same defect class fixed for
@@ -213,7 +222,7 @@ def _make_live_spawn(model: str = DEFAULT_MODEL,
     def spawn(prompt: str, worktree_path: Path) -> str:
         extra_args = ["--setting-sources", "project,local"] if agent == "claude" else []
         return spawnlib.spawn_agent(
-            prompt, worktree_path, agent=agent, model=model, timeout=timeout,
+            prompt, worktree_path, tier=DEFAULT_TIER, prefer=agent, timeout=timeout,
             extra_args=extra_args,
             log=lambda m: print(m, file=sys.stderr)).text
     return spawn
