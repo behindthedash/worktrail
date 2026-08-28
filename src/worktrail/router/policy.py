@@ -30,6 +30,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 
 from ..shared.homedir import env_setting, worktrail_home
+from .invocation_context import SUPPORTED_AGENTS
 
 
 class OperatorConfigError(ValueError):
@@ -236,6 +237,24 @@ VALID_AGENT_CLIS = ("claude", "codex", "opencode")
 # bypass the per-subscription capacity system entirely, so silently falling
 # back to one would mask capacity/quota assumptions the rest of GO makes.
 API_AGENT_LITERALS = ("openrouter", "api")
+# routing.targets.<name>.pool literals (design D3): `subscription`/`free` are
+# harness-native capacity-gated pools; `api` bypasses the harness's own
+# subscription capacity system entirely, so it requires an explicit
+# `api_opt_in: true` on the same target (see _validate_routing_targets()).
+VALID_POOLS = ("subscription", "free", "api")
+# routing.tiers.<row>.<target>.effort vocabulary, keyed by that target's
+# harness (SUPPORTED_AGENTS): the reasoning-effort literals each CLI actually
+# understands. `claude` and `codex` both translate `effort` straight into a
+# reasoning-effort flag (spawnlib.build_cmd's `--effort` / `-c
+# model_reasoning_effort=...`); `opencode` maps it to `--variant` instead,
+# which selects a model variant, not a reasoning-effort level, so it has no
+# effort vocabulary at all -- `None` means every value is out of vocabulary,
+# not "unconstrained".
+EFFORT_VOCABULARY: Dict[str, Optional[Tuple[str, ...]]] = {
+    "claude": ("low", "medium", "high"),
+    "codex": ("minimal", "low", "medium", "high"),
+    "opencode": None,
+}
 
 
 def _parse_scalar(raw: str) -> Any:
@@ -342,6 +361,67 @@ def _validate_agent_entry(value: Any, meta: Dict[str, Any], label: str) -> Optio
     return {"agent_cli": agent_cli, "agent_model": agent_model, "effort": effort}
 
 
+def _validate_routing_targets(raw: Any, meta: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """`routing.targets`: the ordered `{name: {harness, pool, api_opt_in?, auth?}}`
+    mapping (design D3) that separates *harness* (which CLI runs the task) from
+    *pool* (which capacity/auth surface it draws from) -- the schema `tiers`
+    rows and `roles` entries key against by target name.
+
+    File order is preserved: `raw` comes from `yaml.safe_load` (real YAML, via
+    `_resolve_routing()`), whose mapping keys already iterate in declaration
+    order, and this function only ever assigns into `resolved` while walking
+    `raw.items()` -- never re-sorts or re-inserts.
+
+    A target is dropped (with a `meta["warnings"]` entry) when `harness` is
+    outside `SUPPORTED_AGENTS` or `pool` is outside `VALID_POOLS` -- both are
+    load-bearing identity fields the selector cannot fall back on. A `pool:
+    api` target without `api_opt_in: true` is *kept*, not dropped: its
+    `api_opt_in` stays `False` so downstream selection (`select_cell`, task
+    2.1) can skip it as ineligible while still surfacing it (e.g. in
+    `worktrail-routing --check` diagnostics); a warning is appended either way.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        meta["warnings"].append(f"routing.targets must be a mapping; got {raw!r} — ignored")
+        return {}
+    resolved: Dict[str, Dict[str, Any]] = {}
+    for name, entry in raw.items():
+        if not isinstance(name, str):
+            meta["warnings"].append(f"routing.targets: key must be a string; got {name!r} — ignored")
+            continue
+        if not isinstance(entry, dict):
+            meta["warnings"].append(
+                f"routing.targets.{name} must be a mapping ({{harness, pool, api_opt_in?, auth?}}); "
+                f"got {entry!r} — dropped")
+            continue
+        harness = entry.get("harness")
+        if harness not in SUPPORTED_AGENTS:
+            meta["warnings"].append(
+                f"routing.targets.{name}.harness: invalid harness {harness!r} "
+                f"(allowed: {SUPPORTED_AGENTS}); dropped")
+            continue
+        pool = entry.get("pool")
+        if pool not in VALID_POOLS:
+            meta["warnings"].append(
+                f"routing.targets.{name}.pool: invalid pool {pool!r} "
+                f"(allowed: {VALID_POOLS}); dropped")
+            continue
+        api_opt_in = bool(entry.get("api_opt_in", False))
+        if pool == "api" and not api_opt_in:
+            meta["warnings"].append(
+                f"routing.targets.{name}: pool 'api' requires explicit api_opt_in: true; "
+                "target kept but ineligible until opted in")
+        auth = entry.get("auth")
+        resolved[name] = {
+            "harness": harness,
+            "pool": pool,
+            "api_opt_in": api_opt_in,
+            "auth": auth,
+        }
+    return resolved
+
+
 def _validate_routing_agents(raw: Any, meta: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     """`routing.agents`: `{<agent>: {default_model: str}}` — the per-agent
     default-model table `default_model_for_agent()` resolves against, replacing
@@ -436,9 +516,27 @@ def _validate_routing_defaults(raw: Any, meta: Dict[str, Any]) -> Dict[str, Dict
     return resolved
 
 
-def _validate_routing_roles(raw: Any, meta: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
-    """`routing.roles`: `{role: agent-entry}` — same semantics as `--role-agent-map`
-    (`live.py`'s `role=agent` map), exposed here as the single source of truth."""
+def _validate_routing_roles(
+    raw: Any, tiers: Dict[str, Dict[str, Dict[str, Any]]],
+    targets: Dict[str, Dict[str, Any]], meta: Dict[str, Any]
+) -> Dict[str, Dict[str, Any]]:
+    """`routing.roles`: `{role: {tier, prefer?, independent?}}` — a role now
+    resolves to a *tier row* (`routing.tiers`, task 1.2), not directly to an
+    agent/model: `dispatch.tier_for()` (task 4.1) reads `tier` to pick the row
+    `select_cell()` (task 2.1) walks, `prefer` to reorder that row toward one
+    declared target first, and `independent` to mark a role (e.g. review)
+    that should avoid re-using the implementer's own harness.
+
+    An entry is dropped (with a `meta["warnings"]` entry) when it is not a
+    mapping, or when `tier` is missing, not a string, or does not name a
+    declared row of the already-resolved `tiers` table (`_validate_routing_tiers()`)
+    — a role with no valid tier has nothing for the selector to walk. A
+    `prefer` naming a target not declared in `targets` (`_validate_routing_targets()`)
+    drops the whole entry the same way, rather than keeping a tier with an
+    unusable preference. `independent` defaults to `False`; a non-bool value
+    is dropped (with a warning), falling back to `False` rather than the
+    whole entry, since it is the least load-bearing field.
+    """
     if raw is None:
         return {}
     if not isinstance(raw, dict):
@@ -446,90 +544,154 @@ def _validate_routing_roles(raw: Any, meta: Dict[str, Any]) -> Dict[str, Dict[st
         return {}
     resolved: Dict[str, Dict[str, Any]] = {}
     for role, entry in raw.items():
-        normalized = _validate_agent_entry(entry, meta, f"routing.roles.{role}")
-        if normalized is not None:
-            resolved[role] = normalized
+        if not isinstance(entry, dict):
+            meta["warnings"].append(
+                f"routing.roles.{role} must be a mapping ({{tier, prefer?, independent?}}); "
+                f"got {entry!r} — dropped")
+            continue
+        tier = entry.get("tier")
+        if not isinstance(tier, str) or tier not in tiers:
+            meta["warnings"].append(
+                f"routing.roles.{role}.tier {tier!r} does not name a declared "
+                "routing.tiers row; dropped")
+            continue
+        prefer = entry.get("prefer")
+        if prefer is not None and (not isinstance(prefer, str) or prefer not in targets):
+            meta["warnings"].append(
+                f"routing.roles.{role}.prefer {prefer!r} does not name a declared "
+                "routing.targets entry; dropped")
+            continue
+        independent = entry.get("independent", False)
+        if not isinstance(independent, bool):
+            meta["warnings"].append(
+                f"routing.roles.{role}.independent must be a boolean; "
+                f"got {independent!r} — dropped")
+            independent = False
+        resolved[role] = {"tier": tier, "prefer": prefer, "independent": independent}
     return resolved
 
 
 def _validate_routing_purpose_tiers(raw: Any, meta: Dict[str, Any]) -> Dict[str, str]:
-    """`routing.purpose_tiers`: `{purpose: tier}` — a plain string-to-string map
+    """`routing.purposes`: `{purpose: tier}` — a plain string-to-string map
     (unlike `routing.roles`/`routing.tiers`, values here are tier names, not
-    agent entries) that `dispatch.agent_for` consults ahead of `complexity` to
-    resolve a task's tier."""
+    agent entries) that `dispatch.tier_for()` (task 4.1) consults ahead of
+    `complexity` to resolve a task's tier."""
     if raw is None:
         return {}
     if not isinstance(raw, dict):
-        meta["warnings"].append(f"routing.purpose_tiers must be a mapping; got {raw!r} — ignored")
+        meta["warnings"].append(f"routing.purposes must be a mapping; got {raw!r} — ignored")
         return {}
     resolved: Dict[str, str] = {}
     for purpose, tier in raw.items():
         if not isinstance(purpose, str) or not isinstance(tier, str):
             meta["warnings"].append(
-                f"routing.purpose_tiers.{purpose!r}: value must be a string; got {tier!r} — dropped")
+                f"routing.purposes.{purpose!r}: value must be a string; got {tier!r} — dropped")
             continue
         resolved[purpose] = tier
     return resolved
 
 
 def _validate_routing_tiers(
-    raw: Any, meta: Dict[str, Any]
-) -> Dict[Tuple[str, Optional[str]], Dict[str, Any]]:
-    """`routing.tiers`: `{<complexity>[/<domain>]: agent-entry}` — a
-    `(complexity, domain)` match table that `resolve_tier_map()` turns into
-    `dispatch.agent_for`'s `tier_map` parameter.
+    raw: Any, targets: Dict[str, Dict[str, Any]], meta: Dict[str, Any]
+) -> Dict[str, Dict[str, Dict[str, Any]]]:
+    """`routing.tiers`: `{<row>: {<target>: {model, effort?}}}` — tier rows
+    keyed by declared target name (`routing.targets`, task 1.1), replacing the
+    old `(complexity, domain)`-keyed agent-entry table.
 
-    Also accepts the nested per-agent form `{<tier>[/<domain>]: {<agent>:
-    {model, effort}}}`, distinguished from the flat form by its value being a
-    mapping whose keys are entirely agent literals (`VALID_AGENT_CLIS`) rather
-    than an agent-entry's own shape (`agent_cli`/`agent`/`agent_model`/`model`)
-    — the two key sets never overlap, since no agent literal is itself an
-    agent-entry field name. Each nested agent expands to the same
-    `(f"{tier}-{agent}", domain)` key the flat form already produces, so
-    `resolve_tier_map()`'s output is unaffected by which shape a repo used.
+    A row is a tier name (e.g. `t1-deep`); each cell names one of that row's
+    declared targets and the model (required) / effort (optional) to use when
+    the selector (task 2.1) walks that target for that tier. A target with no
+    cell in a given row simply cannot serve that tier — the selector skips it;
+    this is not itself a warning-worthy condition, since not every target need
+    cover every tier.
 
-    The flat form is deprecated in favor of the nested form; each flat entry
-    resolved appends a `meta["warnings"]` entry pointing at its nested
-    replacement, without dropping the entry.
+    A cell naming an undeclared target (not a key of `targets`, the already-
+    validated `_validate_routing_targets()` output) is dropped with a warning
+    — `routing.targets` is the single source of truth for what a target *is*,
+    so a typo'd or removed target name here is a local, per-cell mistake, not
+    a `routing.targets` problem.
 
-    Flat and nested entries are resolved in two passes -- all flat keys, then
-    all nested keys -- rather than in raw YAML declaration order, so a nested
-    entry always overwrites a flat entry for the same `(tier-agent, domain)`
-    key regardless of which one a repo happened to list first."""
+    A cell whose `effort` falls outside its target's harness's
+    `EFFORT_VOCABULARY` gets a warning but is *kept*, not dropped -- an
+    unsupported effort literal is a hint the CLI ignores or errors on, not a
+    reason to make the whole target unusable for that tier. `opencode`'s
+    vocabulary is `None` (it has none: its `effort` maps to a model-variant
+    flag, not a reasoning-effort level), so any `effort` set on an opencode
+    target always warns "ignored by harness".
+    """
     if raw is None:
         return {}
     if not isinstance(raw, dict):
         meta["warnings"].append(f"routing.tiers must be a mapping; got {raw!r} — ignored")
         return {}
-    resolved: Dict[Tuple[str, Optional[str]], Dict[str, Any]] = {}
-    nested_keys: List[str] = []
-    for key, entry in raw.items():
-        if not isinstance(key, str):
-            meta["warnings"].append(f"routing.tiers: key must be a string; got {key!r} — ignored")
+    resolved: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    for row, cells in raw.items():
+        if not isinstance(row, str):
+            meta["warnings"].append(f"routing.tiers: key must be a string; got {row!r} — ignored")
             continue
-        if isinstance(entry, dict) and entry and all(k in VALID_AGENT_CLIS for k in entry):
-            nested_keys.append(key)
-            continue
-        complexity, _, domain = key.partition("/")
-        normalized = _validate_agent_entry(entry, meta, f"routing.tiers.{key}")
-        if normalized is not None:
-            resolved[(complexity, domain or None)] = normalized
+        if not isinstance(cells, dict):
             meta["warnings"].append(
-                f"routing.tiers.{key}: flat form is deprecated -- use the nested "
-                f"tiers.{complexity}.<agent> form instead")
-    for key in nested_keys:
-        complexity, _, domain = key.partition("/")
-        for agent, agent_entry in raw[key].items():
-            if not isinstance(agent_entry, dict):
+                f"routing.tiers.{row} must be a mapping of target -> {{model, effort?}}; "
+                f"got {cells!r} — ignored")
+            continue
+        row_resolved: Dict[str, Dict[str, Any]] = {}
+        for target, cell in cells.items():
+            if not isinstance(target, str) or target not in targets:
                 meta["warnings"].append(
-                    f"routing.tiers.{key}.{agent} must be a mapping ({{model, effort}}); "
-                    f"got {agent_entry!r} — dropped")
+                    f"routing.tiers.{row}.{target!r}: undeclared target "
+                    "(not in routing.targets); dropped")
                 continue
-            normalized = _validate_agent_entry(
-                {**agent_entry, "agent": agent}, meta, f"routing.tiers.{key}.{agent}")
-            if normalized is not None:
-                resolved[(f"{complexity}-{agent}", domain or None)] = normalized
+            if not isinstance(cell, dict):
+                meta["warnings"].append(
+                    f"routing.tiers.{row}.{target} must be a mapping ({{model, effort?}}); "
+                    f"got {cell!r} — dropped")
+                continue
+            model = cell.get("model")
+            if not isinstance(model, str):
+                meta["warnings"].append(
+                    f"routing.tiers.{row}.{target}.model must be a string; "
+                    f"got {model!r} — dropped")
+                continue
+            effort = cell.get("effort")
+            if effort is not None and not isinstance(effort, str):
+                meta["warnings"].append(
+                    f"routing.tiers.{row}.{target}.effort must be a string; dropped")
+                effort = None
+            if effort is not None:
+                harness = targets[target]["harness"]
+                vocabulary = EFFORT_VOCABULARY.get(harness)
+                if vocabulary is None:
+                    meta["warnings"].append(
+                        f"routing.tiers.{row}.{target}.effort {effort!r}: "
+                        f"ignored by harness {harness!r}")
+                elif effort not in vocabulary:
+                    meta["warnings"].append(
+                        f"routing.tiers.{row}.{target}.effort {effort!r} is outside "
+                        f"{harness!r}'s effort vocabulary (allowed: {vocabulary})")
+            row_resolved[target] = {"model": model, "effort": effort}
+        if row_resolved:
+            resolved[row] = row_resolved
     return resolved
+
+
+def _validate_routing_default_tier(
+    raw: Any, tiers: Dict[str, Dict[str, Dict[str, Any]]], meta: Dict[str, Any]
+) -> Optional[str]:
+    """`routing.default_tier`: the tier row used absent any more specific
+    role/purpose/task tier (`dispatch.tier_for()`, task 4.1). Must name a
+    declared row of the already-resolved `routing.tiers` table; anything else
+    resolves to `None` with a warning rather than silently pointing dispatch
+    at a row with no cells."""
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        meta["warnings"].append(f"routing.default_tier must be a string; got {raw!r} — ignored")
+        return None
+    if raw not in tiers:
+        meta["warnings"].append(
+            f"routing.default_tier {raw!r} does not name a declared routing.tiers row; ignored")
+        return None
+    return raw
 
 
 def _validate_routing_fallback(raw: Any, meta: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -575,14 +737,90 @@ def _validate_routing_fallback(raw: Any, meta: Dict[str, Any]) -> List[Dict[str,
     return resolved
 
 
+MIGRATE_HINT = "run `worktrail-routing --migrate` to convert it to the current schema"
+
+
+def _reject_legacy_routing_keys(raw: Dict[str, Any]) -> None:
+    """Fail loud on any pre-target-selector `routing:` shape, rather than
+    silently misinterpreting or dropping it.
+
+    Raises `OperatorConfigError` naming the offending key and pointing at
+    `worktrail-routing --migrate` (design D9, task 6.3) for each of:
+
+    - `routing.agents` / `routing.fallback` — retired top-level tables
+      (default-model-per-agent, ordered agent-entry fallback) superseded by
+      `routing.targets`/`routing.tiers` (tasks 1.1/1.2).
+    - `routing.drain.agent` / `routing.drain.fallback_agents` — retired
+      drain-specific agent selection, superseded by target/tier selection
+      (`routing.drain.max_workers` is unaffected and still valid).
+    - `routing.purpose_tiers` — renamed to `routing.purposes` (task 1.3).
+    - a `routing.tiers` row whose cells are keyed by harness literal
+      (`VALID_AGENT_CLIS`) rather than by declared `routing.targets` name —
+      the pre-1.2 nested tier form. A cell key is only flagged when it does
+      NOT also name a declared `routing.targets` entry, so an operator who
+      names a target literally `codex`/`claude`/`opencode` (targets are
+      free-form strings; only `harness` is constrained to `SUPPORTED_AGENTS`)
+      is read as the modern target-keyed form, not the retired one.
+    - a `routing.roles` entry that is a mapping containing `agent_cli` or
+      `agent_model` — the pre-1.3 role-resolves-to-an-agent-entry form,
+      superseded by `{tier, prefer?, independent?}`.
+
+    Called first thing in `_validate_routing()`, on the already-confirmed
+    non-empty raw mapping, so no legacy shape is ever partially validated
+    (warned-and-dropped) before the operator sees the hard failure.
+    """
+    declared_targets = raw.get("targets")
+    declared_target_names = (
+        set(declared_targets) if isinstance(declared_targets, dict) else set())
+    if "agents" in raw:
+        raise OperatorConfigError(f"routing.agents is a retired key; {MIGRATE_HINT}")
+    if "fallback" in raw:
+        raise OperatorConfigError(f"routing.fallback is a retired key; {MIGRATE_HINT}")
+    if "purpose_tiers" in raw:
+        raise OperatorConfigError(
+            f"routing.purpose_tiers is a retired key (renamed to routing.purposes); {MIGRATE_HINT}")
+    drain = raw.get("drain")
+    if isinstance(drain, dict):
+        if "agent" in drain:
+            raise OperatorConfigError(f"routing.drain.agent is a retired key; {MIGRATE_HINT}")
+        if "fallback_agents" in drain:
+            raise OperatorConfigError(f"routing.drain.fallback_agents is a retired key; {MIGRATE_HINT}")
+    tiers = raw.get("tiers")
+    if isinstance(tiers, dict):
+        for row, cells in tiers.items():
+            if isinstance(cells, dict) and cells and all(
+                    k in VALID_AGENT_CLIS and k not in declared_target_names for k in cells):
+                raise OperatorConfigError(
+                    f"routing.tiers.{row} uses the retired harness-keyed cell form "
+                    f"(cells must be keyed by a declared routing.targets name); {MIGRATE_HINT}")
+    roles = raw.get("roles")
+    if isinstance(roles, dict):
+        for role, entry in roles.items():
+            if isinstance(entry, dict) and ("agent_cli" in entry or "agent_model" in entry):
+                raise OperatorConfigError(
+                    f"routing.roles.{role} uses the retired agent_cli/agent_model role form "
+                    f"(roles now resolve to {{tier, prefer?, independent?}}); {MIGRATE_HINT}")
+
+
 def _validate_routing(raw: Any, meta: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Validate a raw `routing:` mapping (from either `go-policy.yaml` or the
     machine-wide routing file) into
-    `{defaults, roles, tiers, fallback, purpose_tiers, agents, drain}`.
+    `{targets, defaults, roles, tiers, default_tier, fallback, purposes,
+    agents, drain}`.
 
     Returns `None` when `raw` is absent, an empty mapping, or not a mapping at
     all (the last case appends a `_meta.warnings` entry) — callers treat `None`
     as "fall through to the next source" (AC-003/AC-004).
+
+    `targets` is resolved first: `tiers`' cells are only valid when they name
+    a target already declared there, and `default_tier` is only valid when it
+    names a row `tiers` actually resolved.
+
+    `_reject_legacy_routing_keys()` runs first, on the confirmed non-empty raw
+    mapping: a pre-target-selector shape (`agents`/`fallback`/`purpose_tiers`,
+    `drain.agent`/`drain.fallback_agents`, harness-keyed tier cells, or an
+    agent-entry role) raises `OperatorConfigError` rather than being silently
+    warned-and-dropped by the validators below.
     """
     if raw is None:
         return None
@@ -592,12 +830,17 @@ def _validate_routing(raw: Any, meta: Dict[str, Any]) -> Optional[Dict[str, Any]
         return None
     if not raw:
         return None
+    _reject_legacy_routing_keys(raw)
+    targets = _validate_routing_targets(raw.get("targets"), meta)
+    tiers = _validate_routing_tiers(raw.get("tiers"), targets, meta)
     return {
+        "targets": targets,
         "defaults": _validate_routing_defaults(raw.get("defaults"), meta),
-        "roles": _validate_routing_roles(raw.get("roles"), meta),
-        "tiers": _validate_routing_tiers(raw.get("tiers"), meta),
+        "roles": _validate_routing_roles(raw.get("roles"), tiers, targets, meta),
+        "tiers": tiers,
+        "default_tier": _validate_routing_default_tier(raw.get("default_tier"), tiers, meta),
         "fallback": _validate_routing_fallback(raw.get("fallback"), meta),
-        "purpose_tiers": _validate_routing_purpose_tiers(raw.get("purpose_tiers"), meta),
+        "purposes": _validate_routing_purpose_tiers(raw.get("purposes"), meta),
         "agents": _validate_routing_agents(raw.get("agents"), meta),
         "drain": _validate_routing_drain(raw.get("drain"), meta),
     }
@@ -677,87 +920,65 @@ def _resolve_routing(repo: Path, parsed_local: Dict[str, Any], meta: Dict[str, A
     return _validate_routing(mw_raw, meta)
 
 
-def resolve_routing(policy: Dict[str, Any], route: str, risk: str) -> Dict[str, Any]:
-    """Deterministically resolve the effective agent/model/roles/fallback for a
-    `(route, risk)` pair — the single source of truth for `/go` Phase 7
-    (TASK-011), the dashboard (TASK-010), and the run record (TASK-008).
+def resolve_routing(policy: Dict[str, Any], route: str = "", risk: str = "") -> Dict[str, Any]:
+    """Deterministically resolve the effective targets/tiers/roles/purposes/
+    drain configuration — the single source of truth for the selector
+    (`select_cell()`, task 2.1) and dispatch (`tier_for()`, task 4.1).
 
     Args:
         policy: the dict returned by `load_policy()`.
-        route: a classify.py route letter (e.g. "B").
-        risk: a classify.py risk level ("low"/"medium"/"high"/"critical").
+        route, risk: unused (kept for call-site compatibility with the
+            retired route/risk-keyed `routing.defaults` resolution; every
+            caller of `resolve_routing()` is migrated off passing them by
+            the tasks depending on this one).
 
     Returns:
         {
-          "agent_cli": str,              # primary agent CLI
-          "agent_model": Optional[str],  # primary model override, if any
-          "roles": {role: {"agent_cli": str, "agent_model": Optional[str]}},
-                                          # routing.roles, same semantics as
-                                          # --role-agent-map
-          "fallback": [{"agent_cli": str, "agent_model": Optional[str],
-                        "api": bool (optional, True for an opted-in
-                        API/OpenRouter entry)}, ...],  # ordered chain
-          "purpose_tiers": {purpose: tier},  # routing.purpose_tiers, consulted
-                                          # by dispatch.agent_for ahead of
+          "targets": {name: {"harness", "pool", "api_opt_in", "auth"}},
+                                          # routing.targets (task 1.1)
+          "tiers": {row: {target: {"model", "effort"}}},
+                                          # routing.tiers (task 1.2)
+          "roles": {role: {"tier", "prefer", "independent"}},
+                                          # routing.roles
+          "purposes": {purpose: tier},   # routing.purposes, consulted by
+                                          # dispatch.tier_for() ahead of
                                           # complexity to resolve a task's tier
-          "agents": {agent: {"default_model": str}},
-                                          # routing.agents, the per-agent
-                                          # default-model table
-                                          # default_model_for_agent() resolves
-                                          # against (D2/D3); {} when absent
+          "default_tier": Optional[str], # routing.default_tier
           "drain": {"agent": Optional[str], "fallback_agents": [str],
                     "max_workers": int}, # routing.drain, the machine-wide
                                           # drain defaults (D1); {} when absent
         }
 
-    Resolution order for `agent_cli`/`agent_model`:
-      1. `routing.defaults[route][risk]`, if the routing table has a match.
-      2. The flat `policy["agent_cli"]` / `policy["agent_model"]` keys.
-    `fallback` is `routing.fallback` when routing is configured and non-empty,
-    else the single-entry chain built from `policy["fallback_agent_cli"]`.
     Same inputs always produce the same output (REQ-NR002): no randomness, no
     I/O, no clock/env reads beyond what `load_policy()` already resolved.
     """
-    flat_fallback = (
-        [{"agent_cli": policy["fallback_agent_cli"], "agent_model": None}]
-        if policy.get("fallback_agent_cli") else []
-    )
     routing = policy.get("routing")
     if not routing:
         return {
-            "agent_cli": policy.get("agent_cli"),
-            "agent_model": policy.get("agent_model"),
+            "targets": {},
+            "tiers": {},
             "roles": {},
-            "fallback": flat_fallback,
-            "purpose_tiers": {},
-            "agents": {},
+            "purposes": {},
+            "default_tier": None,
             "drain": {},
         }
-    route_map = (routing.get("defaults") or {}).get(route)
-    entry = route_map.get(risk) if isinstance(route_map, dict) else None
     return {
-        "agent_cli": entry["agent_cli"] if entry else policy.get("agent_cli"),
-        "agent_model": entry.get("agent_model") if entry else policy.get("agent_model"),
+        "targets": routing.get("targets") or {},
+        "tiers": routing.get("tiers") or {},
         "roles": routing.get("roles") or {},
-        "fallback": routing.get("fallback") or flat_fallback,
-        "purpose_tiers": routing.get("purpose_tiers") or {},
-        "agents": routing.get("agents") or {},
+        "purposes": routing.get("purposes") or {},
+        "default_tier": routing.get("default_tier"),
         "drain": routing.get("drain") or {},
     }
 
 
-def resolve_tier_map(policy: Dict[str, Any]) -> Dict[Tuple[str, Optional[str]], Dict[str, Any]]:
-    """Resolve `policy["routing"]["tiers"]` into the dispatch-ready
-    `{(complexity, domain): {"agent_cli", "agent_model"}}` mapping consumed by
-    `dispatch.agent_for`'s `tier_map` parameter (TASK-CHG-002).
+def resolve_tier_map(policy: Dict[str, Any]) -> Dict[str, Dict[str, Dict[str, Any]]]:
+    """Resolve `policy["routing"]["tiers"]` into the selector-ready
+    `{row: {target: {"model", "effort"}}}` mapping (task 2.1's `select_cell()`
+    walks one row across its declared targets in preference order).
 
     A pure passthrough of the already-normalized table `_validate_routing_tiers()`
-    built eagerly at `load_policy()` time: both the flat `<tier>-<agent>` form and
-    the nested `tiers.<tier>.<agent>: {model, effort}` form are expanded there into
-    the same `(f"{tier}-{agent}", domain)` tuple keys `dispatch.agent_for`'s
-    `tier_map.get((f"{tier}-{agent}", domain))` lookup expects, so this function's
-    output is identical regardless of which shape a repo declared (D6) --
-    `dispatch.py` itself needs no changes.
+    built eagerly at `load_policy()` time.
 
     Args:
         policy: the dict returned by `load_policy()`.
@@ -774,12 +995,11 @@ def resolve_tier_map(policy: Dict[str, Any]) -> Dict[Tuple[str, Optional[str]], 
 
 
 def _json_safe(obj: Any) -> Any:
-    """Recursively convert `policy["routing"]["tiers"]`'s `(complexity, domain)`
-    tuple keys (built eagerly by `_validate_routing_tiers()`) back into their
-    `"complexity/domain"` (or bare `"complexity"`) string form so `load_policy()`'s
-    return value can be `json.dumps`-ed. Only affects the CLI `--json` display
-    path — `resolve_tier_map()` and every other in-memory consumer still read the
-    tuple-keyed dict produced by `load_policy()` directly, unchanged."""
+    """Recursively convert any tuple dict key to its `"a/b"` (or bare `"a"`)
+    string form so `load_policy()`'s return value can be `json.dumps`-ed.
+    `routing.tiers` is string-keyed by row/target since `_validate_routing_tiers()`'s
+    1.2 rewrite, so this is now a defensive no-op for it specifically; kept
+    generic in case a future validator stores another non-JSON-safe key."""
     if isinstance(obj, dict):
         safe: Dict[Any, Any] = {}
         for key, value in obj.items():

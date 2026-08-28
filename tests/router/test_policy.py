@@ -6,14 +6,31 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 from worktrail.router.policy import (
-    DEFAULTS, OperatorConfigError, _json_safe, _validate_routing_agents,
-    _validate_routing_drain, _validate_routing_purpose_tiers,
-    _validate_routing_tiers, automerge_eligible,
-    automerge_labels, detect_external_automerge, load_policy,
-    merge_method_for_branch, parse_policy_yaml,
-    resolve_post_merge_smoke_cmd, resolve_routing, resolve_tier_map,
+    DEFAULTS, EFFORT_VOCABULARY, OperatorConfigError, _json_safe,
+    _reject_legacy_routing_keys, _validate_routing_agents,
+    _validate_routing_default_tier, _validate_routing_drain,
+    _validate_routing_purpose_tiers, _validate_routing_targets,
+    _validate_routing_tiers, automerge_eligible, automerge_labels,
+    detect_external_automerge, load_policy, merge_method_for_branch,
+    parse_policy_yaml, resolve_post_merge_smoke_cmd, resolve_routing,
+    resolve_tier_map,
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_legacy_machine_wide_routing_file_by_default(monkeypatch):
+    """`tests/conftest.py`'s suite-wide `GO_ROUTING_FILE` fixture seeds a
+    legacy `agents:`-shaped routing file (kept for `default_model_for_agent()`,
+    retired in a later task) -- 1.4 makes that shape a hard
+    `OperatorConfigError`. Point the env var at a nonexistent path by
+    default for every test in this module; a test that wants the
+    machine-wide-file fallback path overrides the same env var itself inside
+    its own body (`_mw_env()`/`_no_mw_env()` below), winning since it patches
+    later than this module-level fixture's setup."""
+    monkeypatch.setenv("GO_ROUTING_FILE", "/nonexistent/worktrail-routing-test/routing.yaml")
 
 
 def _repo_with(policy_text):
@@ -642,13 +659,13 @@ class TestMergeMethodForBranchCli(unittest.TestCase):
 
 
 class TestPolicyJsonCli(unittest.TestCase):
-    """--json on the raw policy dict: `routing.tiers` is stored with
-    `(complexity, domain)` tuple keys (see `Routing.test_validate_routing_tiers_*`
-    below) for the in-memory `resolve_tier_map()` contract, but `json.dumps`
-    cannot serialize tuple keys. Any repo with a `routing.tiers` block used to
-    crash `worktrail-policy --repo . --json` (Phase 4 of every `/go` invocation
-    against it) with `TypeError: keys must be str, int, float, bool or None, not
-    tuple`."""
+    """--json on the raw policy dict: `routing.tiers` used to be stored with
+    `(complexity, domain)` tuple keys, which `json.dumps` cannot serialize.
+    `_validate_routing_tiers()`'s 1.2 rewrite made `routing.tiers` string-keyed
+    (`{row: {target: cell}}`), but the CLI round-trip is still worth guarding
+    against a future non-JSON-safe key (`_json_safe()` stays generic for that
+    reason) -- `worktrail-policy --repo . --json` (Phase 4 of every `/go`
+    invocation) must never crash on a repo's `routing.tiers` block."""
 
     def _run(self, repo):
         import json
@@ -659,26 +676,40 @@ class TestPolicyJsonCli(unittest.TestCase):
         out = subprocess.run(cmd, capture_output=True, text=True, check=True)
         return json.loads(out.stdout)
 
-    def test_json_with_tiers_domain_does_not_crash(self):
-        repo = _repo_with("routing:\n  tiers:\n    hard/backend:\n      agent: codex\n")
+    def test_json_with_tiers_does_not_crash(self):
+        repo = _repo_with(
+            "routing:\n"
+            "  targets:\n"
+            "    codex-main:\n"
+            "      harness: codex\n"
+            "      pool: subscription\n"
+            "  tiers:\n"
+            "    hard:\n"
+            "      codex-main:\n"
+            "        model: gpt-5\n")
         result = self._run(repo)
         self.assertEqual(
             result["routing"]["tiers"],
-            {"hard/backend": {"agent_cli": "codex", "agent_model": None, "effort": None}})
-
-    def test_json_with_tiers_no_domain_does_not_crash(self):
-        repo = _repo_with("routing:\n  tiers:\n    easy:\n      agent: claude\n")
-        result = self._run(repo)
-        self.assertEqual(
-            result["routing"]["tiers"],
-            {"easy": {"agent_cli": "claude", "agent_model": None, "effort": None}})
+            {"hard": {"codex-main": {"model": "gpt-5", "effort": None}}})
 
     def test_json_without_tiers_unaffected(self):
-        repo = _repo_with("routing:\n  roles:\n    reviewer:\n      agent_cli: codex\n")
+        repo = _repo_with(
+            "routing:\n"
+            "  targets:\n"
+            "    codex-main:\n"
+            "      harness: codex\n"
+            "      pool: subscription\n"
+            "  tiers:\n"
+            "    t1-deep:\n"
+            "      codex-main:\n"
+            "        model: gpt-5\n"
+            "  roles:\n"
+            "    reviewer:\n"
+            "      tier: t1-deep\n")
         result = self._run(repo)
         self.assertEqual(
             result["routing"]["roles"],
-            {"reviewer": {"agent_cli": "codex", "agent_model": None, "effort": None}})
+            {"reviewer": {"tier": "t1-deep", "prefer": None, "independent": False}})
 
 
 class TestPolicyJsonSafetyMatrix(unittest.TestCase):
@@ -687,8 +718,8 @@ class TestPolicyJsonSafetyMatrix(unittest.TestCase):
     must never raise for any valid `routing.*` configuration, so a future
     validator that stores another non-JSON-safe key (following the
     `routing.tiers` precedent) is caught here instead of live during a `/go`
-    Phase 4 policy load. Covers `defaults`/`roles`/`tiers`/`fallback`, each
-    with and without a domain/model/effort segment present."""
+    Phase 4 policy load. Covers `defaults`/`roles`/`tiers`, each with and
+    without a model/effort segment present."""
 
     POLICY_YAMLS = {
         "empty_routing_block": "routing: {}\n",
@@ -702,26 +733,40 @@ class TestPolicyJsonSafetyMatrix(unittest.TestCase):
             "        effort: high\n"),
         "roles_only": (
             "routing:\n"
+            "  targets:\n"
+            "    codex-main:\n"
+            "      harness: codex\n"
+            "      pool: subscription\n"
+            "  tiers:\n"
+            "    t1-deep:\n"
+            "      codex-main:\n"
+            "        model: gpt-5\n"
             "  roles:\n"
             "    review:\n"
-            "      agent_cli: codex\n"),
-        "tiers_with_domain": (
+            "      tier: t1-deep\n"
+            "      prefer: codex-main\n"
+            "      independent: true\n"),
+        "tiers_one_target": (
             "routing:\n"
+            "  targets:\n"
+            "    codex-main:\n"
+            "      harness: codex\n"
+            "      pool: subscription\n"
             "  tiers:\n"
-            "    hard/backend:\n"
-            "      agent: codex\n"
-            "      effort: xhigh\n"),
-        "tiers_without_domain": (
+            "    hard:\n"
+            "      codex-main:\n"
+            "        model: gpt-5\n"
+            "        effort: xhigh\n"),
+        "tiers_no_effort": (
             "routing:\n"
+            "  targets:\n"
+            "    claude-main:\n"
+            "      harness: claude\n"
+            "      pool: subscription\n"
             "  tiers:\n"
             "    easy:\n"
-            "      agent: claude\n"),
-        "fallback_only": (
-            "routing:\n"
-            "  fallback:\n"
-            "    - codex\n"
-            "    - agent_cli: opencode\n"
-            "      agent_model: deepseek-v4-flash\n"),
+            "      claude-main:\n"
+            "        model: sonnet\n"),
         "all_four_combined": (
             "routing:\n"
             "  defaults:\n"
@@ -730,27 +775,40 @@ class TestPolicyJsonSafetyMatrix(unittest.TestCase):
             "        agent_cli: claude\n"
             "  roles:\n"
             "    review:\n"
-            "      agent_cli: claude\n"
-            "      agent_model: opus\n"
+            "      tier: t1-deep\n"
+            "      prefer: claude-main\n"
+            "  targets:\n"
+            "    codex-main:\n"
+            "      harness: codex\n"
+            "      pool: subscription\n"
+            "    claude-main:\n"
+            "      harness: claude\n"
+            "      pool: subscription\n"
             "  tiers:\n"
-            "    t1-deep/frontend:\n"
-            "      agent: codex\n"
-            "      agent_model: gpt-5.6-sol\n"
+            "    t1-deep:\n"
+            "      codex-main:\n"
+            "        model: gpt-5.6-sol\n"
             "    t4-trivia:\n"
-            "      agent: claude\n"
-            "  fallback:\n"
-            "    - claude\n"
-            "    - codex\n"
-            "    - opencode\n"),
-        "multiple_tiers_mixed_domains": (
+            "      claude-main:\n"
+            "        model: haiku\n"),
+        "multiple_tiers_multi_target": (
             "routing:\n"
+            "  targets:\n"
+            "    claude-main:\n"
+            "      harness: claude\n"
+            "      pool: subscription\n"
+            "    codex-main:\n"
+            "      harness: codex\n"
+            "      pool: subscription\n"
             "  tiers:\n"
             "    trivial:\n"
-            "      agent: claude\n"
-            "    trivial/frontend:\n"
-            "      agent: codex\n"
-            "    standard/backend:\n"
-            "      agent: opencode\n"),
+            "      claude-main:\n"
+            "        model: haiku\n"
+            "      codex-main:\n"
+            "        model: gpt-5-mini\n"
+            "    standard:\n"
+            "      codex-main:\n"
+            "        model: gpt-5\n"),
     }
 
     def test_json_dumps_never_raises_and_round_trips(self):
@@ -765,8 +823,7 @@ class TestPolicyJsonSafetyMatrix(unittest.TestCase):
                 except TypeError as exc:
                     self.fail(f"{name}: json.dumps raised on _json_safe(load_policy(...)): {exc}")
                 # Round-trip: re-loading the dump must not raise either, and
-                # every routing.tiers key comes back as its "complexity[/domain]"
-                # string form (the tuple keys are gone after _json_safe).
+                # every routing.tiers key comes back as a plain string.
                 reloaded = json.loads(dumped)
                 for key in (reloaded.get("routing") or {}).get("tiers", {}):
                     self.assertIsInstance(key, str)
@@ -775,7 +832,12 @@ class TestPolicyJsonSafetyMatrix(unittest.TestCase):
         # A policy with no routing.tiers has nothing for _json_safe to convert;
         # it must still return a plain, json.dumps-able structure unchanged.
         import json
-        repo = _repo_with("routing:\n  roles:\n    review:\n      agent_cli: codex\n")
+        repo = _repo_with(
+            "routing:\n"
+            "  defaults:\n"
+            "    A:\n"
+            "      low:\n"
+            "        agent_cli: codex\n")
         pol = load_policy(repo)
         self.assertEqual(_json_safe(pol), pol)
         json.dumps(_json_safe(pol))  # must not raise
@@ -805,24 +867,23 @@ class Routing(unittest.TestCase):
             "        agent_model: sonnet\n"
             "  roles:\n"
             "    reviewer:\n"
-            "      agent_cli: codex\n"
+            "      tier: hard\n"
+            "  targets:\n"
+            "    codex-main:\n"
+            "      harness: codex\n"
+            "      pool: subscription\n"
             "  tiers:\n"
-            "    hard/backend:\n"
-            "      agent: codex\n"
-            "  fallback:\n"
-            "    - codex\n"
-            "    - opencode\n")
+            "    hard:\n"
+            "      codex-main:\n"
+            "        model: gpt-5\n")
         with self._no_mw_env():
             pol = load_policy(repo)
         self.assertEqual(pol["routing"]["defaults"],
                          {"A": {"low": {"agent_cli": "claude", "agent_model": "sonnet", "effort": None}}})
         self.assertEqual(pol["routing"]["roles"],
-                         {"reviewer": {"agent_cli": "codex", "agent_model": None, "effort": None}})
+                         {"reviewer": {"tier": "hard", "prefer": None, "independent": False}})
         self.assertEqual(pol["routing"]["tiers"],
-                         {("hard", "backend"): {"agent_cli": "codex", "agent_model": None, "effort": None}})
-        self.assertEqual(pol["routing"]["fallback"],
-                         [{"agent_cli": "codex", "agent_model": None, "effort": None},
-                          {"agent_cli": "opencode", "agent_model": None, "effort": None}])
+                         {"hard": {"codex-main": {"model": "gpt-5", "effort": None}}})
 
     def test_effort_field_validates_and_resolves(self):
         # AC-CHG-003: an agent entry with a string `effort` validates and
@@ -843,25 +904,35 @@ class Routing(unittest.TestCase):
     def test_effort_field_absent_resolves_to_none(self):
         # AC-CHG-003: an agent entry with no `effort` key resolves with
         # `effort: None`, not a missing key.
-        repo = _repo_with("routing:\n  roles:\n    reviewer:\n      agent_cli: codex\n")
+        repo = _repo_with(
+            "routing:\n"
+            "  defaults:\n"
+            "    A:\n"
+            "      low:\n"
+            "        agent_cli: codex\n")
         with self._no_mw_env():
             pol = load_policy(repo)
-        self.assertEqual(pol["routing"]["roles"],
-                         {"reviewer": {"agent_cli": "codex", "agent_model": None, "effort": None}})
+        self.assertEqual(pol["routing"]["defaults"],
+                         {"A": {"low": {"agent_cli": "codex", "agent_model": None, "effort": None}}})
 
     def test_effort_field_invalid_type_dropped_with_warning(self):
         # AC-CHG-003: a non-string `effort` is dropped (resolves to None) with
         # a warning, matching the existing agent_model validation pattern.
         repo = _repo_with(
             "routing:\n"
+            "  targets:\n"
+            "    codex-main:\n"
+            "      harness: codex\n"
+            "      pool: subscription\n"
             "  tiers:\n"
-            "    hard/backend:\n"
-            "      agent: codex\n"
-            "      effort: 123\n")
+            "    hard:\n"
+            "      codex-main:\n"
+            "        model: gpt-5\n"
+            "        effort: 123\n")
         with self._no_mw_env():
             pol = load_policy(repo)
         self.assertEqual(pol["routing"]["tiers"],
-                         {("hard", "backend"): {"agent_cli": "codex", "agent_model": None, "effort": None}})
+                         {"hard": {"codex-main": {"model": "gpt-5", "effort": None}}})
         self.assertTrue(any("effort must be a string" in w for w in pol["_meta"]["warnings"]))
 
     def test_invalid_agent_literal_in_defaults_dropped(self):
@@ -877,29 +948,122 @@ class Routing(unittest.TestCase):
         self.assertEqual(pol["routing"]["defaults"], {})
         self.assertTrue(any("routing.defaults.A.low" in w for w in pol["_meta"]["warnings"]))
 
-    def test_invalid_agent_literal_in_roles_dropped(self):
-        # AC-002
+    def test_non_mapping_role_entry_dropped(self):
+        # AC-002 (1.3: roles are now {tier, prefer?, independent?} mappings)
         repo = _repo_with("routing:\n  roles:\n    reviewer: bogus\n")
         with self._no_mw_env():
             pol = load_policy(repo)
         self.assertEqual(pol["routing"]["roles"], {})
         self.assertTrue(any("routing.roles.reviewer" in w for w in pol["_meta"]["warnings"]))
 
-    def test_invalid_agent_literal_in_tiers_dropped(self):
-        # AC-002, AC-CHG-006
-        repo = _repo_with("routing:\n  tiers:\n    hard/backend:\n      agent: bogus\n")
+    def test_role_undeclared_tier_dropped(self):
+        # 1.3: tier must name a declared routing.tiers row.
+        repo = _repo_with("routing:\n  roles:\n    reviewer:\n      tier: bogus-tier\n")
+        with self._no_mw_env():
+            pol = load_policy(repo)
+        self.assertEqual(pol["routing"]["roles"], {})
+        self.assertTrue(any("routing.roles.reviewer.tier" in w and "bogus-tier" in w
+                            for w in pol["_meta"]["warnings"]))
+
+    def test_role_undeclared_prefer_dropped(self):
+        # 1.3: prefer must name a declared routing.targets entry.
+        repo = _repo_with(
+            "routing:\n"
+            "  targets:\n"
+            "    codex-main:\n"
+            "      harness: codex\n"
+            "      pool: subscription\n"
+            "  tiers:\n"
+            "    hard:\n"
+            "      codex-main:\n"
+            "        model: gpt-5\n"
+            "  roles:\n"
+            "    reviewer:\n"
+            "      tier: hard\n"
+            "      prefer: bogus-target\n")
+        with self._no_mw_env():
+            pol = load_policy(repo)
+        self.assertEqual(pol["routing"]["roles"], {})
+        self.assertTrue(any("routing.roles.reviewer.prefer" in w and "bogus-target" in w
+                            for w in pol["_meta"]["warnings"]))
+
+    def test_role_valid_tier_and_prefer_resolves(self):
+        repo = _repo_with(
+            "routing:\n"
+            "  targets:\n"
+            "    codex-main:\n"
+            "      harness: codex\n"
+            "      pool: subscription\n"
+            "  tiers:\n"
+            "    hard:\n"
+            "      codex-main:\n"
+            "        model: gpt-5\n"
+            "  roles:\n"
+            "    reviewer:\n"
+            "      tier: hard\n"
+            "      prefer: codex-main\n"
+            "      independent: true\n")
+        with self._no_mw_env():
+            pol = load_policy(repo)
+        self.assertEqual(pol["routing"]["roles"],
+                         {"reviewer": {"tier": "hard", "prefer": "codex-main", "independent": True}})
+        self.assertEqual(pol["_meta"]["warnings"], [])
+
+    def test_role_independent_defaults_to_false(self):
+        repo = _repo_with(
+            "routing:\n"
+            "  targets:\n"
+            "    codex-main:\n"
+            "      harness: codex\n"
+            "      pool: subscription\n"
+            "  tiers:\n"
+            "    hard:\n"
+            "      codex-main:\n"
+            "        model: gpt-5\n"
+            "  roles:\n"
+            "    reviewer:\n"
+            "      tier: hard\n")
+        with self._no_mw_env():
+            pol = load_policy(repo)
+        self.assertEqual(pol["routing"]["roles"],
+                         {"reviewer": {"tier": "hard", "prefer": None, "independent": False}})
+
+    def test_role_non_bool_independent_dropped_to_false(self):
+        repo = _repo_with(
+            "routing:\n"
+            "  targets:\n"
+            "    codex-main:\n"
+            "      harness: codex\n"
+            "      pool: subscription\n"
+            "  tiers:\n"
+            "    hard:\n"
+            "      codex-main:\n"
+            "        model: gpt-5\n"
+            "  roles:\n"
+            "    reviewer:\n"
+            "      tier: hard\n"
+            "      independent: yes-please\n")
+        with self._no_mw_env():
+            pol = load_policy(repo)
+        self.assertEqual(pol["routing"]["roles"],
+                         {"reviewer": {"tier": "hard", "prefer": None, "independent": False}})
+        self.assertTrue(any("routing.roles.reviewer.independent" in w
+                            for w in pol["_meta"]["warnings"]))
+
+    def test_role_missing_tier_dropped(self):
+        repo = _repo_with("routing:\n  roles:\n    reviewer:\n      prefer: codex-main\n")
+        with self._no_mw_env():
+            pol = load_policy(repo)
+        self.assertEqual(pol["routing"]["roles"], {})
+        self.assertTrue(any("routing.roles.reviewer.tier" in w for w in pol["_meta"]["warnings"]))
+
+    def test_undeclared_target_in_tiers_dropped(self):
+        # AC-002, AC-CHG-006 (1.2: cells are now keyed by declared target)
+        repo = _repo_with("routing:\n  tiers:\n    hard:\n      bogus-target:\n        model: gpt-5\n")
         with self._no_mw_env():
             pol = load_policy(repo)
         self.assertEqual(pol["routing"]["tiers"], {})
-        self.assertTrue(any("routing.tiers" in w for w in pol["_meta"]["warnings"]))
-
-    def test_invalid_agent_literal_in_fallback_dropped(self):
-        # AC-002
-        repo = _repo_with("routing:\n  fallback:\n    - bogus\n")
-        with self._no_mw_env():
-            pol = load_policy(repo)
-        self.assertEqual(pol["routing"]["fallback"], [])
-        self.assertTrue(any("routing.fallback" in w and "bogus" in w
+        self.assertTrue(any("routing.tiers" in w and "undeclared target" in w
                             for w in pol["_meta"]["warnings"]))
 
     def test_no_repo_routing_but_machine_wide_file_present(self):
@@ -933,163 +1097,303 @@ class Routing(unittest.TestCase):
         self.assertEqual(pol["agent_model"], "gpt-5.4-mini")
         self.assertEqual(pol["fallback_agent_cli"], "opencode")
 
-    def test_fallback_api_literal_excluded_without_opt_in(self):
-        # AC-005
-        repo = _repo_with("routing:\n  fallback:\n    - codex\n    - openrouter\n")
+    def test_validate_routing_tiers_cell_keyed_by_declared_target(self):
+        # 1.2: a row's cell is keyed by declared target name.
+        meta = {"warnings": []}
+        targets = {"codex-main": {"harness": "codex", "pool": "subscription",
+                                   "api_opt_in": False, "auth": None}}
+        resolved = _validate_routing_tiers(
+            {"hard": {"codex-main": {"model": "gpt-5"}}}, targets, meta)
+        self.assertEqual(resolved, {"hard": {"codex-main": {"model": "gpt-5", "effort": None}}})
+        self.assertEqual(meta["warnings"], [])
+
+    def test_validate_routing_tiers_undeclared_target_dropped_with_warning(self):
+        meta = {"warnings": []}
+        targets = {"codex-main": {"harness": "codex", "pool": "subscription",
+                                   "api_opt_in": False, "auth": None}}
+        resolved = _validate_routing_tiers(
+            {"hard": {"bogus-target": {"model": "gpt-5"}}}, targets, meta)
+        self.assertEqual(resolved, {})
+        self.assertTrue(any("routing.tiers.hard" in w and "bogus-target" in w
+                            and "undeclared target" in w for w in meta["warnings"]))
+
+    def test_validate_routing_tiers_undeclared_target_dropped_others_kept(self):
+        meta = {"warnings": []}
+        targets = {"claude-main": {"harness": "claude", "pool": "subscription",
+                                    "api_opt_in": False, "auth": None}}
+        resolved = _validate_routing_tiers(
+            {"hard": {"bogus-target": {"model": "gpt-5"}, "claude-main": {"model": "sonnet"}}},
+            targets, meta)
+        self.assertEqual(resolved, {"hard": {"claude-main": {"model": "sonnet", "effort": None}}})
+        self.assertTrue(any("bogus-target" in w for w in meta["warnings"]))
+
+    def test_validate_routing_tiers_missing_cell_is_not_an_error(self):
+        # A target simply absent from a row's cells means it can't serve that
+        # tier -- not a warning-worthy condition (the requirement this task
+        # implements).
+        meta = {"warnings": []}
+        targets = {"claude-main": {"harness": "claude", "pool": "subscription",
+                                    "api_opt_in": False, "auth": None},
+                   "codex-main": {"harness": "codex", "pool": "subscription",
+                                  "api_opt_in": False, "auth": None}}
+        resolved = _validate_routing_tiers(
+            {"hard": {"codex-main": {"model": "gpt-5"}}}, targets, meta)
+        self.assertNotIn("claude-main", resolved["hard"])
+        self.assertEqual(meta["warnings"], [])
+
+    def test_validate_routing_tiers_missing_model_dropped_with_warning(self):
+        meta = {"warnings": []}
+        targets = {"codex-main": {"harness": "codex", "pool": "subscription",
+                                   "api_opt_in": False, "auth": None}}
+        resolved = _validate_routing_tiers({"hard": {"codex-main": {}}}, targets, meta)
+        self.assertEqual(resolved, {})
+        self.assertTrue(any("routing.tiers.hard.codex-main.model" in w for w in meta["warnings"]))
+
+    def test_validate_routing_tiers_non_mapping_cell_dropped(self):
+        meta = {"warnings": []}
+        targets = {"codex-main": {"harness": "codex", "pool": "subscription",
+                                   "api_opt_in": False, "auth": None}}
+        resolved = _validate_routing_tiers({"hard": {"codex-main": "gpt-5"}}, targets, meta)
+        self.assertEqual(resolved, {})
+        self.assertTrue(any("routing.tiers.hard.codex-main must be a mapping" in w
+                            for w in meta["warnings"]))
+
+    def test_validate_routing_tiers_non_mapping_row_dropped(self):
+        meta = {"warnings": []}
+        resolved = _validate_routing_tiers({"hard": "codex-main"}, {}, meta)
+        self.assertEqual(resolved, {})
+        self.assertTrue(any("routing.tiers.hard must be a mapping" in w for w in meta["warnings"]))
+
+    def test_validate_routing_tiers_absent_resolves_to_empty(self):
+        meta = {"warnings": []}
+        self.assertEqual(_validate_routing_tiers(None, {}, meta), {})
+        self.assertEqual(meta["warnings"], [])
+
+    def test_validate_routing_tiers_non_mapping_top_level_warns_and_ignored(self):
+        meta = {"warnings": []}
+        resolved = _validate_routing_tiers(["hard"], {}, meta)
+        self.assertEqual(resolved, {})
+        self.assertTrue(any("routing.tiers must be a mapping" in w for w in meta["warnings"]))
+
+    def test_effort_vocabulary_shape(self):
+        # 1.5: EFFORT_VOCABULARY covers every SUPPORTED_AGENTS harness;
+        # claude/codex declare their reasoning-effort literals, opencode
+        # declares none (its `effort` maps to a model-variant flag, not a
+        # reasoning-effort level).
+        self.assertEqual(set(EFFORT_VOCABULARY), {"claude", "codex", "opencode"})
+        self.assertIn("high", EFFORT_VOCABULARY["claude"])
+        self.assertIn("high", EFFORT_VOCABULARY["codex"])
+        self.assertIsNone(EFFORT_VOCABULARY["opencode"])
+
+    def test_validate_routing_tiers_effort_in_vocabulary_no_warning(self):
+        meta = {"warnings": []}
+        targets = {"claude-main": {"harness": "claude", "pool": "subscription",
+                                    "api_opt_in": False, "auth": None}}
+        resolved = _validate_routing_tiers(
+            {"hard": {"claude-main": {"model": "opus", "effort": "high"}}}, targets, meta)
+        self.assertEqual(
+            resolved, {"hard": {"claude-main": {"model": "opus", "effort": "high"}}})
+        self.assertEqual(meta["warnings"], [])
+
+    def test_validate_routing_tiers_effort_outside_vocabulary_warns_but_kept(self):
+        meta = {"warnings": []}
+        targets = {"claude-main": {"harness": "claude", "pool": "subscription",
+                                    "api_opt_in": False, "auth": None}}
+        resolved = _validate_routing_tiers(
+            {"hard": {"claude-main": {"model": "opus", "effort": "xhigh"}}}, targets, meta)
+        # kept, not dropped -- an unsupported effort literal doesn't make the
+        # target unusable for the tier.
+        self.assertEqual(
+            resolved, {"hard": {"claude-main": {"model": "opus", "effort": "xhigh"}}})
+        self.assertTrue(any(
+            "routing.tiers.hard.claude-main.effort" in w and "xhigh" in w
+            and "claude" in w for w in meta["warnings"]))
+
+    def test_validate_routing_tiers_codex_effort_outside_vocabulary_warns(self):
+        meta = {"warnings": []}
+        targets = {"codex-main": {"harness": "codex", "pool": "subscription",
+                                   "api_opt_in": False, "auth": None}}
+        resolved = _validate_routing_tiers(
+            {"hard": {"codex-main": {"model": "gpt-5", "effort": "extreme"}}}, targets, meta)
+        self.assertEqual(
+            resolved, {"hard": {"codex-main": {"model": "gpt-5", "effort": "extreme"}}})
+        self.assertTrue(any(
+            "routing.tiers.hard.codex-main.effort" in w and "extreme" in w
+            and "codex" in w for w in meta["warnings"]))
+
+    def test_validate_routing_tiers_opencode_effort_always_ignored_by_harness(self):
+        # opencode has no effort vocabulary at all -- any declared effort
+        # warns "ignored by harness", even a literal that's valid elsewhere.
+        meta = {"warnings": []}
+        targets = {"opencode-main": {"harness": "opencode", "pool": "subscription",
+                                      "api_opt_in": False, "auth": None}}
+        resolved = _validate_routing_tiers(
+            {"hard": {"opencode-main": {"model": "big-model", "effort": "high"}}}, targets, meta)
+        self.assertEqual(
+            resolved, {"hard": {"opencode-main": {"model": "big-model", "effort": "high"}}})
+        self.assertTrue(any(
+            "routing.tiers.hard.opencode-main.effort" in w and "ignored by harness" in w
+            for w in meta["warnings"]))
+
+    def test_validate_routing_tiers_no_effort_no_vocabulary_warning(self):
+        meta = {"warnings": []}
+        targets = {"opencode-main": {"harness": "opencode", "pool": "subscription",
+                                      "api_opt_in": False, "auth": None}}
+        resolved = _validate_routing_tiers(
+            {"hard": {"opencode-main": {"model": "big-model"}}}, targets, meta)
+        self.assertEqual(
+            resolved, {"hard": {"opencode-main": {"model": "big-model", "effort": None}}})
+        self.assertEqual(meta["warnings"], [])
+
+    def test_load_policy_effort_outside_vocabulary_warns(self):
+        repo = _repo_with(
+            "routing:\n"
+            "  targets:\n"
+            "    opencode-main:\n"
+            "      harness: opencode\n"
+            "      pool: subscription\n"
+            "  tiers:\n"
+            "    hard:\n"
+            "      opencode-main:\n"
+            "        model: big-model\n"
+            "        effort: high\n")
         with self._no_mw_env():
             pol = load_policy(repo)
-        self.assertEqual(pol["routing"]["fallback"], [{"agent_cli": "codex", "agent_model": None, "effort": None}])
-        self.assertTrue(any("openrouter" in w and "excluded" in w
+        self.assertEqual(
+            pol["routing"]["tiers"],
+            {"hard": {"opencode-main": {"model": "big-model", "effort": "high"}}})
+        self.assertTrue(any(
+            "ignored by harness" in w for w in pol["_meta"]["warnings"]))
+
+    def test_load_policy_undeclared_target_in_tiers_reports_which_row(self):
+        repo = _repo_with(
+            "routing:\n"
+            "  targets:\n"
+            "    codex-main:\n"
+            "      harness: codex\n"
+            "      pool: subscription\n"
+            "  tiers:\n"
+            "    hard:\n"
+            "      claude-main:\n"
+            "        model: opus\n")
+        with self._no_mw_env():
+            pol = load_policy(repo)
+        self.assertEqual(pol["routing"]["tiers"], {})
+        self.assertTrue(any("routing.tiers.hard" in w and "claude-main" in w
                             for w in pol["_meta"]["warnings"]))
 
-    def test_fallback_api_literal_included_with_opt_in(self):
-        # AC-005
+    def test_load_policy_multiple_targets_per_row_resolve(self):
         repo = _repo_with(
             "routing:\n"
-            "  fallback:\n"
-            "    - codex\n"
-            "    - agent_cli: openrouter\n"
-            "      api_opt_in: true\n")
+            "  targets:\n"
+            "    claude-main:\n"
+            "      harness: claude\n"
+            "      pool: subscription\n"
+            "    codex-main:\n"
+            "      harness: codex\n"
+            "      pool: subscription\n"
+            "  tiers:\n"
+            "    t1-deep:\n"
+            "      claude-main:\n"
+            "        model: opus\n"
+            "        effort: high\n"
+            "      codex-main:\n"
+            "        model: gpt-5\n")
         with self._no_mw_env():
             pol = load_policy(repo)
-        self.assertEqual(pol["routing"]["fallback"],
-                         [{"agent_cli": "codex", "agent_model": None, "effort": None},
-                          {"agent_cli": "openrouter", "agent_model": None, "effort": None, "api": True}])
+        self.assertEqual(pol["routing"]["tiers"],
+                         {"t1-deep": {"claude-main": {"model": "opus", "effort": "high"},
+                                      "codex-main": {"model": "gpt-5", "effort": None}}})
+        self.assertEqual(pol["_meta"]["warnings"], [])
 
-    def test_validate_routing_tiers_complexity_and_domain(self):
-        # AC-CHG-004. The flat `<complexity>/<domain>` form itself still
-        # resolves correctly -- task 2.2 (consolidate-operator-config-into-
-        # routing) adds a deprecation warning on top, asserted separately.
+    def test_validate_routing_default_tier_names_declared_row(self):
         meta = {"warnings": []}
-        resolved = _validate_routing_tiers(
-            {"hard/backend": {"agent": "codex", "model": "gpt-5"}}, meta)
-        self.assertEqual(resolved,
-                         {("hard", "backend"): {"agent_cli": "codex", "agent_model": "gpt-5", "effort": None}})
-        self.assertEqual(meta["warnings"], [
-            "routing.tiers.hard/backend: flat form is deprecated -- use the "
-            "nested tiers.hard.<agent> form instead",
-        ])
+        tiers = {"t2-build": {"codex-main": {"model": "gpt-5", "effort": None}}}
+        self.assertEqual(_validate_routing_default_tier("t2-build", tiers, meta), "t2-build")
+        self.assertEqual(meta["warnings"], [])
 
-    def test_validate_routing_tiers_no_domain_yields_none(self):
-        # AC-CHG-005
+    def test_validate_routing_default_tier_absent_resolves_to_none(self):
         meta = {"warnings": []}
-        resolved = _validate_routing_tiers({"easy": {"agent": "claude"}}, meta)
-        self.assertEqual(resolved, {("easy", None): {"agent_cli": "claude", "agent_model": None, "effort": None}})
+        self.assertIsNone(_validate_routing_default_tier(None, {}, meta))
+        self.assertEqual(meta["warnings"], [])
 
-    def test_validate_routing_tiers_invalid_agent_dropped_others_kept(self):
-        # AC-CHG-006
+    def test_validate_routing_default_tier_undeclared_row_dropped_with_warning(self):
         meta = {"warnings": []}
-        resolved = _validate_routing_tiers(
-            {"hard/backend": {"agent": "bogus"},
-             "easy": {"agent": "claude"}}, meta)
-        self.assertEqual(resolved, {("easy", None): {"agent_cli": "claude", "agent_model": None, "effort": None}})
-        self.assertTrue(any("routing.tiers.hard/backend" in w for w in meta["warnings"]))
+        self.assertIsNone(_validate_routing_default_tier("bogus-row", {"t2-build": {}}, meta))
+        self.assertTrue(any("routing.default_tier" in w and "bogus-row" in w
+                            for w in meta["warnings"]))
 
-    def test_flat_and_nested_tiers_forms_byte_identical(self):
-        # 2.4 (D6): the flat `<tier>-<agent>[/<domain>]` form and the nested
-        # `tiers.<tier>[/<domain>].<agent>: {model, effort}` form, declaring
-        # the same tier/agent/domain/model/effort, resolve to the exact same
-        # tier_map entry.
-        flat_repo = _repo_with(
-            "routing:\n"
-            "  tiers:\n"
-            "    hard-codex/backend:\n"
-            "      agent: codex\n"
-            "      model: gpt-5\n"
-            "      effort: high\n")
-        nested_repo = _repo_with(
-            "routing:\n"
-            "  tiers:\n"
-            "    hard/backend:\n"
-            "      codex:\n"
-            "        model: gpt-5\n"
-            "        effort: high\n")
-        with self._no_mw_env():
-            flat_pol = load_policy(flat_repo)
-            nested_pol = load_policy(nested_repo)
-        expected = {("hard-codex", "backend"):
-                    {"agent_cli": "codex", "agent_model": "gpt-5", "effort": "high"}}
-        self.assertEqual(resolve_tier_map(flat_pol), expected)
-        self.assertEqual(resolve_tier_map(nested_pol), expected)
-        self.assertEqual(resolve_tier_map(flat_pol), resolve_tier_map(nested_pol))
+    def test_validate_routing_default_tier_non_string_dropped_with_warning(self):
+        meta = {"warnings": []}
+        self.assertIsNone(_validate_routing_default_tier(3, {"t2-build": {}}, meta))
+        self.assertTrue(any("routing.default_tier must be a string" in w for w in meta["warnings"]))
 
-    def test_flat_and_nested_tiers_forms_byte_identical_no_domain(self):
-        # 2.4 (D6): same as above, without a domain component.
-        flat_repo = _repo_with(
-            "routing:\n"
-            "  tiers:\n"
-            "    easy-claude:\n"
-            "      agent: claude\n")
-        nested_repo = _repo_with(
-            "routing:\n"
-            "  tiers:\n"
-            "    easy:\n"
-            "      claude: {}\n")
-        with self._no_mw_env():
-            flat_pol = load_policy(flat_repo)
-            nested_pol = load_policy(nested_repo)
-        expected = {("easy-claude", None):
-                    {"agent_cli": "claude", "agent_model": None, "effort": None}}
-        self.assertEqual(resolve_tier_map(flat_pol), expected)
-        self.assertEqual(resolve_tier_map(nested_pol), expected)
-
-    def test_nested_tiers_wins_over_flat_for_same_tier_agent(self):
-        # 2.4 (D6): nested wins when both declare the same tier/agent,
-        # regardless of raw YAML declaration order (resolved in two passes:
-        # all flat keys, then all nested keys).
+    def test_load_policy_default_tier_names_declared_row_resolves(self):
         repo = _repo_with(
             "routing:\n"
+            "  default_tier: t2-build\n"
+            "  targets:\n"
+            "    codex-main:\n"
+            "      harness: codex\n"
+            "      pool: subscription\n"
             "  tiers:\n"
-            "    hard-codex:\n"
-            "      agent: codex\n"
-            "      model: gpt-5\n"
-            "    hard:\n"
-            "      codex:\n"
-            "        model: gpt-5.4\n"
-            "        effort: high\n")
+            "    t2-build:\n"
+            "      codex-main:\n"
+            "        model: gpt-5\n")
         with self._no_mw_env():
             pol = load_policy(repo)
-        self.assertEqual(resolve_tier_map(pol),
-                         {("hard-codex", None):
-                          {"agent_cli": "codex", "agent_model": "gpt-5.4", "effort": "high"}})
+        self.assertEqual(pol["routing"]["default_tier"], "t2-build")
+        self.assertEqual(pol["_meta"]["warnings"], [])
 
-    def test_nested_tiers_wins_over_flat_reverse_declaration_order(self):
-        # 2.4: nested wins even when the nested key is declared before the
-        # flat key in raw YAML.
+    def test_load_policy_default_tier_undeclared_row_dropped_with_warning(self):
         repo = _repo_with(
             "routing:\n"
+            "  default_tier: bogus-row\n"
+            "  targets:\n"
+            "    codex-main:\n"
+            "      harness: codex\n"
+            "      pool: subscription\n"
             "  tiers:\n"
-            "    hard:\n"
-            "      codex:\n"
-            "        model: gpt-5.4\n"
-            "    hard-codex:\n"
-            "      agent: codex\n"
-            "      model: gpt-5\n")
+            "    t2-build:\n"
+            "      codex-main:\n"
+            "        model: gpt-5\n")
         with self._no_mw_env():
             pol = load_policy(repo)
-        self.assertEqual(resolve_tier_map(pol),
-                         {("hard-codex", None):
-                          {"agent_cli": "codex", "agent_model": "gpt-5.4", "effort": None}})
+        self.assertIsNone(pol["routing"]["default_tier"])
+        self.assertTrue(any("routing.default_tier" in w and "bogus-row" in w
+                            for w in pol["_meta"]["warnings"]))
+
+    def test_load_policy_default_tier_absent_resolves_to_none(self):
+        repo = _repo_with(
+            "routing:\n"
+            "  defaults:\n"
+            "    A:\n"
+            "      low:\n"
+            "        agent_cli: codex\n")
+        with self._no_mw_env():
+            pol = load_policy(repo)
+        self.assertIsNone(pol["routing"]["default_tier"])
 
     def test_purpose_tiers_configured_resolves_and_validates(self):
-        # 3.3: a configured routing.purpose_tiers table resolves and validates.
+        # 1.3: a configured routing.purposes table resolves and validates
+        # (renamed from routing.purpose_tiers).
         repo = _repo_with(
             "routing:\n"
-            "  purpose_tiers:\n"
+            "  purposes:\n"
             "    scaffolding: t3\n"
             "    security-review: t1-deep\n")
         with self._no_mw_env():
             pol = load_policy(repo)
-        self.assertEqual(pol["routing"]["purpose_tiers"],
+        self.assertEqual(pol["routing"]["purposes"],
                          {"scaffolding": "t3", "security-review": "t1-deep"})
         self.assertEqual(pol["_meta"]["warnings"], [])
 
     def test_purpose_tiers_unconfigured_resolves_to_empty(self):
         # 3.3: an unconfigured/empty table resolves to {}.
-        repo = _repo_with("routing:\n  roles:\n    reviewer:\n      agent_cli: codex\n")
+        repo = _repo_with("routing:\n  targets: {}\n")
         with self._no_mw_env():
             pol = load_policy(repo)
-        self.assertEqual(pol["routing"]["purpose_tiers"], {})
+        self.assertEqual(pol["routing"]["purposes"], {})
 
     def test_purpose_tiers_explicit_empty_mapping_resolves_to_empty(self):
         # 3.3: an unconfigured/empty table resolves to {}.
@@ -1101,13 +1405,13 @@ class Routing(unittest.TestCase):
         # 3.3: a malformed entry (non-string value) is dropped with a warning.
         repo = _repo_with(
             "routing:\n"
-            "  purpose_tiers:\n"
+            "  purposes:\n"
             "    scaffolding: 3\n"
             "    security-review: t1-deep\n")
         with self._no_mw_env():
             pol = load_policy(repo)
-        self.assertEqual(pol["routing"]["purpose_tiers"], {"security-review": "t1-deep"})
-        self.assertTrue(any("routing.purpose_tiers" in w and "scaffolding" in w
+        self.assertEqual(pol["routing"]["purposes"], {"security-review": "t1-deep"})
+        self.assertTrue(any("routing.purposes" in w and "scaffolding" in w
                             for w in pol["_meta"]["warnings"]))
 
     def test_validate_routing_purpose_tiers_non_string_value_dropped(self):
@@ -1115,21 +1419,30 @@ class Routing(unittest.TestCase):
         resolved = _validate_routing_purpose_tiers(
             {"scaffolding": 3, "security-review": "t1-deep"}, meta)
         self.assertEqual(resolved, {"security-review": "t1-deep"})
-        self.assertTrue(any("purpose_tiers" in w for w in meta["warnings"]))
+        self.assertTrue(any("purposes" in w for w in meta["warnings"]))
 
     def test_validate_routing_purpose_tiers_non_mapping_ignored(self):
         meta = {"warnings": []}
         resolved = _validate_routing_purpose_tiers(["scaffolding"], meta)
         self.assertEqual(resolved, {})
-        self.assertTrue(any("routing.purpose_tiers must be a mapping" in w for w in meta["warnings"]))
+        self.assertTrue(any("routing.purposes must be a mapping" in w for w in meta["warnings"]))
 
     def test_resolve_tier_map_populated(self):
         # AC-CHG-001
-        repo = _repo_with("routing:\n  tiers:\n    hard/backend:\n      agent: codex\n")
+        repo = _repo_with(
+            "routing:\n"
+            "  targets:\n"
+            "    codex-main:\n"
+            "      harness: codex\n"
+            "      pool: subscription\n"
+            "  tiers:\n"
+            "    hard:\n"
+            "      codex-main:\n"
+            "        model: gpt-5\n")
         with self._no_mw_env():
             pol = load_policy(repo)
         self.assertEqual(resolve_tier_map(pol),
-                         {("hard", "backend"): {"agent_cli": "codex", "agent_model": None, "effort": None}})
+                         {"hard": {"codex-main": {"model": "gpt-5", "effort": None}}})
 
     def test_resolve_tier_map_no_routing_returns_empty(self):
         # AC-CHG-002
@@ -1151,58 +1464,58 @@ class Routing(unittest.TestCase):
         self.assertEqual(resolve_tier_map(pol), {})
 
     def test_resolve_routing_deterministic_match(self):
-        # REQ-002, REQ-NR002
+        # REQ-002, REQ-NR002 (1.3: resolve_routing() exposes
+        # targets/tiers/roles/purposes/default_tier/drain, not
+        # route/risk-keyed agent_cli/agent_model).
         repo = _repo_with(
             "routing:\n"
-            "  defaults:\n"
-            "    B:\n"
-            "      medium:\n"
-            "        agent_cli: claude\n"
-            "        agent_model: opus\n"
+            "  targets:\n"
+            "    codex-main:\n"
+            "      harness: codex\n"
+            "      pool: subscription\n"
+            "  tiers:\n"
+            "    t3:\n"
+            "      codex-main:\n"
+            "        model: gpt-5-mini\n"
+            "  default_tier: t3\n"
             "  roles:\n"
-            "    reviewer: codex\n"
-            "  fallback:\n"
-            "    - opencode\n"
-            "  purpose_tiers:\n"
-            "    scaffolding: t3\n")
+            "    reviewer:\n"
+            "      tier: t3\n"
+            "  purposes:\n"
+            "    scaffolding: t3\n"
+            "  drain:\n"
+            "    max_workers: 3\n")
         with self._no_mw_env():
             pol = load_policy(repo)
-        first = resolve_routing(pol, "B", "medium")
-        second = resolve_routing(pol, "B", "medium")
+        first = resolve_routing(pol)
+        second = resolve_routing(pol)
         self.assertEqual(first, second)
-        self.assertEqual(first["agent_cli"], "claude")
-        self.assertEqual(first["agent_model"], "opus")
-        self.assertEqual(first["roles"], {"reviewer": {"agent_cli": "codex", "agent_model": None, "effort": None}})
-        self.assertEqual(first["fallback"], [{"agent_cli": "opencode", "agent_model": None, "effort": None}])
-        self.assertEqual(first["purpose_tiers"], {"scaffolding": "t3"})
+        self.assertEqual(first["targets"],
+                         {"codex-main": {"harness": "codex", "pool": "subscription",
+                                         "api_opt_in": False, "auth": None}})
+        self.assertEqual(first["tiers"], {"t3": {"codex-main": {"model": "gpt-5-mini", "effort": None}}})
+        self.assertEqual(first["roles"], {"reviewer": {"tier": "t3", "prefer": None, "independent": False}})
+        self.assertEqual(first["purposes"], {"scaffolding": "t3"})
+        self.assertEqual(first["default_tier"], "t3")
+        self.assertEqual(first["drain"], {"agent": None, "fallback_agents": [], "max_workers": 3})
+        self.assertNotIn("agents", first)
+        self.assertNotIn("fallback", first)
 
-    def test_resolve_routing_purpose_tiers_empty_when_unconfigured(self):
-        repo = _repo_with(
-            "routing:\n  defaults:\n    B:\n      medium:\n        agent_cli: claude\n")
+    def test_resolve_routing_purposes_empty_when_unconfigured(self):
+        repo = _repo_with("routing:\n  targets: {}\n")
         with self._no_mw_env():
             pol = load_policy(repo)
-        self.assertEqual(resolve_routing(pol, "B", "medium")["purpose_tiers"], {})
+        self.assertEqual(resolve_routing(pol)["purposes"], {})
 
-    def test_resolve_routing_unmatched_falls_back_to_flat_agent_cli(self):
-        # REQ-002
-        repo = _repo_with(
-            "agent_cli: opencode\n"
-            "routing:\n  defaults:\n    A:\n      low:\n        agent_cli: claude\n")
-        with self._no_mw_env():
-            pol = load_policy(repo)
-        result = resolve_routing(pol, "Z", "critical")
-        self.assertEqual(result["agent_cli"], "opencode")
-
-    def test_resolve_routing_no_routing_configured_matches_flat_behavior(self):
+    def test_resolve_routing_no_routing_configured_returns_empty_shape(self):
         repo = _repo_with("agent_cli: claude\nagent_model: sonnet\nfallback_agent_cli: codex\n")
         with self._no_mw_env():
             pol = load_policy(repo)
-        result = resolve_routing(pol, "A", "low")
-        self.assertEqual(result["agent_cli"], "claude")
-        self.assertEqual(result["agent_model"], "sonnet")
-        self.assertEqual(result["roles"], {})
-        self.assertEqual(result["fallback"], [{"agent_cli": "codex", "agent_model": None}])
-        self.assertEqual(result["purpose_tiers"], {})
+        result = resolve_routing(pol)
+        self.assertEqual(result, {
+            "targets": {}, "tiers": {}, "roles": {}, "purposes": {},
+            "default_tier": None, "drain": {},
+        })
 
     def test_malformed_scalar_routing_value_warns_and_ignored(self):
         # REQ-001, REQ-NR004
@@ -1229,6 +1542,102 @@ class Routing(unittest.TestCase):
         with self._no_mw_env():
             pol = load_policy(repo)
         self.assertIsNone(pol["routing"])
+
+
+class TestValidateRoutingTargets(unittest.TestCase):
+    """`_validate_routing_targets()` (1.1): the ordered `routing.targets`
+    mapping into `{name: {harness, pool, api_opt_in, auth}}`."""
+
+    def test_absent_resolves_to_empty(self):
+        meta = {"warnings": []}
+        self.assertEqual(_validate_routing_targets(None, meta), {})
+        self.assertEqual(meta["warnings"], [])
+
+    def test_non_mapping_warns_and_ignored(self):
+        meta = {"warnings": []}
+        resolved = _validate_routing_targets(["claude-sub"], meta)
+        self.assertEqual(resolved, {})
+        self.assertTrue(any("routing.targets must be a mapping" in w for w in meta["warnings"]))
+
+    def test_valid_entry_resolves(self):
+        meta = {"warnings": []}
+        resolved = _validate_routing_targets(
+            {"claude-sub": {"harness": "claude", "pool": "subscription"}}, meta)
+        self.assertEqual(
+            resolved,
+            {"claude-sub": {"harness": "claude", "pool": "subscription",
+                             "api_opt_in": False, "auth": None}})
+        self.assertEqual(meta["warnings"], [])
+
+    def test_auth_passed_through(self):
+        meta = {"warnings": []}
+        resolved = _validate_routing_targets(
+            {"claude-api": {"harness": "claude", "pool": "api", "api_opt_in": True,
+                             "auth": {"env": "ANTHROPIC_API_KEY"}}}, meta)
+        self.assertEqual(resolved["claude-api"]["auth"], {"env": "ANTHROPIC_API_KEY"})
+        self.assertEqual(meta["warnings"], [])
+
+    def test_file_order_preserved(self):
+        meta = {"warnings": []}
+        resolved = _validate_routing_targets(
+            {"codex-sub": {"harness": "codex", "pool": "subscription"},
+             "claude-sub": {"harness": "claude", "pool": "subscription"},
+             "opencode-free": {"harness": "opencode", "pool": "free"}}, meta)
+        self.assertEqual(list(resolved), ["codex-sub", "claude-sub", "opencode-free"])
+
+    def test_entry_not_mapping_dropped(self):
+        meta = {"warnings": []}
+        resolved = _validate_routing_targets({"claude-sub": "claude"}, meta)
+        self.assertEqual(resolved, {})
+        self.assertTrue(any("routing.targets.claude-sub must be a mapping" in w
+                             for w in meta["warnings"]))
+
+    def test_invalid_harness_dropped(self):
+        meta = {"warnings": []}
+        resolved = _validate_routing_targets(
+            {"bogus": {"harness": "gemini", "pool": "subscription"}}, meta)
+        self.assertEqual(resolved, {})
+        self.assertTrue(any("routing.targets.bogus.harness" in w and "gemini" in w
+                             for w in meta["warnings"]))
+
+    def test_missing_harness_dropped(self):
+        meta = {"warnings": []}
+        resolved = _validate_routing_targets({"claude-sub": {"pool": "subscription"}}, meta)
+        self.assertEqual(resolved, {})
+        self.assertTrue(any("routing.targets.claude-sub.harness" in w for w in meta["warnings"]))
+
+    def test_invalid_pool_dropped(self):
+        meta = {"warnings": []}
+        resolved = _validate_routing_targets(
+            {"claude-sub": {"harness": "claude", "pool": "enterprise"}}, meta)
+        self.assertEqual(resolved, {})
+        self.assertTrue(any("routing.targets.claude-sub.pool" in w and "enterprise" in w
+                             for w in meta["warnings"]))
+
+    def test_api_pool_without_opt_in_kept_but_warns_ineligible(self):
+        meta = {"warnings": []}
+        resolved = _validate_routing_targets(
+            {"claude-api": {"harness": "claude", "pool": "api"}}, meta)
+        self.assertEqual(
+            resolved,
+            {"claude-api": {"harness": "claude", "pool": "api",
+                             "api_opt_in": False, "auth": None}})
+        self.assertTrue(any("claude-api" in w and "api_opt_in" in w for w in meta["warnings"]))
+
+    def test_api_pool_with_opt_in_resolves_no_warning(self):
+        meta = {"warnings": []}
+        resolved = _validate_routing_targets(
+            {"claude-api": {"harness": "claude", "pool": "api", "api_opt_in": True}}, meta)
+        self.assertEqual(resolved["claude-api"]["api_opt_in"], True)
+        self.assertEqual(meta["warnings"], [])
+
+    def test_mixed_valid_and_invalid_entries(self):
+        meta = {"warnings": []}
+        resolved = _validate_routing_targets(
+            {"claude-sub": {"harness": "claude", "pool": "subscription"},
+             "bogus": {"harness": "gemini", "pool": "subscription"}}, meta)
+        self.assertEqual(list(resolved), ["claude-sub"])
+        self.assertTrue(any("bogus" in w for w in meta["warnings"]))
 
 
 class RoutingAgentsAndDrain(unittest.TestCase):
@@ -1321,39 +1730,20 @@ class RoutingAgentsAndDrain(unittest.TestCase):
 
     # -- load_policy() integration --------------------------------------
 
-    def test_load_policy_valid_agents_and_drain_resolve(self):
+    def test_load_policy_valid_drain_max_workers_resolves(self):
+        # 1.4: routing.agents and routing.drain.agent/fallback_agents are now
+        # retired keys (see LegacyRoutingKeys below) -- only max_workers
+        # remains a valid routing.drain field.
         repo = _repo_with(
             "routing:\n"
-            "  agents:\n"
-            "    claude:\n"
-            "      default_model: sonnet\n"
-            "    codex:\n"
-            "      default_model: gpt-5\n"
             "  drain:\n"
-            "    agent: codex\n"
-            "    fallback_agents:\n"
-            "      - opencode\n"
             "    max_workers: 3\n")
         with self._no_mw_env():
             pol = load_policy(repo)
-        self.assertEqual(pol["routing"]["agents"],
-                         {"claude": {"default_model": "sonnet"}, "codex": {"default_model": "gpt-5"}})
+        self.assertEqual(pol["routing"]["agents"], {})
         self.assertEqual(pol["routing"]["drain"],
-                         {"agent": "codex", "fallback_agents": ["opencode"], "max_workers": 3})
+                         {"agent": None, "fallback_agents": [], "max_workers": 3})
         self.assertEqual(pol["_meta"]["warnings"], [])
-
-    def test_load_policy_malformed_agents_warns_without_crashing(self):
-        repo = _repo_with(
-            "routing:\n"
-            "  agents:\n"
-            "    bogus:\n"
-            "      default_model: sonnet\n"
-            "    codex:\n"
-            "      default_model: gpt-5\n")
-        with self._no_mw_env():
-            pol = load_policy(repo)
-        self.assertEqual(pol["routing"]["agents"], {"codex": {"default_model": "gpt-5"}})
-        self.assertTrue(any("routing.agents" in w and "bogus" in w for w in pol["_meta"]["warnings"]))
 
     def test_load_policy_malformed_drain_raises(self):
         # 1.2's docstring: routing.drain is stated operator intent, so a
@@ -1383,37 +1773,198 @@ class RoutingAgentsAndDrain(unittest.TestCase):
         self.assertEqual(pol["_meta"]["warnings"], [])
 
     # -- resolve_routing() exposure --------------------------------------
+    # 1.3: resolve_routing() drops `agents`/`fallback` from its returned
+    # shape entirely (routing.agents/routing.fallback stay internal to
+    # `policy["routing"]`, resolved by `_validate_routing()` above, but are
+    # no longer part of the selector-facing contract).
 
-    def test_resolve_routing_exposes_agents_and_drain(self):
-        repo = _repo_with(
-            "routing:\n"
-            "  agents:\n"
-            "    claude:\n"
-            "      default_model: sonnet\n"
-            "  drain:\n"
-            "    agent: codex\n"
-            "    max_workers: 5\n")
+    def test_resolve_routing_exposes_drain_but_not_agents(self):
+        repo = _repo_with("routing:\n  drain:\n    max_workers: 5\n")
         with self._no_mw_env():
             pol = load_policy(repo)
-        result = resolve_routing(pol, "A", "low")
-        self.assertEqual(result["agents"], {"claude": {"default_model": "sonnet"}})
-        self.assertEqual(result["drain"], {"agent": "codex", "fallback_agents": [], "max_workers": 5})
+        result = resolve_routing(pol)
+        self.assertNotIn("agents", result)
+        self.assertEqual(result["drain"], {"agent": None, "fallback_agents": [], "max_workers": 5})
 
-    def test_resolve_routing_agents_and_drain_empty_when_absent(self):
+    def test_resolve_routing_drain_empty_when_absent(self):
         repo = _repo_with("routing:\n  defaults:\n    A:\n      low:\n        agent_cli: claude\n")
         with self._no_mw_env():
             pol = load_policy(repo)
-        result = resolve_routing(pol, "A", "low")
-        self.assertEqual(result["agents"], {})
+        result = resolve_routing(pol)
+        self.assertNotIn("agents", result)
         self.assertEqual(result["drain"], {})
 
-    def test_resolve_routing_agents_and_drain_empty_when_no_routing_configured(self):
+    def test_resolve_routing_drain_empty_when_no_routing_configured(self):
         repo = _repo_with("agent_cli: claude\n")
         with self._no_mw_env():
             pol = load_policy(repo)
-        result = resolve_routing(pol, "A", "low")
-        self.assertEqual(result["agents"], {})
+        result = resolve_routing(pol)
+        self.assertNotIn("agents", result)
         self.assertEqual(result["drain"], {})
+
+
+class LegacyRoutingKeys(unittest.TestCase):
+    """`_reject_legacy_routing_keys()` (task 1.4): a pre-target-selector
+    `routing:` shape fails loud with `OperatorConfigError` naming the
+    offending key and `worktrail-routing --migrate`, rather than being
+    silently warned-and-dropped."""
+
+    def _no_mw_env(self):
+        return mock.patch.dict(
+            os.environ, {"GO_ROUTING_FILE": "/nonexistent/go-routing-test/routing.yaml"})
+
+    # -- _reject_legacy_routing_keys() directly --------------------------
+
+    def test_agents_key_raises(self):
+        with self.assertRaises(OperatorConfigError) as ctx:
+            _reject_legacy_routing_keys({"agents": {"claude": {"default_model": "sonnet"}}})
+        self.assertIn("routing.agents", str(ctx.exception))
+        self.assertIn("worktrail-routing --migrate", str(ctx.exception))
+
+    def test_fallback_key_raises(self):
+        with self.assertRaises(OperatorConfigError) as ctx:
+            _reject_legacy_routing_keys({"fallback": ["codex"]})
+        self.assertIn("routing.fallback", str(ctx.exception))
+        self.assertIn("worktrail-routing --migrate", str(ctx.exception))
+
+    def test_purpose_tiers_key_raises(self):
+        with self.assertRaises(OperatorConfigError) as ctx:
+            _reject_legacy_routing_keys({"purpose_tiers": {"scaffolding": "t3"}})
+        self.assertIn("routing.purpose_tiers", str(ctx.exception))
+        self.assertIn("worktrail-routing --migrate", str(ctx.exception))
+
+    def test_drain_agent_raises(self):
+        with self.assertRaises(OperatorConfigError) as ctx:
+            _reject_legacy_routing_keys({"drain": {"agent": "codex"}})
+        self.assertIn("routing.drain.agent", str(ctx.exception))
+        self.assertIn("worktrail-routing --migrate", str(ctx.exception))
+
+    def test_drain_fallback_agents_raises(self):
+        with self.assertRaises(OperatorConfigError) as ctx:
+            _reject_legacy_routing_keys({"drain": {"fallback_agents": ["opencode"]}})
+        self.assertIn("routing.drain.fallback_agents", str(ctx.exception))
+        self.assertIn("worktrail-routing --migrate", str(ctx.exception))
+
+    def test_drain_max_workers_only_does_not_raise(self):
+        _reject_legacy_routing_keys({"drain": {"max_workers": 3}})  # must not raise
+
+    def test_harness_keyed_tier_cell_raises(self):
+        with self.assertRaises(OperatorConfigError) as ctx:
+            _reject_legacy_routing_keys(
+                {"tiers": {"hard": {"codex": {"model": "gpt-5"}}}})
+        self.assertIn("routing.tiers.hard", str(ctx.exception))
+        self.assertIn("worktrail-routing --migrate", str(ctx.exception))
+
+    def test_target_keyed_tier_cell_does_not_raise(self):
+        # A declared-target name that happens to differ from any harness
+        # literal is the current (non-legacy) shape.
+        _reject_legacy_routing_keys(
+            {"tiers": {"hard": {"codex-main": {"model": "gpt-5"}}}})  # must not raise
+
+    def test_target_named_after_harness_literal_does_not_raise(self):
+        # A target literally named `codex` is legal (target names are
+        # free-form; only `harness` is constrained to SUPPORTED_AGENTS) and
+        # must not be mistaken for the retired harness-keyed tier form.
+        _reject_legacy_routing_keys(
+            {"targets": {"codex": {"harness": "codex", "pool": "subscription"}},
+             "tiers": {"hard": {"codex": {"model": "gpt-5"}}}})  # must not raise
+
+    def test_undeclared_harness_keyed_tier_cell_still_raises(self):
+        # Without a matching routing.targets declaration, a cell keyed by a
+        # harness literal is still read as the retired form even when other
+        # unrelated targets are declared.
+        with self.assertRaises(OperatorConfigError) as ctx:
+            _reject_legacy_routing_keys(
+                {"targets": {"codex-main": {"harness": "codex", "pool": "subscription"}},
+                 "tiers": {"hard": {"codex": {"model": "gpt-5"}}}})
+        self.assertIn("routing.tiers.hard", str(ctx.exception))
+
+    def test_role_with_agent_cli_raises(self):
+        with self.assertRaises(OperatorConfigError) as ctx:
+            _reject_legacy_routing_keys({"roles": {"reviewer": {"agent_cli": "codex"}}})
+        self.assertIn("routing.roles.reviewer", str(ctx.exception))
+        self.assertIn("worktrail-routing --migrate", str(ctx.exception))
+
+    def test_role_with_agent_model_raises(self):
+        with self.assertRaises(OperatorConfigError) as ctx:
+            _reject_legacy_routing_keys({"roles": {"reviewer": {"agent_model": "opus"}}})
+        self.assertIn("routing.roles.reviewer", str(ctx.exception))
+
+    def test_role_with_tier_prefer_independent_does_not_raise(self):
+        _reject_legacy_routing_keys(
+            {"roles": {"reviewer": {"tier": "hard", "prefer": "codex-main",
+                                     "independent": True}}})  # must not raise
+
+    def test_no_legacy_keys_does_not_raise(self):
+        _reject_legacy_routing_keys(
+            {"targets": {"codex-main": {"harness": "codex", "pool": "subscription"}},
+             "tiers": {"hard": {"codex-main": {"model": "gpt-5"}}},
+             "default_tier": "hard",
+             "roles": {"reviewer": {"tier": "hard"}},
+             "purposes": {"scaffolding": "hard"},
+             "drain": {"max_workers": 2}})  # must not raise
+
+    # -- called first in _validate_routing() / load_policy() ------------
+
+    def test_load_policy_agents_key_raises(self):
+        repo = _repo_with("routing:\n  agents:\n    claude:\n      default_model: sonnet\n")
+        with self._no_mw_env():
+            with self.assertRaises(OperatorConfigError):
+                load_policy(repo)
+
+    def test_load_policy_fallback_key_raises(self):
+        repo = _repo_with("routing:\n  fallback:\n    - codex\n")
+        with self._no_mw_env():
+            with self.assertRaises(OperatorConfigError):
+                load_policy(repo)
+
+    def test_load_policy_purpose_tiers_key_raises(self):
+        repo = _repo_with("routing:\n  purpose_tiers:\n    scaffolding: t3\n")
+        with self._no_mw_env():
+            with self.assertRaises(OperatorConfigError):
+                load_policy(repo)
+
+    def test_load_policy_drain_agent_raises(self):
+        repo = _repo_with("routing:\n  drain:\n    agent: codex\n")
+        with self._no_mw_env():
+            with self.assertRaises(OperatorConfigError):
+                load_policy(repo)
+
+    def test_load_policy_drain_fallback_agents_raises(self):
+        repo = _repo_with("routing:\n  drain:\n    fallback_agents:\n      - opencode\n")
+        with self._no_mw_env():
+            with self.assertRaises(OperatorConfigError):
+                load_policy(repo)
+
+    def test_load_policy_harness_keyed_tier_cell_raises(self):
+        repo = _repo_with(
+            "routing:\n"
+            "  tiers:\n"
+            "    hard:\n"
+            "      codex:\n"
+            "        model: gpt-5\n")
+        with self._no_mw_env():
+            with self.assertRaises(OperatorConfigError):
+                load_policy(repo)
+
+    def test_load_policy_role_agent_cli_raises(self):
+        repo = _repo_with("routing:\n  roles:\n    reviewer:\n      agent_cli: codex\n")
+        with self._no_mw_env():
+            with self.assertRaises(OperatorConfigError):
+                load_policy(repo)
+
+    def test_load_policy_legacy_key_raises_before_reaching_machine_wide_fallback(self):
+        # _reject_legacy_routing_keys() runs on the repo-local block before
+        # _resolve_routing() would otherwise fall through to a machine-wide
+        # routing file -- a legacy repo-local block must not be silently
+        # bypassed by a valid machine-wide file underneath it.
+        tmp = tempfile.mkdtemp()
+        mw = Path(tmp) / "routing.yaml"
+        mw.write_text("targets:\n  codex-main:\n    harness: codex\n    pool: subscription\n")
+        repo = _repo_with("routing:\n  fallback:\n    - codex\n")
+        with mock.patch.dict(os.environ, {"GO_ROUTING_FILE": str(mw)}):
+            with self.assertRaises(OperatorConfigError):
+                load_policy(repo)
 
 
 if __name__ == "__main__":

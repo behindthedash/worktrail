@@ -29,7 +29,7 @@ def _fake_spawn_factory():
     """Returns a fake spawn_claude_p that records its timeout= argument."""
     calls = []
 
-    def fake(prompt, worktree, model=None, effort=None, timeout=None, extra_args=None, resume_session_id=None, fallback_agent=None, log=None):
+    def fake(prompt, worktree, tier=None, prefer=None, exclude_harness=None, timeout=None, extra_args=None, resume_session_id=None, log=None):
         calls.append({"timeout": timeout})
         return (
             '{"task": "T", "step": "implement", "status": "success",'
@@ -194,7 +194,7 @@ class TestConcurrencyNoBleed(unittest.TestCase):
         received = {}
         barrier = threading.Barrier(2)
 
-        def fake_spawn(prompt, worktree, model=None, effort=None, timeout=None, extra_args=None, resume_session_id=None, fallback_agent=None, log=None):
+        def fake_spawn(prompt, worktree, tier=None, prefer=None, exclude_harness=None, timeout=None, extra_args=None, resume_session_id=None, log=None):
             barrier.wait()  # both threads enter simultaneously
             received[threading.get_ident()] = timeout
             return (
@@ -209,16 +209,23 @@ class TestConcurrencyNoBleed(unittest.TestCase):
 
         def run(task):
             thread_ids[task["id"]] = threading.get_ident()
-            with patch.object(dispatch, "build_worker_prompt", return_value="fake"), patch.object(
-                spawnlib, "spawn_claude_p", fake_spawn
-            ):
-                spawn("implement", task, Path("/fake/wt"))
+            spawn("implement", task, Path("/fake/wt"))
 
-        with ThreadPoolExecutor(max_workers=2) as ex:
-            fa = ex.submit(run, task_a)
-            fb = ex.submit(run, task_b)
-            fa.result()
-            fb.result()
+        # Install both patches ONCE, before the threads start, not one pair
+        # per thread inside run(): unittest.mock.patch.object's start()/stop()
+        # push/pop a per-target stack that is not safe for two threads to
+        # enter and exit concurrently on the SAME target -- confirmed live,
+        # a per-thread `with patch.object(...)` here left spawnlib.spawn_claude_p
+        # permanently monkey-patched to this test's own closure afterward,
+        # breaking every later test in the suite that spawns for real.
+        with patch.object(dispatch, "build_worker_prompt", return_value="fake"), patch.object(
+            spawnlib, "spawn_claude_p", fake_spawn
+        ):
+            with ThreadPoolExecutor(max_workers=2) as ex:
+                fa = ex.submit(run, task_a)
+                fb = ex.submit(run, task_b)
+                fa.result()
+                fb.result()
 
         self.assertEqual(received[thread_ids["T001"]], 900)
         self.assertEqual(received[thread_ids["T002"]], 3600)
@@ -253,7 +260,7 @@ class TestExpiryReportsEffectiveTimeout(unittest.TestCase):
         spawn = LiveSpawn("spec", "docs/specs/spec/", agent="claude", timeout=1800)
         task = {"id": "T001", "timeout": 2700}
 
-        def raising_spawn(prompt, worktree, model=None, effort=None, timeout=None, extra_args=None, resume_session_id=None, fallback_agent=None, log=None):
+        def raising_spawn(prompt, worktree, tier=None, prefer=None, exclude_harness=None, timeout=None, extra_args=None, resume_session_id=None, log=None):
             raise subprocess.TimeoutExpired(cmd=["claude"], timeout=timeout)
 
         output = io.StringIO()

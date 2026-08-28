@@ -11,16 +11,21 @@ defaults (run records, telemetry logs, caches) can never touch the real
 so explicitly (writing to tmp_path and overriding the same env var itself),
 which still wins since monkeypatch restores in LIFO order.
 
-The isolated routing file is NOT a guaranteed-nonexistent path: since
-`spawnlib.default_model_for_agent()` raises when `routing.agents.<agent>.
-default_model` is unconfigured (no silent fallback, task 3.3), an empty/absent
-routing file would break the entire test suite's spawn-related surface, which
-touches `default_model_for_agent()` incidentally far more often than it
-exercises routing semantics directly. So the isolated file is seeded with the
-same per-agent defaults the codebase hardcoded before this consolidation
-(sonnet / gpt-5.4-mini / opencode/deepseek-v4-flash-free) -- a safe, known
-baseline every test gets unless it overrides the same env var itself (e.g. to
-a nonexistent path, to exercise the "no routing configured" raise-loud path).
+The isolated routing file is seeded with a minimal, current-schema
+`routing.targets`/`routing.tiers`/`default_tier` baseline -- one target per
+harness (`claude-sub`/`codex-sub`/`opencode-free`), all sharing the single
+`t2-build` tier row -- so `live.py`'s default-model resolution
+(`_default_model_for_agent()`, which every spawn-adjacent code path in
+`live.py` falls back to when no explicit `model=`/routing override is given)
+succeeds for whichever agent a test names, the same way the retired
+`routing.agents` shape used to pre-seed all three agents here before the
+target-selector routing schema replaced it (`policy._reject_legacy_routing_keys()`,
+task 1.4). The LEGACY `agents:` shape must never be written here -- that key
+is a hard `OperatorConfigError` as of task 1.4 -- but this new-schema seed is
+not that shape and does not trip that rejection. A test that needs a
+*different* target/tier/model, or genuinely no routing configured at all,
+overrides GO_ROUTING_FILE itself (monkeypatch restores in LIFO order, so a
+per-test override still wins).
 
 WORKTRAIL_SKILL_DISPATCH_DEPTH is ambient *dispatch-session* state of the same
 class: a suite run from inside a dispatched session (worktrail-go ->
@@ -33,6 +38,9 @@ itself reads ambient depth by design and stays; tests that exercise depth
 semantics set the variable explicitly.
 """
 
+import tempfile
+from pathlib import Path
+
 import pytest
 
 
@@ -41,21 +49,41 @@ def _isolate_go_machine_wide_config(tmp_path, monkeypatch):
     # Dispatch-chain marker: see module docstring -- never inherit it ambiently.
     monkeypatch.delenv("WORKTRAIL_SKILL_DISPATCH_DEPTH", raising=False)
     monkeypatch.setenv("WORKTRAIL_HOME", str(tmp_path / "worktrail-home"))
-    routing_file = tmp_path / "routing.yaml"
-    routing_file.write_text(
-        "agents:\n"
-        "  claude:\n"
-        "    default_model: sonnet\n"
-        "  codex:\n"
-        "    default_model: gpt-5.4-mini\n"
-        "  opencode:\n"
-        "    default_model: opencode/deepseek-v4-flash-free\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("GO_ROUTING_FILE", str(routing_file))
-    monkeypatch.setenv("GO_MODEL_DEFAULTS_FILE", str(tmp_path / "no-such-model-defaults.yaml"))
-    monkeypatch.setenv("GO_AGENT_CAPACITY_CACHE", str(tmp_path / "agent-capacity.json"))
-    # The real work queue is machine-wide state too: any code path that falls
-    # back to work_queue.base_dir() (e.g. drain's backlog seeding) must land in
-    # a per-test directory, never the operator's $WORK_QUEUE_DIR/~/work-queue.
-    monkeypatch.setenv("WORK_QUEUE_DIR", str(tmp_path / "work-queue"))
+    # A dedicated tempdir OUTSIDE tmp_path's own tree, not a subdirectory of
+    # it (worktrail-home/ included) -- several tests recursively glob tmp_path
+    # itself for *.yaml run records (e.g. run_record.py's load_run_index(),
+    # "**/*.yaml"); a routing.yaml anywhere under tmp_path got swept into
+    # those scans and misread as a malformed run record (confirmed live:
+    # RunRecordFormatError "unrecognized keys: claude-sub, ..., t2-build").
+    with tempfile.TemporaryDirectory(prefix="worktrail-test-routing-") as routing_dir:
+        routing_file = Path(routing_dir) / "routing.yaml"
+        routing_file.write_text(
+            "targets:\n"
+            "  claude-sub:\n"
+            "    harness: claude\n"
+            "    pool: subscription\n"
+            "  codex-sub:\n"
+            "    harness: codex\n"
+            "    pool: subscription\n"
+            "  opencode-free:\n"
+            "    harness: opencode\n"
+            "    pool: free\n"
+            "tiers:\n"
+            "  t2-build:\n"
+            "    claude-sub:\n"
+            "      model: sonnet\n"
+            "    codex-sub:\n"
+            "      model: gpt-5.4-mini\n"
+            "    opencode-free:\n"
+            "      model: opencode/deepseek-v4-flash-free\n"
+            "default_tier: t2-build\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("GO_ROUTING_FILE", str(routing_file))
+        monkeypatch.setenv("GO_MODEL_DEFAULTS_FILE", str(tmp_path / "no-such-model-defaults.yaml"))
+        monkeypatch.setenv("GO_AGENT_CAPACITY_CACHE", str(tmp_path / "agent-capacity.json"))
+        # The real work queue is machine-wide state too: any code path that falls
+        # back to work_queue.base_dir() (e.g. drain's backlog seeding) must land in
+        # a per-test directory, never the operator's $WORK_QUEUE_DIR/~/work-queue.
+        monkeypatch.setenv("WORK_QUEUE_DIR", str(tmp_path / "work-queue"))
+        yield

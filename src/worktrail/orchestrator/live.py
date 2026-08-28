@@ -154,10 +154,49 @@ def _default_post_merge_smoke_cmd(repo: Path) -> "str | None":
 # --agent, policy agent_cli, and GO_AGENT_CLI env var all override this.
 DEFAULT_AGENT = _detect_default_agent()
 
-# Every codex role defaults to the SAME model (spawnlib.default_model_for_agent
+
+def _default_model_for_agent(agent: str) -> str:
+    """Replacement for the retired `spawnlib.default_model_for_agent()`
+    (deleted by task 3.3, which moved per-agent default-model resolution onto
+    `runtime.selection.select_cell()`): task 4.2's own AC describes this as
+    "DEFAULT_AGENT detection becomes a default-target lookup" -- resolve
+    `agent`'s model by finding a `routing.targets` entry whose harness
+    matches it, then reading that target's cell in the operator's configured
+    `default_tier` row. Resolved fresh per call, not a frozen snapshot, for
+    the same reason the old function was (an operator edit to routing.yaml
+    takes effect on the very next spawn). No silent fallback to a hardcoded
+    model: a missing declaration is stated operator intent no configuration
+    file provides."""
+    from ..router.policy import (
+        OperatorConfigError,
+        load_policy,
+        resolve_routing,
+        resolved_routing_file_path,
+    )
+    from ..shared.homedir import worktrail_home
+
+    routing = resolve_routing(load_policy(worktrail_home()))
+    tier = routing.get("default_tier")
+    targets = routing.get("targets") or {}
+    row = ((routing.get("tiers") or {}).get(tier) or {}) if tier else {}
+    for name, target in targets.items():
+        if isinstance(target, dict) and target.get("harness") == agent:
+            cell = row.get(name)
+            if isinstance(cell, dict) and cell.get("model"):
+                return cell["model"]
+    raise OperatorConfigError(
+        f"no default model configured for agent {agent!r} -- add a "
+        f"routing.targets entry with harness {agent!r} and a "
+        f"routing.tiers.{tier or '<default_tier>'} cell for it in "
+        f"{resolved_routing_file_path()}, or run `worktrail-routing --init` "
+        "to write a starter config"
+    )
+
+
+# Every codex role defaults to the SAME model (_default_model_for_agent
 # resolved fresh per call, not a frozen snapshot -- a stale frozen copy of
-# spawnlib's default here is exactly the staleness bug spawnlib.py itself was
-# just fixed for; see _effective_role_models below).
+# the default here is exactly the staleness bug the function itself avoids;
+# see _effective_role_models below).
 _CODEX_DEFAULT_ROLES = ("implement", "review", "fix", "cleanup", "ci-fix")
 
 # Reviewer independence (locked decision 13.3): the headless review worker is the
@@ -2140,7 +2179,7 @@ def run_research_session(
     4. Run a single agent session with those files as context.
     5. Return the session_id from SpawnResult so workers can fork from it.
     """
-    model = model or spawnlib.default_model_for_agent(agent)
+    model = model or _default_model_for_agent(agent)
     # --- collect spec content ---
     spec_lines: list[str] = []
     for candidate in sorted(spec_folder.glob("*.md")):
@@ -2213,36 +2252,6 @@ def run_research_session(
     return result.session_id
 
 
-def _serving_agent_guess(agent: str, model: str, fallback) -> str:
-    """Best-effort guess at which configured hop will actually serve a spawn,
-    mirroring `spawn_agent`'s own capacity-gate walk (REQ-027) -- used ONLY to
-    label the journal entry; `spawn_agent` performs the authoritative selection
-    itself. `fallback` is either a single agent name, an ordered sequence of
-    names, or falsy (no chain configured). Never raises: any error while
-    reading the capacity cache just falls back to the primary `agent`."""
-    hops = (
-        list(fallback) if isinstance(fallback, (list, tuple)) else ([fallback] if fallback else [])
-    )
-    candidates = [(agent, model)]
-    for hop in hops:
-        if not hop or hop == agent:
-            continue
-        try:
-            candidates.append((hop, spawnlib.default_model_for_agent(hop)))
-        except Exception:
-            continue
-    try:
-        for cand_agent, cand_model in candidates:
-            try:
-                agent_capacity.check(cand_agent, cand_model)
-            except agent_capacity.ProviderUnavailable:
-                continue
-            return cand_agent
-    except Exception:
-        pass
-    return agent
-
-
 class LiveSpawn:
     def __init__(
         self,
@@ -2264,7 +2273,14 @@ class LiveSpawn:
         self.spec_id = spec_id
         self.spec_folder_rel = spec_folder_rel.rstrip("/") + "/"
         self.timeout = timeout
-        self.model = model or spawnlib.default_model_for_agent(agent)
+        # Accepted for CLI/caller backward compatibility only -- __call__'s
+        # tier-based dispatch (task 4.2) never reads self.model; a spawn's
+        # model now comes from whichever cell select_cell() serves, or from
+        # an explicit --model-map override via explicit_cell_override(). Still
+        # eagerly resolved here (not lazily) to preserve the pre-spec
+        # behavior of failing fast at construction when `agent` has no
+        # declared default, rather than only at the first spawn.
+        self.model = model or _default_model_for_agent(agent)
         # Run-level default effort (model-tier-routing 3.3). Unlike `model`, effort
         # has no per-agent default to fall back to -- omitting it is always a valid,
         # common state (spawnlib.build_cmd only adds the flag `if effort:`), so no
@@ -2276,20 +2292,39 @@ class LiveSpawn:
         # different/independent headless CLI instead of the same one that wrote
         # the code. Falls back to `agent` for any role not listed.
         self.role_agents = role_agents or {}
+        # `fallback_agent`/`tier_map`/`fallback_chain` are accepted for CLI/
+        # caller backward compatibility ONLY and no longer consulted by
+        # __call__ (routing-target-selector task 4.2): `spawn_agent()`'s own
+        # tier-row re-selection already hops to the next ungated cell within
+        # the resolved tier automatically (task 3.4), so there is no separate
+        # fallback chain to thread through; `tier_map`'s old compound
+        # `(complexity, domain)` key has no analogue under the new schema,
+        # where `complexity` maps directly onto a `routing.tiers` row name
+        # (see `dispatch.tier_for()`). A CLI invocation that still passes
+        # these flags keeps working (no crash, no behavior it can observe
+        # changing beyond going through the new selector) rather than being
+        # broken by their removal.
         self.fallback_agent = fallback_agent
-        # TASK-007: resolved routing table pieces, consumed as plain data (no
-        # policy.py import -- see live.py's cross-plugin note). tier_map is
-        # {(complexity, domain): agent-entry}, the exact shape dispatch.agent_for
-        # expects; fallback_chain is an ordered list of agent names that -- when
-        # configured -- takes precedence over the legacy single fallback_agent
-        # (REQ-018). Both default to "off" so a caller that never sets them gets
-        # byte-identical pre-spec dispatch (REQ-016).
         self.tier_map = tier_map or {}
-        # {purpose: tier} -- routing.purpose_tiers, consulted by dispatch.agent_for
-        # ahead of task.get("complexity") when resolving self.tier_map's key
-        # (task-purpose-classification 4.2/5.1). Defaults to "off" like tier_map.
-        self.purpose_tier_map = purpose_tier_map or {}
         self.fallback_chain = list(fallback_chain) if fallback_chain else None
+        # {purpose: tier} -- routing.purposes (task-purpose-classification),
+        # consulted by dispatch.tier_for() ahead of task.get("complexity")
+        # when resolving a role's tier. Caller-supplied (repo-scoped) value
+        # wins; falls back to the machine-wide routing file's own `purposes`
+        # table (self._routing, resolved below) when the caller passes none.
+        self.purpose_tier_map = purpose_tier_map or {}
+        # The machine-wide routing table (targets/tiers/roles/purposes/
+        # default_tier) -- resolved once per LiveSpawn instance, not per call,
+        # matching _default_model_for_agent()'s "resolved fresh per call"
+        # intent one level up (an operator's routing.yaml edit takes effect on
+        # the next orchestrator invocation, not mid-run). `spawn_agent()`
+        # itself re-resolves this internally for the actual cell/capacity
+        # walk; this copy is only for tier_for()'s roles/purposes/default_tier
+        # inputs and the review exclude_harness/prefer-target lookups below.
+        from ..router.policy import load_policy, resolve_routing
+        from ..shared.homedir import worktrail_home
+
+        self._routing = resolve_routing(load_policy(worktrail_home()))
         self.research_session_id: str = ""  # set by --fork-research before fan-out
         # task-id -> task dict for the whole spec; set by the caller (drive loop
         # already has it built) so build_worker_prompt can surface a dependency's
@@ -2350,101 +2385,139 @@ class LiveSpawn:
             by_id=self.by_id,
             external_deps_by_ref=self.external_deps_by_ref,
         )
-        # TASK-007: resolve every spawn's agent through the shared precedence
-        # function (per-task override > role override > tier match > run
-        # default) instead of the old bare `role_agents.get(role, self.agent)`.
-        # Judgment roles (review here -- resolve/ci-fix/assembly-resolve never
-        # reach LiveSpawn.__call__, see dispatch.JUDGMENT_ROLES) only ever
-        # consult the role override / run default, never task["agent"] or
-        # self.tier_map (AC-014). Passing reviewer_agent=self.agent (not
-        # dispatch.DEFAULT_REVIEWER_AGENT) preserves the pre-spec fallback
-        # (self.agent) when review has no role_agents override (REQ-016).
-        resolved = dispatch.agent_for(
-            role,
-            task,
-            reviewer_agent=self.agent,
-            default_agent=self.agent,
-            role_agent_map=self.role_agents,
-            tier_map=self.tier_map,
-            purpose_tier_map=self.purpose_tier_map,
+        # Resolve every spawn's tier through the single precedence function
+        # (routing-target-selector task 4.1/4.2, replacing the old
+        # dispatch.agent_for()): explicit task tier > role tier for judgment
+        # roles > purpose > complexity > default_tier. Judgment roles (review
+        # here -- resolve/ci-fix/assembly-resolve never reach
+        # LiveSpawn.__call__, see dispatch.JUDGMENT_ROLES) never consult
+        # task["agent"]/purpose/complexity, only roles.<role> or their own
+        # review-specific default (DEC-003 independent-reviewer guarantee).
+        roles = self._routing.get("roles") or {}
+        purposes = self.purpose_tier_map or self._routing.get("purposes") or {}
+        default_tier = self._routing.get("default_tier")
+        available_tiers = (self._routing.get("tiers") or {}).keys()
+        tier, prefer, independent = dispatch.tier_for(
+            role, task, roles=roles, purposes=purposes,
+            default_tier=default_tier, available_tiers=available_tiers,
         )
-        agent = resolved["agent_cli"] or self.agent
-        # A role/tier pinned to a different agent than the run's default has no
-        # sensible fallback model in `self.model` (resolved for the DEFAULT
-        # agent) -- resolve that agent's own default instead (live.py:934-935
-        # pattern), unless the resolution itself carried an explicit model (a
-        # pinned tier/role entry, AC-011).
-        if agent == self.agent:
-            default_model = resolved["agent_model"] or self.model
-        else:
-            default_model = resolved["agent_model"] or spawnlib.default_model_for_agent(agent)
-        model = self.role_models.get(role, default_model)
-        # Effort mirrors the model precedence above, minus the cross-agent default
-        # fallback: there's no `default_effort_for_agent()` (no agent requires one),
-        # so a role/tier pinned to a different agent than the run's default only
-        # gets an effort when the resolution itself carried one (AC-011 parity).
-        effort = resolved["effort"] or (self.effort if agent == self.agent else None)
-        # Claude workers get lean flags (bare + measured tool set).
-        # Reviewer independence (13.3): review role additionally gets an appended
-        # system prompt; implement/fix/cleanup keep the DEFAULT system prompt so
+        # role_agents (--role-agent-map, a harness name e.g. "claude") is a
+        # secondary, CLI-level preference: it only applies when routing.roles
+        # didn't already name one for this role, and is translated from a
+        # harness to the first declared target with that harness (tier_for()'s
+        # own `prefer` is always a target name, matching select_cell()). Falls
+        # further back to the run's own --agent (self.agent) when neither
+        # names one -- the pre-spec "every role defaults to the run agent"
+        # parity every construction site that never configures roles/
+        # role_agents at all still depends on.
+        def _target_for_harness(harness: str) -> str | None:
+            for name, declared in (self._routing.get("targets") or {}).items():
+                if isinstance(declared, dict) and declared.get("harness") == harness:
+                    return name
+            return None
+
+        if prefer is None and role in self.role_agents:
+            prefer = _target_for_harness(self.role_agents[role])
+        if prefer is None:
+            prefer = _target_for_harness(self.agent)
+        # independent=True (review's default, or an explicit routing.roles.review.
+        # independent: true) excludes the harness that most recently served THIS
+        # instance -- in the drive loop's implement -> review sequence for one
+        # task, that is the implement step's own served harness, preserving the
+        # independent-reviewer guarantee (13.3, DEC-003) without pinning a
+        # literal agent/model in routing.roles itself (spec requirement).
+        exclude_harness = self.last_agent if independent else None
+        # Claude workers get lean flags (bare + measured tool set). Reviewer
+        # independence: review role additionally gets an appended system
+        # prompt; implement/fix/cleanup keep the DEFAULT system prompt so
         # prompt-cache reuse stays active across the run's many cold workers.
-        extra_args = list(_LEAN_WORKER_FLAGS) if agent == "claude" else []
+        # Both depend on which HARNESS actually serves, which select_cell()
+        # alone (not tier_for()) determines -- resolved just below.
         resume_session_id = self.research_session_id or None
-        if role == dispatch.ROLE_REVIEW:
-            if agent == "claude":
-                extra_args += ["--append-system-prompt", _REVIEWER_SYSTEM_PROMPT]
-            else:
-                prompt = f"{_REVIEWER_SYSTEM_PROMPT}\n\n{prompt}"
-        if agent != "claude":
-            resume_session_id = None
-        # An ordered fallback chain (routing-table-resolved) wins over the
-        # legacy single --fallback-agent when configured (REQ-018). It applies
-        # to every spawn EXCEPT judgment roles pinned to a non-default agent:
-        # a role/tier override on implement/fix/cleanup still deserves the
-        # run's configured recovery path (a pinned tier model going unavailable
-        # for any reason should not leave the task with zero automatic
-        # recovery), but a JUDGMENT_ROLES spawn (review is the only one that
-        # reaches this call -- resolve/ci-fix/assembly-resolve never do, see
-        # dispatch.JUDGMENT_ROLES) deliberately pinned to a different reviewer
-        # agent keeps the old no-fallback gating so a silent fallback can never
-        # erode the independent-reviewer guarantee (13.3, DEC-003). spawn_agent/
-        # spawn_claude_p already drop any hop equal to the spawned `agent`
-        # itself (spawnlib._normalize_fallback_chain), so passing the run-level
-        # chain through unchanged for a tier-resolved agent is safe as-is.
-        fallback = self.fallback_chain if self.fallback_chain else self.fallback_agent
-        judgment_pinned = role in dispatch.JUDGMENT_ROLES and agent != self.agent
-        effective_fallback = None if judgment_pinned else fallback
-        self.last_agent = agent
-        if effective_fallback:
-            # Claude task workers now carry real fallback machinery too (see
-            # spawn_claude_p's fallback_agent param, brief
-            # 20260723-111700-claude-primary-fallback-inert) -- this guess is
-            # accurate for claude the same way it already was for codex/opencode.
-            self.last_agent = _serving_agent_guess(agent, model, effective_fallback)
-        if agent == "claude":
-            return spawnlib.spawn_claude_p(
-                prompt,
-                worktree,
-                model=model,
-                effort=effort,
-                timeout=effective_timeout,
-                extra_args=extra_args,
-                resume_session_id=resume_session_id,
-                fallback_agent=effective_fallback,
-                log=print,
-            )
-        return spawnlib.spawn_agent(
-            prompt,
-            worktree,
-            agent=agent,
-            model=model,
-            effort=effort,
-            fallback_agent=effective_fallback,
+
+        explicit_model = self.role_models.get(role)
+        explicit_effort = self.effort if role not in dispatch.JUDGMENT_ROLES else None
+        spawn_kwargs = dict(
             timeout=effective_timeout,
-            extra_args=extra_args,
             resume_session_id=resume_session_id,
             log=print,
         )
+        # extra_args/system-prompt depend on which HARNESS actually serves,
+        # which only select_cell() (not tier_for()) determines -- peek at it
+        # purely to shape the prompt/flags before the real call. Best-effort:
+        # if every cell in the row is already gated, fall back to self.agent's
+        # harness for shaping only -- the REAL select_cell() inside
+        # spawn_agent/spawn_claude_p (or the explicit-cell branch below) still
+        # raises the authoritative NoExecutionTarget; peeking must never fail
+        # a request that was always going to fail anyway for a different
+        # reason (the harness label on a doomed request is moot).
+        from ..runtime.selection import select_cell, NoExecutionTarget as _NoExecutionTarget
+
+        try:
+            peeked_harness = select_cell(
+                self._routing, tier, prefer=prefer, exclude_harness=exclude_harness,
+                capacity=agent_capacity,
+            ).harness
+        except _NoExecutionTarget:
+            peeked_harness = self.agent
+        extra_args = list(_LEAN_WORKER_FLAGS) if peeked_harness == "claude" else []
+        if role == dispatch.ROLE_REVIEW:
+            if peeked_harness == "claude":
+                extra_args += ["--append-system-prompt", _REVIEWER_SYSTEM_PROMPT]
+            else:
+                prompt = f"{_REVIEWER_SYSTEM_PROMPT}\n\n{prompt}"
+        if peeked_harness != "claude":
+            spawn_kwargs["resume_session_id"] = None
+        spawn_kwargs["extra_args"] = extra_args
+
+        if explicit_model or explicit_effort:
+            # An explicit --model-map/--effort override: resolve which cell
+            # tier_for()'s own (tier, prefer, exclude_harness) would serve,
+            # then override just the missing half (model or effort) via a
+            # throwaway one-cell routing file -- never the operator's real
+            # routing.yaml (same mechanism as compile.py's --agent/--model).
+            # Raises NoExecutionTarget here (not caught) when nothing is
+            # available -- this IS the real, authoritative selection.
+            winning = select_cell(
+                self._routing, tier, prefer=prefer, exclude_harness=exclude_harness,
+                capacity=agent_capacity,
+            )
+            with spawnlib.explicit_cell_override(
+                winning.target, explicit_model or winning.model,
+                effort=explicit_effort or winning.effort,
+            ):
+                self.last_agent = winning.harness
+                if winning.harness == "claude":
+                    result = spawnlib.spawn_claude_p(prompt, worktree, tier="explicit", **spawn_kwargs)
+                else:
+                    result = spawnlib.spawn_agent(prompt, worktree, tier="explicit", **spawn_kwargs)
+        else:
+            # No explicit override: let spawn_agent/spawn_claude_p do the full
+            # tier-row walk, including its own automatic same-row re-selection
+            # on an infra/session-limit failure (task 3.4).
+            self.last_agent = peeked_harness
+            if peeked_harness == "claude":
+                result = spawnlib.spawn_claude_p(
+                    prompt, worktree, tier=tier, prefer=prefer,
+                    exclude_harness=exclude_harness, **spawn_kwargs,
+                )
+            else:
+                result = spawnlib.spawn_agent(
+                    prompt, worktree, tier=tier, prefer=prefer,
+                    exclude_harness=exclude_harness, **spawn_kwargs,
+                )
+
+        # The actually-served cell can differ from the peeked/winning one
+        # after a session-limit/infra hop -- correct the journal label
+        # (last_agent is documented/consumed as a HARNESS name, e.g. "codex",
+        # not a target name) to match. getattr, not result.served_harness: a
+        # caller/test double patching spawn_agent/spawn_claude_p out with its
+        # own minimal fake result object never carries this field, and the
+        # label set just above is still a reasonable value to keep then.
+        served_harness = getattr(result, "served_harness", None)
+        if served_harness:
+            self.last_agent = served_harness
+        return result
 
 
 def spawn_one(
@@ -2502,7 +2575,7 @@ def live_run(
     (e2e/cleanup) are skipped unless --with-tail, since faithful e2e needs the
     impl branches integrated first (next phase).
     """
-    model = model or spawnlib.default_model_for_agent(agent)
+    model = model or _default_model_for_agent(agent)
     repo = instantiate(SAMPLE_TEMPLATE, dest)
     spec_id, tasks = taskformats.load_spec(str(repo / SAMPLE_SPEC_REL))
     if only:
@@ -2632,7 +2705,7 @@ def full(
     the integrated branch -> final PR -> cleanup. Records the real cassette."""
     from . import integrate
 
-    model = model or spawnlib.default_model_for_agent(agent)
+    model = model or _default_model_for_agent(agent)
     out_cassette = str(_SKILL / ".fixtures" / "sample-spec" / "cassette.live.json")
 
     res = live_run(DEFAULT_DEST, max_workers, out_cassette, None, False, agent, model)  # fan-out
@@ -3215,7 +3288,7 @@ def live_run_real(
     heartbeat) is mutated only under a lock; the slow `claude -p` spawns run
     outside it.
     """
-    model = model or spawnlib.default_model_for_agent(agent)
+    model = model or _default_model_for_agent(agent)
     from . import verify as verify_module
 
     repo = repo.resolve()
@@ -3852,7 +3925,7 @@ def full_real(
     on process exit even if this returns early; a held lock aborts with a clear
     message rather than racing.
     """
-    model = model or spawnlib.default_model_for_agent(agent)
+    model = model or _default_model_for_agent(agent)
     repo = Path(repo_path).resolve()
     role_models = _effective_role_models(agent, role_models)
     journal_path = str(journal_path_for(repo, spec_rel))
@@ -4041,7 +4114,7 @@ def _pipeline_scheduler(
     _write_group_journal to use progress.atomic_write_text, or pass an atomic-write
     callback through the integrate_one seam.
     """
-    model = model or spawnlib.default_model_for_agent(agent)
+    model = model or _default_model_for_agent(agent)
     from . import integrate as integrate_module
     from . import verify as verify_module
     from ..router.gitnexus_preflight import check as gitnexus_check
@@ -5037,7 +5110,7 @@ def _full_real_inner(
     out N tasks then blocks on each PR's CI, routinely exceeding a 10-minute
     foreground timeout. If killed, the journal makes the next run resumable.
     """
-    model = model or spawnlib.default_model_for_agent(agent)
+    model = model or _default_model_for_agent(agent)
     from . import integrate
     from . import verify
 
@@ -5245,7 +5318,7 @@ def _full_real_inner(
 
 
 def smoke(agent: str = DEFAULT_AGENT, model: str | None = None) -> bool:
-    model = model or spawnlib.default_model_for_agent(agent)
+    model = model or _default_model_for_agent(agent)
     result = spawnlib.spawn_agent(
         "Reply with exactly: PONG",
         Path.cwd(),
@@ -5321,7 +5394,7 @@ def _role_agent_model(
     role_agent = (role_agents or {}).get(role, agent)
     role_model = (role_models or {}).get(
         role,
-        model if role_agent == agent else spawnlib.default_model_for_agent(role_agent),
+        model if role_agent == agent else _default_model_for_agent(role_agent),
     )
     return role_agent, role_model
 
@@ -5371,7 +5444,7 @@ def _effective_role_models(agent: str, role_models: dict | None) -> dict | None:
     if role_models is not None:
         return role_models
     if agent == "codex":
-        model = spawnlib.default_model_for_agent("codex")
+        model = _default_model_for_agent("codex")
         return {role: model for role in _CODEX_DEFAULT_ROLES}
     return None
 
@@ -5740,7 +5813,7 @@ def main(argv=None) -> int:
 
     args = p.parse_args(argv)
     if getattr(args, "model", None) is None:
-        args.model = spawnlib.default_model_for_agent(getattr(args, "agent", DEFAULT_AGENT))
+        args.model = _default_model_for_agent(getattr(args, "agent", DEFAULT_AGENT))
     role_models = _effective_role_models(
         getattr(args, "agent", DEFAULT_AGENT), _parse_model_map(getattr(args, "model_map", None))
     )

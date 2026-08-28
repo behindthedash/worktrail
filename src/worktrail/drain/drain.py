@@ -493,28 +493,43 @@ def select_available_agent(cache: dict, candidates: List[str],
     higher-priority agent is picked back up automatically once its persisted
     gate's retry_after passes -- no restart or config edit needed.
     """
-    # routing_candidates(routing) yields the real (provider, model) pairs
-    # routing.agents/routing.tiers actually configure (D4). A candidate with
-    # no routing entry (routing unset, or that agent absent from routing.yaml)
-    # falls back to the old sentinel model -- the eventual provider adapter
-    # still resolves its configured/default model exactly as before, so an
-    # operator who has not adopted routing.yaml yet sees no behavior change.
-    by_provider: Dict[str, List[dict]] = {}
+    # routing_candidates(routing) yields the real {target, harness, model, ...}
+    # cells routing.targets/routing.tiers actually configure (task 2.2). Each
+    # `candidate` here is a HARNESS name (drain's own --agent priority order,
+    # e.g. "claude"/"codex"/"opencode" -- build_command() needs a harness to
+    # pick the right CLI binary), so cells are grouped by harness, not by the
+    # target-selector's own `target` name (multiple targets, e.g. claude-sub
+    # and claude-api, can share one harness). A candidate with no routing
+    # entry (routing unset, or that harness absent from routing.yaml) falls
+    # back to the old sentinel model -- the eventual provider adapter still
+    # resolves its configured/default model exactly as before, so an operator
+    # who has not adopted routing.yaml yet sees no behavior change.
+    by_harness: Dict[str, List[dict]] = {}
     for entry in routing_candidates(routing):
-        by_provider.setdefault(entry["provider"], []).append(entry)
+        by_harness.setdefault(entry["harness"], []).append(entry)
 
     catalog = [
         {"provider": candidate, "model": entry["model"]}
         for candidate in candidates
-        for entry in (by_provider.get(candidate) or [{"model": "configured-default"}])
+        for entry in (by_harness.get(candidate) or [{"model": "configured-default"}])
     ]
+    # (harness, model) -> target, so `available()` can key the capacity gate
+    # the same way spawn_agent/select_cell do now (target:model, not a flat
+    # harness-wide key) -- first-declared target wins on a same-model tie
+    # across multiple targets of one harness.
+    target_for: Dict[tuple, str] = {}
+    for entry in routing_candidates(routing):
+        target_for.setdefault((entry["harness"], entry["model"]), entry["target"])
 
     def available(provider: str, model: str, **_kwargs: object) -> dict:
-        # A real model keys the per-model cache entry (e.g. "claude:opus"),
-        # so a gate on one model no longer blocks every model of that
-        # provider; the sentinel keeps the prior provider-wide gate when no
-        # routing-sourced model is known.
-        key = provider if model == "configured-default" else agent_capacity.provider_key(provider, model)
+        # A real model keys the per-target-model cache entry (e.g.
+        # "claude-sub:opus"), so a gate on one model no longer blocks every
+        # model of that harness; the sentinel keeps the prior harness-wide
+        # gate when no routing-sourced model is known.
+        if model == "configured-default":
+            key = provider
+        else:
+            key = agent_capacity.provider_key(target_for.get((provider, model), provider), model)
         return {
             "available": not capacity_gated(cache, key, now=now),
             "source": "agent-capacity.json",
@@ -2086,9 +2101,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--budget-minutes", type=int, default=0,
                         help="wall-clock budget (0 = none)")
     parser.add_argument("--agent", default=None, choices=SUPPORTED_AGENTS,
-                        help="one-shot provider; when omitted, falls back to "
-                             "routing.drain.agent (worktrail_home()/routing.yaml), "
-                             "then to claude")
+                        help="one-shot provider; defaults to claude when omitted "
+                             "(routing.drain.agent is a retired key -- worktrail-routing "
+                             "--migrate)")
     parser.add_argument("--fallback-agent", action="append", default=[],
                         dest="fallback_agents", choices=SUPPORTED_AGENTS, metavar="AGENT",
                         help="additional agent to try, in priority order, when a "
@@ -2150,18 +2165,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.work_queue_py is None or not Path(args.work_queue_py).is_file():
         print("error: work_queue.py not found; pass --work-queue-py", file=sys.stderr)
         return 2
-    # CLI > routing.yaml ("drain" block) > built-in default. Explicit
-    # automation (the nightly drain script passes --agent/--fallback-agent
-    # itself) is never affected by the routing file; a config-less manual
-    # `worktrail-drain` picks up the operator's stated provider preference
-    # instead of silently defaulting to claude.
+    # CLI > built-in default. routing.drain no longer carries agent/
+    # fallback_agents (routing-target-selector task 5.1: drain agent
+    # selection is candidate-priority-order + capacity gating via
+    # select_available_agent(), not a single configured default) -- loading
+    # still fails loud on a routing file that still declares either retired
+    # key, rather than silently ignoring it.
     try:
         routing_drain = resolve_routing(load_policy(worktrail_home()), route="", risk="")["drain"]
     except OperatorConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    agent = args.agent or routing_drain.get("agent") or "claude"
-    fallback_agents = list(args.fallback_agents) or list(routing_drain.get("fallback_agents") or [])
+    agent = args.agent or "claude"
+    fallback_agents = list(args.fallback_agents)
     invalid = [a for a in [agent, *fallback_agents] if a not in SUPPORTED_AGENTS]
     if invalid:
         print(f"error: unsupported agent(s) {', '.join(sorted(set(invalid)))} "

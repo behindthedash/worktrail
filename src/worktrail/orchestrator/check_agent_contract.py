@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from . import spawnlib
+from ..runtime.selection import Cell
 
 CONTRACT_PROMPT = "Reply with exactly the single word: ok"
 EXPECTED_REPLY = "ok"
@@ -85,13 +86,13 @@ def check_agent(
     spawnlib's parser recognized the response -- not the raw-string fallback.
     """
     runner = runner or subprocess.run
-    model = model or spawnlib.default_model_for_agent(agent)
     output_file = None
     if agent == "codex":
         fd, output_file = tempfile.mkstemp(prefix="contract-codex-last-", suffix=".txt")
         os.close(fd)
 
-    cmd = spawnlib.build_cmd(prompt, agent=agent, model=model, output_last_message=output_file)
+    cell = Cell(target=agent, harness=agent, model=model, effort=None, pool="subscription")
+    cmd = spawnlib.build_cmd(prompt, cell, output_last_message=output_file)
     try:
         proc = runner(cmd, cwd=str(cwd), capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
