@@ -755,6 +755,16 @@ def spawn_agent(
     the caller (parsed as a missing report-back -> task failure) rather than
     looping forever.
 
+    An ordinary infra failure (non-zero exit / empty stdout) retries the SAME
+    cell up to `retries` times first. Once that budget is exhausted the cell
+    is gated `failure_class="infra"` (via `agent_capacity.classify_failure`)
+    and, exactly like the session-limit path above, we re-select from the same
+    row -- the fresh gate excludes the failed cell -- and continue this same
+    attempt loop against whatever cell is served next, with its own fresh
+    `retries` budget. Only when every cell in the row has exhausted its budget
+    (re-selection raises `NoExecutionTarget`) do we give up and return the
+    last raw output to the caller.
+
     Raises `subprocess.TimeoutExpired` on a wall-clock timeout.
     """
     routing = resolve_routing(load_policy(worktrail_home()))
@@ -975,8 +985,40 @@ def spawn_agent(
         if proc.returncode != 0:
             sys.stderr.write(f"[{cell.harness} worker exit {proc.returncode}] {(proc.stderr or '')[-400:]}\n")
         if attempt >= attempts:
-            log(f"    spawn still failing after {attempts} attempt(s); giving up to caller")
-            return finish(last_raw)
+            # This cell's retry budget is exhausted. The `agent_capacity.record`
+            # gate just recorded above excludes it from re-selection, so hop to
+            # the next cell in the same row (same mechanism the session-limit
+            # hop above uses) and give it its own fresh attempt budget. Only
+            # when the row has nothing left do we give up and hand the last
+            # raw output back to the caller.
+            cleanup_output_file()
+            try:
+                next_cell = _select()
+            except NoExecutionTarget:
+                log(f"    spawn still failing after {attempts} attempt(s) on "
+                    f"{cell.target}; no alternate cell left in the row, giving up to caller")
+                return finish(last_raw)
+            failed_cell = cell
+            cell = next_cell
+            output_file = None
+            if cell.harness == "codex":
+                fd, output_file = tempfile.mkstemp(prefix="orch-codex-last-", suffix=".txt")
+                os.close(fd)
+            cmd = build_cmd(
+                prompt,
+                cell,
+                # extra_args/resume_session_id are specific to the FIRST
+                # cell this call resolved; neither carries across an
+                # infra-failure hop.
+                extra_args=None,
+                resume_session_id=None,
+                output_last_message=output_file,
+            )
+            child_env, opencode_dir = _prepare_child_env(cell)
+            log(f"    spawn still failing after {attempts} attempt(s) on "
+                f"{failed_cell.target}; hopping to {cell.target} ({cell.harness}:{cell.model})")
+            attempt = 0
+            continue
         backoff = min(30.0, 5.0 * attempt)
         log(f"    spawn infra failure (attempt {attempt}/{attempts}); retrying in {backoff:.0f}s")
         sleep(backoff)
