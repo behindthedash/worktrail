@@ -1407,6 +1407,84 @@ class SessionLimitFallback(unittest.TestCase):
         self.assertEqual(sleeps, [])
 
 
+class InfraFailureFallback(unittest.TestCase):
+    """routing-target-selector 3.4: once the primary cell exhausts `retries`
+    on an infra failure (not just a session-limit hit), spawn_agent
+    re-selects from the SAME row -- the capacity gate `record()` just wrote
+    for the failed cell excludes it -- and continues the SAME attempt loop
+    against whatever cell is served next, instead of giving up immediately."""
+
+    def setUp(self):
+        spawnlib.agent_capacity.save({"version": 1, "providers": {}})
+
+    def test_hops_to_the_next_cell_after_retries_exhausted(self):
+        calls = []
+        sleeps = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd[0] == "claude":
+                return Proc(1, "", "boom")
+            return Proc(0, json.dumps(
+                {"type": "result", "result": "opencode saved it", "usage": {}}
+            ) + "\n", "")
+
+        original = spawnlib.subprocess.run
+        spawnlib.subprocess.run = fake_run
+        try:
+            with tempfile.TemporaryDirectory() as cwd, \
+                    _patch_routing(CLAUDE_THEN_OPENCODE_ROUTING):
+                out = spawnlib.spawn_agent(
+                    "prompt", cwd, tier="t2-build", retries=2,
+                    extra_args=["--append-system-prompt", "claude-only"],
+                    sleep=lambda seconds: sleeps.append(seconds),
+                )
+        finally:
+            spawnlib.subprocess.run = original
+        self.assertEqual(out.text, "opencode saved it")
+        # first attempt + 2 retries on claude (all infra failures), then one
+        # successful call on the opencode cell the row hops to.
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(calls[0][0], "claude")
+        self.assertEqual(calls[1][0], "claude")
+        self.assertEqual(calls[2][0], "claude")
+        self.assertEqual(calls[3][:2], ["opencode", "run"])
+        # extra_args are specific to the FIRST cell this call resolved and do
+        # not carry across the infra-failure hop.
+        self.assertNotIn("--append-system-prompt", calls[3])
+        # 2 backoff sleeps during the exhausted claude attempts; none after
+        # the hop, since the opencode cell succeeds on its first try.
+        self.assertEqual(len(sleeps), 2)
+
+    def test_every_cell_exhausted_returns_last_raw_output(self):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return Proc(1, "", "boom")
+
+        original = spawnlib.subprocess.run
+        spawnlib.subprocess.run = fake_run
+        try:
+            with tempfile.TemporaryDirectory() as cwd, \
+                    _patch_routing(CLAUDE_THEN_OPENCODE_ROUTING):
+                out = spawnlib.spawn_agent(
+                    "prompt", cwd, tier="t2-build", retries=1,
+                    sleep=lambda *_: None,
+                )
+        finally:
+            spawnlib.subprocess.run = original
+        self.assertEqual(out.text, "")
+        # 2 attempts on claude (retries=1 -> attempts=2), hop, 2 more attempts
+        # on opencode, then no cell left in the row -- give up with the last
+        # raw output.
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(calls[0][0], "claude")
+        self.assertEqual(calls[1][0], "claude")
+        self.assertEqual(calls[2][:2], ["opencode", "run"])
+        self.assertEqual(calls[3][:2], ["opencode", "run"])
+
+
 class SpawnClaudePFallback(unittest.TestCase):
     """brief 20260723-111700-claude-primary-fallback-inert: a claude-primary
     run's session-limit hit must actually hop to another cell in the row when
