@@ -379,6 +379,26 @@ class ClaudeVsNonClaudeSpawnShapeTests(LiveSpawnCallTestCase):
         self.assertEqual(self.captured["resume_session_id"], "sess-123")
 
 
+class DefaultTargetForHarnessTests(unittest.TestCase):
+    """DEFAULT_AGENT is a default-TARGET hint now (not a bare harness name):
+    `_default_target_for_harness()` resolves the first configured
+    `routing.targets` entry whose `harness` matches, so it actually moves a
+    cell to the front of a tier row via `select_cell()`'s `prefer=` (which
+    only matches target names, never harness names)."""
+
+    def test_resolves_first_target_declaring_the_harness(self):
+        with patch.object(spawnlib, "resolve_routing", return_value=TWO_TARGET_ROUTING):
+            self.assertEqual(live._default_target_for_harness("codex"), "codex-sub")
+
+    def test_falls_back_to_bare_harness_when_no_target_matches(self):
+        with patch.object(spawnlib, "resolve_routing", return_value=TWO_TARGET_ROUTING):
+            self.assertEqual(live._default_target_for_harness("opencode"), "opencode")
+
+    def test_falls_back_to_bare_harness_on_resolution_error(self):
+        with patch.object(spawnlib, "resolve_routing", side_effect=RuntimeError("no policy")):
+            self.assertEqual(live._default_target_for_harness("claude"), "claude")
+
+
 class LegacyFallbackMachineryRemovedTests(unittest.TestCase):
     """The judgment_pinned/effective_fallback branch, _serving_agent_guess(),
     and the fallback_chain/fallback_agent constructor params are all deleted --
@@ -397,9 +417,19 @@ class LegacyFallbackMachineryRemovedTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             live.LiveSpawn("spec-001", "docs/specs/001-spec", fallback_chain=["codex"])
 
-    def test_constructor_rejects_legacy_agent_model_kwargs(self):
-        with self.assertRaises(TypeError):
-            live.LiveSpawn("spec-001", "docs/specs/001-spec", model="sonnet")
+    def test_constructor_still_accepts_legacy_model_and_role_map_kwargs(self):
+        # role_models/role_agents/tier_map/purpose_tier_map/effort/model are kept
+        # on the constructor for caller signature compatibility (verify.py's
+        # resolve/ci-fix/assembly-resolve spawns and CLI flags still thread them
+        # through) even though __call__'s tier_for()/select_cell() resolution
+        # never reads them.
+        spawn = live.LiveSpawn(
+            "spec-001", "docs/specs/001-spec",
+            model="sonnet", role_models={"review": "opus"}, role_agents={"review": "claude"},
+            tier_map={("hard", "backend"): {}}, purpose_tier_map={"security-review": "t1"},
+            effort="high",
+        )
+        self.assertEqual(spawn.model, "sonnet")
 
     def test_dispatch_agent_for_no_longer_exists(self):
         self.assertFalse(hasattr(dispatch, "agent_for"))
