@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from ..router.classify import classify
-from ..router.policy import load_policy
+from ..router.policy import load_policy, resolve_routing
 from ..orchestrator.spawnlib import spawn_agent
 from ..router.cluster_detect import OVERLAP_THRESHOLD, _overlap_coefficient, _tokenize
 from ..shared.brief_frontmatter import is_canonical_style, serialize_frontmatter, validate_brief
@@ -49,21 +49,11 @@ def _semantic_slug_summary(focus: str, repo: Optional[str]) -> Optional[str]:
         return None
     try:
         policy = load_policy(repo_path)
+        routing = resolve_routing(policy)
     except Exception:
         return None
-    agent = policy.get("agent_cli") or policy.get("fallback_agent_cli")
-    fallback_chain: list[str] = []
-    routing = policy.get("routing") or {}
-    if isinstance(routing, dict):
-        routed_fallback = routing.get("fallback") or []
-        fallback_chain = [
-            str(entry.get("agent_cli"))
-            for entry in routed_fallback
-            if isinstance(entry, dict) and entry.get("agent_cli")
-        ]
-        if not agent:
-            agent = next((name for name in fallback_chain if name), None)
-    if not agent:
+    tier = routing.get("default_tier")
+    if not tier:
         return None
     prompt = (
         "Summarize the underlying issue in 3 to 5 lowercase words for a "
@@ -75,9 +65,7 @@ def _semantic_slug_summary(focus: str, repo: Optional[str]) -> Optional[str]:
         result = spawn_agent(
             prompt,
             cwd=repo_path,
-            agent=agent,
-            model=policy.get("agent_model"),
-            fallback_agent=fallback_chain or None,
+            tier=tier,
             timeout=20,
             retries=0,
             session_limit_waits=0,
