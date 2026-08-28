@@ -22,6 +22,7 @@ from unittest import mock
 
 from worktrail.router import dashboard
 from worktrail.router.policy import load_policy, resolve_routing
+from worktrail.runtime.selection import select_cell
 from worktrail.conductor import compile as runplan_compile
 from worktrail.conductor import runplan
 
@@ -1439,6 +1440,10 @@ class CategoryPickerAndRender(unittest.TestCase):
         self.assertNotIn("decisions", items_default)
 
     def test_category_items_queue_item_planned_agent_matches_routing(self):
+        # planned-agent reports the configured default_tier's winning target --
+        # route/risk no longer select routing (routing.defaults was retired by
+        # the target/tier/role redesign), so the brief's route/risk here is
+        # deliberately irrelevant to the assertion.
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             specs = repo / "docs" / "specs"
@@ -1446,10 +1451,15 @@ class CategoryPickerAndRender(unittest.TestCase):
             (specs / "go-policy.yaml").write_text(
                 "agent_cli: codex\n"
                 "routing:\n"
-                "  defaults:\n"
-                "    B:\n"
-                "      medium:\n"
-                "        agent_cli: claude\n"
+                "  targets:\n"
+                "    claude-sub:\n"
+                "      harness: claude\n"
+                "      pool: subscription\n"
+                "  tiers:\n"
+                "    t2-build:\n"
+                "      claude-sub:\n"
+                "        model: sonnet\n"
+                "  default_tier: t2-build\n"
             )
             briefs = [{
                 "filename": "queued.md",
@@ -1460,10 +1470,9 @@ class CategoryPickerAndRender(unittest.TestCase):
             }]
             items = dashboard.build_category_items(None, [], [], briefs)
             policy = load_policy(repo)
-            self.assertEqual(
-                items["workqueue"][0]["planned-agent"],
-                resolve_routing(policy, "B", "medium")["agent_cli"],
-            )
+            resolved = resolve_routing(policy)
+            expected = select_cell(resolved, resolved["default_tier"]).target
+            self.assertEqual(items["workqueue"][0]["planned-agent"], expected)
 
     def test_category_items_spec_item_planned_agent_matches_routing(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1473,10 +1482,15 @@ class CategoryPickerAndRender(unittest.TestCase):
             (specs / "go-policy.yaml").write_text(
                 "agent_cli: codex\n"
                 "routing:\n"
-                "  defaults:\n"
-                "    C:\n"
-                "      low:\n"
-                "        agent_cli: opencode\n"
+                "  targets:\n"
+                "    opencode-free:\n"
+                "      harness: opencode\n"
+                "      pool: free\n"
+                "  tiers:\n"
+                "    t3-bulk:\n"
+                "      opencode-free:\n"
+                "        model: deepseek-v4-flash-free\n"
+                "  default_tier: t3-bulk\n"
             )
             rows = [{
                 "repo": "repo-a",
@@ -1491,10 +1505,9 @@ class CategoryPickerAndRender(unittest.TestCase):
             }]
             items = dashboard.build_category_items(rows, None, inflight=[], queue_briefs=[])
             policy = load_policy(repo)
-            self.assertEqual(
-                items["ready"][0]["planned-agent"],
-                resolve_routing(policy, "C", "low")["agent_cli"],
-            )
+            resolved = resolve_routing(policy)
+            expected = select_cell(resolved, resolved["default_tier"]).target
+            self.assertEqual(items["ready"][0]["planned-agent"], expected)
 
     def test_rendered_text_unchanged_with_routing_inputs(self):
         base_rows = [self._spec_row("001", "ready-to-implement", "orchestrator")]

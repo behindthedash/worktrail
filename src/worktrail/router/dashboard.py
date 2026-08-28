@@ -125,6 +125,12 @@ from ..orchestrator.agent_capacity import (
 # `routing.agents` table.
 from ..runtime.routing_source import routing_candidates as _routing_candidates
 
+# select_cell resolves the "planned agent" annotation's default-tier winner
+# (task 2.1); route/risk no longer select routing (routing.defaults was
+# retired by the target/tier/role redesign), so this reports the operator's
+# configured default tier's winning target, not a route/risk-keyed lookup.
+from ..runtime.selection import select_cell as _select_cell
+
 # audit_postmerge is a sibling module (spec post-merge-reconciliation-audit):
 # its dashboard_snapshot() is a pure state-file read (no `gh` calls), reused
 # here rather than re-reading the persisted state a second way.
@@ -374,35 +380,28 @@ def _item_repo_root(item: Dict[str, Any], fallback: Path) -> Path:
     return fallback
 
 
-def _item_route_risk(item: Dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
-    route = item.get("route") or item.get("classifier_route")
-    risk = item.get("risk") or item.get("classifier_risk")
-    classifier = item.get("classifier")
-    if isinstance(classifier, dict):
-        route = route or classifier.get("route")
-        risk = risk or classifier.get("risk")
-    route = str(route).strip().upper() if isinstance(route, str) and route.strip() else None
-    risk = str(risk).strip().lower() if isinstance(risk, str) and risk.strip() else None
-    return route, risk
-
-
-def _planned_agent_for_item(
-    item: Dict[str, Any],
-    repo_root: Optional[Path] = None,
-) -> Optional[str]:
+def _planned_agent_for_item(repo_root: Optional[Path] = None) -> Optional[str]:
+    """The routing target that would serve `repo_root`'s configured
+    `default_tier` -- the dashboard's best-effort "planned agent" annotation.
+    Route/risk no longer select routing (`routing.defaults` was retired by
+    the target/tier/role redesign, so an item's own route/risk classifier is
+    not a routing input any more), which is why this takes no `item`."""
     default_agent = _POLICY_DEFAULTS.get("agent_cli")
     root = repo_root or _dashboard_repo_root()
     policy = _load_dashboard_policy(str(root))
     if not policy:
         return default_agent
-    route, risk = _item_route_risk(item)
-    if route and risk and _resolve_routing is not None:
-        try:
-            resolved = _resolve_routing(policy, route, risk)
-        except Exception:  # noqa: BLE001 — dashboard annotations must not fail rendering
-            return policy.get("agent_cli") or default_agent
-        return resolved.get("agent_cli") or policy.get("agent_cli") or default_agent
-    return policy.get("agent_cli") or default_agent
+    if _resolve_routing is None or _select_cell is None:
+        return policy.get("agent_cli") or default_agent
+    resolved = _resolve_routing(policy)
+    tier = resolved.get("default_tier")
+    if not tier:
+        return policy.get("agent_cli") or default_agent
+    try:
+        cell = _select_cell(resolved, tier)
+    except Exception:  # noqa: BLE001 — dashboard annotations must not fail rendering
+        return policy.get("agent_cli") or default_agent
+    return cell.target
 
 
 def _routing_configured_providers(policy: Optional[Dict[str, Any]]) -> List[str]:
@@ -2209,7 +2208,7 @@ def build_category_items(
             "path": repo["path"] if repo else None,
             "next_action": s["next_action"],
             "stage": s["stage"],
-            "planned-agent": _planned_agent_for_item(s, repo_root),
+            "planned-agent": _planned_agent_for_item(repo_root),
         }
 
     ready_items: List[Dict[str, Any]] = []
@@ -2226,11 +2225,11 @@ def build_category_items(
             ):
                 if s["stage"] in _READY_STAGES:
                     item = _spec_item(s, repo)
-                    item["planned-agent"] = _planned_agent_for_item(s, repo_root)
+                    item["planned-agent"] = _planned_agent_for_item(repo_root)
                     ready_items.append(item)
                 elif s["stage"] in _TASK_STAGES:
                     item = _spec_item(s, repo)
-                    item["planned-agent"] = _planned_agent_for_item(s, repo_root)
+                    item["planned-agent"] = _planned_agent_for_item(repo_root)
                     tasks_items.append(item)
     else:
         for s in sorted(
@@ -2257,7 +2256,7 @@ def build_category_items(
             "description": desc,
             "action": "resume",
             "id": brief_id,
-            "planned-agent": _planned_agent_for_item(brief, _item_repo_root(brief, default_repo_root)),
+            "planned-agent": _planned_agent_for_item(_item_repo_root(brief, default_repo_root)),
         })
 
     queue_ids = {b["filename"].replace(".md", "") for b in queue_briefs}
@@ -2308,7 +2307,7 @@ def build_category_items(
                 "description": "Claim and start this queued brief.",
                 "action": "claim",
                 "id": brief_id,
-                "planned-agent": _planned_agent_for_item(brief, _item_repo_root(brief, default_repo_root)),
+                "planned-agent": _planned_agent_for_item(_item_repo_root(brief, default_repo_root)),
             })
         if overflow_queue:
             workqueue_items.append({
