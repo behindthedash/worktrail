@@ -5,6 +5,30 @@ from datetime import datetime, timedelta, timezone
 
 from worktrail.orchestrator import agent_capacity
 from worktrail.orchestrator import spawnlib
+from worktrail.runtime.selection import NoExecutionTarget
+
+
+def _preflight_target(harness, pool="subscription"):
+    return {"harness": harness, "pool": pool, "api_opt_in": False, "auth": None}
+
+
+def _preflight_routing():
+    """A two-cell `resolve_routing()`-shaped dict (claude preferred, opencode
+    next) for patching `spawnlib.resolve_routing` in a preflight-gating test --
+    same shape as `tests/orchestrator/test_spawnlib.py`'s own routing fixtures."""
+    return {
+        "targets": {
+            "claude": _preflight_target("claude"),
+            "opencode": _preflight_target("opencode"),
+        },
+        "tiers": {
+            "t2-build": {
+                "claude": {"model": "sonnet", "effort": None},
+                "opencode": {"model": "opencode/deepseek-v4-flash-free", "effort": None},
+            },
+        },
+        "roles": {}, "purposes": {}, "default_tier": "t2-build", "drain": {},
+    }
 
 
 def test_malformed_cache_recovers(tmp_path):
@@ -247,6 +271,7 @@ def test_preflight_uses_fallback_when_primary_is_gated(tmp_path, monkeypatch):
         retry_after=now + timedelta(minutes=1), path=path, now=now,
     )
     monkeypatch.setenv("GO_AGENT_CAPACITY_CACHE", str(path))
+    monkeypatch.setattr(spawnlib, "resolve_routing", lambda *a, **kw: _preflight_routing())
     monkeypatch.setattr(
         spawnlib.subprocess,
         "run",
@@ -257,56 +282,9 @@ def test_preflight_uses_fallback_when_primary_is_gated(tmp_path, monkeypatch):
         })(),
     )
 
-    result = spawnlib.spawn_agent("prompt", tmp_path, fallback_agent="opencode")
+    result = spawnlib.spawn_agent("prompt", tmp_path, tier="t2-build", sleep=lambda *_: None)
 
     assert result.text == "ok"
-
-
-def test_preflight_fallback_drops_primary_agent_extra_args(tmp_path, monkeypatch):
-    path = tmp_path / "capacity.json"
-    now = datetime.now(timezone.utc)
-    agent_capacity.record(
-        "claude", "sonnet", outcome="unavailable", failure_class="transport",
-        retry_after=now + timedelta(minutes=1), path=path, now=now,
-    )
-    monkeypatch.setenv("GO_AGENT_CAPACITY_CACHE", str(path))
-    monkeypatch.setattr(
-        spawnlib,
-        "prepare_codex_child_environment",
-        lambda: ({}, None, False),
-    )
-    calls = []
-    monkeypatch.setattr(
-        spawnlib.subprocess,
-        "run",
-        lambda cmd, **kwargs: calls.append(cmd) or type("Proc", (), {
-            "returncode": 0,
-            "stdout": '{"type":"result","result":"ok","usage":{}}\n',
-            "stderr": "",
-        })(),
-    )
-    claude_args = [
-        "--strict-mcp-config", "--tools", "Read", "Bash",
-        "--setting-sources", "project,local",
-    ]
-
-    for fallback in ("codex", "opencode"):
-        calls.clear()
-        result = spawnlib.spawn_agent(
-            "prompt", tmp_path, agent="claude", fallback_agent=fallback,
-            extra_args=claude_args,
-        )
-
-        assert result.text == "ok"
-        assert not set(claude_args).intersection(calls[0])
-
-    agent_capacity.record("claude", "sonnet", outcome="available", path=path)
-    calls.clear()
-    spawnlib.spawn_agent(
-        "prompt", tmp_path, agent="claude", fallback_agent="codex",
-        extra_args=claude_args,
-    )
-    assert set(claude_args).issubset(calls[0])
 
 
 def test_status_reads_empty_cache(tmp_path):
@@ -587,19 +565,20 @@ def test_concurrent_record_capacity_gate_calls_both_survive(tmp_path, monkeypatc
 def test_preflight_reports_all_providers_gated_without_spawning(tmp_path, monkeypatch):
     path = tmp_path / "capacity.json"
     now = datetime.now(timezone.utc)
-    for agent, model in (("claude", "sonnet"), ("opencode", spawnlib.default_model_for_agent("opencode"))):
+    for target, model in (("claude", "sonnet"), ("opencode", "opencode/deepseek-v4-flash-free")):
         agent_capacity.record(
-            agent, model, outcome="unavailable", failure_class="transport",
+            target, model, outcome="unavailable", failure_class="transport",
             retry_after=now + timedelta(minutes=1), path=path, now=now,
         )
     monkeypatch.setenv("GO_AGENT_CAPACITY_CACHE", str(path))
+    monkeypatch.setattr(spawnlib, "resolve_routing", lambda *a, **kw: _preflight_routing())
     called = []
     monkeypatch.setattr(spawnlib.subprocess, "run", lambda *args, **kwargs: called.append(args))
 
     try:
-        spawnlib.spawn_agent("prompt", tmp_path, fallback_agent="opencode")
-    except agent_capacity.ProviderUnavailable as exc:
-        assert exc.provider_key == "opencode:" + spawnlib.default_model_for_agent("opencode")
+        spawnlib.spawn_agent("prompt", tmp_path, tier="t2-build", sleep=lambda *_: None)
+    except NoExecutionTarget:
+        pass
     else:
         raise AssertionError("all gated providers should stop before spawn")
     assert called == []

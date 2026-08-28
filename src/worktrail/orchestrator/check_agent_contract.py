@@ -86,7 +86,6 @@ def check_agent(
     spawnlib's parser recognized the response -- not the raw-string fallback.
     """
     runner = runner or subprocess.run
-    model = model or spawnlib.default_model_for_agent(agent)
     output_file = None
     if agent == "codex":
         fd, output_file = tempfile.mkstemp(prefix="contract-codex-last-", suffix=".txt")
