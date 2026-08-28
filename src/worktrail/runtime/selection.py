@@ -46,12 +46,37 @@ class InvalidCandidate(SelectionError):
 
 
 class NoExecutionTarget(SelectionError):
-    """Every compatible configured candidate is capacity gated."""
+    """Every compatible configured candidate/cell is capacity gated.
 
-    def __init__(self, attempted: Sequence[tuple[str, str, Any]]):
+    ``attempted`` is either the legacy ``(provider, model, evidence)`` triples
+    used by :func:`select_execution_target`, or the ``(target, harness,
+    model, evidence)`` quadruples used by :func:`select_cell` -- the message
+    is shaped from whichever arity was passed so ``select_cell``'s callers
+    get each cell's gate class and retry time without breaking the older,
+    shorter message existing callers already match on.
+    """
+
+    def __init__(self, attempted: Sequence[tuple]):
         self.attempted = tuple(attempted)
-        labels = ", ".join(f"{p}:{m}" for p, m, _ in attempted) or "none"
-        super().__init__(f"no supported execution target has capacity (attempted: {labels})")
+        if not self.attempted:
+            super().__init__("no supported execution target has capacity (attempted: none)")
+            return
+        if len(self.attempted[0]) == 4:
+            parts = []
+            for target, harness, model, evidence in self.attempted:
+                detail = f"{target} ({harness}:{model})"
+                gate_class = _value(evidence, "failure_class") if isinstance(evidence, Mapping) else None
+                retry_at = _value(evidence, "retry_after") if isinstance(evidence, Mapping) else None
+                if gate_class:
+                    detail += f" [{gate_class}"
+                    if retry_at:
+                        detail += f", retry at {retry_at}"
+                    detail += "]"
+                parts.append(detail)
+            super().__init__(f"no execution cell has capacity (attempted: {'; '.join(parts)})")
+        else:
+            labels = ", ".join(f"{p}:{m}" for p, m, _ in self.attempted) or "none"
+            super().__init__(f"no supported execution target has capacity (attempted: {labels})")
 
 
 def _value(item: Any, name: str, default: Any = None) -> Any:
@@ -242,3 +267,87 @@ def select_execution_target(
 
 # Concise public spelling for callers that already use ``resolve_*`` APIs.
 resolve_execution_target = select_execution_target
+
+
+@dataclass(frozen=True)
+class Cell:
+    """One resolved routing cell: a target, the harness that runs it, and
+    the model/effort/pool/auth that harness spawns with (design D3)."""
+
+    target: str
+    harness: str
+    model: str
+    effort: Optional[str]
+    pool: str
+    auth: Any = None
+
+
+def select_cell(
+    routing: Mapping[str, Any],
+    tier: str,
+    *,
+    prefer: Optional[str] = None,
+    exclude_harness: Optional[str] = None,
+    capacity: Any = None,
+    now: Optional[datetime] = None,
+) -> Cell:
+    """Walk a `routing.tiers` row across its declared `routing.targets` in
+    preference order, returning the first cell with capacity (design D3).
+
+    ``routing`` is `resolve_routing()`'s return value: `{targets, tiers,
+    roles, purposes, default_tier, drain}`. Pure and deterministic beyond
+    ``capacity``/``now``, which callers inject (D3: "Pure, clock/capacity
+    injected, deterministic").
+
+    Steps (D3):
+      1. order = targets in file order; ``prefer`` (if it names a target with
+         a cell in this row) moves to the front.
+      2. drop `api`-pool targets lacking `api_opt_in`; drop targets with no
+         cell in this row.
+      3. if `exclude_harness` is set, partition: other harnesses first, the
+         excluded harness last (soft exclusion).
+      4. the first cell whose `(target, model)` is not capacity-gated wins.
+      5. none available -> `NoExecutionTarget` listing every cell attempted
+         with its gate class and retry time.
+    """
+    targets: Mapping[str, Any] = routing.get("targets") or {}
+    row: Mapping[str, Any] = (routing.get("tiers") or {}).get(tier) or {}
+
+    order = list(targets.keys())
+    if prefer and prefer in order and prefer in row:
+        order.remove(prefer)
+        order.insert(0, prefer)
+
+    candidates: list[tuple[str, Mapping[str, Any], Mapping[str, Any]]] = []
+    for name in order:
+        target = targets.get(name)
+        if not isinstance(target, Mapping):
+            continue
+        if target.get("pool") == "api" and not target.get("api_opt_in"):
+            continue
+        cell = row.get(name)
+        if not cell:
+            continue
+        candidates.append((name, target, cell))
+
+    if exclude_harness:
+        other = [item for item in candidates if item[1].get("harness") != exclude_harness]
+        excluded = [item for item in candidates if item[1].get("harness") == exclude_harness]
+        candidates = other + excluded
+
+    attempted: list[tuple[str, str, str, Any]] = []
+    for name, target, cell in candidates:
+        harness = target.get("harness")
+        model = cell.get("model")
+        available, evidence = _capacity(capacity, name, model, now)
+        attempted.append((name, harness, model, evidence))
+        if available:
+            return Cell(
+                target=name,
+                harness=harness,
+                model=model,
+                effort=cell.get("effort"),
+                pool=target.get("pool"),
+                auth=target.get("auth"),
+            )
+    raise NoExecutionTarget(attempted)

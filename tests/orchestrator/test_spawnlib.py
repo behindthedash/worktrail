@@ -25,6 +25,15 @@ os.environ.setdefault("GO_AGENT_CAPACITY_CACHE", os.path.join(tempfile.mkdtemp()
 
 Proc = namedtuple("Proc", "returncode stdout stderr")
 
+
+def _cell(harness="claude", model=None, effort=None, pool="subscription", auth=None, target=None):
+    """Build a `Cell` for a `build_cmd`/`build_child_env` test without every
+    call site spelling out all six fields."""
+    return spawnlib.Cell(
+        target=target or harness, harness=harness, model=model, effort=effort,
+        pool=pool, auth=auth,
+    )
+
 # Claude-only argv tokens (spec spawnlib-cross-hop-argv-invariant): every
 # element here is legal ONLY on a `claude -p` command line; a codex or opencode
 # argv carrying any of them as an exact element means the primary's extra_args
@@ -339,7 +348,9 @@ class Helpers(unittest.TestCase):
         self.assertFalse(spawnlib.is_infra_failure(0, "real"))
 
     def test_build_cmd_includes_model_and_extra(self):
-        c = spawnlib.build_cmd("hi", model="haiku", extra_args=["--append-system-prompt", "x"])
+        c = spawnlib.build_cmd(
+            "hi", _cell(model="haiku"), extra_args=["--append-system-prompt", "x"]
+        )
         self.assertEqual(c[:3], ["claude", "-p", "hi"])
         self.assertIn("--permission-mode", c)
         self.assertIn("bypassPermissions", c)
@@ -348,17 +359,17 @@ class Helpers(unittest.TestCase):
         self.assertIn("--append-system-prompt", c)
 
     def test_build_cmd_no_model(self):
-        c = spawnlib.build_cmd("hi")
+        c = spawnlib.build_cmd("hi", _cell())
         self.assertNotIn("--model", c)
 
     def test_build_cmd_uses_stream_json(self):
-        c = spawnlib.build_cmd("hi")
+        c = spawnlib.build_cmd("hi", _cell())
         self.assertIn("--output-format", c)
         idx = c.index("--output-format")
         self.assertEqual(c[idx + 1], "stream-json")
 
     def test_build_cmd_opencode(self):
-        c = spawnlib.build_cmd("hi", agent="opencode", model="opencode/claude-sonnet-4-6")
+        c = spawnlib.build_cmd("hi", _cell(harness="opencode", model="opencode/claude-sonnet-4-6"))
         self.assertEqual(c[:3], ["opencode", "run", "--format"])
         self.assertEqual(c[3], "json")
         self.assertIn("--model", c)
@@ -366,7 +377,10 @@ class Helpers(unittest.TestCase):
         self.assertEqual(c[-1], "hi")
 
     def test_build_cmd_codex(self):
-        c = spawnlib.build_cmd("hi", agent="codex", model="gpt-5.3-codex", output_last_message="/tmp/out")
+        c = spawnlib.build_cmd(
+            "hi", _cell(harness="codex", model="gpt-5.3-codex"),
+            output_last_message="/tmp/out",
+        )
         self.assertEqual(c[:2], ["codex", "exec"])
         self.assertIn("--json", c)
         self.assertIn("-s", c)
@@ -379,33 +393,51 @@ class Helpers(unittest.TestCase):
 
     def test_build_cmd_rejects_unknown_agent(self):
         with self.assertRaises(ValueError):
-            spawnlib.build_cmd("hi", agent="bogus")
+            spawnlib.build_cmd("hi", _cell(harness="bogus"))
 
     def test_build_cmd_no_effort_byte_identical_to_pre_change(self):
         # model-tier-routing 3.4: effort=None must not perturb any agent's
         # command line -- byte-identical to the pre-effort build_cmd() output.
         for agent in ("claude", "opencode", "codex"):
-            with_effort_none = spawnlib.build_cmd("hi", agent=agent, effort=None)
-            without_effort_kwarg = spawnlib.build_cmd("hi", agent=agent)
+            with_effort_none = spawnlib.build_cmd("hi", _cell(harness=agent, effort=None))
+            without_effort_kwarg = spawnlib.build_cmd("hi", _cell(harness=agent))
             self.assertEqual(with_effort_none, without_effort_kwarg)
             self.assertNotIn("--effort", with_effort_none)
             self.assertNotIn("--variant", with_effort_none)
             self.assertFalse(any("model_reasoning_effort" in part for part in with_effort_none))
 
     def test_build_cmd_claude_effort_flag(self):
-        c = spawnlib.build_cmd("hi", agent="claude", effort="high")
+        c = spawnlib.build_cmd("hi", _cell(effort="high"))
         self.assertIn("--effort", c)
         self.assertEqual(c[c.index("--effort") + 1], "high")
 
     def test_build_cmd_opencode_effort_variant_flag(self):
-        c = spawnlib.build_cmd("hi", agent="opencode", effort="max")
+        c = spawnlib.build_cmd("hi", _cell(harness="opencode", effort="max"))
         self.assertIn("--variant", c)
         self.assertEqual(c[c.index("--variant") + 1], "max")
 
     def test_build_cmd_codex_effort_reasoning_config(self):
-        c = spawnlib.build_cmd("hi", agent="codex", effort="xhigh")
+        c = spawnlib.build_cmd("hi", _cell(harness="codex", effort="xhigh"))
         self.assertIn("-c", c)
         self.assertEqual(c[c.index("-c") + 1], "model_reasoning_effort=xhigh")
+
+    def test_build_cmd_claude_subscription_omits_bare(self):
+        c = spawnlib.build_cmd("hi", _cell(pool="subscription"))
+        self.assertNotIn("--bare", c)
+
+    def test_build_cmd_claude_api_appends_bare(self):
+        c = spawnlib.build_cmd("hi", _cell(pool="api"))
+        self.assertIn("--bare", c)
+
+    def test_build_cmd_opencode_api_pool_does_not_add_bare(self):
+        # --bare is a claude-only auth-lane flag (D6); pool never perturbs
+        # opencode/codex argv beyond the model/effort translation they already do.
+        c = spawnlib.build_cmd("hi", _cell(harness="opencode", model="m", pool="api"))
+        self.assertNotIn("--bare", c)
+
+    def test_build_cmd_codex_api_pool_does_not_add_bare(self):
+        c = spawnlib.build_cmd("hi", _cell(harness="codex", model="m", pool="api"))
+        self.assertNotIn("--bare", c)
 
 
 class DefaultSettingSourcesStructural(unittest.TestCase):
@@ -418,13 +450,13 @@ class DefaultSettingSourcesStructural(unittest.TestCase):
     passes, so a brand-new call site is covered for free."""
 
     def test_claude_gets_default_with_no_extra_args(self):
-        c = spawnlib.build_cmd("hi")  # simulates a hypothetical new call site
+        c = spawnlib.build_cmd("hi", _cell())  # simulates a hypothetical new call site
         self.assertIn("--setting-sources", c)
         idx = c.index("--setting-sources")
         self.assertEqual(c[idx + 1], "project,local")
 
     def test_claude_gets_default_with_unrelated_extra_args(self):
-        c = spawnlib.build_cmd("hi", extra_args=["--append-system-prompt", "x"])
+        c = spawnlib.build_cmd("hi", _cell(), extra_args=["--append-system-prompt", "x"])
         self.assertIn("--setting-sources", c)
         idx = c.index("--setting-sources")
         self.assertEqual(c[idx + 1], "project,local")
@@ -432,14 +464,14 @@ class DefaultSettingSourcesStructural(unittest.TestCase):
     def test_caller_supplied_setting_sources_is_not_overridden(self):
         # A caller that genuinely wants the operator's user-level settings opts
         # out by passing its own value; the default must never clobber it.
-        c = spawnlib.build_cmd("hi", extra_args=["--setting-sources", "all"])
+        c = spawnlib.build_cmd("hi", _cell(), extra_args=["--setting-sources", "all"])
         self.assertEqual(c.count("--setting-sources"), 1)
         idx = c.index("--setting-sources")
         self.assertEqual(c[idx + 1], "all")
 
     def test_codex_and_opencode_never_get_the_claude_only_flag(self):
         for agent, model in (("codex", "gpt-5.3-codex"), ("opencode", "opencode/claude-sonnet-4-6")):
-            c = spawnlib.build_cmd("hi", agent=agent, model=model)
+            c = spawnlib.build_cmd("hi", _cell(harness=agent, model=model))
             self.assertNotIn("--setting-sources", c, agent)
 
     def test_spawn_agent_reaches_the_default_through_to_subprocess(self):
@@ -1702,25 +1734,96 @@ class BuildCmdForkSession(unittest.TestCase):
     """Tests for fork-session path in build_cmd (TASK-007)."""
 
     def test_build_cmd_fork_session(self):
-        cmd = spawnlib.build_cmd("p", resume_session_id="sid-42")
+        cmd = spawnlib.build_cmd("p", _cell(), resume_session_id="sid-42")
         self.assertIn("--resume", cmd)
         idx = cmd.index("--resume")
         self.assertEqual(cmd[idx + 1], "sid-42")
         self.assertIn("--fork-session", cmd)
 
     def test_build_cmd_no_fork(self):
-        cmd = spawnlib.build_cmd("p")
+        cmd = spawnlib.build_cmd("p", _cell())
         self.assertNotIn("--fork-session", cmd)
         self.assertNotIn("--resume", cmd)
 
     def test_build_cmd_fork_session_none(self):
-        cmd = spawnlib.build_cmd("p", resume_session_id=None)
+        cmd = spawnlib.build_cmd("p", _cell(), resume_session_id=None)
         self.assertNotIn("--fork-session", cmd)
 
     def test_build_cmd_fork_session_empty_string(self):
         # Empty string is falsy — should not add fork args
-        cmd = spawnlib.build_cmd("p", resume_session_id="")
+        cmd = spawnlib.build_cmd("p", _cell(), resume_session_id="")
         self.assertNotIn("--fork-session", cmd)
+
+
+class BuildChildEnv(unittest.TestCase):
+    """Tests for build_child_env(cell, base_env) -- design D6: claude
+    subscription drops any ambient ANTHROPIC_API_KEY, claude api requires and
+    copies through its declared auth.env, and every other harness/pool is a
+    no-op (routing-target-selector 3.2)."""
+
+    def test_claude_subscription_removes_ambient_api_key(self):
+        base = {"ANTHROPIC_API_KEY": "sk-ambient", "PATH": "/usr/bin"}
+        env = spawnlib.build_child_env(_cell(pool="subscription"), base)
+        self.assertNotIn("ANTHROPIC_API_KEY", env)
+        self.assertEqual(env["PATH"], "/usr/bin")
+
+    def test_claude_subscription_is_a_noop_when_key_already_absent(self):
+        base = {"PATH": "/usr/bin"}
+        env = spawnlib.build_child_env(_cell(pool="subscription"), base)
+        self.assertEqual(env, base)
+
+    def test_base_env_is_not_mutated(self):
+        base = {"ANTHROPIC_API_KEY": "sk-ambient"}
+        spawnlib.build_child_env(_cell(pool="subscription"), base)
+        self.assertIn("ANTHROPIC_API_KEY", base)
+
+    def test_claude_api_copies_named_auth_var_through(self):
+        base = {"ANTHROPIC_API_KEY": "sk-real", "PATH": "/usr/bin"}
+        cell = _cell(pool="api", auth={"env": "ANTHROPIC_API_KEY"})
+        env = spawnlib.build_child_env(cell, base)
+        self.assertEqual(env["ANTHROPIC_API_KEY"], "sk-real")
+
+    def test_claude_api_copies_a_differently_named_auth_var(self):
+        base = {"CLAUDE_API_KEY_PROD": "sk-prod"}
+        cell = _cell(pool="api", auth={"env": "CLAUDE_API_KEY_PROD"})
+        env = spawnlib.build_child_env(cell, base)
+        self.assertEqual(env["CLAUDE_API_KEY_PROD"], "sk-prod")
+
+    def test_claude_api_raises_when_auth_env_var_is_unset(self):
+        base = {"PATH": "/usr/bin"}  # ANTHROPIC_API_KEY not present
+        cell = _cell(pool="api", auth={"env": "ANTHROPIC_API_KEY"}, target="claude-api")
+        with self.assertRaises(spawnlib.OperatorConfigError) as ctx:
+            spawnlib.build_child_env(cell, base)
+        self.assertIn("claude-api", str(ctx.exception))
+        self.assertIn("ANTHROPIC_API_KEY", str(ctx.exception))
+
+    def test_claude_api_raises_when_auth_env_var_is_empty(self):
+        base = {"ANTHROPIC_API_KEY": ""}
+        cell = _cell(pool="api", auth={"env": "ANTHROPIC_API_KEY"})
+        with self.assertRaises(spawnlib.OperatorConfigError):
+            spawnlib.build_child_env(cell, base)
+
+    def test_claude_api_raises_when_auth_is_not_configured(self):
+        base = {"ANTHROPIC_API_KEY": "sk-real"}
+        cell = _cell(pool="api", auth=None, target="claude-api")
+        with self.assertRaises(spawnlib.OperatorConfigError) as ctx:
+            spawnlib.build_child_env(cell, base)
+        self.assertIn("claude-api", str(ctx.exception))
+        self.assertIn("auth.env", str(ctx.exception))
+
+    def test_opencode_is_a_noop_regardless_of_pool(self):
+        base = {"ANTHROPIC_API_KEY": "sk-ambient"}
+        for pool in ("subscription", "free", "api"):
+            with self.subTest(pool=pool):
+                env = spawnlib.build_child_env(_cell(harness="opencode", pool=pool), base)
+                self.assertEqual(env, base)
+
+    def test_codex_is_a_noop_regardless_of_pool(self):
+        base = {"ANTHROPIC_API_KEY": "sk-ambient"}
+        for pool in ("subscription", "api"):
+            with self.subTest(pool=pool):
+                env = spawnlib.build_child_env(_cell(harness="codex", pool=pool), base)
+                self.assertEqual(env, base)
 
 
 if __name__ == "__main__":
