@@ -203,6 +203,50 @@ class ReconcileTailEvidenceVerifyOneTest(unittest.TestCase):
             self.assertEqual(result[0]["task"], "TASK-1.3")
             self.assertEqual(result[0]["reconcile_state"], "quarantined")
 
+    def test_verify_one_exception_quarantines_only_that_finding(self):
+        finding_a = _finding("TASK-1.4")
+        finding_b = _finding("TASK-1.5")
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            journal_path = str(Path(tmp) / "journal.json")
+
+            def fake_integrate_one(g, *_args, **_kwargs):
+                integrate._write_group_journal(
+                    journal_path, g["name"], "https://github.com/acme/repo/pull/3",
+                    g["name"], "OPEN",
+                )
+                return None
+
+            fake_verifier = unittest.mock.Mock()
+
+            def fake_verify_one(g, *_args, **_kwargs):
+                if g["name"] == "tail-task-1.4":
+                    raise RuntimeError("boom")
+
+            fake_verifier.verify_one.side_effect = fake_verify_one
+
+            def fake_make_verifier():
+                return fake_verifier
+
+            with unittest.mock.patch.object(
+                integrate, "integrate_one", side_effect=fake_integrate_one
+            ):
+                result = integrate.reconcile_unreconciled_tail_evidence(
+                    [finding_a, finding_b], Path("/fake/repo"), "spec-1",
+                    [
+                        {"id": "TASK-1.4", "deps": []},
+                        {"id": "TASK-1.5", "deps": []},
+                    ],
+                    "origin", "run-1", "main", journal_path,
+                    make_verifier=fake_make_verifier,
+                )
+
+            self.assertEqual(fake_verifier.verify_one.call_count, 2)
+            self.assertEqual(result[0]["task"], "TASK-1.4")
+            self.assertEqual(result[0]["reconcile_state"], "quarantined")
+            self.assertEqual(result[1]["task"], "TASK-1.5")
+            self.assertEqual(result[1]["reconcile_state"], "opened")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
