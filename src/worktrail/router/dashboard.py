@@ -3230,6 +3230,14 @@ def main(argv=None) -> int:
     # Single-repo worktrees live at <repo>/../<repo>-worktrees/. args.root is
     # <repo>/docs/specs, so the repo is its grandparent.
     repo_dir = Path(args.root).resolve().parent.parent
+    # This branch's own summary count must match its repo-scoped view
+    # (category_actions' "Work queue" label below) rather than the raw
+    # multi-repo total -- same queue_repo scoping as everything else in this
+    # branch, applied to the pre-existing "not blocked" formula.
+    scoped_handoff_queue = sum(
+        1 for b in queue_briefs
+        if not b.get("blocked") and _repo_scope_match(b.get("repo"), repo_dir.name)
+    )
     epic_rows = scan_epics(repo_dir)
     worktrees = [wt.name for wt in _find_worktrees(repo_dir.parent, repo_dir.name)]
     backlog_total = sum(1 for r in rows if r["stage"] in _BACKLOG)
@@ -3258,7 +3266,7 @@ def main(argv=None) -> int:
                     "specs": rows,
                     "epics": epic_rows,
                     "active_specs": sum(1 for r in rows if r["stage"] in _ACTIVE),
-                    "handoff_queue": unblocked_queue_total,
+                    "handoff_queue": scoped_handoff_queue,
                     "inflight": inflight,
                     "worktrees": worktrees,
                     "category_actions": build_category_actions(
