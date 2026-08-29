@@ -937,8 +937,6 @@ def spawn_agent(
             env["WORKTRAIL_SKILL_DISPATCH_DEPTH"] = os.environ[
                 "WORKTRAIL_SKILL_DISPATCH_DEPTH"
             ]
-        if dispatch_id is not None:
-            env["WORKTRAIL_DISPATCH_ID"] = dispatch_id
         return build_child_env(current_cell, env), oc_data_dir
 
     child_env, opencode_dir = _prepare_child_env(cell)
@@ -1156,7 +1154,6 @@ def spawn_claude_p(
     session_limit_waits: int = SESSION_LIMIT_WAITS_DEFAULT,
     extra_args: Optional[Sequence[str]] = None,
     resume_session_id: Optional[str] = None,
-    dispatch_id: Optional[str] = None,
     log: Callable[[str], None] = lambda *_: None,
     sleep: Callable[[float], None] = time.sleep,
 ) -> SpawnResult:
@@ -1177,7 +1174,6 @@ def spawn_claude_p(
         session_limit_waits=session_limit_waits,
         extra_args=extra_args,
         resume_session_id=resume_session_id,
-        dispatch_id=dispatch_id,
         log=log,
         sleep=sleep,
     )
