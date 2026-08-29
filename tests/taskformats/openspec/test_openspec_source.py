@@ -111,6 +111,71 @@ def test_load_missing_change_raises(tmp_path):
         OpenSpecTaskSource(tmp_path).load("nope")
 
 
+DECLARED_FILES_MD = textwrap.dedent(
+    """\
+    ## 1. Setup
+
+    - [ ] 1.1 Create export module structure
+      files: src/export/__init__.py, src/export/csv.py
+    - [ ] 1.2 Add CSV encoder dependency
+    """
+)
+
+
+def test_load_carries_declared_files_into_task_dict(tmp_path):
+    """The declaration reaches `task["files"]` through `load()`, not just the
+    parser -- the adapter is the seam `compile.py` reads scope through."""
+    _, tasks = OpenSpecTaskSource(_change(tmp_path, tasks=DECLARED_FILES_MD)).load("add-export")
+    by_id = {t["id"]: t for t in tasks}
+    assert by_id["1.1"]["files"] == ["src/export/__init__.py", "src/export/csv.py"]
+    # a task with no continuation line still carries an empty list
+    assert by_id["1.2"]["files"] == []
+
+
+NO_PATHS_DECLARED_MD = textwrap.dedent(
+    """\
+    ## 1. Setup
+
+    - [ ] 1.1 Create export module structure
+      files:
+    """
+)
+
+
+def test_load_surfaces_empty_files_declaration_as_a_frontmatter_warning(tmp_path):
+    """A `files:` line naming no paths must not raise -- it rides the same
+    `frontmatter_warnings` list every task dict already carries."""
+    _, tasks = OpenSpecTaskSource(_change(tmp_path, tasks=NO_PATHS_DECLARED_MD)).load(
+        "add-export"
+    )
+    task = tasks[0]
+    assert task["files"] == []
+    assert any("names no paths" in w for w in task["frontmatter_warnings"])
+
+
+DUPLICATE_FILES_DECLARED_MD = textwrap.dedent(
+    """\
+    ## 1. Setup
+
+    - [ ] 1.1 Create export module structure
+      files: src/export/__init__.py
+      files: src/export/csv.py
+    """
+)
+
+
+def test_load_surfaces_duplicate_files_declaration_as_a_frontmatter_warning(tmp_path):
+    """A second `files:` line under the same task is tolerated, not fatal: the
+    first declaration wins and the collision is reported via
+    `frontmatter_warnings`."""
+    _, tasks = OpenSpecTaskSource(_change(tmp_path, tasks=DUPLICATE_FILES_DECLARED_MD)).load(
+        "add-export"
+    )
+    task = tasks[0]
+    assert task["files"] == ["src/export/__init__.py"]
+    assert any("more than one" in w for w in task["frontmatter_warnings"])
+
+
 # --------------------------------------------------------------------------- #
 # paths + guards
 # --------------------------------------------------------------------------- #

@@ -6,8 +6,8 @@
 
 ## 2. Source adapter (`src/worktrail/taskformats/openspec/source.py`)
 
-- [ ] 2.1 Change `load()` to emit each parsed task's `files` into the task dict in place of the hard-coded `"files": []`, and update the class docstring so "deliberately does not synthesise files" reads as "never invents scope; carries only what the artifact declares" (Requirement: Inline file-scope declaration parsing)
-- [ ] 2.2 Add adapter tests asserting declared paths reach `task["files"]` through `OpenSpecTaskSource.load()` and ride the existing `frontmatter_warnings` plumbing for the malformed cases (Requirements: Inline file-scope declaration parsing, Tolerant handling of malformed declarations)
+- [x] 2.1 Change `load()` to emit each parsed task's `files` into the task dict in place of the hard-coded `"files": []`, and update the class docstring so "deliberately does not synthesise files" reads as "never invents scope; carries only what the artifact declares" (Requirement: Inline file-scope declaration parsing)
+- [x] 2.2 Add adapter tests asserting declared paths reach `task["files"]` through `OpenSpecTaskSource.load()` and ride the existing `frontmatter_warnings` plumbing for the malformed cases (Requirements: Inline file-scope declaration parsing, Tolerant handling of malformed declarations)
 
 ## 3. Seed-path behavior (`tests/conductor/test_compile.py`)
 

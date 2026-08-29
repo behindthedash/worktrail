@@ -35,10 +35,10 @@ DEFAULT_SPEC_ROOT = "openspec/changes"
 class OpenSpecTaskSource:
     """`TaskSource` over `openspec/changes/<change-id>/`.
 
-    Deliberately does not synthesise `files` (file scope). `runnable_frontier()`
+    Never invents scope; carries only what the artifact declares. `runnable_frontier()`
     treats an empty file set as "collides with nothing", so inventing a scope
     here would be worse than declaring none: it would let the coordinator run
-    two tasks concurrently against a guess. File scope is the compiled
+    two tasks concurrently against a guess. Undeclared file scope is the compiled
     RunPlan's job (design P3); until it exists, the conservative `deps` below
     are what keep a run correct.
     """
@@ -110,7 +110,7 @@ class OpenSpecTaskSource:
                     "status": t.status,
                     "deps": deps,
                     "external_deps": [],
-                    "files": [],
+                    "files": list(t.files),
                     "kind": t.kind,
                     "tags": list(t.tags),
                     "group": t.group,
