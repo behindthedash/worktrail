@@ -235,7 +235,12 @@ def tier_for(
 
     Precedence: the task's own explicit `tier` override, else
     `roles.<role>.tier` for JUDGMENT_ROLES, else `purposes[task.purpose]`,
-    else the task's own `complexity` (used directly as a tier row name), else
+    else the task's own `complexity` -- used directly as a tier row name, but
+    only when it names a declared row (`available_tiers`): an unmatched value
+    like `"medium"` falls through to `default_tier` instead of reaching
+    `select_cell()` as a nonexistent row and crashing the spawn with
+    `NoExecutionTarget` (the worktrail-go SKILL contract: "value has no
+    matching row -> fall through to `routing.default_tier`") -- else
     `default_tier`. JUDGMENT_ROLES never consult purpose/complexity at all
     (DEC-003 independent-reviewer guarantee) -- a judgment role with no
     `roles.<role>` entry falls straight to its own default (review:
@@ -246,11 +251,12 @@ def tier_for(
     `available_tiers`, when given, is the operator's actual declared
     `routing.tiers` key set -- passed so review's `t1-deep`-or-`default_tier`
     fallback can tell whether `t1-deep` is really declared instead of always
-    assuming it is (this function has no other visibility into `routing.tiers`
-    by design, matching its documented signature: role/task/roles/purposes/
-    default_tier only). Omitted, `t1-deep` is used unconditionally for review
-    -- correct for any repo using the shipped starter template, which always
-    declares it.
+    assuming it is, and so an unmatched `complexity` value can fall through
+    to `default_tier` (this function has no other visibility into
+    `routing.tiers` by design, matching its documented signature: role/task/
+    roles/purposes/default_tier only). Omitted, `t1-deep` is used
+    unconditionally for review and `complexity` passes through unchecked --
+    the pre-routing behavior for callers with no routing table in play.
     """
     roles = roles or {}
     purposes = purposes or {}
@@ -274,7 +280,8 @@ def tier_for(
     if purpose and purpose in purposes:
         return purposes[purpose], None, False
     complexity = task.get("complexity")
-    if isinstance(complexity, str) and complexity:
+    if isinstance(complexity, str) and complexity and (
+            available_tiers is None or complexity in available_tiers):
         return complexity, None, False
     return default_tier, None, False
 

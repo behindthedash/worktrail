@@ -189,6 +189,15 @@ PR's head), run the gate from the worktree root and require exit 0:
 worktrail-preflight run --repo "$PWD" --run "$RUN" --risk "$RISK_LEVEL" --gates "$GATES" --target-branch "$BASE" --route "$ROUTE"
 ```
 
+Run this **after commit, as the last step before `git push`/`gh pr create`** —
+not as an earlier sanity check on uncommitted work. The pass marker it records
+is keyed to the exact tree state (`tree_state()`), so a run against an
+uncommitted change can never satisfy the push-time `check()` gate the very
+next commit invalidates it. `run` itself refuses immediately on a dirty tree
+(`DIRTY_TREE_EXIT`) rather than spending the full gate's runtime on a result
+that's guaranteed to be discarded — but relying on that refusal still means an
+avoidable wasted run; sequence the commit first instead.
+
 `worktrail-preflight run` executes `pre_pr_gate.py` in-process (identical
 checks and exit codes to calling `worktrail-pre-pr-gate` directly — it is a
 strict superset, not an alternate path) and, on a zero exit, additionally

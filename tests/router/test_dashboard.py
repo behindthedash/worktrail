@@ -4036,6 +4036,12 @@ class DecisionsJsonCLI(unittest.TestCase):
                 [b["id"] for b in output["category_items"]["workqueue"]], ["ours"]
             )
 
+            # The top-level summary count must agree with the "Work queue (1)"
+            # label above, not the raw 2-brief multi-repo total (follow-up to
+            # the live incident: this field was still unfiltered after the
+            # category pickers were fixed).
+            self.assertEqual(output["handoff_queue"], 1)
+
 
 class QueueJsonFileCLI(unittest.TestCase):
     """`--queue-json-file`/`--decisions-json-file`: a file-path (or '-' for

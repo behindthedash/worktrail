@@ -12,10 +12,14 @@ Three ways a plan gets produced, cheapest first:
    zero LLM calls on the second run.*
 2. **Seed.** If the authoring format already declares file scope for every task,
    the plan is a pure projection of what was parsed and no model is invoked.
-   Every devkit spec takes this path, which is decision D1's "task frontmatter
-   becomes a seed RunPlan so compile has ground truth instead of re-inferring".
-3. **Compile.** One `spawn_agent` call over the change directory. This is the
-   OpenSpec path, where `tasks.md` carries no per-task metadata at all.
+   Every devkit spec takes this path (decision D1's "task frontmatter becomes
+   a seed RunPlan so compile has ground truth instead of re-inferring"), and
+   so does an OpenSpec `tasks.md` whose tasks each carry an explicit `files:`
+   scope declaration.
+3. **Compile.** One `spawn_agent` call over the change directory, for any task
+   that still lacks declared file scope after parsing -- in practice mostly
+   OpenSpec, since its `tasks.md` format has no per-task metadata unless the
+   author adds it.
 
 A compile that fails, times out, or returns something that does not validate
 degrades to the baseline plan rather than raising. A run that falls back is

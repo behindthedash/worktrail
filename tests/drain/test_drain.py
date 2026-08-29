@@ -1628,6 +1628,126 @@ def test_drain_dry_run_launches_nothing(tmp_path, monkeypatch):
     assert summary["iterations"] == []
 
 
+def test_drain_pre_loop_resolves_a_target_name_agent(tmp_path, monkeypatch):
+    """task 5.1: --agent/--fallback-agent may now name a routing.yaml target
+    (e.g. "claude-sub"), not only a bare harness. Before this fix, drain()'s
+    pre-loop placeholder build_command() call passed the raw CLI value
+    straight through and crashed with a ValueError ("unsupported agent
+    'claude-sub'") before the loop's own select_available_agent() ever ran --
+    it only understands target names, not harnesses, are resolved lazily.
+    dry-run stops right after building that placeholder command, so a
+    surviving dry-run here is itself the regression check; asserting the
+    logged command used the resolved harness/model confirms it resolved
+    correctly rather than merely not-crashing by accident."""
+    fake = FakeQueue([1])
+    install_fake_queue(monkeypatch, fake)
+    monkeypatch.setattr(drain, "machine_wide_routing",
+                         lambda: _ROUTING_TWO_CLAUDE_MODELS)
+    config = make_config(tmp_path, agent="claude-sub", dry_run=True)
+    logs = []
+
+    def spawner(cmd, timeout):
+        raise AssertionError("dry-run must not spawn")
+
+    summary = drain.drain(config, spawner=spawner, log=logs.append)
+    assert summary["stopped"] == "dry_run"
+    (dry_run_line,) = [line for line in logs if line.startswith("dry-run:")]
+    assert "claude-sub" not in dry_run_line
+    assert "claude" in dry_run_line
+    assert "--model sonnet" in dry_run_line
+    assert "--effort medium" in dry_run_line
+
+
+def test_drain_pre_loop_falls_back_to_ungated_resolution_when_all_gated(
+        tmp_path, monkeypatch):
+    """When the only candidate's cell is already capacity-gated before the
+    first iteration, select_available_agent() returns None against the real
+    cache -- the pre-loop placeholder still needs a valid harness shape (the
+    loop's own first-pass selection re-evaluates real capacity immediately
+    after), so it re-resolves against an empty cache instead of leaving the
+    unresolved target name for build_command()."""
+    fake = FakeQueue([1])
+    install_fake_queue(monkeypatch, fake)
+    monkeypatch.setattr(drain, "machine_wide_routing",
+                         lambda: _ROUTING_TWO_CLAUDE_MODELS)
+    config = make_config(tmp_path, agent="claude-sub", dry_run=True)
+    config.capacity_cache.write_text(json.dumps(
+        {"providers": {"claude-sub:sonnet": {"status": "gated"}}}))
+    logs = []
+
+    def spawner(cmd, timeout):
+        raise AssertionError("dry-run must not spawn")
+
+    summary = drain.drain(config, spawner=spawner, log=logs.append)
+    assert summary["stopped"] == "dry_run"
+    (dry_run_line,) = [line for line in logs if line.startswith("dry-run:")]
+    assert "claude" in dry_run_line
+
+
+def test_drain_runs_routing_liveness_check_before_first_iteration(
+        tmp_path, monkeypatch):
+    """task 5.1: the routing liveness check (task 6.2's --check logic) runs
+    once before the first iteration, next to validate_agent_runtime()'s own
+    fail-closed preflight -- so a retired-model gate is recorded before any
+    spawn attempts it, not discovered only after a wasted iteration fails.
+    Gated on the builtin spawner exactly like validate_agent_runtime() (no
+    point checking a live routing.yaml against a synthetic test spawner), so
+    this uses the real spawner path (dry-run stops before any actual spawn)."""
+    fake = FakeQueue([1])
+    install_fake_queue(monkeypatch, fake)
+    calls = []
+    monkeypatch.setattr(drain, "check_routing_liveness",
+                         lambda **kw: calls.append(kw) or 0)
+    config = make_config(tmp_path, dry_run=True)
+
+    summary = drain.drain(config, log=lambda _l: None)
+    assert summary["stopped"] == "dry_run"
+    assert calls == [{"capacity_path": config.capacity_cache}]
+
+
+def test_drain_routing_liveness_check_error_never_aborts_drain(tmp_path, monkeypatch):
+    """Best-effort like the sweep/seed-backlog checks above: a liveness-check
+    failure is logged, never raised."""
+    fake = FakeQueue([1])
+    install_fake_queue(monkeypatch, fake)
+
+    def boom(**_kw):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(drain, "check_routing_liveness", boom)
+    config = make_config(tmp_path, dry_run=True)
+    logs = []
+
+    summary = drain.drain(config, log=logs.append)
+    assert summary["stopped"] == "dry_run"
+    assert any("routing liveness check error: boom" in line for line in logs)
+
+
+def test_main_accepts_routing_target_name_for_agent_flag(tmp_path, monkeypatch):
+    """--agent/--fallback-agent now accept a declared routing.yaml target
+    name, not only a bare harness (task 5.1)."""
+    rc, config = _run_main(
+        tmp_path, monkeypatch,
+        argv_extra=["--agent", "claude-sub"],
+        config_payload=_TARGETS_PAYLOAD)
+    assert rc == 0
+    assert config.agent == "claude-sub"
+    assert config.fallback_agents == []
+
+
+def test_main_rejects_a_value_that_is_neither_harness_nor_declared_target(
+        tmp_path, monkeypatch, capsys):
+    rc, config = _run_main(
+        tmp_path, monkeypatch,
+        argv_extra=["--agent", "not-a-real-target"],
+        config_payload=_TARGETS_PAYLOAD)
+    assert rc == 2
+    assert config is None
+    err = capsys.readouterr().err
+    assert "not-a-real-target" in err
+    assert "must be one of" in err
+
+
 # ---------------------------------------------------------------------------
 # drive() wiring — the loop calls ensure_pr_risk_label per iteration with a PR.
 # ensure_pr_risk_label/_current_pr_labels themselves now live in
@@ -3440,6 +3560,49 @@ def test_main_defaults_to_claude_without_config(tmp_path, monkeypatch):
     assert rc == 0
     assert config.agent == "claude"
     assert config.fallback_agents == []
+
+
+_TARGETS_PAYLOAD = (
+    '{"targets": {'
+    '"codex-sub": {"harness": "codex", "pool": "subscription"}, '
+    '"claude-sub": {"harness": "claude", "pool": "subscription"}, '
+    '"claude-api": {"harness": "claude", "pool": "api", "api_opt_in": true}, '
+    '"opencode-free": {"harness": "opencode", "pool": "free"}}}'
+)
+
+
+def test_main_flagless_derives_chain_from_targets_file_order(tmp_path, monkeypatch):
+    """drain-operator-config "No flags" scenarios: with no --agent/--fallback-agent,
+    the candidate chain is routing.yaml's `targets` file order, deduped to bare
+    harness names (claude-api shares claude-sub's harness and adds nothing)."""
+    rc, config = _run_main(tmp_path, monkeypatch, config_payload=_TARGETS_PAYLOAD)
+    assert rc == 0
+    assert config.agent == "codex"
+    assert config.fallback_agents == ["claude", "opencode"]
+
+
+def test_main_agent_flag_wins_entirely_over_targets_order(tmp_path, monkeypatch):
+    """Flags override config: an explicit --agent suppresses the targets-order
+    derivation outright -- routing fallbacks are not merged in."""
+    rc, config = _run_main(
+        tmp_path, monkeypatch,
+        argv_extra=["--agent", "claude"],
+        config_payload=_TARGETS_PAYLOAD)
+    assert rc == 0
+    assert config.agent == "claude"
+    assert config.fallback_agents == []
+
+
+def test_main_fallback_flag_alone_also_suppresses_targets_order(tmp_path, monkeypatch):
+    """A bare --fallback-agent (no --agent) is still an explicit chain choice:
+    primary falls to the claude built-in, not to the targets-order derivation."""
+    rc, config = _run_main(
+        tmp_path, monkeypatch,
+        argv_extra=["--fallback-agent", "opencode"],
+        config_payload=_TARGETS_PAYLOAD)
+    assert rc == 0
+    assert config.agent == "claude"
+    assert config.fallback_agents == ["opencode"]
 
 
 def test_main_rejects_any_operator_config_agent_key(tmp_path, monkeypatch, capsys):

@@ -396,6 +396,132 @@ def test_explicit_model_without_agent_is_rejected(change, tmp_path):
             )
 
 
+def _git_change_dir(tmp_path: Path) -> Path:
+    """A real `git init`-ed repo (unlike the `change` fixture's fake `.git`
+    mkdir), required for `main()`'s `_git_repo_root()` subprocess call."""
+    import subprocess
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    d = repo / "openspec" / "changes" / "add-parser"
+    d.mkdir(parents=True)
+    (d / "proposal.md").write_text("## Why\nBecause.\n")
+    (d / "tasks.md").write_text(TASKS_MD)
+    return d
+
+
+def test_cli_agent_and_model_flags_override_a_declared_target(tmp_path):
+    """`--agent`/`--model` at the CLI, not just the `_default_spawn` kwargs
+    directly (task 2.4's AC) -- beat the resolved tier the same way as the
+    kwarg-level `test_explicit_agent_and_model_override_a_declared_target`."""
+    from unittest.mock import patch
+
+    d = _git_change_dir(tmp_path)
+    spec_id, tasks = _load(d)
+    reply = _reply(**{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks})
+
+    with _clear_ambient_agent_env(tmp_path):
+        with patch("worktrail.orchestrator.spawnlib.spawn_agent") as spawn_agent:
+            spawn_agent.return_value = type("SpawnResult", (), {"text": reply})()
+            rc = conductor_compile.main(
+                [str(d), "--agent", "codex-sub", "--model", "override-model", "--cache-dir", str(tmp_path / "plans")]
+            )
+
+    assert rc == 0
+    assert spawn_agent.call_count == 1
+    kwargs = spawn_agent.call_args.kwargs
+    assert kwargs["tier"] == "explicit"
+
+
+def test_cli_agent_flag_alone_prefers_the_target_within_the_resolved_tier(tmp_path):
+    """A CLI `--agent` with no `--model` keeps that target's own configured
+    model -- the partial-override case task 2.4 also names."""
+    from unittest.mock import patch
+
+    d = _git_change_dir(tmp_path)
+    spec_id, tasks = _load(d)
+    reply = _reply(**{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks})
+
+    with _clear_ambient_agent_env(tmp_path):
+        with patch("worktrail.orchestrator.spawnlib.spawn_agent") as spawn_agent:
+            spawn_agent.return_value = type("SpawnResult", (), {"text": reply})()
+            rc = conductor_compile.main(
+                [str(d), "--agent", "codex-sub", "--cache-dir", str(tmp_path / "plans")]
+            )
+
+    assert rc == 0
+    assert spawn_agent.call_count == 1
+    kwargs = spawn_agent.call_args.kwargs
+    assert kwargs["tier"] != "explicit"
+    assert kwargs["prefer"] == "codex-sub"
+
+
+def test_cli_fallback_chain_flag_is_accepted_but_does_not_reach_spawn_agent(tmp_path):
+    """`--fallback-chain` is kept for backward CLI compatibility only:
+    `spawn_agent()`'s own tier-row reselection now owns capacity-gate
+    degradation (`tests/orchestrator/test_spawnlib.py`'s
+    `test_walks_past_a_capacity_gated_cell_to_the_next_target`), so the parsed
+    chain must reach `_default_spawn` without error and without changing the
+    resolved tier/prefer (task 2.5, reclassified -- see tasks.md)."""
+    from unittest.mock import patch
+
+    d = _git_change_dir(tmp_path)
+    spec_id, tasks = _load(d)
+    reply = _reply(**{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks})
+
+    with _clear_ambient_agent_env(tmp_path):
+        with patch("worktrail.orchestrator.spawnlib.spawn_agent") as spawn_agent:
+            spawn_agent.return_value = type("SpawnResult", (), {"text": reply})()
+            rc = conductor_compile.main(
+                [str(d), "--fallback-chain", "codex-sub,opencode-free", "--cache-dir", str(tmp_path / "plans")]
+            )
+
+    assert rc == 0
+    assert spawn_agent.call_count == 1
+    kwargs = spawn_agent.call_args.kwargs
+    assert "fallback_agent" not in kwargs
+    assert kwargs["tier"] == "t2-build"
+    assert kwargs["prefer"] is None
+
+
+def test_ambient_orch_model_env_vars_do_not_influence_compile_spawn(change, tmp_path):
+    """`ORCH_OPENCODE_MODEL`/`ORCH_CODEX_MODEL` are not read anywhere in
+    `spawnlib.py` -- model selection stays config-file driven
+    (`routing.tiers`), per the reconciliation with the merged sibling change
+    `model-tier-routing-remove-env-model-overrides` (task 2.6)."""
+    from unittest.mock import patch
+
+    spec_id, tasks = _load(change)
+    reply = _reply(**{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks})
+
+    env = {
+        "GO_AGENT_CLI": "",
+        "ORCH_AGENT": "",
+        "OPENCODE_PARENT": "",
+        "CODEX_CI": "",
+        "CODEX_THREAD_ID": "",
+        "ORCH_OPENCODE_MODEL": "some-opencode-model",
+        "ORCH_CODEX_MODEL": "some-codex-model",
+    }
+    with patch.dict("os.environ", env, clear=False):
+        with patch("worktrail.orchestrator.spawnlib.spawn_agent") as spawn_agent:
+            spawn_agent.return_value = type("SpawnResult", (), {"text": reply})()
+            plan = conductor_compile.compile_run_plan(
+                change,
+                tasks,
+                spec_id=spec_id,
+                repo=change.parents[2],
+                cache_dir=tmp_path / "plans",
+            )
+
+    assert plan.source == runplan.SOURCE_COMPILED
+    assert spawn_agent.call_count == 1
+    kwargs = spawn_agent.call_args.kwargs
+    assert kwargs["tier"] == "t2-build"
+    assert kwargs["prefer"] is None
+
+
 def test_an_injected_spawn_callable_bypasses_the_policy_resolver(change, tmp_path):
     """A caller-provided `spawn=` callable must be used verbatim, without
     consulting the default policy resolver first."""
@@ -439,6 +565,117 @@ def test_a_format_that_already_declares_file_scope_is_seeded_not_compiled(tmp_pa
     assert spawn.calls == 0
     assert plan.source == runplan.SOURCE_SEED
     assert plan.by_id()["1.1"].files == ("src/a.py",)
+
+
+def test_a_change_with_full_declared_scope_is_seeded_with_tail_tasks_exempt(tmp_path):
+    """Requirement: Declared scope satisfies compilation without a model call.
+
+    Every `impl` task below declares at least one file; the `[e2e]`/`[cleanup]`
+    tail tasks declare none, and must not be penalized for it -- `needs_compile`
+    excludes them on `kind` alone (`compile.py`'s tail-exemption), so a fully
+    declared implementation set is enough to seed the whole plan, tails included.
+    """
+    d = tmp_path / "openspec" / "changes" / "fully-declared"
+    d.mkdir(parents=True)
+    (d / "tasks.md").write_text(
+        "## 1. Core\n\n- [ ] 1.1 a\n- [ ] 1.2 b\n\n## 2. Verify\n\n- [ ] 2.1 [e2e] check\n- [ ] 2.2 [cleanup] tidy\n"
+    )
+    tasks = [
+        {"id": "1.1", "title": "a", "kind": "impl", "deps": [], "files": ["src/a.py"], "path": "tasks.md"},
+        {
+            "id": "1.2",
+            "title": "b",
+            "kind": "impl",
+            "deps": ["1.1"],
+            "files": ["src/a.py", "src/b.py"],
+            "path": "tasks.md",
+        },
+        {"id": "2.1", "title": "check", "kind": "e2e", "deps": ["1.1", "1.2"], "files": [], "path": "tasks.md"},
+        {"id": "2.2", "title": "tidy", "kind": "cleanup", "deps": ["2.1"], "files": [], "path": "tasks.md"},
+    ]
+    assert conductor_compile.needs_compile(tasks) == []
+
+    spawn = RecordingSpawn("should never be called")
+    plan = conductor_compile.compile_run_plan(
+        d, tasks, spec_id="fully-declared", repo=tmp_path, cache_dir=tmp_path / "plans", spawn=spawn
+    )
+
+    assert spawn.calls == 0, "declared scope on every implementation task must satisfy compilation with no model call"
+    assert plan.source == runplan.SOURCE_SEED
+    by_id = plan.by_id()
+    assert by_id["1.1"].files == ("src/a.py",)
+    assert by_id["1.2"].files == ("src/a.py", "src/b.py")
+    assert by_id["2.1"].files == ()
+    assert by_id["2.2"].files == ()
+
+
+def test_partial_declared_scope_is_kept_and_gaps_fall_back_when_spawning_fails(tmp_path):
+    """Requirement: Declared scope satisfies compilation without a model call.
+
+    A declared file scope on one task must survive a failed compile attempt
+    made on its still-scopeless sibling's behalf: `give_up()`'s baseline is
+    built from the tasks' own fields (`_plan_from_tasks`), so 1.1's declaration
+    is preserved even though 1.2 (the gap `needs_compile` triggers the model
+    call for) never got an answer.
+    """
+    d = tmp_path / "openspec" / "changes" / "partial"
+    d.mkdir(parents=True)
+    (d / "tasks.md").write_text("## 1. Core\n\n- [ ] 1.1 a\n- [ ] 1.2 b\n")
+    tasks = [
+        {"id": "1.1", "title": "a", "kind": "impl", "deps": [], "files": ["src/a.py"], "path": "tasks.md"},
+        {"id": "1.2", "title": "b", "kind": "impl", "deps": ["1.1"], "files": [], "path": "tasks.md"},
+    ]
+    assert conductor_compile.needs_compile(tasks) == ["1.2"]
+
+    def boom(*_a, **_k):
+        raise RuntimeError("provider unavailable")
+
+    plan = conductor_compile.compile_run_plan(
+        d, tasks, spec_id="partial", repo=tmp_path, cache_dir=tmp_path / "plans", spawn=boom
+    )
+
+    assert plan.source == runplan.SOURCE_BASELINE
+    by_id = plan.by_id()
+    assert by_id["1.1"].files == ("src/a.py",), "the declared scope must survive a failed compile"
+    assert by_id["1.2"].files == (), "an undeclared task stays scopeless once the model call fails"
+    assert "provider unavailable" in plan.notes[0]
+
+
+def test_editing_a_declared_files_scope_invalidates_the_cached_plan(tmp_path):
+    """Requirement: Declared scope satisfies compilation without a model call.
+
+    `runplan.fingerprint` folds each task's own `files` list into its hash --
+    the task tuples compile actually reads, not `tasks.md`'s bytes -- so
+    changing one task's declared scope must produce a new fingerprint and a
+    fresh compile rather than serving the plan cached under the old scope.
+    """
+    d = tmp_path / "openspec" / "changes" / "declared"
+    d.mkdir(parents=True)
+    (d / "tasks.md").write_text("## 1. Core\n\n- [ ] 1.1 a\n- [ ] 1.2 b\n")
+    tasks = [
+        {"id": "1.1", "title": "a", "kind": "impl", "deps": [], "files": ["src/a.py"], "path": "tasks.md"},
+        {"id": "1.2", "title": "b", "kind": "impl", "deps": ["1.1"], "files": [], "path": "tasks.md"},
+    ]
+    spawn = RecordingSpawn(
+        _reply(**{"1.1": {"files": ["src/a.py"], "deps": []}, "1.2": {"files": ["src/b.py"], "deps": ["1.1"]}})
+    )
+    kwargs = dict(spec_id="declared", repo=tmp_path, cache_dir=tmp_path / "plans", spawn=spawn)
+
+    first = conductor_compile.compile_run_plan(d, tasks, **kwargs)
+    assert spawn.calls == 1
+    assert first.source == runplan.SOURCE_COMPILED
+
+    tasks[0]["files"] = ["src/a.py", "src/a_helper.py"]
+    spawn.reply = _reply(
+        **{
+            "1.1": {"files": ["src/a.py", "src/a_helper.py"], "deps": []},
+            "1.2": {"files": ["src/b.py"], "deps": ["1.1"]},
+        }
+    )
+    second = conductor_compile.compile_run_plan(d, tasks, **kwargs)
+    assert second.fingerprint != first.fingerprint, "editing a declaration must not serve a stale cached plan"
+    assert spawn.calls == 2, "a changed fingerprint must miss the cache and recompile"
+    assert second.by_id()["1.1"].files == ("src/a.py", "src/a_helper.py")
 
 
 def test_tail_tasks_do_not_by_themselves_trigger_a_compile(tmp_path):
