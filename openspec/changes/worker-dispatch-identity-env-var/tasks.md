@@ -32,7 +32,7 @@
       following this file's existing pattern for asserting on the child `env=`
       passed to the process launcher) results in `WORKTRAIL_DISPATCH_ID=go-abc123` in
       that env. (Requirement: Worker environment carries the run's dispatch identity)
-- [ ] 3.2 In the same file, add a test that omitting `dispatch_id` (or passing
+- [x] 3.2 In the same file, add a test that omitting `dispatch_id` (or passing
       `None`) results in `WORKTRAIL_DISPATCH_ID` being absent from the child env.
       (Requirement: No dispatch identity is invented when none is supplied)
 - [ ] 3.3 In `tests/orchestrator/test_live_extras.py` (or wherever `LiveSpawn`
