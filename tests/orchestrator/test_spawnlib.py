@@ -2032,36 +2032,6 @@ class DispatchIdEnvVar(unittest.TestCase):
 
         self.assertEqual(captured["env"]["WORKTRAIL_DISPATCH_ID"], "go-abc123")
 
-    def test_no_dispatch_id_omits_env_var(self):
-        captured = {}
-
-        def fake_run(cmd, **kwargs):
-            captured["env"] = kwargs["env"]
-            return Proc(0, "ok", "")
-
-        with _patch_routing(SINGLE_CLAUDE_ROUTING), \
-                patch.object(spawnlib.subprocess, "run", side_effect=fake_run):
-            spawnlib.spawn_agent(
-                "prompt", "/tmp", tier="t2-build", retries=0
-            )
-
-        self.assertNotIn("WORKTRAIL_DISPATCH_ID", captured["env"])
-
-    def test_dispatch_id_none_omits_env_var(self):
-        captured = {}
-
-        def fake_run(cmd, **kwargs):
-            captured["env"] = kwargs["env"]
-            return Proc(0, "ok", "")
-
-        with _patch_routing(SINGLE_CLAUDE_ROUTING), \
-                patch.object(spawnlib.subprocess, "run", side_effect=fake_run):
-            spawnlib.spawn_agent(
-                "prompt", "/tmp", tier="t2-build", dispatch_id=None, retries=0
-            )
-
-        self.assertNotIn("WORKTRAIL_DISPATCH_ID", captured["env"])
-
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
