@@ -24,6 +24,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -1473,13 +1474,25 @@ def reconcile_unreconciled_tail_evidence(
     is captured first -- this makes reconciliation safe to retry across
     resumed runs.
 
+    When `integrate_one` leaves the group OPEN (a PR exists but has not
+    merged), a freshly-built `Verifier` -- from `make_verifier` if the
+    caller supplies one, otherwise `_default_tail_verifier` -- runs
+    `verify_one` against that same synthetic group and its journaled
+    `head_branch`, so a stranded tail PR actually gets pushed through
+    retarget/CI-wait/merge instead of sitting OPEN until a future run
+    happens to notice it. The journal is re-read again after `verify_one`
+    returns (it, like `integrate_one`, communicates outcome via the
+    journal rather than a return value) so `reconcile_state`/`reconcile_pr_url`
+    reflect verify's outcome (e.g. a confirmed merge) rather than the
+    pre-verify OPEN snapshot.
+
     Each finding is reconciled independently by its own task id: an
     unexpected failure reconciling one finding (e.g. `detect_unreconciled_tail_evidence`
     somehow yielding more than one finding for the same task across repeated
     calls -- should not happen given its dedup-by-construction, but this is
-    the last line of defense) is caught and recorded as "quarantined" for
-    that finding alone, rather than raising and losing every other finding
-    in the same batch.
+    the last line of defense), including one raised by `verify_one`, is
+    caught and recorded as "quarantined" for that finding alone, rather than
+    raising and losing every other finding in the same batch.
     """
     status = {t["id"]: t.get("status", "done") for t in tasks}
     by_id = {t["id"]: t for t in tasks}
@@ -1519,8 +1532,52 @@ def reconcile_unreconciled_tail_evidence(
             )
             post_record = _read_group_journal_record(journal_path, name)
             post_state = post_record.get("state")
+            was_already_open = pre_state == "OPEN"
             if post_state == "OPEN":
-                reconcile_state = "already-open" if pre_state == "OPEN" else "opened"
+                verifier = verifier_factory()
+                verify_merged: list = []
+                verify_quarantined: dict = {}
+                verify_armed: dict = {}
+                verifier.verify_one(
+                    g,
+                    post_record.get("head_branch") or name,
+                    None,
+                    verify_merged,
+                    verify_quarantined,
+                    threading.Lock(),
+                    armed=verify_armed,
+                )
+                # verify_one communicates outcome via the merged/quarantined
+                # accumulators, not a return value or a journal write of its
+                # own (see live.py's _pipeline_scheduler, which does the same
+                # after every verify_one call) -- persist it here so the
+                # re-read below actually observes the new state. `armed`
+                # (queued for auto-merge but not yet confirmed) is passed
+                # separately so it is never mistaken for a confirmed merge
+                # and stamped MERGED -- design.md's non-goal is no new
+                # journal state beyond MERGED/QUARANTINED, so an armed PR is
+                # left OPEN, same as it would be without this verify step.
+                if name in verify_merged:
+                    _write_group_journal(
+                        journal_path,
+                        name,
+                        post_record.get("pr_url", ""),
+                        post_record.get("head_branch") or name,
+                        "MERGED",
+                    )
+                elif name in verify_quarantined:
+                    _write_group_journal(
+                        journal_path,
+                        name,
+                        "",
+                        post_record.get("head_branch") or name,
+                        "QUARANTINED",
+                        QUARANTINE_INTEGRATION_ERROR,
+                    )
+                post_record = _read_group_journal_record(journal_path, name)
+                post_state = post_record.get("state")
+            if post_state == "OPEN":
+                reconcile_state = "already-open" if was_already_open else "opened"
             elif post_state == "MERGED":
                 reconcile_state = "merged"
             else:
