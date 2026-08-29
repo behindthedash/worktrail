@@ -66,7 +66,7 @@ to yet — record the decision from step 1 anyway so a later resumption of this 
 human) has the pointer, and do not run the review-thread gate against the original PR
 until the fix actually lands on the base branch.
 
-## Waiting for checks
+## Waiting for checks {#ci-wait-discipline}
 
 **Use `--watch`, never a hand-rolled sleep loop** (the harness blocks `sleep`,
 and a foreground poll loop strands the run — GO v1 defect L7). Run with the
@@ -88,6 +88,30 @@ stuck-check-run path above: retrying the same GraphQL call just re-hits the outa
 (Optional event-driven variant when pullhook is deployed at
 `https://pullhook.io`: `curl -sf "https://pullhook.io/api/hooks/<repo-channel>/pull"`
 blocks up to 30 s and returns on a check_run event.)
+
+**Single-turn wait discipline (subagents).** The entire wait happens INSIDE
+blocking tool calls within one turn — the `--watch` call plus at most its 3
+bounded re-issues. Never report "still pending" and end the turn expecting to
+be resumed for another check: every resume of a long-lived transcript re-feeds
+the whole prior conversation, so cost grows linearly with poll count while the
+information gained is zero. (Observed 2026-08-29, policy-file migration run: a
+subagent waited as ~15 end-turn/resume cycles, ~210k → ~245k tokens, until the
+coordinator stood it down and took the wait itself in one blocking call.) If
+the wait genuinely cannot fit one turn's bounded retries, do not keep the
+transcript alive — report the PR as opened-and-pending and hand the wait to
+the dispatcher.
+
+**Wait ownership: pure wait-then-merge tails belong to the dispatcher.** Once
+the PR is open and nothing remains but "is it green yet", there is no judgment
+left to delegate — the coordinator/orchestrator holds the wait itself (its own
+single `gh pr checks --watch` call, or a background monitor that reports once;
+see `subagent-prompts.md` `{#bounded-poll-contract}` for the background shape)
+instead of keeping a subagent alive for it. Reserve subagents for steps that
+require reasoning: writing the fix, resolving scope, classifying a failure.
+A subagent prompt that includes "watch CI to green, then merge" is therefore
+only appropriate when the same subagent also owns the failure-classification
+loop below; otherwise end the subagent at PR-opened and let the dispatcher
+finish the tail.
 
 **Stuck check-run fallback (after the 3 exhausted `--watch` retries above).** A required
 check-run can report `status:in_progress`/`conclusion:null` indefinitely even after its
