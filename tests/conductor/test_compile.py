@@ -396,6 +396,132 @@ def test_explicit_model_without_agent_is_rejected(change, tmp_path):
             )
 
 
+def _git_change_dir(tmp_path: Path) -> Path:
+    """A real `git init`-ed repo (unlike the `change` fixture's fake `.git`
+    mkdir), required for `main()`'s `_git_repo_root()` subprocess call."""
+    import subprocess
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    d = repo / "openspec" / "changes" / "add-parser"
+    d.mkdir(parents=True)
+    (d / "proposal.md").write_text("## Why\nBecause.\n")
+    (d / "tasks.md").write_text(TASKS_MD)
+    return d
+
+
+def test_cli_agent_and_model_flags_override_a_declared_target(tmp_path):
+    """`--agent`/`--model` at the CLI, not just the `_default_spawn` kwargs
+    directly (task 2.4's AC) -- beat the resolved tier the same way as the
+    kwarg-level `test_explicit_agent_and_model_override_a_declared_target`."""
+    from unittest.mock import patch
+
+    d = _git_change_dir(tmp_path)
+    spec_id, tasks = _load(d)
+    reply = _reply(**{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks})
+
+    with _clear_ambient_agent_env(tmp_path):
+        with patch("worktrail.orchestrator.spawnlib.spawn_agent") as spawn_agent:
+            spawn_agent.return_value = type("SpawnResult", (), {"text": reply})()
+            rc = conductor_compile.main(
+                [str(d), "--agent", "codex-sub", "--model", "override-model", "--cache-dir", str(tmp_path / "plans")]
+            )
+
+    assert rc == 0
+    assert spawn_agent.call_count == 1
+    kwargs = spawn_agent.call_args.kwargs
+    assert kwargs["tier"] == "explicit"
+
+
+def test_cli_agent_flag_alone_prefers_the_target_within_the_resolved_tier(tmp_path):
+    """A CLI `--agent` with no `--model` keeps that target's own configured
+    model -- the partial-override case task 2.4 also names."""
+    from unittest.mock import patch
+
+    d = _git_change_dir(tmp_path)
+    spec_id, tasks = _load(d)
+    reply = _reply(**{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks})
+
+    with _clear_ambient_agent_env(tmp_path):
+        with patch("worktrail.orchestrator.spawnlib.spawn_agent") as spawn_agent:
+            spawn_agent.return_value = type("SpawnResult", (), {"text": reply})()
+            rc = conductor_compile.main(
+                [str(d), "--agent", "codex-sub", "--cache-dir", str(tmp_path / "plans")]
+            )
+
+    assert rc == 0
+    assert spawn_agent.call_count == 1
+    kwargs = spawn_agent.call_args.kwargs
+    assert kwargs["tier"] != "explicit"
+    assert kwargs["prefer"] == "codex-sub"
+
+
+def test_cli_fallback_chain_flag_is_accepted_but_does_not_reach_spawn_agent(tmp_path):
+    """`--fallback-chain` is kept for backward CLI compatibility only:
+    `spawn_agent()`'s own tier-row reselection now owns capacity-gate
+    degradation (`tests/orchestrator/test_spawnlib.py`'s
+    `test_walks_past_a_capacity_gated_cell_to_the_next_target`), so the parsed
+    chain must reach `_default_spawn` without error and without changing the
+    resolved tier/prefer (task 2.5, reclassified -- see tasks.md)."""
+    from unittest.mock import patch
+
+    d = _git_change_dir(tmp_path)
+    spec_id, tasks = _load(d)
+    reply = _reply(**{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks})
+
+    with _clear_ambient_agent_env(tmp_path):
+        with patch("worktrail.orchestrator.spawnlib.spawn_agent") as spawn_agent:
+            spawn_agent.return_value = type("SpawnResult", (), {"text": reply})()
+            rc = conductor_compile.main(
+                [str(d), "--fallback-chain", "codex-sub,opencode-free", "--cache-dir", str(tmp_path / "plans")]
+            )
+
+    assert rc == 0
+    assert spawn_agent.call_count == 1
+    kwargs = spawn_agent.call_args.kwargs
+    assert "fallback_agent" not in kwargs
+    assert kwargs["tier"] == "t2-build"
+    assert kwargs["prefer"] is None
+
+
+def test_ambient_orch_model_env_vars_do_not_influence_compile_spawn(change, tmp_path):
+    """`ORCH_OPENCODE_MODEL`/`ORCH_CODEX_MODEL` are not read anywhere in
+    `spawnlib.py` -- model selection stays config-file driven
+    (`routing.tiers`), per the reconciliation with the merged sibling change
+    `model-tier-routing-remove-env-model-overrides` (task 2.6)."""
+    from unittest.mock import patch
+
+    spec_id, tasks = _load(change)
+    reply = _reply(**{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks})
+
+    env = {
+        "GO_AGENT_CLI": "",
+        "ORCH_AGENT": "",
+        "OPENCODE_PARENT": "",
+        "CODEX_CI": "",
+        "CODEX_THREAD_ID": "",
+        "ORCH_OPENCODE_MODEL": "some-opencode-model",
+        "ORCH_CODEX_MODEL": "some-codex-model",
+    }
+    with patch.dict("os.environ", env, clear=False):
+        with patch("worktrail.orchestrator.spawnlib.spawn_agent") as spawn_agent:
+            spawn_agent.return_value = type("SpawnResult", (), {"text": reply})()
+            plan = conductor_compile.compile_run_plan(
+                change,
+                tasks,
+                spec_id=spec_id,
+                repo=change.parents[2],
+                cache_dir=tmp_path / "plans",
+            )
+
+    assert plan.source == runplan.SOURCE_COMPILED
+    assert spawn_agent.call_count == 1
+    kwargs = spawn_agent.call_args.kwargs
+    assert kwargs["tier"] == "t2-build"
+    assert kwargs["prefer"] is None
+
+
 def test_an_injected_spawn_callable_bypasses_the_policy_resolver(change, tmp_path):
     """A caller-provided `spawn=` callable must be used verbatim, without
     consulting the default policy resolver first."""
