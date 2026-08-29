@@ -105,7 +105,7 @@ class ParsedTask:
     line_no: int  # 0-based index into the file's lines; the write-back anchor
     kind: str = DEFAULT_KIND  # from a leading [tag]; gates the fan-out holdout
     tags: list = field(default_factory=list)  # every leading tag, in order
-    files: list = field(default_factory=list)  # paths from an indented `files:` line, if any
+    files: list[str] = field(default_factory=list)  # paths from an indented `files:` line, if any
 
 
 @dataclass
