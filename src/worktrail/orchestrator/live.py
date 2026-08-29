@@ -2300,6 +2300,7 @@ class LiveSpawn:
         purpose_tier_map: dict | None = None,
         fallback_chain: "list[str] | None" = None,
         effort: str | None = None,
+        dispatch_id: str | None = None,
     ) -> None:
         self.agent = agent
         self.label = f"LIVE {agent}"
@@ -2319,6 +2320,7 @@ class LiveSpawn:
         # common state (spawnlib.build_cmd only adds the flag `if effort:`), so no
         # `spawnlib.default_effort_for_agent()` equivalent exists or is needed.
         self.effort = effort
+        self.dispatch_id = dispatch_id
         self.role_models = role_models or {}  # per-role overrides (production)
         # per-role agent CLI overrides (e.g. review=claude while implement/fix
         # stay on a cheaper --agent) -- lets the reviewer run on a genuinely
