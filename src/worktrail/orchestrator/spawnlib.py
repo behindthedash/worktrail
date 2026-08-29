@@ -937,6 +937,8 @@ def spawn_agent(
             env["WORKTRAIL_SKILL_DISPATCH_DEPTH"] = os.environ[
                 "WORKTRAIL_SKILL_DISPATCH_DEPTH"
             ]
+        if dispatch_id is not None:
+            env["WORKTRAIL_DISPATCH_ID"] = dispatch_id
         return build_child_env(current_cell, env), oc_data_dir
 
     child_env, opencode_dir = _prepare_child_env(cell)
