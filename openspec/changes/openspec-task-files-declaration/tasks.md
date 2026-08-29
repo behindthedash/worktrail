@@ -17,8 +17,8 @@
 
 ## 4. Documentation
 
-- [ ] 4.1 Add the optional indented `files:` declaration to the `openspec-propose` skill's tasks-artifact guidance — syntax example, opt-in per task, create-or-modify paths only, full-declaration compiles without a model call — and amend its "OpenSpec's checklist schema carries no field for that" sentence accordingly (Requirement: Authoring documentation of the declaration syntax)
-- [ ] 4.2 Add a short amendment note to `docs/design/conductor-lanes.md` §4.5/D2 recording the opt-in inline declaration as a scoped exception to "file scope comes from the compiled RunPlan", preserving D2's compile-pass decision rather than reversing it
+- [x] 4.1 Add the optional indented `files:` declaration to the `openspec-propose` skill's tasks-artifact guidance — syntax example, opt-in per task, create-or-modify paths only, full-declaration compiles without a model call — and amend its "OpenSpec's checklist schema carries no field for that" sentence accordingly (Requirement: Authoring documentation of the declaration syntax)
+- [x] 4.2 Add a short amendment note to `docs/design/conductor-lanes.md` §4.5/D2 recording the opt-in inline declaration as a scoped exception to "file scope comes from the compiled RunPlan", preserving D2's compile-pass decision rather than reversing it
 
 ## 5. Verification
 
