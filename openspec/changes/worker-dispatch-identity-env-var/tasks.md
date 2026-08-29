@@ -8,7 +8,7 @@
       `WORKTRAIL_SKILL_DISPATCH_DEPTH` handling immediately below it). Leave the key
       absent when `dispatch_id` is `None`. (Requirement: Worker environment carries
       the run's dispatch identity)
-- [ ] 1.3 Add a matching optional `dispatch_id: Optional[str] = None` parameter to
+- [x] 1.3 Add a matching optional `dispatch_id: Optional[str] = None` parameter to
       `spawnlib.spawn_claude_p()` and pass it straight through to its `spawn_agent()`
       call.
 
