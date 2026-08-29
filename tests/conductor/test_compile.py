@@ -567,6 +567,117 @@ def test_a_format_that_already_declares_file_scope_is_seeded_not_compiled(tmp_pa
     assert plan.by_id()["1.1"].files == ("src/a.py",)
 
 
+def test_a_change_with_full_declared_scope_is_seeded_with_tail_tasks_exempt(tmp_path):
+    """Requirement: Declared scope satisfies compilation without a model call.
+
+    Every `impl` task below declares at least one file; the `[e2e]`/`[cleanup]`
+    tail tasks declare none, and must not be penalized for it -- `needs_compile`
+    excludes them on `kind` alone (`compile.py`'s tail-exemption), so a fully
+    declared implementation set is enough to seed the whole plan, tails included.
+    """
+    d = tmp_path / "openspec" / "changes" / "fully-declared"
+    d.mkdir(parents=True)
+    (d / "tasks.md").write_text(
+        "## 1. Core\n\n- [ ] 1.1 a\n- [ ] 1.2 b\n\n## 2. Verify\n\n- [ ] 2.1 [e2e] check\n- [ ] 2.2 [cleanup] tidy\n"
+    )
+    tasks = [
+        {"id": "1.1", "title": "a", "kind": "impl", "deps": [], "files": ["src/a.py"], "path": "tasks.md"},
+        {
+            "id": "1.2",
+            "title": "b",
+            "kind": "impl",
+            "deps": ["1.1"],
+            "files": ["src/a.py", "src/b.py"],
+            "path": "tasks.md",
+        },
+        {"id": "2.1", "title": "check", "kind": "e2e", "deps": ["1.1", "1.2"], "files": [], "path": "tasks.md"},
+        {"id": "2.2", "title": "tidy", "kind": "cleanup", "deps": ["2.1"], "files": [], "path": "tasks.md"},
+    ]
+    assert conductor_compile.needs_compile(tasks) == []
+
+    spawn = RecordingSpawn("should never be called")
+    plan = conductor_compile.compile_run_plan(
+        d, tasks, spec_id="fully-declared", repo=tmp_path, cache_dir=tmp_path / "plans", spawn=spawn
+    )
+
+    assert spawn.calls == 0, "declared scope on every implementation task must satisfy compilation with no model call"
+    assert plan.source == runplan.SOURCE_SEED
+    by_id = plan.by_id()
+    assert by_id["1.1"].files == ("src/a.py",)
+    assert by_id["1.2"].files == ("src/a.py", "src/b.py")
+    assert by_id["2.1"].files == ()
+    assert by_id["2.2"].files == ()
+
+
+def test_partial_declared_scope_is_kept_and_gaps_fall_back_when_spawning_fails(tmp_path):
+    """Requirement: Declared scope satisfies compilation without a model call.
+
+    A declared file scope on one task must survive a failed compile attempt
+    made on its still-scopeless sibling's behalf: `give_up()`'s baseline is
+    built from the tasks' own fields (`_plan_from_tasks`), so 1.1's declaration
+    is preserved even though 1.2 (the gap `needs_compile` triggers the model
+    call for) never got an answer.
+    """
+    d = tmp_path / "openspec" / "changes" / "partial"
+    d.mkdir(parents=True)
+    (d / "tasks.md").write_text("## 1. Core\n\n- [ ] 1.1 a\n- [ ] 1.2 b\n")
+    tasks = [
+        {"id": "1.1", "title": "a", "kind": "impl", "deps": [], "files": ["src/a.py"], "path": "tasks.md"},
+        {"id": "1.2", "title": "b", "kind": "impl", "deps": ["1.1"], "files": [], "path": "tasks.md"},
+    ]
+    assert conductor_compile.needs_compile(tasks) == ["1.2"]
+
+    def boom(*_a, **_k):
+        raise RuntimeError("provider unavailable")
+
+    plan = conductor_compile.compile_run_plan(
+        d, tasks, spec_id="partial", repo=tmp_path, cache_dir=tmp_path / "plans", spawn=boom
+    )
+
+    assert plan.source == runplan.SOURCE_BASELINE
+    by_id = plan.by_id()
+    assert by_id["1.1"].files == ("src/a.py",), "the declared scope must survive a failed compile"
+    assert by_id["1.2"].files == (), "an undeclared task stays scopeless once the model call fails"
+    assert "provider unavailable" in plan.notes[0]
+
+
+def test_editing_a_declared_files_scope_invalidates_the_cached_plan(tmp_path):
+    """Requirement: Declared scope satisfies compilation without a model call.
+
+    `runplan.fingerprint` folds each task's own `files` list into its hash --
+    the task tuples compile actually reads, not `tasks.md`'s bytes -- so
+    changing one task's declared scope must produce a new fingerprint and a
+    fresh compile rather than serving the plan cached under the old scope.
+    """
+    d = tmp_path / "openspec" / "changes" / "declared"
+    d.mkdir(parents=True)
+    (d / "tasks.md").write_text("## 1. Core\n\n- [ ] 1.1 a\n- [ ] 1.2 b\n")
+    tasks = [
+        {"id": "1.1", "title": "a", "kind": "impl", "deps": [], "files": ["src/a.py"], "path": "tasks.md"},
+        {"id": "1.2", "title": "b", "kind": "impl", "deps": ["1.1"], "files": [], "path": "tasks.md"},
+    ]
+    spawn = RecordingSpawn(
+        _reply(**{"1.1": {"files": ["src/a.py"], "deps": []}, "1.2": {"files": ["src/b.py"], "deps": ["1.1"]}})
+    )
+    kwargs = dict(spec_id="declared", repo=tmp_path, cache_dir=tmp_path / "plans", spawn=spawn)
+
+    first = conductor_compile.compile_run_plan(d, tasks, **kwargs)
+    assert spawn.calls == 1
+    assert first.source == runplan.SOURCE_COMPILED
+
+    tasks[0]["files"] = ["src/a.py", "src/a_helper.py"]
+    spawn.reply = _reply(
+        **{
+            "1.1": {"files": ["src/a.py", "src/a_helper.py"], "deps": []},
+            "1.2": {"files": ["src/b.py"], "deps": ["1.1"]},
+        }
+    )
+    second = conductor_compile.compile_run_plan(d, tasks, **kwargs)
+    assert second.fingerprint != first.fingerprint, "editing a declaration must not serve a stale cached plan"
+    assert spawn.calls == 2, "a changed fingerprint must miss the cache and recompile"
+    assert second.by_id()["1.1"].files == ("src/a.py", "src/a_helper.py")
+
+
 def test_tail_tasks_do_not_by_themselves_trigger_a_compile(tmp_path):
     """A tail is held out of the fan-out on `kind`, so it never reaches the
     file-collision check and inferring a scope for it would buy nothing."""
