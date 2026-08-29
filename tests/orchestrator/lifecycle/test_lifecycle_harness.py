@@ -41,7 +41,7 @@ import unittest.mock
 from pathlib import Path
 
 from worktrail.conductor import compile as conductor_compile
-from worktrail.orchestrator import live, spawnlib, verify
+from worktrail.orchestrator import live, spawnlib, verify, worktree
 
 _HERE = Path(__file__).resolve().parent
 _FAKE_GH = _HERE / "fake_gh.py"
@@ -421,6 +421,23 @@ class SquashMergedDependencyCarryLifecycle(_LifecycleCase):
     def _run(self):
         import tempfile
 
+        # `reconcile_unreconciled_tail_evidence` now verifies (and, on a
+        # confirmed merge, cleans up) TASK-004's tail PR instead of leaving
+        # it OPEN -- so its worktree no longer survives the run to be
+        # inspected afterwards. Spy on the real `WorktreeManager.remove` (not
+        # a fake) to snapshot whether the carried files were present at the
+        # moment cleanup tore the worktree down -- the direct proof the carry
+        # fix engaged, without weakening the harness's real-cleanup coverage.
+        carried_at_cleanup: dict = {}
+        original_remove = worktree.WorktreeManager.remove
+
+        def spying_remove(self, task_id, force=True):
+            if task_id.upper() == "TASK-004":
+                path = worktree.worktree_path(self.worktree_base, self.spec_id, task_id)
+                for tid in ("task-002", "task-003"):
+                    carried_at_cleanup[tid] = (path / "src" / f"{tid}.txt").exists()
+            return original_remove(self, task_id, force=force)
+
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             repo = _mk_devkit_repo_with_tail(tmp)
@@ -433,7 +450,10 @@ class SquashMergedDependencyCarryLifecycle(_LifecycleCase):
             # branches are gone by then, so `dependency_start_ref` falls back to
             # the run-start local base, which predates their squash-merges. This
             # call must complete without raising it.
-            _run_full_real(repo, DEVKIT_SPEC_REL, env)
+            with unittest.mock.patch.object(
+                worktree.WorktreeManager, "remove", spying_remove
+            ):
+                _run_full_real(repo, DEVKIT_SPEC_REL, env)
 
             # The three impl groups (base/feature-1/feature-2) really did merge
             # into the remote base -- the squash-merge boundary TASK-004's carry
@@ -453,11 +473,10 @@ class SquashMergedDependencyCarryLifecycle(_LifecycleCase):
             # Its carry actually landed TASK-002/TASK-003's content in its own
             # worktree (not just skipped the dependency-file check some other
             # way) -- the direct proof the fix engaged.
-            tail_wt = repo.parent / f"{repo.name}-worktrees" / "001-x-task-004"
             for tid in ("task-002", "task-003"):
                 self.assertTrue(
-                    (tail_wt / "src" / f"{tid}.txt").exists(),
-                    f"TASK-004 worktree missing carried {tid}.txt",
+                    carried_at_cleanup.get(tid),
+                    f"TASK-004 worktree missing carried {tid}.txt at cleanup time",
                 )
 
     def test_pipeline(self):
