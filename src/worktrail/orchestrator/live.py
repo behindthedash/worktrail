@@ -4125,6 +4125,7 @@ def _pipeline_scheduler(
     effort: str | None = None,
     re_integrate: bool = False,
     migration_patterns: "list[str] | None" = None,
+    dispatch_id: str | None = None,
     # Injectable seams (default to production implementations)
     _spawn=None,
     _integrate_one=None,
@@ -5365,6 +5366,7 @@ def _full_real_inner(
         route=route,
         gates=gates,
         migration_patterns=migration_patterns,
+        dispatch_id=dispatch_id,
     )
 
 
