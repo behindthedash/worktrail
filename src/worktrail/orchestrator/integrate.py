@@ -27,7 +27,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
 from . import coordinator
 from . import dispatch
@@ -36,6 +36,9 @@ from . import progress
 from . import worktree
 from ..addons import runner as addons_runner
 from ..taskformats import resolve as taskformats
+
+if TYPE_CHECKING:  # pragma: no cover - typing only, keeps `verify` a lazy import
+    from . import verify
 
 TAIL = ("e2e", "cleanup")
 TERMINAL_GROUP_STATES = {"OPEN", "MERGED", "QUARANTINED"}
@@ -1409,6 +1412,7 @@ def reconcile_unreconciled_tail_evidence(
     pr_labels: Optional[list[str]] = None,
     route: Optional[str] = None,
     gates: str = "",
+    make_verifier: Optional[Callable[[], "verify.Verifier"]] = None,
 ) -> list:
     """Open (or reuse) a group PR for each `detect_unreconciled_tail_evidence`
     finding, so a tail task's stranded evidence commit reaches `base` the same
