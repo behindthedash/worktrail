@@ -884,6 +884,89 @@ class LiveSpawnServedTargetCorrectionTests(unittest.TestCase):
         self.assertEqual(spawn.last_agent, "opencode")
 
 
+class LiveSpawnDispatchIdTests(unittest.TestCase):
+    """LiveSpawn.__init__ accepts an optional dispatch_id parameter and threads
+    it to spawn_agent/spawn_claude_p calls."""
+
+    def _make_task(self):
+        return {"id": "TASK-001", "status": "pending", "files": ["src/foo.py"]}
+
+    def test_livespawn_constructor_accepts_dispatch_id(self):
+        spawn = live.LiveSpawn("spec-001", "docs/specs/001-spec", dispatch_id="go-abc123")
+        self.assertEqual(spawn.dispatch_id, "go-abc123")
+
+    def test_livespawn_constructor_dispatch_id_defaults_to_none(self):
+        spawn = live.LiveSpawn("spec-001", "docs/specs/001-spec")
+        self.assertIsNone(spawn.dispatch_id)
+
+    def test_dispatch_id_threaded_to_spawn_agent(self):
+        captured_kwargs = {}
+        fake_result = type(
+            "R", (), {"text": "ok", "usage": {}, "tools_used": [], "skills_used": [], "paused_s": 0.0}
+        )()
+        with patch("worktrail.orchestrator.live.dispatch.build_worker_prompt", return_value="prompt"), \
+             patch("worktrail.orchestrator.live.spawnlib.spawn_agent",
+                   side_effect=lambda *_, **kw: captured_kwargs.update(kw) or fake_result):
+            spawn = live.LiveSpawn("spec-001", "docs/specs/001-spec", agent="opencode", dispatch_id="go-abc123")
+            spawn("implement", self._make_task(), Path("/tmp/wt"))
+        self.assertEqual(captured_kwargs.get("dispatch_id"), "go-abc123")
+
+    def test_dispatch_id_threaded_to_spawn_claude_p(self):
+        captured_kwargs = {}
+        fake_result = type(
+            "R", (), {"text": "ok", "usage": {}, "tools_used": [], "skills_used": [], "paused_s": 0.0}
+        )()
+        with patch("worktrail.orchestrator.live.dispatch.build_worker_prompt", return_value="prompt"), \
+             patch("worktrail.orchestrator.live.spawnlib.spawn_claude_p",
+                   side_effect=lambda *_, **kw: captured_kwargs.update(kw) or fake_result):
+            spawn = live.LiveSpawn("spec-001", "docs/specs/001-spec", agent="claude", dispatch_id="go-abc123")
+            spawn("implement", self._make_task(), Path("/tmp/wt"))
+        self.assertEqual(captured_kwargs.get("dispatch_id"), "go-abc123")
+
+    def test_dispatch_id_none_is_threaded(self):
+        captured_kwargs = {}
+        fake_result = type(
+            "R", (), {"text": "ok", "usage": {}, "tools_used": [], "skills_used": [], "paused_s": 0.0}
+        )()
+        with patch("worktrail.orchestrator.live.dispatch.build_worker_prompt", return_value="prompt"), \
+             patch("worktrail.orchestrator.live.spawnlib.spawn_agent",
+                   side_effect=lambda *_, **kw: captured_kwargs.update(kw) or fake_result):
+            spawn = live.LiveSpawn("spec-001", "docs/specs/001-spec", agent="opencode")
+            spawn("implement", self._make_task(), Path("/tmp/wt"))
+        self.assertIn("dispatch_id", captured_kwargs)
+        self.assertIsNone(captured_kwargs["dispatch_id"])
+
+
+class FullRealDispatchIdCLITests(unittest.TestCase):
+    """full-real --dispatch-id argument wiring: the CLI parameter is passed
+    through to full_real() and ultimately to LiveSpawn."""
+
+    def _run(self, *extra_args):
+        """Mock full_real and capture kwargs passed to it."""
+        import tempfile
+        tmp = tempfile.mkdtemp(prefix="dispatch-id-cli-")
+        captured = {}
+
+        def fake_full_real(*_args, **kwargs):
+            captured.update(kwargs)
+            return {}
+
+        argv = [
+            "full-real", "--repo", tmp, "--spec", "docs/specs/001-foo", "--base", "main",
+        ] + list(extra_args)
+        with patch.object(live, "full_real", side_effect=fake_full_real):
+            live.main(argv)
+        return captured
+
+    def test_dispatch_id_argument_passed_to_full_real(self):
+        captured = self._run("--dispatch-id", "go-abc123")
+        self.assertEqual(captured.get("dispatch_id"), "go-abc123")
+
+    def test_dispatch_id_omitted_defaults_to_none(self):
+        captured = self._run()
+        self.assertIsNone(captured.get("dispatch_id"))
+
+
 def _run_git(repo: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, check=True)
 

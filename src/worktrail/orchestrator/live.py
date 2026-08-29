@@ -2300,6 +2300,7 @@ class LiveSpawn:
         purpose_tier_map: dict | None = None,
         fallback_chain: "list[str] | None" = None,
         effort: str | None = None,
+        dispatch_id: str | None = None,
     ) -> None:
         self.agent = agent
         self.label = f"LIVE {agent}"
@@ -2319,6 +2320,7 @@ class LiveSpawn:
         # common state (spawnlib.build_cmd only adds the flag `if effort:`), so no
         # `spawnlib.default_effort_for_agent()` equivalent exists or is needed.
         self.effort = effort
+        self.dispatch_id = dispatch_id
         self.role_models = role_models or {}  # per-role overrides (production)
         # per-role agent CLI overrides (e.g. review=claude while implement/fix
         # stay on a cheaper --agent) -- lets the reviewer run on a genuinely
@@ -2474,6 +2476,7 @@ class LiveSpawn:
             timeout=effective_timeout,
             resume_session_id=resume_session_id,
             log=print,
+            dispatch_id=self.dispatch_id,
         )
         # extra_args/system-prompt depend on which HARNESS actually serves,
         # which only select_cell() (not tier_for()) determines -- peek at it
@@ -3274,6 +3277,7 @@ def live_run_real(
     purpose_tier_map: dict | None = None,
     fallback_chain: "list[str] | None" = None,
     effort: str | None = None,
+    dispatch_id: str | None = None,
     run_budget: float | None = None,
     spawn=None,
     git_lock=None,
@@ -3373,6 +3377,7 @@ def live_run_real(
         purpose_tier_map=purpose_tier_map,
         fallback_chain=fallback_chain,
         effort=effort,
+        dispatch_id=dispatch_id,
     )
     # Set unconditionally (default-constructed or caller-injected, e.g. the
     # --fork-research spawn built by the live-run-real CLI handler) so
@@ -3943,6 +3948,7 @@ def full_real(
     purpose_tier_map: dict | None = None,
     fallback_chain: "list[str] | None" = None,
     effort: str | None = None,
+    dispatch_id: str | None = None,
     run_budget: int | None = None,
     re_integrate: bool = False,
     smoke_cmd: str | None = None,
@@ -3993,6 +3999,7 @@ def full_real(
             purpose_tier_map=purpose_tier_map,
             fallback_chain=fallback_chain,
             effort=effort,
+            dispatch_id=dispatch_id,
             re_integrate=re_integrate,
             smoke_cmd=smoke_cmd,
             post_merge_smoke_cmd=post_merge_smoke_cmd,
@@ -4025,6 +4032,7 @@ def _dispatch_pending_tail(
     purpose_tier_map: dict | None,
     fallback_chain: "list[str] | None",
     effort: str | None,
+    dispatch_id: str | None,
     run_budget: int | None,
     bootstrap_cmd: str | None = None,
     spawn=None,
@@ -4081,6 +4089,7 @@ def _dispatch_pending_tail(
         purpose_tier_map=purpose_tier_map,
         fallback_chain=fallback_chain,
         effort=effort,
+        dispatch_id=dispatch_id,
         run_budget=run_budget,
         bootstrap_cmd=bootstrap_cmd,
         spawn=spawn,
@@ -4118,6 +4127,7 @@ def _pipeline_scheduler(
     purpose_tier_map: dict | None = None,
     fallback_chain: "list[str] | None" = None,
     effort: str | None = None,
+    dispatch_id: str | None = None,
     re_integrate: bool = False,
     migration_patterns: "list[str] | None" = None,
     # Injectable seams (default to production implementations)
@@ -4998,6 +5008,7 @@ def _pipeline_scheduler(
             purpose_tier_map,
             fallback_chain,
             effort,
+            dispatch_id,
             run_budget,
             bootstrap_cmd=bootstrap_cmd,
             spawn=spawn_fn,
@@ -5102,6 +5113,7 @@ def _full_real_inner(
     purpose_tier_map: dict | None = None,
     fallback_chain: "list[str] | None" = None,
     effort: str | None = None,
+    dispatch_id: str | None = None,
     re_integrate: bool = False,
     smoke_cmd: str | None = None,
     post_merge_smoke_cmd: str | None = None,
@@ -5346,6 +5358,7 @@ def _full_real_inner(
         purpose_tier_map=purpose_tier_map,
         fallback_chain=fallback_chain,
         effort=effort,
+        dispatch_id=dispatch_id,
         run_budget=run_budget,
         journal_path=journal_path,
         run_id=run_id,
@@ -5611,6 +5624,14 @@ def main(argv=None) -> int:
         "LiveSpawn this run constructs; a configured tier's own effort still wins "
         "per dispatch.agent_for's precedence (model-tier-routing 3.3). Omit for "
         "no effort flag (pre-spec behavior).",
+    )
+    fr.add_argument(
+        "--dispatch-id",
+        default=None,
+        dest="dispatch_id",
+        help="Run-level dispatch identity string, threaded to every "
+        "LiveSpawn this run constructs for worker environment tracing. Omit for "
+        "no dispatch identity.",
     )
     fr.add_argument(
         "--max-workers",
@@ -5992,6 +6013,7 @@ def main(argv=None) -> int:
             purpose_tier_map=purpose_tier_map,
             fallback_chain=fallback_chain,
             effort=args.effort,
+            dispatch_id=args.dispatch_id,
             run_budget=args.run_budget * 60 if args.run_budget else args.run_budget,
             re_integrate=args.re_integrate,
             smoke_cmd=smoke_cmd,
