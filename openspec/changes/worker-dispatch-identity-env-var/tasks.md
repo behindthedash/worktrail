@@ -8,7 +8,7 @@
       `WORKTRAIL_SKILL_DISPATCH_DEPTH` handling immediately below it). Leave the key
       absent when `dispatch_id` is `None`. (Requirement: Worker environment carries
       the run's dispatch identity)
-- [ ] 1.3 Add a matching optional `dispatch_id: Optional[str] = None` parameter to
+- [x] 1.3 Add a matching optional `dispatch_id: Optional[str] = None` parameter to
       `spawnlib.spawn_claude_p()` and pass it straight through to its `spawn_agent()`
       call.
 
@@ -27,7 +27,7 @@
 
 ## 3. Tests
 
-- [ ] 3.1 In `tests/orchestrator/test_spawnlib.py`, add a test that calling
+- [x] 3.1 In `tests/orchestrator/test_spawnlib.py`, add a test that calling
       `spawn_agent(..., dispatch_id="go-abc123")` (with the subprocess launch mocked,
       following this file's existing pattern for asserting on the child `env=`
       passed to the process launcher) results in `WORKTRAIL_DISPATCH_ID=go-abc123` in
