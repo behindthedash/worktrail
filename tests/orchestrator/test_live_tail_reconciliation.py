@@ -72,6 +72,15 @@ class PipelineSchedulerReconciliationTest(unittest.TestCase):
 
             reconcile_mock.assert_called_once()
             self.assertEqual(reconcile_mock.call_args.args[0], [_finding()])
+            self.assertIn(
+                "make_verifier", reconcile_mock.call_args.kwargs,
+                "the scheduler must wire its verifier factory through to "
+                "reconcile_unreconciled_tail_evidence so tail-task PRs get verified",
+            )
+            self.assertTrue(
+                callable(reconcile_mock.call_args.kwargs["make_verifier"]),
+                "make_verifier must be a callable factory",
+            )
             record_mock.assert_called_once()
             self.assertEqual(
                 call_order, ["reconcile", "record"],
@@ -101,6 +110,151 @@ class PipelineSchedulerReconciliationTest(unittest.TestCase):
                 "no findings must still clear any stale journal entry, "
                 f"got {record_mock.call_args.args[1]!r}",
             )
+
+
+class ReconcileTailEvidenceVerifyOneTest(unittest.TestCase):
+    """`reconcile_unreconciled_tail_evidence` (integrate.py) itself -- the
+    `verify_one` call it makes when `integrate_one` leaves a synthetic tail
+    group OPEN, per its `make_verifier` seam (task 1.x)."""
+
+    def test_verify_one_called_for_group_left_open_by_integrate_one(self):
+        finding = _finding("TASK-1.1")
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            journal_path = str(Path(tmp) / "journal.json")
+
+            def fake_integrate_one(g, *_args, **_kwargs):
+                integrate._write_group_journal(
+                    journal_path, g["name"], "https://github.com/acme/repo/pull/1",
+                    "tail-task-1.1", "OPEN",
+                )
+                return None
+
+            fake_verifier = unittest.mock.Mock()
+
+            def fake_make_verifier():
+                return fake_verifier
+
+            with unittest.mock.patch.object(
+                integrate, "integrate_one", side_effect=fake_integrate_one
+            ):
+                result = integrate.reconcile_unreconciled_tail_evidence(
+                    [finding], Path("/fake/repo"), "spec-1", [{"id": "TASK-1.1", "deps": []}],
+                    "origin", "run-1", "main", journal_path,
+                    make_verifier=fake_make_verifier,
+                )
+
+            fake_verifier.verify_one.assert_called_once()
+            called_group = fake_verifier.verify_one.call_args.args[0]
+            self.assertEqual(called_group["tasks"], ["TASK-1.1"])
+            self.assertEqual(called_group["name"], "tail-task-1.1")
+            self.assertEqual(result[0]["task"], "TASK-1.1")
+
+    def test_verify_one_not_called_when_integrate_one_leaves_group_merged(self):
+        finding = _finding("TASK-1.2")
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            journal_path = str(Path(tmp) / "journal.json")
+
+            def fake_integrate_one(g, *_args, **_kwargs):
+                integrate._write_group_journal(
+                    journal_path, g["name"], "https://github.com/acme/repo/pull/2",
+                    "tail-task-1.2", "MERGED",
+                )
+                return None
+
+            fake_verifier = unittest.mock.Mock()
+
+            def fake_make_verifier():
+                return fake_verifier
+
+            with unittest.mock.patch.object(
+                integrate, "integrate_one", side_effect=fake_integrate_one
+            ):
+                result = integrate.reconcile_unreconciled_tail_evidence(
+                    [finding], Path("/fake/repo"), "spec-1", [{"id": "TASK-1.2", "deps": []}],
+                    "origin", "run-1", "main", journal_path,
+                    make_verifier=fake_make_verifier,
+                )
+
+            fake_verifier.verify_one.assert_not_called()
+            self.assertEqual(result[0]["task"], "TASK-1.2")
+            self.assertEqual(result[0]["reconcile_state"], "merged")
+
+    def test_verify_one_not_called_when_integrate_one_leaves_group_quarantined(self):
+        finding = _finding("TASK-1.3")
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            journal_path = str(Path(tmp) / "journal.json")
+
+            def fake_integrate_one(g, *_args, **_kwargs):
+                integrate._write_group_journal(
+                    journal_path, g["name"], "",
+                    "tail-task-1.3", "QUARANTINED", "integration-error",
+                )
+                return None
+
+            fake_verifier = unittest.mock.Mock()
+
+            def fake_make_verifier():
+                return fake_verifier
+
+            with unittest.mock.patch.object(
+                integrate, "integrate_one", side_effect=fake_integrate_one
+            ):
+                result = integrate.reconcile_unreconciled_tail_evidence(
+                    [finding], Path("/fake/repo"), "spec-1", [{"id": "TASK-1.3", "deps": []}],
+                    "origin", "run-1", "main", journal_path,
+                    make_verifier=fake_make_verifier,
+                )
+
+            fake_verifier.verify_one.assert_not_called()
+            self.assertEqual(result[0]["task"], "TASK-1.3")
+            self.assertEqual(result[0]["reconcile_state"], "quarantined")
+
+    def test_verify_one_exception_quarantines_only_that_finding(self):
+        finding_a = _finding("TASK-1.4")
+        finding_b = _finding("TASK-1.5")
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            journal_path = str(Path(tmp) / "journal.json")
+
+            def fake_integrate_one(g, *_args, **_kwargs):
+                integrate._write_group_journal(
+                    journal_path, g["name"], "https://github.com/acme/repo/pull/3",
+                    g["name"], "OPEN",
+                )
+                return None
+
+            fake_verifier = unittest.mock.Mock()
+
+            def fake_verify_one(g, *_args, **_kwargs):
+                if g["name"] == "tail-task-1.4":
+                    raise RuntimeError("boom")
+
+            fake_verifier.verify_one.side_effect = fake_verify_one
+
+            def fake_make_verifier():
+                return fake_verifier
+
+            with unittest.mock.patch.object(
+                integrate, "integrate_one", side_effect=fake_integrate_one
+            ):
+                result = integrate.reconcile_unreconciled_tail_evidence(
+                    [finding_a, finding_b], Path("/fake/repo"), "spec-1",
+                    [
+                        {"id": "TASK-1.4", "deps": []},
+                        {"id": "TASK-1.5", "deps": []},
+                    ],
+                    "origin", "run-1", "main", journal_path,
+                    make_verifier=fake_make_verifier,
+                )
+
+            self.assertEqual(fake_verifier.verify_one.call_count, 2)
+            self.assertEqual(result[0]["task"], "TASK-1.4")
+            self.assertEqual(result[0]["reconcile_state"], "quarantined")
+            self.assertEqual(result[1]["task"], "TASK-1.5")
+            self.assertEqual(result[1]["reconcile_state"], "opened")
 
 
 if __name__ == "__main__":

@@ -27,7 +27,7 @@ Implements requirement: **Reconciliation PR receives the same CI verification as
 
 ## 2. Pipeline scheduler wiring
 
-- [ ] 2.1 In `src/worktrail/orchestrator/live.py`'s `_pipeline_scheduler`
+- [x] 2.1 In `src/worktrail/orchestrator/live.py`'s `_pipeline_scheduler`
       (~line 4973 call site), pass `make_verifier=make_verifier_fn` (the
       function's existing verifier factory, already sharing `iv_lock`/
       `pm_merge_lock`/`pm_cumulative_regression`) to
@@ -35,20 +35,20 @@ Implements requirement: **Reconciliation PR receives the same CI verification as
 
 ## 3. Tests
 
-- [ ] 3.1 In `tests/orchestrator/` (co-locate with existing
+- [x] 3.1 In `tests/orchestrator/` (co-locate with existing
       `reconcile_unreconciled_tail_evidence` coverage — see
       `test_live_tail_reconciliation.py`, `test_tail_pr_dedup.py`), add a
       unit test calling `reconcile_unreconciled_tail_evidence` directly with
       a fake `integrate_one` that journals a group to `OPEN` and a fake
       `make_verifier`/`Verifier.verify_one` double, asserting `verify_one` is
       called for that finding's synthetic group.
-- [ ] 3.2 Add a test asserting `verify_one` is NOT called for a finding whose
+- [x] 3.2 Add a test asserting `verify_one` is NOT called for a finding whose
       `post_state` after `integrate_one` is `MERGED` or not `OPEN`
       (quarantined) — no PR to verify.
-- [ ] 3.3 Add a test asserting a `verify_one` exception for one finding is
+- [x] 3.3 Add a test asserting a `verify_one` exception for one finding is
       recorded as `quarantined` for that finding without preventing
       reconciliation of the other findings in the same batch.
-- [ ] 3.4 In `test_live_tail_reconciliation.py` (`_pipeline_scheduler`
+- [x] 3.4 In `test_live_tail_reconciliation.py` (`_pipeline_scheduler`
       integration level), assert the scheduler's call to
       `reconcile_unreconciled_tail_evidence` passes a `make_verifier`
       keyword argument (a callable), confirming the wiring from task 2.1 —
