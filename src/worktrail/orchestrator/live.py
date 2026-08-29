@@ -5829,6 +5829,12 @@ def main(argv=None) -> int:
         help="Comma-separated classifier gates for this run, forwarded to the group-PR "
         "label refresh's --gates for the same eligibility check as the one-off PR path.",
     )
+    fr.add_argument(
+        "--dispatch-id",
+        default=None,
+        dest="dispatch_id",
+        help="Dispatch identifier to thread through all worker spawns for run tracking.",
+    )
     pc = sub.add_parser(
         "precheck",
         help="Check whether pending impl tasks have their declared files already present",

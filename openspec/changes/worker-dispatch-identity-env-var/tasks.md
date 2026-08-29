@@ -19,7 +19,7 @@
       stored).
 - [ ] 2.2 Thread `self.dispatch_id` into the `spawnlib.spawn_agent`/
       `spawnlib.spawn_claude_p` call(s) inside `LiveSpawn.__call__`.
-- [ ] 2.3 Add a `--dispatch-id` argument (default `None`) to the `full-real`
+- [x] 2.3 Add a `--dispatch-id` argument (default `None`) to the `full-real`
       argparse subparser (`fr = sub.add_parser("full-real", ...)`).
 - [ ] 2.4 Add a `dispatch_id: str | None = None` parameter to `full_real()`, passed
       through to the `LiveSpawn` it constructs, and pass `args.dispatch_id` to it
