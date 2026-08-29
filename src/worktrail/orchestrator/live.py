@@ -4982,6 +4982,7 @@ def _pipeline_scheduler(
             pr_labels=pr_labels,
             route=route,
             gates=gates,
+            make_verifier=make_verifier_fn,
         )
     integrate_module._record_unreconciled_tail_evidence(journal_path, unreconciled_tail)
     unreconciled_note = _format_unreconciled_tail_note(unreconciled_tail)
