@@ -103,5 +103,44 @@ class PipelineSchedulerReconciliationTest(unittest.TestCase):
             )
 
 
+class ReconcileTailEvidenceVerifyOneTest(unittest.TestCase):
+    """`reconcile_unreconciled_tail_evidence` (integrate.py) itself -- the
+    `verify_one` call it makes when `integrate_one` leaves a synthetic tail
+    group OPEN, per its `make_verifier` seam (task 1.x)."""
+
+    def test_verify_one_called_for_group_left_open_by_integrate_one(self):
+        finding = _finding("TASK-1.1")
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            journal_path = str(Path(tmp) / "journal.json")
+
+            def fake_integrate_one(g, *_args, **_kwargs):
+                integrate._write_group_journal(
+                    journal_path, g["name"], "https://github.com/acme/repo/pull/1",
+                    "tail-task-1.1", "OPEN",
+                )
+                return None
+
+            fake_verifier = unittest.mock.Mock()
+
+            def fake_make_verifier():
+                return fake_verifier
+
+            with unittest.mock.patch.object(
+                integrate, "integrate_one", side_effect=fake_integrate_one
+            ):
+                result = integrate.reconcile_unreconciled_tail_evidence(
+                    [finding], Path("/fake/repo"), "spec-1", [{"id": "TASK-1.1", "deps": []}],
+                    "origin", "run-1", "main", journal_path,
+                    make_verifier=fake_make_verifier,
+                )
+
+            fake_verifier.verify_one.assert_called_once()
+            called_group = fake_verifier.verify_one.call_args.args[0]
+            self.assertEqual(called_group["tasks"], ["TASK-1.1"])
+            self.assertEqual(called_group["name"], "tail-task-1.1")
+            self.assertEqual(result[0]["task"], "TASK-1.1")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
