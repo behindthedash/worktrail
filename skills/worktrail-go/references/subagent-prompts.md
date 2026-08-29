@@ -982,7 +982,13 @@ echo "CHECKS_EXIT=$?"
 - **Bash tool timeout fired** (checks still pending after 10 min) → re-issue
   the same `--watch` command, up to 3 times (30 min total). Still pending →
   quarantine with worktrees preserved and report the stuck checks. Never
-  switch to a sleep loop and never background an unbounded waiter.
+  switch to a sleep loop and never background an unbounded waiter — and never
+  end the turn to "check again later": the whole wait stays inside these
+  blocking calls in one turn (single-turn wait discipline,
+  `ci-watch-loop.md` `{#ci-wait-discipline}`). When composing a NEW subagent
+  prompt with a PR tail, prefer ending the subagent at PR-opened and keeping
+  the wait in the dispatcher (wait-ownership rule, same section) unless the
+  subagent also owns failure classification.
 
 **Note on branch protection and CI-skip:** If `$BASE` has required status checks enforced via branch protection, `gh pr merge` itself will reject a red or pending PR. The `--watch` gate above is defence-in-depth and ensures conductor visibility into the wait; it also handles consuming projects that may lack branch protection.
 

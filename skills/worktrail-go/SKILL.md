@@ -798,7 +798,9 @@ Route I `investigation_complete`) may finish without commit/push/PR creation.
 
 **CI watch loop.** After opening a PR on any PR-owning route, run the loop in
 `references/ci-watch-loop.md` before closing the run record: wait with
-`gh pr checks --watch` (never a sleep loop), then classify the settled checks — pass →
+`gh pr checks --watch` (never a sleep loop, never an end-turn/resume poll —
+single-turn wait discipline, and pure wait-tails stay with the dispatcher:
+`references/ci-watch-loop.md` `{#ci-wait-discipline}`), then classify the settled checks — pass →
 finish; transient infra → rerun; code defect → minimal patch (≤5 iterations); product
 decision → `blocked_product_decision`; ceiling → `failed_recoverable`.
 
