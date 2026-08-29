@@ -939,6 +939,8 @@ def spawn_agent(
             ]
         if dispatch_id is not None:
             env["WORKTRAIL_DISPATCH_ID"] = dispatch_id
+        else:
+            env.pop("WORKTRAIL_DISPATCH_ID", None)
         return build_child_env(current_cell, env), oc_data_dir
 
     child_env, opencode_dir = _prepare_child_env(cell)
