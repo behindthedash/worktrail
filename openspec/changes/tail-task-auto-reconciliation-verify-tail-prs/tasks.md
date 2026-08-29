@@ -2,7 +2,7 @@
 
 Implements requirement: **Reconciliation PR receives the same CI verification as a group PR**
 
-- [ ] 1.1 In `src/worktrail/orchestrator/integrate.py`, add a
+- [x] 1.1 In `src/worktrail/orchestrator/integrate.py`, add a
       `make_verifier: Optional[Callable[[], "verify.Verifier"]] = None`
       parameter to `reconcile_unreconciled_tail_evidence`.
 - [ ] 1.2 Add a module-level default factory (lazily importing `verify`, and
