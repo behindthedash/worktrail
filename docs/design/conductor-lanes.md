@@ -242,6 +242,15 @@ rather than by omission.
 alternative (authors hand-write file scopes into `tasks.md`) reintroduces the per-task frontmatter
 coupling §2 just removed.
 
+> **Amendment (openspec-task-files-declaration):** §4.5's "`deps`/`files`/`complexity` are not
+> parsed from the artifact — they come from the compiled RunPlan" now has one narrow, opt-in
+> exception: an author may indent a `files:` block under an individual `tasks.md` checklist item
+> to declare that task's file scope inline. This does not reverse D2 — compile still runs exactly
+> once per change and is still the default source of file scope for every task that omits the
+> declaration. The exception is scoped per-task: a fully-declared task lets compile seed that
+> task's scope without a model call (the same seeding §5/D1 already grants migrated devkit
+> frontmatter), while a partially- or un-declared task falls back to the LLM pass unchanged.
+
 **D3 — Lane concurrency is re-derived from `agent_capacity.py`, not carried over.** Today
 `max_workers` defaults 2–3 (`live.py:1352,1475,1847`), sized for short-lived cold task workers.
 Warm lane agents are longer-lived and heavier; the old constant would systematically mis-size them.
