@@ -160,15 +160,26 @@ def parse_tasks_md(text: str) -> ParsedTasks:
                 )
 
             files: list[str] = []
-            for follow in lines[i + 1:]:
+            files_declared = False
+            for j, follow in enumerate(lines[i + 1:], start=i + 1):
                 if not follow.strip():
                     break
                 if GROUP_RE.match(follow) or TASK_RE.match(follow):
                     break
                 fm = FILES_RE.match(follow)
                 if fm:
+                    if files_declared:
+                        result.warnings.append(
+                            f"line {j + 1}: task {tid} has more than one 'files:' line; "
+                            "using the first declaration"
+                        )
+                        continue
+                    files_declared = True
                     files = split_files(fm.group(1))
-                    break
+                    if not files:
+                        result.warnings.append(
+                            f"line {j + 1}: task {tid}'s 'files:' line names no paths"
+                        )
 
             result.tasks.append(
                 ParsedTask(
