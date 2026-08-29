@@ -1400,6 +1400,30 @@ def _close_superseded_tail_pr(
         )
 
 
+def _default_tail_verifier(repo: Path, remote: str, base: str, spec_id: str) -> "verify.Verifier":
+    """Default `make_verifier` factory for `reconcile_unreconciled_tail_evidence`
+    when the caller (the pipeline scheduler) doesn't inject one -- standalone
+    callers and tests get a `Verifier` with its own private `git_lock`/
+    `merge_lock` (nothing to share them with outside a scheduler run) and the
+    same resolve/ci-fix spawn roles live.py's `_pipeline_scheduler` wires up,
+    at that module's run-wide agent/model/timeout defaults since this
+    function has none of its own to honor."""
+    from . import live
+    from . import verify
+
+    resolve_spawn, ci_fix_spawn = live._verifier_role_spawns(
+        live.DEFAULT_AGENT, verify.DEFAULT_MODEL, live.WORKER_TIMEOUT_DEFAULT, None, None
+    )
+    return verify.Verifier(
+        repo,
+        remote,
+        base,
+        spec_id,
+        spawn=resolve_spawn,
+        ci_fix_spawn=ci_fix_spawn,
+    )
+
+
 def reconcile_unreconciled_tail_evidence(
     findings: list,
     repo: Path,
