@@ -2145,9 +2145,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--budget-minutes", type=int, default=0,
                         help="wall-clock budget (0 = none)")
     parser.add_argument("--agent", default=None, choices=SUPPORTED_AGENTS,
-                        help="one-shot provider; defaults to claude when omitted "
-                             "(routing.drain.agent is a retired key -- worktrail-routing "
-                             "--migrate)")
+                        help="one-shot provider; when omitted (and no --fallback-agent), "
+                             "the chain comes from routing.yaml's targets file order, "
+                             "else claude (routing.drain.agent is a retired key -- "
+                             "worktrail-routing --migrate)")
     parser.add_argument("--fallback-agent", action="append", default=[],
                         dest="fallback_agents", choices=SUPPORTED_AGENTS, metavar="AGENT",
                         help="additional agent to try, in priority order, when a "
@@ -2209,19 +2210,38 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.work_queue_py is None or not Path(args.work_queue_py).is_file():
         print("error: work_queue.py not found; pass --work-queue-py", file=sys.stderr)
         return 2
-    # CLI > built-in default. routing.drain no longer carries agent/
-    # fallback_agents (routing-target-selector task 5.1: drain agent
-    # selection is candidate-priority-order + capacity gating via
+    # CLI > routing `targets` file order > built-in default. routing.drain no
+    # longer carries agent/fallback_agents (routing-target-selector task 5.1:
+    # drain agent selection is candidate-priority-order + capacity gating via
     # select_available_agent(), not a single configured default) -- loading
     # still fails loud on a routing file that still declares either retired
     # key, rather than silently ignoring it.
     try:
-        routing_drain = resolve_routing(load_policy(worktrail_home()), route="", risk="")["drain"]
+        resolved_routing = resolve_routing(load_policy(worktrail_home()), route="", risk="")
     except OperatorConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    agent = args.agent or "claude"
+    routing_drain = resolved_routing["drain"]
+    agent = args.agent
     fallback_agents = list(args.fallback_agents)
+    if agent is None and not fallback_agents:
+        # No flags: candidate priority order is routing.yaml's own `targets`
+        # file order, deduped to bare harness names (the pre-loop
+        # build_command()/validate_agent_runtime() paths are harness-keyed;
+        # select_available_agent() re-resolves each harness to its
+        # first-declared target -- and that target's default_tier cell --
+        # every iteration). drain-operator-config "No flags" scenarios:
+        # routing governs the chain, so the operator's nightly script no
+        # longer needs to mirror the file with hardcoded --agent flags.
+        harness_order: List[str] = []
+        for target in (resolved_routing.get("targets") or {}).values():
+            harness = target.get("harness") if isinstance(target, dict) else None
+            if harness in SUPPORTED_AGENTS and harness not in harness_order:
+                harness_order.append(harness)
+        if harness_order:
+            agent, fallback_agents = harness_order[0], harness_order[1:]
+    if agent is None:
+        agent = "claude"
     invalid = [a for a in [agent, *fallback_agents] if a not in SUPPORTED_AGENTS]
     if invalid:
         print(f"error: unsupported agent(s) {', '.join(sorted(set(invalid)))} "

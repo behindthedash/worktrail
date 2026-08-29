@@ -3442,6 +3442,49 @@ def test_main_defaults_to_claude_without_config(tmp_path, monkeypatch):
     assert config.fallback_agents == []
 
 
+_TARGETS_PAYLOAD = (
+    '{"targets": {'
+    '"codex-sub": {"harness": "codex", "pool": "subscription"}, '
+    '"claude-sub": {"harness": "claude", "pool": "subscription"}, '
+    '"claude-api": {"harness": "claude", "pool": "api", "api_opt_in": true}, '
+    '"opencode-free": {"harness": "opencode", "pool": "free"}}}'
+)
+
+
+def test_main_flagless_derives_chain_from_targets_file_order(tmp_path, monkeypatch):
+    """drain-operator-config "No flags" scenarios: with no --agent/--fallback-agent,
+    the candidate chain is routing.yaml's `targets` file order, deduped to bare
+    harness names (claude-api shares claude-sub's harness and adds nothing)."""
+    rc, config = _run_main(tmp_path, monkeypatch, config_payload=_TARGETS_PAYLOAD)
+    assert rc == 0
+    assert config.agent == "codex"
+    assert config.fallback_agents == ["claude", "opencode"]
+
+
+def test_main_agent_flag_wins_entirely_over_targets_order(tmp_path, monkeypatch):
+    """Flags override config: an explicit --agent suppresses the targets-order
+    derivation outright -- routing fallbacks are not merged in."""
+    rc, config = _run_main(
+        tmp_path, monkeypatch,
+        argv_extra=["--agent", "claude"],
+        config_payload=_TARGETS_PAYLOAD)
+    assert rc == 0
+    assert config.agent == "claude"
+    assert config.fallback_agents == []
+
+
+def test_main_fallback_flag_alone_also_suppresses_targets_order(tmp_path, monkeypatch):
+    """A bare --fallback-agent (no --agent) is still an explicit chain choice:
+    primary falls to the claude built-in, not to the targets-order derivation."""
+    rc, config = _run_main(
+        tmp_path, monkeypatch,
+        argv_extra=["--fallback-agent", "opencode"],
+        config_payload=_TARGETS_PAYLOAD)
+    assert rc == 0
+    assert config.agent == "claude"
+    assert config.fallback_agents == ["opencode"]
+
+
 def test_main_rejects_any_operator_config_agent_key(tmp_path, monkeypatch, capsys):
     """routing.drain.agent/fallback_agents are retired keys (routing-target-
     selector task 5.1: drain agent selection is now candidate-priority-order
