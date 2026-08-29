@@ -909,6 +909,33 @@ class LiveSpawnDispatchIdTests(unittest.TestCase):
         self.assertIsNone(captured.get("dispatch_id"))
 
 
+class FullRealDispatchIdArgparseTests(unittest.TestCase):
+    """full-real --dispatch-id argparse wiring passes dispatch_id to full_real()."""
+
+    def test_dispatch_id_passed_to_full_real(self):
+        argv = [
+            "full-real",
+            "--repo", "/fake/repo",
+            "--spec", "docs/specs/001-foo",
+            "--dispatch-id", "go-abc123",
+        ]
+        with patch("worktrail.orchestrator.live.full_real", return_value={}) as mock_fr:
+            live.main(argv)
+        mock_fr.assert_called_once()
+        self.assertEqual(mock_fr.call_args.kwargs.get("dispatch_id"), "go-abc123")
+
+    def test_dispatch_id_omitted_defaults_to_none(self):
+        argv = [
+            "full-real",
+            "--repo", "/fake/repo",
+            "--spec", "docs/specs/001-foo",
+        ]
+        with patch("worktrail.orchestrator.live.full_real", return_value={}) as mock_fr:
+            live.main(argv)
+        mock_fr.assert_called_once()
+        self.assertIsNone(mock_fr.call_args.kwargs.get("dispatch_id"))
+
+
 def _run_git(repo: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, check=True)
 
