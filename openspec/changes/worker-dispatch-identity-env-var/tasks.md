@@ -1,8 +1,8 @@
 ## 1. spawnlib: env plumbing
 
-- [ ] 1.1 Add an optional `dispatch_id: Optional[str] = None` parameter to
+- [x] 1.1 Add an optional `dispatch_id: Optional[str] = None` parameter to
       `spawnlib.spawn_agent()`.
-- [ ] 1.2 In `spawn_agent()`'s nested `build_child_env()`, when `dispatch_id` is not
+- [x] 1.2 In `spawn_agent()`'s nested `build_child_env()`, when `dispatch_id` is not
       `None`, set `env["WORKTRAIL_DISPATCH_ID"] = dispatch_id` on the built child
       env dict (same conditional-passthrough shape as the existing
       `WORKTRAIL_SKILL_DISPATCH_DEPTH` handling immediately below it). Leave the key
@@ -14,7 +14,7 @@
 
 ## 2. live.py: LiveSpawn + full-real plumbing
 
-- [ ] 2.1 Add an optional `dispatch_id: str | None = None` constructor parameter to
+- [x] 2.1 Add an optional `dispatch_id: str | None = None` constructor parameter to
       `LiveSpawn.__init__`, stored as `self.dispatch_id` (mirrors how `effort` is
       stored).
 - [ ] 2.2 Thread `self.dispatch_id` into the `spawnlib.spawn_agent`/
