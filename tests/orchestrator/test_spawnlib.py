@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 from collections import namedtuple
 from unittest.mock import patch
 
@@ -1047,9 +1048,64 @@ class CodexSpawn(unittest.TestCase):
         ) as prepare:
             spawnlib.spawn_agent("prompt", "/tmp", tier="t2-build")
 
-        prepare.assert_called_once_with()
+        # Subscription lane: default home selection, ChatGPT auth inherited --
+        # same contract as before the codex-api-auth-lane change, now passed
+        # explicitly so the auth lane always matches the served cell's pool.
+        prepare.assert_called_once_with(None, inherit_auth=True)
         self.assertEqual(seen["env"]["CODEX_HOME"], child_env["CODEX_HOME"])
         self.assertEqual(seen["env"]["CC_HEADLESS"], "1")
+
+    def _api_routing(self, codex_home):
+        return _routing(
+            {"codex-api": _target("codex", pool="api", api_opt_in=True,
+                                  auth={"codex_home": codex_home} if codex_home else None)},
+            {"t2-build": {"codex-api": {"model": "gpt-5.3-codex", "effort": None}}},
+            default_tier="t2-build",
+        )
+
+    def test_codex_api_cell_uses_declared_home_without_auth_inheritance(self):
+        """codex-api-auth-lane: a `pool: api` cell spawns in its declared,
+        provisioned CODEX_HOME with inherit_auth=False -- the one live-verified
+        per-spawn auth selector (routing-target-selector task 3.6)."""
+        with tempfile.TemporaryDirectory() as home:
+            (Path(home) / "auth.json").write_text("{}")
+            child_env = {"CODEX_HOME": home}
+
+            def fake_run(cmd, **kwargs):
+                out_path = cmd[cmd.index("--output-last-message") + 1]
+                with open(out_path, "w") as f:
+                    f.write("ok")
+                return Proc(0, '{"type":"event"}\n', "")
+
+            spawnlib.subprocess.run = fake_run
+            with _patch_routing(self._api_routing(home)), patch.object(
+                spawnlib,
+                "prepare_codex_child_environment",
+                return_value=(child_env.copy(), home, False),
+            ) as prepare:
+                spawnlib.spawn_agent("prompt", "/tmp", tier="t2-build")
+            prepare.assert_called_once_with(home, inherit_auth=False)
+
+    def test_codex_api_cell_without_codex_home_fails_loud_before_launch(self):
+        launched = []
+        spawnlib.subprocess.run = lambda *a, **k: launched.append(a) or Proc(0, "", "")
+        with _patch_routing(self._api_routing(None)):
+            with self.assertRaises(spawnlib.OperatorConfigError) as ctx:
+                spawnlib.spawn_agent("prompt", "/tmp", tier="t2-build")
+        self.assertIn("auth.codex_home", str(ctx.exception))
+        self.assertIn("codex-api", str(ctx.exception))
+        self.assertEqual(launched, [])
+
+    def test_codex_api_cell_with_unprovisioned_home_fails_loud_before_launch(self):
+        launched = []
+        spawnlib.subprocess.run = lambda *a, **k: launched.append(a) or Proc(0, "", "")
+        with tempfile.TemporaryDirectory() as home:  # exists, but no auth.json
+            with _patch_routing(self._api_routing(home)):
+                with self.assertRaises(spawnlib.OperatorConfigError) as ctx:
+                    spawnlib.spawn_agent("prompt", "/tmp", tier="t2-build")
+        self.assertIn("auth.json", str(ctx.exception))
+        self.assertIn("--with-api-key", str(ctx.exception))
+        self.assertEqual(launched, [])
 
 
 class OpenCodeSpawn(unittest.TestCase):
