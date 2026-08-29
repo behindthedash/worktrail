@@ -1389,14 +1389,14 @@ class ReposScan(unittest.TestCase):
             parent = Path(tmp)
             contaminated = self._repo(parent, "repo-a")
             clean_sibling = self._repo(parent, "repo-b")
-            policy_dir = contaminated / "docs" / "specs"
+            policy_dir = contaminated / ".worktrail"
             policy_dir.mkdir(parents=True)
-            (policy_dir / "go-policy.yaml").write_text(
+            (policy_dir / "policy.yaml").write_text(
                 '# go conductor / parallel-orchestrator policy for repo-b.\n'
                 'pre_pr_cmd: "${REPO_B_VENV:-/home/x/projects/repo-b/.venv}/bin/pytest"\n'
             )
-            (clean_sibling / "docs" / "specs").mkdir(parents=True)
-            (clean_sibling / "docs" / "specs" / "go-policy.yaml").write_text(
+            (clean_sibling / ".worktrail").mkdir(parents=True)
+            (clean_sibling / ".worktrail" / "policy.yaml").write_text(
                 '# go conductor / parallel-orchestrator policy for repo-b.\n'
                 'pre_pr_cmd: "${REPO_B_VENV:-/home/x/projects/repo-b/.venv}/bin/pytest"\n'
             )
@@ -1420,9 +1420,9 @@ class ReposScan(unittest.TestCase):
                 repo = parent / name
                 repo.mkdir(parents=True)
                 subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-                specs = repo / "docs" / "specs"
-                specs.mkdir(parents=True)
-                (specs / "go-policy.yaml").write_text(
+                worktrail_dir = repo / ".worktrail"
+                worktrail_dir.mkdir(parents=True)
+                (worktrail_dir / "policy.yaml").write_text(
                     f'# go conductor policy for {name}.\npre_pr_cmd: "{cmd}"\n'
                 )
                 (repo / "tests").mkdir()
@@ -1690,9 +1690,9 @@ class CategoryPickerAndRender(unittest.TestCase):
         # deliberately irrelevant to the assertion.
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            specs = repo / "docs" / "specs"
-            specs.mkdir(parents=True)
-            (specs / "go-policy.yaml").write_text(
+            worktrail_dir = repo / ".worktrail"
+            worktrail_dir.mkdir(parents=True)
+            (worktrail_dir / "policy.yaml").write_text(
                 "agent_cli: codex\n"
                 "routing:\n"
                 "  targets:\n"
@@ -1721,9 +1721,9 @@ class CategoryPickerAndRender(unittest.TestCase):
     def test_category_items_spec_item_planned_agent_matches_routing(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            specs = repo / "docs" / "specs"
-            specs.mkdir(parents=True)
-            (specs / "go-policy.yaml").write_text(
+            worktrail_dir = repo / ".worktrail"
+            worktrail_dir.mkdir(parents=True)
+            (worktrail_dir / "policy.yaml").write_text(
                 "agent_cli: codex\n"
                 "routing:\n"
                 "  targets:\n"
@@ -3714,7 +3714,7 @@ class AutoPickReleaseTriage(unittest.TestCase):
         }
 
     def _set_release_gate(self, gate: str) -> None:
-        policy_file = self.repo / "docs" / "specs" / "go-policy.yaml"
+        policy_file = self.repo / ".worktrail" / "policy.yaml"
         policy_file.parent.mkdir(parents=True, exist_ok=True)
         policy_file.write_text(f"release_gate: {gate}\n")
 

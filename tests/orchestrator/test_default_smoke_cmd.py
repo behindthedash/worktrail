@@ -27,9 +27,9 @@ class DefaultSmokeCmdResolutionTests(unittest.TestCase):
     def _repo(self, policy_yaml: "str | None") -> str:
         d = tempfile.mkdtemp(prefix="default-smoke-")
         if policy_yaml is not None:
-            spec = Path(d) / "docs" / "specs"
+            spec = Path(d) / ".worktrail"
             spec.mkdir(parents=True)
-            (spec / "go-policy.yaml").write_text(policy_yaml, encoding="utf-8")
+            (spec / "policy.yaml").write_text(policy_yaml, encoding="utf-8")
         return d
 
     def test_resolves_pre_pr_cmd_when_configured(self):
@@ -73,9 +73,9 @@ class DefaultPostMergeSmokeCmdResolutionTests(unittest.TestCase):
     def _repo(self, policy_yaml: "str | None") -> str:
         d = tempfile.mkdtemp(prefix="default-post-merge-smoke-")
         if policy_yaml is not None:
-            spec = Path(d) / "docs" / "specs"
+            spec = Path(d) / ".worktrail"
             spec.mkdir(parents=True)
-            (spec / "go-policy.yaml").write_text(policy_yaml, encoding="utf-8")
+            (spec / "policy.yaml").write_text(policy_yaml, encoding="utf-8")
         return d
 
     def test_resolves_post_merge_smoke_cmd_when_configured(self):
@@ -106,9 +106,9 @@ class FullRealCLIAutoResolveTests(unittest.TestCase):
     def _repo(self, policy_yaml: "str | None") -> str:
         d = tempfile.mkdtemp(prefix="default-smoke-cli-")
         if policy_yaml is not None:
-            spec = Path(d) / "docs" / "specs"
+            spec = Path(d) / ".worktrail"
             spec.mkdir(parents=True)
-            (spec / "go-policy.yaml").write_text(policy_yaml, encoding="utf-8")
+            (spec / "policy.yaml").write_text(policy_yaml, encoding="utf-8")
         return d
 
     def _run(self, repo: str, *extra: str) -> dict:

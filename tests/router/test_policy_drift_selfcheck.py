@@ -28,9 +28,9 @@ def _repo(root: Path, name: str, policy_text=None, files=None,
     repo.mkdir(parents=True)
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
     if policy_text is not None:
-        specs = repo / "docs" / "specs"
-        specs.mkdir(parents=True)
-        (specs / "go-policy.yaml").write_text(policy_text)
+        worktrail_dir = repo / ".worktrail"
+        worktrail_dir.mkdir(parents=True)
+        (worktrail_dir / "policy.yaml").write_text(policy_text)
     for rel in files or []:
         p = repo / rel
         p.parent.mkdir(parents=True, exist_ok=True)

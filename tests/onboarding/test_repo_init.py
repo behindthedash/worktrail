@@ -646,24 +646,6 @@ class ProposeTests(unittest.TestCase):
         self.assertTrue(any("already split" in s for s in result["skipped"]))
         self.assertTrue(any("protect-dev.json" in s for s in result["skipped"]))
 
-    def test_legacy_policy_filename_is_respected_not_overwritten(self):
-        repo = _tmp_repo()
-        (repo / "docs" / "specs").mkdir(parents=True)
-        (repo / "docs" / "specs" / "go-policy.yaml").write_text("agent_cli: codex\n")
-        rc, result = self._run_propose(repo)
-        self.assertEqual(rc, 0)
-        self.assertFalse((repo / ".worktrail" / "policy.yaml").is_file())
-        self.assertTrue(any("legacy policy filename" in s for s in result["skipped"]))
-
-    def test_interim_policy_filename_is_respected_not_overwritten(self):
-        repo = _tmp_repo()
-        (repo / "docs" / "specs").mkdir(parents=True)
-        (repo / "docs" / "specs" / "worktrail-go-policy.yaml").write_text("agent_cli: codex\n")
-        rc, result = self._run_propose(repo)
-        self.assertEqual(rc, 0)
-        self.assertFalse((repo / ".worktrail" / "policy.yaml").is_file())
-        self.assertTrue(any("legacy policy filename" in s for s in result["skipped"]))
-
     def test_automerge_workflow_skipped_when_already_present(self):
         repo = _tmp_repo()
         wf_dir = repo / ".github" / "workflows"

@@ -10,8 +10,8 @@ from worktrail.router import release_gate, run_record
 
 def _mk_repo(tmp_path: Path) -> Path:
     repo = tmp_path / "projects" / "myapp"
-    (repo / "docs" / "specs").mkdir(parents=True)
-    (repo / "docs" / "specs" / "go-policy.yaml").write_text(
+    (repo / ".worktrail").mkdir(parents=True)
+    (repo / ".worktrail" / "policy.yaml").write_text(
         f"release_gate: v1.0\nrun_record_dir: {tmp_path}/runs\n"
     )
     return repo

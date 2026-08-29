@@ -29,9 +29,9 @@ def _scenarios():
 
 def _permissive_policy(tmp, target="dev"):
     """The most permissive policy the loader accepts (max_risk tops out at medium)."""
-    d = Path(tmp) / "docs" / "specs"
+    d = Path(tmp) / ".worktrail"
     d.mkdir(parents=True, exist_ok=True)
-    (d / "go-policy.yaml").write_text(
+    (d / "policy.yaml").write_text(
         "automerge:\n  enabled: true\n  max_risk: medium\n"
         f"  target_branches:\n    - {target}\n")
     return load_policy(Path(tmp))

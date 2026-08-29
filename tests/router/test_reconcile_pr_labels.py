@@ -47,8 +47,8 @@ _NO_POLICY = {
 
 def test_discover_managed_repos_requires_go_policy_yaml(tmp_path):
     managed = tmp_path / "managed"
-    (managed / "docs" / "specs").mkdir(parents=True)
-    (managed / "docs" / "specs" / "go-policy.yaml").write_text("base_branch: main\n")
+    (managed / ".worktrail").mkdir(parents=True)
+    (managed / ".worktrail" / "policy.yaml").write_text("base_branch: main\n")
     (managed / ".git").mkdir()
 
     unmanaged = tmp_path / "unmanaged"
@@ -477,8 +477,8 @@ def test_main_single_repo_json_output(monkeypatch, tmp_path, capsys):
 
 def test_main_repos_root_only_sweeps_managed_repos(monkeypatch, tmp_path, capsys):
     managed = tmp_path / "managed"
-    (managed / "docs" / "specs").mkdir(parents=True)
-    (managed / "docs" / "specs" / "go-policy.yaml").write_text("base_branch: main\n")
+    (managed / ".worktrail").mkdir(parents=True)
+    (managed / ".worktrail" / "policy.yaml").write_text("base_branch: main\n")
     (managed / ".git").mkdir()
 
     unmanaged = tmp_path / "unmanaged"
