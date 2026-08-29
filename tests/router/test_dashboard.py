@@ -3817,6 +3817,80 @@ class RepoScopedQueueRender(unittest.TestCase):
         self.assertNotIn("theirs", out)
 
 
+class RepoScopedCategoryPickers(unittest.TestCase):
+    """`build_category_actions`/`build_category_items` must not surface another
+    repo's open decisions or queued briefs when `queue_repo` scopes the picker
+    to one repo -- the same class of leak `render_dashboard`'s own
+    `queue_repo` filter already closes for its text output above, but that
+    filter was never applied to the JSON-mode picker builders (observed live
+    2026-08-28: `worktrail-go worktrail` surfaced a datalena open decision in
+    the 'Open decisions' category and inflated 'Work queue' to a cross-repo
+    count)."""
+
+    BRIEFS = [
+        {"filename": "a.md", "focus": "ours", "repo": "devops"},
+        {"filename": "b.md", "focus": "theirs", "repo": "datalena"},
+    ]
+    DECISIONS = [
+        {"id": "d-ours", "question": "ours?", "repo": "devops"},
+        {"id": "d-theirs", "question": "theirs?", "repo": "datalena"},
+    ]
+
+    def test_category_actions_counts_scoped_to_queue_repo(self):
+        cats = dashboard.build_category_actions(
+            None, [], inflight=[], queue_briefs=list(self.BRIEFS),
+            open_decisions=list(self.DECISIONS), queue_repo="devops")
+        decisions_cat = next(c for c in cats if c["category"] == "decisions")
+        workqueue_cat = next(c for c in cats if c["category"] == "workqueue")
+        self.assertEqual(decisions_cat["label"], "Open decisions (1)")
+        self.assertEqual(workqueue_cat["label"], "Work queue (1)")
+
+    def test_category_actions_unscoped_without_queue_repo(self):
+        cats = dashboard.build_category_actions(
+            None, [], inflight=[], queue_briefs=list(self.BRIEFS),
+            open_decisions=list(self.DECISIONS))
+        decisions_cat = next(c for c in cats if c["category"] == "decisions")
+        workqueue_cat = next(c for c in cats if c["category"] == "workqueue")
+        self.assertEqual(decisions_cat["label"], "Open decisions (2)")
+        self.assertEqual(workqueue_cat["label"], "Work queue (2)")
+
+    def test_category_items_scoped_to_queue_repo(self):
+        items = dashboard.build_category_items(
+            None, [], inflight=[], queue_briefs=list(self.BRIEFS),
+            open_decisions=list(self.DECISIONS), queue_repo="devops")
+        self.assertEqual(len(items["decisions"]), 1)
+        self.assertEqual(items["decisions"][0]["id"], "d-ours")
+        self.assertEqual(len(items["workqueue"]), 1)
+        self.assertEqual(items["workqueue"][0]["id"], "a")
+
+    def test_category_items_unscoped_without_queue_repo(self):
+        items = dashboard.build_category_items(
+            None, [], inflight=[], queue_briefs=list(self.BRIEFS),
+            open_decisions=list(self.DECISIONS))
+        self.assertEqual({d["id"] for d in items["decisions"]}, {"d-ours", "d-theirs"})
+        self.assertEqual({b["id"] for b in items["workqueue"]}, {"a", "b"})
+
+    def test_path_repo_basename_match(self):
+        cats = dashboard.build_category_actions(
+            None, [], inflight=[],
+            queue_briefs=[{"filename": "c.md", "focus": "x", "repo": "/home/x/projects/devops/"}],
+            open_decisions=[{"id": "d-1", "question": "?", "repo": "/home/x/projects/devops"}],
+            queue_repo="devops")
+        decisions_cat = next(c for c in cats if c["category"] == "decisions")
+        workqueue_cat = next(c for c in cats if c["category"] == "workqueue")
+        self.assertEqual(decisions_cat["label"], "Open decisions (1)")
+        self.assertEqual(workqueue_cat["label"], "Work queue (1)")
+
+    def test_unattributed_item_excluded_from_scoped_view(self):
+        cats = dashboard.build_category_actions(
+            None, [], inflight=[],
+            queue_briefs=[{"filename": "c.md", "focus": "x", "repo": None}],
+            open_decisions=[{"id": "d-1", "question": "?", "repo": None}],
+            queue_repo="devops")
+        self.assertFalse(any(c["category"] == "decisions" for c in cats))
+        self.assertFalse(any(c["category"] == "workqueue" for c in cats))
+
+
 class DecisionsJsonCLI(unittest.TestCase):
     """`main()`'s `--decisions-json` flag, end-to-end: valid JSON must reach
     both the category picker data and the echoed `open_decisions` field;
@@ -3918,6 +3992,49 @@ class DecisionsJsonCLI(unittest.TestCase):
             output = self._run_json(["--root", str(specs_dir), "--json"])
 
             self.assertEqual(output["open_decisions"], [])
+
+    def test_single_repo_output_excludes_other_repo_decision_and_queue_brief(self):
+        """Repro of the live incident (2026-08-28): `worktrail-go worktrail`
+        surfaced a datalena-repo open decision in the 'Open decisions' picker
+        and inflated 'Work queue' to a cross-repo count. A repo-scoped JSON
+        dashboard must exclude another repo's open decision and queue brief
+        from `open_decisions`, `category_actions` counts, and
+        `category_items` alike."""
+        with tempfile.TemporaryDirectory() as tmp:
+            specs_dir = Path(tmp) / "myrepo" / "docs" / "specs"
+            specs_dir.mkdir(parents=True)
+            decisions_payload = json.dumps({"decisions": [
+                {"id": "dec-ours", "question": "Ours?", "repo": "myrepo"},
+                {"id": "dec-theirs", "question": "Theirs?", "repo": "otherrepo"},
+            ]})
+            queue_payload = json.dumps({"briefs": [
+                {"filename": "ours.md", "focus": "ours", "repo": "myrepo"},
+                {"filename": "theirs.md", "focus": "theirs", "repo": "otherrepo"},
+            ]})
+
+            output = self._run_json([
+                "--root", str(specs_dir),
+                "--decisions-json", decisions_payload,
+                "--queue-json", queue_payload,
+                "--json",
+            ])
+
+            self.assertEqual([d["id"] for d in output["open_decisions"]], ["dec-ours"])
+
+            decision_cat = next(
+                c for c in output["category_actions"] if c["category"] == "decisions"
+            )
+            self.assertEqual(decision_cat["label"], "Open decisions (1)")
+            self.assertEqual(len(output["category_items"]["decisions"]), 1)
+            self.assertEqual(output["category_items"]["decisions"][0]["id"], "dec-ours")
+
+            workqueue_cat = next(
+                c for c in output["category_actions"] if c["category"] == "workqueue"
+            )
+            self.assertEqual(workqueue_cat["label"], "Work queue (1)")
+            self.assertEqual(
+                [b["id"] for b in output["category_items"]["workqueue"]], ["ours"]
+            )
 
 
 class QueueJsonFileCLI(unittest.TestCase):

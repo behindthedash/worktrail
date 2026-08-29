@@ -2213,6 +2213,17 @@ _STAGE_PRIORITY = {
 }
 
 
+def _repo_scope_match(item_repo: Optional[str], queue_repo: str) -> bool:
+    """Same comparison auto_pick_brief applies for its repo_filter: exact
+    (trailing-slash-insensitive) or basename equality, so an item whose
+    `repo:` is a path still matches a bare repo name and vice versa. An
+    item with no repo at all does NOT match a repo-scoped view -- it is
+    not this repo's work any more than another repo's is."""
+    rf = str(queue_repo).rstrip("/")
+    r = str(item_repo or "").rstrip("/")
+    return bool(r) and (r == rf or Path(r).name == Path(rf).name)
+
+
 # --- two-level category picker -----------------------------------------------
 
 _CATEGORY_DESC = {
@@ -2230,13 +2241,27 @@ def build_category_actions(
     inflight: List[Dict[str, Any]],
     queue_briefs: List[Dict[str, Any]],
     open_decisions: Optional[List[Dict[str, Any]]] = None,
+    queue_repo: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Level-1 AskUserQuestion buttons: one per work category (≤4).
 
     Categories are only included when they have actionable items. The five
     possible categories in priority order: decisions, ready/in-progress,
     needs-tasking, work-queue, new-work. 'New work' is always present as the
-    final entry, so it is the first one dropped by the ≤4 truncation."""
+    final entry, so it is the first one dropped by the ≤4 truncation.
+
+    `queue_repo`, when set, scopes `inflight`/`queue_briefs`/`open_decisions`
+    to that repo the same way `render_dashboard`'s own `queue_repo` filter
+    does for its text output — a repo-scoped `/go <repo>` dashboard must not
+    count another repo's queued briefs or open decisions toward these
+    buttons (see `_repo_scope_match`)."""
+    if queue_repo:
+        inflight = [b for b in inflight if _repo_scope_match(b.get("repo"), queue_repo)]
+        queue_briefs = [b for b in queue_briefs if _repo_scope_match(b.get("repo"), queue_repo)]
+        open_decisions = [
+            d for d in (open_decisions or []) if _repo_scope_match(d.get("repo"), queue_repo)
+        ]
+
     actives: List[Dict[str, Any]] = []
     if repo_rows is not None:
         for repo in repo_rows:
@@ -2302,6 +2327,7 @@ def build_category_items(
     backlog_total: int = 0,
     clusters: Optional[List[Dict[str, Any]]] = None,
     open_decisions: Optional[List[Dict[str, Any]]] = None,
+    queue_repo: Optional[str] = None,
 ) -> Dict[str, List[Dict[str, Any]]]:
     """Level-2 items per category for the two-level /go picker.
 
@@ -2311,7 +2337,22 @@ def build_category_items(
     'decisions' is capped at 4 with no overflow item (matching every other
     category's own cap) and is omitted entirely when there are no open
     decisions, so callers that never pass `open_decisions` see byte-identical
-    output."""
+    output.
+
+    `queue_repo`, when set, scopes `inflight`/`open_decisions` to that repo
+    before any items are built from them, and later scopes the individually
+    claimable (non-cluster) queue items the same way — see
+    `build_category_actions`'s matching parameter and `_repo_scope_match`.
+    Cluster membership matching (below) deliberately uses the *unscoped*
+    `queue_briefs`: consolidation is a queue-wide concern, matching
+    `render_dashboard`'s own `clusters` section, which `queue_repo` never
+    filters either."""
+    if queue_repo:
+        inflight = [b for b in inflight if _repo_scope_match(b.get("repo"), queue_repo)]
+        open_decisions = [
+            d for d in (open_decisions or []) if _repo_scope_match(d.get("repo"), queue_repo)
+        ]
+
     default_repo_root = _dashboard_repo_root()
 
     def _spec_item(s: Dict[str, Any], repo: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -2405,6 +2446,12 @@ def build_category_items(
             })
             cluster_member_ids.update(filtered_members)
             remaining_slots -= 1
+
+    # Individually claimable items ARE repo-scoped (unlike cluster matching
+    # above): a repo-scoped picker must not offer another repo's brief as a
+    # direct claim target.
+    if queue_repo:
+        queue_briefs = [b for b in queue_briefs if _repo_scope_match(b.get("repo"), queue_repo)]
 
     unblocked_queue = [
         b for b in queue_briefs
@@ -2574,14 +2621,7 @@ def render_dashboard(
         return (s[:n] + "…") if len(s) > n else s
 
     def _queue_repo_match(brief_repo: Optional[str]) -> bool:
-        """Same comparison auto_pick_brief applies for its repo_filter: exact
-        (trailing-slash-insensitive) or basename equality, so a brief whose
-        `repo:` is a path still matches a bare repo name and vice versa. A
-        brief with no repo at all does NOT match a repo-scoped view -- it is
-        not this repo's work any more than another repo's is."""
-        rf = str(queue_repo).rstrip("/")
-        r = str(brief_repo or "").rstrip("/")
-        return bool(r) and (r == rf or Path(r).name == Path(rf).name)
+        return _repo_scope_match(brief_repo, queue_repo)
 
     if queue_repo:
         # A repo-scoped dashboard (e.g. `/go devops`) must not render other
@@ -3222,15 +3262,22 @@ def main(argv=None) -> int:
                     "inflight": inflight,
                     "worktrees": worktrees,
                     "category_actions": build_category_actions(
-                        None, rows, inflight, queue_briefs, open_decisions=open_decisions
+                        None, rows, inflight, queue_briefs, open_decisions=open_decisions,
+                        queue_repo=repo_dir.name,
                     ),
                     "category_items": build_category_items(
                         None, rows, inflight, queue_briefs, backlog_total, clusters=clusters,
-                        open_decisions=open_decisions,
+                        open_decisions=open_decisions, queue_repo=repo_dir.name,
                     ),
                     "auto_pick": auto_pick,
                     "clusters": clusters,
-                    "open_decisions": open_decisions,
+                    # Repo-scoped for the same reason as category_actions/items above
+                    # (queue_repo) -- a repo-scoped dashboard's raw open_decisions
+                    # field must not leak another repo's decision record either.
+                    "open_decisions": [
+                        d for d in open_decisions
+                        if _repo_scope_match(d.get("repo"), repo_dir.name)
+                    ],
                     "cluster_precision": cluster_precision,
                     "capacity": capacity,
                     "postmerge_check_failures": postmerge_check_failures,
