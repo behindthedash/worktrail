@@ -13,7 +13,7 @@
 
 - [x] 3.1 Add a compile test proving a change whose implementation tasks all declare at least one file yields `SOURCE_SEED` without invoking the injectable `spawn` callable, with per-task scopes equal to the declared lists and tail-kind (`[e2e]`/`[cleanup]`) tasks exempt from declaring (Requirement: Declared scope satisfies compilation without a model call)
 - [x] 3.2 Add compile tests for the partial case (declared scopes honored, remaining gaps still routed through inference/baseline when spawning fails) and for fingerprint invalidation (editing one declaration produces a new fingerprint so no stale cached plan is served) (Requirement: Declared scope satisfies compilation without a model call)
-- [ ] 3.3 Re-check `_print_scope_gap_error`'s remediation text and `compile.py`'s module docstring for accuracy now that "add explicit \`files:\` scope to the artifact" is actionable for OpenSpec, adjusting wording if it implies devkit-only (no behavioral change expected)
+- [x] 3.3 Re-check `_print_scope_gap_error`'s remediation text and `compile.py`'s module docstring for accuracy now that "add explicit \`files:\` scope to the artifact" is actionable for OpenSpec, adjusting wording if it implies devkit-only (no behavioral change expected)
 
 ## 4. Documentation
 
