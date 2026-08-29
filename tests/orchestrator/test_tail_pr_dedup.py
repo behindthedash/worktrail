@@ -144,6 +144,76 @@ class ReconcileDedupIntegrationTest(unittest.TestCase):
         self.assertEqual(findings, original)
 
 
+class ReconcileVerifySeamTest(unittest.TestCase):
+    """`reconcile_unreconciled_tail_evidence`'s post-`integrate_one` verify step."""
+
+    SINGLE_TASK = [{"id": "1.1", "deps": []}]
+
+    def test_open_state_runs_verify_one_and_reflects_merged_outcome(self):
+        findings = [_finding("1.1")]
+        journal_reads = [
+            {"state": "OPEN", "head_branch": "run-1/tail-1.1", "pr_url": "https://pr/1"},
+            {"state": "OPEN", "head_branch": "run-1/tail-1.1", "pr_url": "https://pr/1"},
+            {"state": "MERGED", "head_branch": "run-1/tail-1.1", "pr_url": "https://pr/1"},
+        ]
+        verify_calls = []
+
+        class FakeVerifier:
+            def verify_one(self, group, group_branch, delivered, merged, quarantined, lock,
+                            **kwargs):
+                verify_calls.append((group["name"], group_branch))
+                merged.append(group["name"])
+
+        write_calls = []
+
+        def fake_write(journal_path, name, pr_url, head_branch, state,
+                        quarantine_reason="", quarantine_detail=""):
+            write_calls.append((name, state))
+
+        with unittest.mock.patch.object(
+            integrate, "integrate_one", return_value=None
+        ), unittest.mock.patch.object(
+            integrate, "_read_group_journal_record", side_effect=journal_reads
+        ), unittest.mock.patch.object(
+            integrate, "_write_group_journal", side_effect=fake_write
+        ):
+            result = integrate.reconcile_unreconciled_tail_evidence(
+                findings, Path("/fake/repo"), "spec-1", self.SINGLE_TASK,
+                "origin", "run-1", "main", None,
+                make_verifier=lambda: FakeVerifier(),
+            )
+
+        self.assertEqual(verify_calls, [("tail-1.1", "run-1/tail-1.1")])
+        self.assertEqual(write_calls, [("tail-1.1", "MERGED")])
+        self.assertEqual(result[0]["reconcile_state"], "merged")
+        self.assertEqual(result[0]["reconcile_pr_url"], "https://pr/1")
+
+    def test_verify_one_exception_quarantines_only_that_finding(self):
+        findings = [_finding("1.1")]
+        journal_reads = [
+            {"state": None},
+            {"state": "OPEN", "head_branch": "run-1/tail-1.1", "pr_url": "https://pr/1"},
+        ]
+
+        class ExplodingVerifier:
+            def verify_one(self, *args, **kwargs):
+                raise RuntimeError("boom")
+
+        with unittest.mock.patch.object(
+            integrate, "integrate_one", return_value=None
+        ), unittest.mock.patch.object(
+            integrate, "_read_group_journal_record", side_effect=journal_reads
+        ):
+            result = integrate.reconcile_unreconciled_tail_evidence(
+                findings, Path("/fake/repo"), "spec-1", self.SINGLE_TASK,
+                "origin", "run-1", "main", None,
+                make_verifier=lambda: ExplodingVerifier(),
+            )
+
+        self.assertEqual(result[0]["reconcile_state"], "quarantined")
+        self.assertEqual(result[0]["reconcile_pr_url"], "")
+
+
 class CloseSupersededTailPrTest(unittest.TestCase):
     def test_noop_when_journal_has_no_open_record(self):
         with unittest.mock.patch.object(
