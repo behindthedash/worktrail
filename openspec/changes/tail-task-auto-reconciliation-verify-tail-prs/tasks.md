@@ -5,12 +5,12 @@ Implements requirement: **Reconciliation PR receives the same CI verification as
 - [x] 1.1 In `src/worktrail/orchestrator/integrate.py`, add a
       `make_verifier: Optional[Callable[[], "verify.Verifier"]] = None`
       parameter to `reconcile_unreconciled_tail_evidence`.
-- [ ] 1.2 Add a module-level default factory (lazily importing `verify`, and
+- [x] 1.2 Add a module-level default factory (lazily importing `verify`, and
       `live` for `_verifier_role_spawns`, matching this module's existing
       lazy-import pattern) used when `make_verifier` is not provided —
       standalone `Verifier` construction with private locks, for callers
       outside the pipeline scheduler and for tests that don't inject one.
-- [ ] 1.3 In the existing per-finding loop, after `integrate_one` and the
+- [x] 1.3 In the existing per-finding loop, after `integrate_one` and the
       `post_state` read: when `post_state == "OPEN"`, call
       `verifier.verify_one(g, group_branch, ...)` using a freshly-built
       verifier from `make_verifier` (or the default), the same `g` dict
@@ -18,11 +18,11 @@ Implements requirement: **Reconciliation PR receives the same CI verification as
       finding's journal entry. Re-read the journal record after `verify_one`
       returns so `reconcile_state`/`pr_url` reflect verify's outcome
       (e.g. a confirmed merge) rather than the pre-verify `OPEN` snapshot.
-- [ ] 1.4 Extend the existing per-finding `try/except` so a `verify_one`
+- [x] 1.4 Extend the existing per-finding `try/except` so a `verify_one`
       exception is caught the same way an `integrate_one` exception already
       is — recorded as `quarantined` for that finding alone, per design.md's
       per-finding isolation decision.
-- [ ] 1.5 Update the function's docstring to describe the new verify step
+- [x] 1.5 Update the function's docstring to describe the new verify step
       and the `make_verifier` parameter.
 
 ## 2. Pipeline scheduler wiring

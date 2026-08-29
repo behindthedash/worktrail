@@ -939,16 +939,25 @@ class ReconcileUnreconciledTailEvidence(unittest.TestCase):
             journal_path = Path(tmpdir) / "journal.json"
             journal_path.write_text(json.dumps({"run_id": "run-1"}) + "\n")
 
-            run = FakeRunWithOperator.FakeRunHelper()
+            # Uses the stateful _GhWorldHelper (not the plain FakeRunHelper) because
+            # post-1.3 the loop also runs verify_one on the freshly-opened PR, which
+            # issues its own `gh pr view` -- that needs to see the PR `gh pr create`
+            # just "opened", not a scripted one-shot response.
+            run = self._GhWorldHelper()
             findings = [{"task": "T022", "worktree": "/x", "head_sha": "abc123"}]
             task = _tail_task("T022", "e2e", status="done")
             task["reqs"] = ["REQ-009"]
+
+            class NoOpVerifier:
+                def verify_one(self, *args, **kwargs):
+                    pass
 
             with patch("worktrail.orchestrator.integrate._git", side_effect=run):
                 with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
                     result = integrate.reconcile_unreconciled_tail_evidence(
                         findings, Path("/repo"), "spec-001", [task], "origin",
                         "run-1", "main", str(journal_path),
+                        make_verifier=lambda: NoOpVerifier(),
                     )
 
             # Enriched contract (post-1.2/1.3): a new list carrying each finding's
@@ -957,7 +966,7 @@ class ReconcileUnreconciledTailEvidence(unittest.TestCase):
             enriched = result[0]
             self.assertEqual(enriched["task"], "T022")
             self.assertEqual(enriched["reconcile_state"], "opened")
-            self.assertEqual(enriched["reconcile_pr_url"], "https://github.com/owner/repo/pull/123")
+            self.assertEqual(enriched["reconcile_pr_url"], "https://github.com/owner/repo/pull/201")
             self.assertNotIn("reconcile_state", findings[0])  # input list not mutated
             create_calls = run.find_calls("gh", "pr", "create")
             self.assertEqual(len(create_calls), 1)
