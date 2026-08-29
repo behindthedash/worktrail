@@ -27,7 +27,7 @@
 
 ## 3. Tests
 
-- [ ] 3.1 In `tests/orchestrator/test_spawnlib.py`, add a test that calling
+- [x] 3.1 In `tests/orchestrator/test_spawnlib.py`, add a test that calling
       `spawn_agent(..., dispatch_id="go-abc123")` (with the subprocess launch mocked,
       following this file's existing pattern for asserting on the child `env=`
       passed to the process launcher) results in `WORKTRAIL_DISPATCH_ID=go-abc123` in
