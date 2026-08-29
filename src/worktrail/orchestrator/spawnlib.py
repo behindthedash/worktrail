@@ -892,10 +892,41 @@ def spawn_agent(
         env: Dict[str, str] = {**os.environ, "CC_HEADLESS": "1"}
         oc_data_dir: Optional[Path] = None
         if current_cell.harness == "codex":
-            env, codex_home, automatic_home = prepare_codex_child_environment()
+            # Auth lane follows the cell's pool (design D6): an `api` cell
+            # spawns in its own declared, pre-provisioned CODEX_HOME with the
+            # parent's ChatGPT login NOT inherited -- CODEX_HOME isolation is
+            # the one live-verified per-spawn auth selector for codex
+            # (routing-target-selector task 3.6: `-c preferred_auth_method`
+            # and OPENAI_API_KEY are both inert against a persisted login).
+            codex_home_override: Optional[str] = None
+            inherit_auth = True
+            if current_cell.pool == "api":
+                auth = current_cell.auth if isinstance(current_cell.auth, Mapping) else {}
+                codex_home_override = auth.get("codex_home")
+                if not codex_home_override:
+                    raise OperatorConfigError(
+                        f"routing target {current_cell.target!r} (harness codex, pool "
+                        "api) has no auth.codex_home configured -- add `auth: "
+                        "{codex_home: <path>}` to its routing.targets entry in "
+                        f"{resolved_routing_file_path()}, naming a home provisioned "
+                        "with `codex login --with-api-key`"
+                    )
+                if not (Path(codex_home_override).expanduser() / "auth.json").exists():
+                    raise OperatorConfigError(
+                        f"routing target {current_cell.target!r}'s auth.codex_home "
+                        f"({codex_home_override}) has no auth.json -- provision it "
+                        "once with `CODEX_HOME=<that path> codex login --with-api-key` "
+                        "before spawning this 'api' pool"
+                    )
+                inherit_auth = False
+            env, codex_home, automatic_home = prepare_codex_child_environment(
+                codex_home_override, inherit_auth=inherit_auth
+            )
             env["CC_HEADLESS"] = "1"
             if automatic_home:
                 log(f"    using automatic Worktrail Codex home: {codex_home}")
+            elif codex_home_override:
+                log(f"    using declared codex api home: {codex_home}")
         elif current_cell.harness == "opencode":
             env, oc_data_dir = prepare_opencode_child_environment(cwd, env)
             log(f"    opencode state isolated at {oc_data_dir} "
