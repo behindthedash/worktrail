@@ -1497,7 +1497,7 @@ class Routing(unittest.TestCase):
         self.assertEqual(first["roles"], {"reviewer": {"tier": "t3", "prefer": None, "independent": False}})
         self.assertEqual(first["purposes"], {"scaffolding": "t3"})
         self.assertEqual(first["default_tier"], "t3")
-        self.assertEqual(first["drain"], {"agent": None, "fallback_agents": [], "max_workers": 3})
+        self.assertEqual(first["drain"], {"max_workers": 3})
         self.assertNotIn("agents", first)
         self.assertNotIn("fallback", first)
 
@@ -1784,7 +1784,7 @@ class RoutingAgentsAndDrain(unittest.TestCase):
             pol = load_policy(repo)
         result = resolve_routing(pol)
         self.assertNotIn("agents", result)
-        self.assertEqual(result["drain"], {"agent": None, "fallback_agents": [], "max_workers": 5})
+        self.assertEqual(result["drain"], {"max_workers": 5})
 
     def test_resolve_routing_drain_empty_when_absent(self):
         repo = _repo_with("routing:\n  defaults:\n    A:\n      low:\n        agent_cli: claude\n")

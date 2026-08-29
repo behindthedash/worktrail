@@ -944,9 +944,14 @@ def resolve_routing(policy: Dict[str, Any], route: str = "", risk: str = "") -> 
                                           # dispatch.tier_for() ahead of
                                           # complexity to resolve a task's tier
           "default_tier": Optional[str], # routing.default_tier
-          "drain": {"agent": Optional[str], "fallback_agents": [str],
-                    "max_workers": int}, # routing.drain, the machine-wide
-                                          # drain defaults (D1); {} when absent
+          "drain": {"max_workers": int}, # routing.drain, the machine-wide
+                                          # drain defaults (D1); {} when absent.
+                                          # `agent`/`fallback_agents` are
+                                          # retired keys `_reject_legacy_
+                                          # routing_keys()` already rejects if
+                                          # present, so `_validate_routing_
+                                          # drain()`'s own dead placeholders
+                                          # for them never reach this dict.
         }
 
     Same inputs always produce the same output (REQ-NR002): no randomness, no
@@ -962,13 +967,15 @@ def resolve_routing(policy: Dict[str, Any], route: str = "", risk: str = "") -> 
             "default_tier": None,
             "drain": {},
         }
+    drain_raw = routing.get("drain") or {}
+    drain = {"max_workers": drain_raw["max_workers"]} if "max_workers" in drain_raw else {}
     return {
         "targets": routing.get("targets") or {},
         "tiers": routing.get("tiers") or {},
         "roles": routing.get("roles") or {},
         "purposes": routing.get("purposes") or {},
         "default_tier": routing.get("default_tier"),
-        "drain": routing.get("drain") or {},
+        "drain": drain,
     }
 
 
