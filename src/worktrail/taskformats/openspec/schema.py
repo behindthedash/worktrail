@@ -19,9 +19,13 @@ Two consequences this module leans on:
    a convention we impose, and the schema instructs authors to "Group related
    tasks" and "Order tasks by dependency". That makes the group heading a real
    signal about intended execution shape.
-2. **Nothing else is.** There is no per-task frontmatter, no file scope, no
+2. **Almost nothing else is.** There is no per-task frontmatter and no
    explicit dependency edge -- deliberately, per `docs/design/conductor-lanes.md`
    §2: those come from the compiled RunPlan, not from the authoring artifact.
+   File scope is the one opt-in exception: an author may follow a task line
+   with an indented `files:` continuation line naming the repo-relative paths
+   that task creates or modifies, letting the compiler skip inference for
+   tasks that declare their own scope.
 """
 
 from __future__ import annotations
@@ -52,6 +56,17 @@ TAG_RE = re.compile(r"^\s*\[([^\]]+)\]\s*")
 KNOWN_KINDS = frozenset({"impl", "e2e", "cleanup", "docs", "feature", "chore"})
 DEFAULT_KIND = "impl"
 
+# An indented `files:` continuation line immediately following a task, e.g.
+#   - [ ] 1.1 Add the widget
+#     files: src/widget.py, tests/test_widget.py
+# Must be indented (distinguishes it from a top-level line) and is only
+# looked for inside the window between a task line and whatever ends it
+# (the next task line, a group heading, or a blank line).
+FILES_RE = re.compile(r"^[ \t]+files:\s*(.*?)\s*$", re.IGNORECASE)
+# Splits a `files:` value into path tokens: comma and/or whitespace
+# separated, with any backtick-wrapping stripped per token.
+FILES_TOKEN_SPLIT_RE = re.compile(r"[,\s]+")
+
 
 def split_tags(title: str) -> tuple[str, list[str]]:
     """Peel leading `[tag]` markers off a task title.
@@ -70,6 +85,16 @@ def split_tags(title: str) -> tuple[str, list[str]]:
     return rest.strip(), tags
 
 
+def split_files(value: str) -> list[str]:
+    """Split a `files:` continuation line's value into path tokens.
+
+    Tokens may be comma-separated, whitespace-separated, or both; a token
+    wrapped in backticks (` `` `) has them stripped.
+    """
+    tokens = [t for t in FILES_TOKEN_SPLIT_RE.split(value.strip()) if t]
+    return [t.strip("`") for t in tokens]
+
+
 @dataclass
 class ParsedTask:
     id: str  # "1.1" -- the authored identifier, used verbatim as the task id
@@ -80,6 +105,7 @@ class ParsedTask:
     line_no: int  # 0-based index into the file's lines; the write-back anchor
     kind: str = DEFAULT_KIND  # from a leading [tag]; gates the fan-out holdout
     tags: list = field(default_factory=list)  # every leading tag, in order
+    files: list = field(default_factory=list)  # paths from an indented `files:` line, if any
 
 
 @dataclass
@@ -107,8 +133,9 @@ def parse_tasks_md(text: str) -> ParsedTasks:
     group = ""
     group_title = ""
     seen: set[str] = set()
+    lines = text.splitlines()
 
-    for i, line in enumerate(text.splitlines()):
+    for i, line in enumerate(lines):
         gm = GROUP_RE.match(line)
         if gm:
             group, group_title = gm.group(1), gm.group(2)
@@ -131,6 +158,18 @@ def parse_tasks_md(text: str) -> ParsedTasks:
                 result.warnings.append(
                     f"line {i + 1}: task {tid} carries multiple kind tags {kinds}; using {kinds[0]!r}"
                 )
+
+            files: list[str] = []
+            for follow in lines[i + 1:]:
+                if not follow.strip():
+                    break
+                if GROUP_RE.match(follow) or TASK_RE.match(follow):
+                    break
+                fm = FILES_RE.match(follow)
+                if fm:
+                    files = split_files(fm.group(1))
+                    break
+
             result.tasks.append(
                 ParsedTask(
                     id=tid,
@@ -141,6 +180,7 @@ def parse_tasks_md(text: str) -> ParsedTasks:
                     line_no=i,
                     kind=kinds[0] if kinds else DEFAULT_KIND,
                     tags=tags,
+                    files=files,
                 )
             )
             continue
