@@ -891,22 +891,25 @@ class LiveSpawnDispatchIdTests(unittest.TestCase):
         return {"id": "TASK-001", "status": "pending", "files": ["src/foo.py"]}
 
     def _call(self, dispatch_id=None):
-        captured = {}
+        claude_captured = {}
+        agent_captured = {}
         fake_result = type("R", (), {"text": "ok", "usage": {}, "tools_used": [], "skills_used": [], "paused_s": 0.0})()
         with patch("worktrail.orchestrator.live.dispatch.build_worker_prompt", return_value="prompt"), \
-             patch("worktrail.orchestrator.live.spawnlib.spawn_claude_p", side_effect=lambda *_, **kw: captured.update(kw) or fake_result), \
-             patch("worktrail.orchestrator.live.spawnlib.spawn_agent", side_effect=lambda *_, **kw: captured.update(kw) or fake_result):
-            spawn = live.LiveSpawn("spec-001", "docs/specs/001-spec", agent="claude", dispatch_id=dispatch_id)
+             patch("worktrail.orchestrator.live.spawnlib.spawn_claude_p", side_effect=lambda *_, **kw: claude_captured.update(kw) or fake_result), \
+             patch("worktrail.orchestrator.live.spawnlib.spawn_agent", side_effect=lambda *_, **kw: agent_captured.update(kw) or fake_result):
+            spawn = live.LiveSpawn("spec-001", "docs/specs/001-spec", agent="opencode", dispatch_id=dispatch_id)
             spawn("implement", self._make_task(), Path("/tmp/wt"))
-        return captured
+        return claude_captured, agent_captured
 
-    def test_dispatch_id_threaded_into_spawn_call(self):
-        captured = self._call(dispatch_id="go-abc123")
-        self.assertEqual(captured.get("dispatch_id"), "go-abc123")
+    def test_dispatch_id_threaded_into_spawn_agent_call(self):
+        claude_captured, agent_captured = self._call(dispatch_id="go-abc123")
+        self.assertEqual(claude_captured, {}, "spawn_claude_p should not be called with opencode agent")
+        self.assertEqual(agent_captured.get("dispatch_id"), "go-abc123", "dispatch_id must be passed to spawn_agent")
 
     def test_dispatch_id_absent_when_omitted(self):
-        captured = self._call(dispatch_id=None)
-        self.assertIsNone(captured.get("dispatch_id"))
+        claude_captured, agent_captured = self._call(dispatch_id=None)
+        self.assertEqual(claude_captured, {}, "spawn_claude_p should not be called with opencode agent")
+        self.assertIsNone(agent_captured.get("dispatch_id"), "dispatch_id must be absent when not provided")
 
 
 def _run_git(repo: Path, *args: str) -> subprocess.CompletedProcess:
