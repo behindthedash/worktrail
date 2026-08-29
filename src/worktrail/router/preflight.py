@@ -17,7 +17,12 @@ else is "deny" with instructions to run `worktrail-preflight run`. It reuses
 pre_pr_gate.py's own resolve_cmd/is_docs_only so the hook stops maintaining a
 second, line-based worktrail-go-policy.yaml reader that can drift from the real one.
 
-`worktrail-preflight run` executes the full pre_pr_gate.py gate in-process
+`worktrail-preflight run` refuses immediately (`DIRTY_TREE_EXIT`, no gate
+command spawned) when `dirty_tree_reason()` finds uncommitted changes to
+tracked files -- a pass marker recorded against a dirty tree can never match
+the tree state `check()` sees after the commit that's needed to ship the
+change, so running the gate against one is guaranteed wasted work. Past that,
+it executes the full pre_pr_gate.py gate in-process
 (spec-sync drift, clarification-integrity, DoD-verification, the
 docs_only_paths fast path, then the resolved pre_pr_cmd) and, on a zero exit,
 records the pass marker keyed to the tree state (HEAD sha + working-tree
@@ -87,6 +92,18 @@ MARKER_NAME = "preflight-pass.json"
 # command's own nonzero returncode): no pass marker is written, so `check()`'s
 # `gh pr create` guard denies the same as it would for a failed smoke gate.
 ADDON_REQUIRED_FAILURE_EXIT = 6
+
+# Returned by `run` when `dirty_tree_reason()` finds uncommitted changes to
+# tracked files, before `pre_pr_cmd` is even invoked. `tree_state()` folds
+# working-tree status into the pass-marker key, so a marker recorded against
+# a dirty tree can never match the tree state after the next `git commit` --
+# running the gate (`pytest` + integration checks, often several minutes) on
+# an uncommitted tree is structurally guaranteed to be wasted work, since the
+# very commit that's needed to ship the change invalidates the marker
+# `check()` will look for. Refusing here, before the expensive command runs,
+# mirrors `check()`'s own dirty-tree-first ordering (see its docstring) --
+# it just moves the same refusal from push time to gate-run time.
+DIRTY_TREE_EXIT = 7
 
 # Written for the duration of `run`'s gate execution and removed in a
 # `finally` block on exit (pass, fail, or exception) -- gives callers a
@@ -356,16 +373,18 @@ def dirty_tree_reason(repo: Path) -> Optional[str]:
     part of any commit regardless, so they carry none of the risk this
     guards against. Staged/unstaged changes to *tracked* files are that
     risk -- `tree_state()` folds working-tree status into its own marker
-    key, so `worktrail-preflight run` happily records a pass against a
-    dirty tree. But `git push` only ever sends committed history, so a pass
-    marker matching a dirty tree provides no assurance about what actually
-    reaches the remote branch and the PR opened from it. Incident: datalena
-    PR #2478 (2026-08-22) merged missing 112 files of gate-verified fixes
-    because they were made after the gate's last passing run but never
-    committed before `git push` + `gh pr create` -- the marker matched the
-    (dirty) tree at push time, so nothing caught the gap until a manual
-    `git worktree remove` refused over leftover uncommitted changes. This
-    check closes that gap at the same choke point `check()` already guards.
+    key, so a marker recorded against a dirty tree can never match the tree
+    state `git push` actually sends (only committed history), and can never
+    match the tree state after the very commit that's needed to ship the
+    change either. `run` now refuses immediately on a dirty tree (see
+    `DIRTY_TREE_EXIT`) rather than spending time on a doomed gate run.
+    Incident: datalena PR #2478 (2026-08-22) merged missing 112 files of
+    gate-verified fixes because they were made after the gate's last passing
+    run but never committed before `git push` + `gh pr create` -- the marker
+    matched the (dirty) tree at push time, so nothing caught the gap until a
+    manual `git worktree remove` refused over leftover uncommitted changes.
+    This check closes that gap at the same choke point `check()` already
+    guards, and (via `run`'s own refusal) before the gap can even open.
     """
     diff = _git(repo, "diff", "HEAD", "--name-only")
     if diff is None:
@@ -605,6 +624,16 @@ def check(repo: Path, command: Optional[str] = None) -> Dict[str, Any]:
 
 def _run(args: argparse.Namespace) -> int:
     repo = Path(args.repo).resolve()
+    dirty_reason = dirty_tree_reason(repo)
+    if dirty_reason is not None:
+        print(f"PRE-PR GATE: FAIL — {dirty_reason}", file=sys.stderr)
+        print(
+            "  Any pass marker recorded now would be keyed to this dirty tree "
+            "and can never match the tree state after the commit `check()` "
+            "requires -- commit first, then re-run.",
+            file=sys.stderr,
+        )
+        return DIRTY_TREE_EXIT
     policy = load_policy(repo)
     gate_argv = ["--repo", str(repo)]
     if args.risk:

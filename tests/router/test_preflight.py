@@ -14,7 +14,7 @@ from unittest import mock
 from worktrail.addons.base import AddOnResult
 from worktrail.router.policy import load_policy
 from worktrail.router.preflight import (
-    ADDON_REQUIRED_FAILURE_EXIT,
+    ADDON_REQUIRED_FAILURE_EXIT, DIRTY_TREE_EXIT,
     check, dirty_tree_reason, duplicate_work_warning, is_running,
     is_unparseable_command, labels_in_command, main, marker_path, read_marker,
     read_running_lock, remove_running_lock, running_lock_path, tree_state,
@@ -540,6 +540,26 @@ class TestRunCli(_GitRepoCase):
         repo = self._init_repo('pre_pr_cmd: "exit 3"\n')
         code = main(["run", "--repo", repo])
         self.assertEqual(code, 3)
+        self.assertIsNone(read_running_lock(Path(repo)))
+
+    def test_run_refuses_on_dirty_tree_without_running_the_gate(self) -> None:
+        """A pass marker is tree-keyed (`tree_state()`), so a `run` against
+        uncommitted changes can never satisfy the push-time `check()` gate --
+        the very next `git commit` changes the tree hash and invalidates it.
+        `run` must refuse before spending time on `pre_pr_cmd`, not after."""
+        repo = self._init_repo('pre_pr_cmd: "true"\n')
+        self._write(repo, "docs/specs/go-policy.yaml", 'pre_pr_cmd: "false"\n')
+        code = main(["run", "--repo", repo])
+        self.assertEqual(code, DIRTY_TREE_EXIT)
+        self.assertIsNone(read_marker(Path(repo)))
+        self.assertIsNone(read_running_lock(Path(repo)))
+
+    def test_run_dirty_tree_refusal_leaves_no_running_lock(self) -> None:
+        repo = self._init_repo('pre_pr_cmd: "true"\n')
+        self._write(repo, "untracked-does-not-matter.txt")
+        self._write(repo, "docs/specs/go-policy.yaml", 'pre_pr_cmd: "false"\n')
+        code = main(["run", "--repo", repo])
+        self.assertEqual(code, DIRTY_TREE_EXIT)
         self.assertIsNone(read_running_lock(Path(repo)))
 
 
