@@ -2504,6 +2504,7 @@ class LiveSpawn:
         if peeked_harness != "claude":
             spawn_kwargs["resume_session_id"] = None
         spawn_kwargs["extra_args"] = extra_args
+        spawn_kwargs["dispatch_id"] = self.dispatch_id
 
         if explicit_model or explicit_effort:
             # An explicit --model-map/--effort override: resolve which cell
