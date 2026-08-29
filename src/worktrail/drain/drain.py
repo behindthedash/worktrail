@@ -122,8 +122,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from . import stuck_remediation
 from ..orchestrator import agent_capacity
-from ..runtime.routing_source import routing_candidates
-from ..runtime.selection import NoExecutionTarget, select_execution_target
+from ..runtime.selection import NoExecutionTarget, select_cell
 from ..orchestrator.integrate import _refresh_pr_labels
 from ..router import branch_selfcheck, dashboard, quarantine_selfcheck
 from ..router.policy import (
@@ -189,15 +188,18 @@ FAILED_STATES = frozenset({"failed_recoverable", "failed_terminal"})
 def build_command(agent: str, permission_args: List[str],
                   template: Optional[str] = None,
                   go_repo: Optional[str] = None,
-                  model: Optional[str] = None) -> List[str]:
+                  model: Optional[str] = None,
+                  effort: Optional[str] = None) -> List[str]:
     """Build the one-shot CLI argv. A template with {prompt} overrides the
     per-agent shape entirely (permission args are the caller's job then).
 
-    `model` is the routing-selected cell's model (task 5.1); a per-harness
-    `--model` flag is appended in the same position `spawnlib.build_cmd()`
-    uses for the orchestrator's own spawns, so drain's front-door session
-    honors the same routing.yaml the rest of the system does instead of
-    falling back to whatever the CLI's own default resolves to.
+    `model`/`effort` are the routing-selected cell's own fields (task 5.1); a
+    per-harness `--model`/effort flag is appended in the same position
+    `spawnlib.build_cmd()` uses for the orchestrator's own spawns (claude:
+    `--effort`; opencode: `--variant`; codex: `-c
+    model_reasoning_effort=<effort>`), so drain's front-door session honors
+    the same routing.yaml the rest of the system does instead of falling
+    back to whatever the CLI's own default resolves to.
     """
     prompt = (PROMPT.replace("worktrail-go auto", f"worktrail-go {go_repo} auto", 1)
               if go_repo else PROMPT)
@@ -210,10 +212,14 @@ def build_command(agent: str, permission_args: List[str],
         raise ValueError(f"unsupported agent {agent!r}; one of {SUPPORTED_AGENTS}")
     model_flag = ["--model", model] if model else []
     if agent == "claude":
-        return ["claude", "-p", prompt, *permission_args, *model_flag]
+        effort_flag = ["--effort", effort] if effort else []
+        return ["claude", "-p", prompt, *permission_args, *model_flag, *effort_flag]
     if agent == "opencode":
-        return ["opencode", "run", *permission_args, *model_flag, prompt]
-    return ["codex", "exec", "-s", "danger-full-access", *permission_args, *model_flag, prompt]
+        effort_flag = ["--variant", effort] if effort else []
+        return ["opencode", "run", *permission_args, *model_flag, *effort_flag, prompt]
+    effort_flag = ["-c", f"model_reasoning_effort={effort}"] if effort else []
+    return ["codex", "exec", "-s", "danger-full-access", *permission_args, *model_flag,
+            *effort_flag, prompt]
 
 
 def _version_key(path: Path) -> tuple[int, ...]:
@@ -491,10 +497,11 @@ def machine_wide_routing() -> Optional[Dict[str, Any]]:
 
 def select_available_agent(cache: dict, candidates: List[str],
                             routing: Optional[Dict[str, Any]] = None,
-                            now: Optional[datetime] = None) -> Optional[Tuple[str, Optional[str]]]:
+                            now: Optional[datetime] = None
+                            ) -> Optional[Tuple[str, Optional[str], Optional[str]]]:
     """First candidate (in configured order) that is not capacity-gated, paired
-    with the model routing.yaml resolved for it (task 5.1) -- `None` for the
-    model when routing is unset or that harness has no routing entry, so the
+    with the model/effort routing.yaml resolved for it -- `None` for both when
+    routing is unset (or incomplete: no `targets`/`default_tier`), so the
     caller falls back to the CLI's own default instead of passing a sentinel
     string as `--model`. Returns `None` when every candidate is gated. A
     candidate with no cache entry at all counts as available, matching
@@ -502,58 +509,71 @@ def select_available_agent(cache: dict, candidates: List[str],
     broken in a way that has not yet been classified, is not pre-emptively
     excluded.
 
+    With routing configured, delegates to `select_cell(routing,
+    routing["default_tier"], ...)` (design D3: "drain `select_available_agent`
+    (row = `default_tier`)"), the same selector every other spawn path uses.
+    `select_cell` has no concept of a caller-specified candidate subset --
+    only a single `prefer` reorder -- so `candidates`' own priority order is
+    encoded directly into a scoped copy of `routing["targets"]` restricted to
+    (and ordered by) each candidate's resolved target, in priority order. A
+    candidate may already name a target directly, or a bare harness name
+    (resolved to its first-declared target); either way, a candidate with no
+    matching target in routing.yaml is simply not reachable once routing
+    governs selection -- an un-configured harness was never a real target to
+    begin with. A gate on one target's cell falls through to the NEXT
+    candidate's target in that same tier row, not to a different tier's
+    model for the same harness (a real, intentional narrowing from the
+    previous `select_execution_target`-based selection, which could hop
+    tiers).
+
+    The CLI's own `--agent`/`--fallback-agent` flags are NOT yet loosened to
+    accept a target name (they still validate against `SUPPORTED_AGENTS`,
+    i.e. bare harness names) -- doing so safely also requires resolving the
+    pre-loop placeholder `build_command()` call in `drain()`'s main loop,
+    which currently passes the raw CLI value straight through and would
+    crash on a target name before the loop's own `select_available_agent`
+    call ever ran. That is real, separate, still-open work.
+
     Called fresh every iteration (not cached across the drain run), so a
     higher-priority agent is picked back up automatically once its persisted
     gate's retry_after passes -- no restart or config edit needed.
     """
-    # routing_candidates(routing) yields the real {target, harness, model, ...}
-    # cells routing.targets/routing.tiers actually configure (task 2.2). Each
-    # `candidate` here is a HARNESS name (drain's own --agent priority order,
-    # e.g. "claude"/"codex"/"opencode" -- build_command() needs a harness to
-    # pick the right CLI binary), so cells are grouped by harness, not by the
-    # target-selector's own `target` name (multiple targets, e.g. claude-sub
-    # and claude-api, can share one harness). A candidate with no routing
-    # entry (routing unset, or that harness absent from routing.yaml) falls
-    # back to the old sentinel model -- the eventual provider adapter still
-    # resolves its configured/default model exactly as before, so an operator
-    # who has not adopted routing.yaml yet sees no behavior change.
-    by_harness: Dict[str, List[dict]] = {}
-    for entry in routing_candidates(routing):
-        by_harness.setdefault(entry["harness"], []).append(entry)
+    targets: Dict[str, Any] = (routing or {}).get("targets") or {}
+    default_tier = (routing or {}).get("default_tier")
+    if not targets or not default_tier:
+        # No routing (or an operator config predating routing.yaml) -- fall
+        # back to the bare-harness-name sentinel gate, exactly like a harness
+        # absent from routing.yaml: the eventual provider adapter still
+        # resolves its own configured/default model, so an operator who has
+        # not adopted routing.yaml yet sees no behavior change.
+        for candidate in candidates:
+            if not capacity_gated(cache, candidate, now=now):
+                return candidate, None, None
+        return None
 
-    catalog = [
-        {"provider": candidate, "model": entry["model"]}
-        for candidate in candidates
-        for entry in (by_harness.get(candidate) or [{"model": "configured-default"}])
-    ]
-    # (harness, model) -> target, so `available()` can key the capacity gate
-    # the same way spawn_agent/select_cell do now (target:model, not a flat
-    # harness-wide key) -- first-declared target wins on a same-model tie
-    # across multiple targets of one harness.
-    target_for: Dict[tuple, str] = {}
-    for entry in routing_candidates(routing):
-        target_for.setdefault((entry["harness"], entry["model"]), entry["target"])
+    harness_to_target: Dict[str, str] = {}
+    for name, info in targets.items():
+        if isinstance(info, dict):
+            harness_to_target.setdefault(info.get("harness"), name)
+    # Each candidate may already name a target directly (task 5.1:
+    # "--agent/--fallback-agent now take target names"); a bare harness name
+    # still resolves via harness_to_target for back-compat with an
+    # unmigrated --agent claude/codex/opencode invocation.
+    scoped_targets: Dict[str, Any] = {}
+    for candidate in candidates:
+        name = candidate if candidate in targets else harness_to_target.get(candidate)
+        if name and name not in scoped_targets:
+            scoped_targets[name] = targets[name]
+    scoped_routing = {**routing, "targets": scoped_targets}
 
-    def available(provider: str, model: str, **_kwargs: object) -> dict:
-        # A real model keys the per-target-model cache entry (e.g.
-        # "claude-sub:opus"), so a gate on one model no longer blocks every
-        # model of that harness; the sentinel keeps the prior harness-wide
-        # gate when no routing-sourced model is known.
-        if model == "configured-default":
-            key = provider
-        else:
-            key = agent_capacity.provider_key(target_for.get((provider, model), provider), model)
-        return {
-            "available": not capacity_gated(cache, key, now=now),
-            "source": "agent-capacity.json",
-        }
+    def capacity(target: str, model: str, **_kwargs: object) -> bool:
+        return not capacity_gated(cache, agent_capacity.provider_key(target, model), now=now)
 
     try:
-        target = select_execution_target(catalog, capacity=available, now=now)
+        cell = select_cell(scoped_routing, default_tier, capacity=capacity, now=now)
     except NoExecutionTarget:
         return None
-    model = None if target.model == "configured-default" else target.model
-    return target.provider, model
+    return cell.harness, cell.model, cell.effort
 
 
 MAX_TRANSCRIPT_FILES = 50  # bounded like agent_capacity.py's audit log / dashboard.py's miss log
@@ -1528,7 +1548,7 @@ def sweep_remediations(
                     f"{finding.get('spec_id')}: skipped, every candidate agent "
                     f"is capacity-gated ({', '.join(candidates)})")
                 continue
-            chosen, _chosen_model = selection
+            chosen, _chosen_model, _chosen_effort = selection
             if chosen != current_agent:
                 log(f"agent switch: {current_agent or candidates[0]} -> "
                     f"{chosen} (capacity)")
@@ -1866,6 +1886,7 @@ def drain(config: DrainConfig,
     candidates = [config.agent] + list(config.fallback_agents)
     active_agent = config.agent
     active_model: Optional[str] = None
+    active_effort: Optional[str] = None
     seeded_backlog: Dict[str, Any] = {}
     routing = machine_wide_routing()
     try:
@@ -1898,16 +1919,18 @@ def drain(config: DrainConfig,
                 if selection is None:
                     state.agent_capacity_gated = True
                 else:
-                    chosen, chosen_model = selection
+                    chosen, chosen_model, chosen_effort = selection
                     state.agent_capacity_gated = False
-                    if chosen != active_agent or chosen_model != active_model:
+                    if (chosen != active_agent or chosen_model != active_model
+                            or chosen_effort != active_effort):
                         if chosen != active_agent:
                             log(f"agent switch: {active_agent} -> {chosen} (capacity)")
                         active_agent = chosen
                         active_model = chosen_model
+                        active_effort = chosen_effort
                         cmd = build_command(active_agent, config.permission_args,
                                             config.agent_cmd, config.go_repo,
-                                            model=active_model)
+                                            model=active_model, effort=active_effort)
             else:
                 state.agent_capacity_gated = capacity_gated(cache, active_agent)
             decision = decide(state, clock())

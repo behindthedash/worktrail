@@ -115,6 +115,21 @@ def test_build_command_no_model_omits_flag():
     assert build_command("claude", [], model=None) == ["claude", "-p", PROMPT]
 
 
+def test_build_command_effort_appended_per_harness():
+    assert build_command("claude", [], model="opus", effort="high") == [
+        "claude", "-p", PROMPT, "--model", "opus", "--effort", "high"]
+    assert build_command("opencode", [], model="opencode/x", effort="medium") == [
+        "opencode", "run", "--model", "opencode/x", "--variant", "medium", PROMPT]
+    assert build_command("codex", [], model="gpt-5", effort="low") == [
+        "codex", "exec", "-s", "danger-full-access", "--model", "gpt-5",
+        "-c", "model_reasoning_effort=low", PROMPT]
+
+
+def test_build_command_no_effort_omits_flag():
+    assert build_command("claude", [], model="opus", effort=None) == [
+        "claude", "-p", PROMPT, "--model", "opus"]
+
+
 def test_build_agent_environment_adds_supported_user_runtime_dirs(tmp_path, monkeypatch):
     home = tmp_path / "home"
     node_bin = home / ".nvm" / "versions" / "node" / "v24.16.0" / "bin"
@@ -572,7 +587,7 @@ def test_select_available_agent_picks_agent_back_up_after_retry_after_expires():
                      "retry_after": (now - timedelta(hours=1)).isoformat()},
     }}
     assert select_available_agent(
-        cache, ["claude", "codex", "opencode"], now=now) == ("claude", None)
+        cache, ["claude", "codex", "opencode"], now=now) == ("claude", None, None)
 
 
 # ---------------------------------------------------------------------------
@@ -581,12 +596,12 @@ def test_select_available_agent_picks_agent_back_up_after_retry_after_expires():
 
 def test_select_available_agent_prefers_primary_when_ungated():
     cache = {"providers": {"claude": {"status": "gated"}}}
-    assert select_available_agent(cache, ["codex", "claude"]) == ("codex", None)
+    assert select_available_agent(cache, ["codex", "claude"]) == ("codex", None, None)
 
 
 def test_select_available_agent_skips_gated_primary_for_fallback():
     cache = {"providers": {"codex": {"status": "unavailable"}}}
-    assert select_available_agent(cache, ["codex", "claude"]) == ("claude", None)
+    assert select_available_agent(cache, ["codex", "claude"]) == ("claude", None, None)
 
 
 def test_select_available_agent_none_when_every_candidate_gated():
@@ -598,7 +613,7 @@ def test_select_available_agent_none_when_every_candidate_gated():
 
 
 def test_select_available_agent_never_tried_counts_as_available():
-    assert select_available_agent({}, ["codex", "claude"]) == ("codex", None)
+    assert select_available_agent({}, ["codex", "claude"]) == ("codex", None, None)
 
 
 def test_select_available_agent_single_candidate_no_fallback_configured():
@@ -607,58 +622,72 @@ def test_select_available_agent_single_candidate_no_fallback_configured():
 
 
 # ---------------------------------------------------------------------------
-# agent fallback selection with routing-sourced (real) models (task 4.3/4.5,
-# updated for routing-target-selector: routing.targets/routing.tiers, cells
-# keyed by target name)
+# agent fallback selection with routing-sourced (real) models (task 5.1:
+# select_available_agent delegates to select_cell(routing, default_tier))
 #
-# routing_candidates(routing) turns routing.targets/routing.tiers into real
-# {target, harness, model, ...} cells; select_available_agent then keys the
-# capacity check on the real target:model (agent_capacity.provider_key)
-# instead of the old "configured-default" sentinel, so a gate on ONE model no
-# longer gates every model of that harness (D4). "claude-sub" appears in two
-# tier rows with two different models, so routing_candidates() yields it
-# twice -- once per model -- exactly like an operator's real two-tier config.
+# select_cell walks ONE tier row (default_tier) across its declared targets,
+# keying the capacity check on the real target:model (agent_capacity.
+# provider_key) instead of the old "configured-default" sentinel, so a gate
+# on one target's cell no longer gates the whole row (D4) -- it falls
+# through to the NEXT declared target in that same row, not to a different
+# tier's model for the same harness (select_cell has no cross-tier concept).
+# Two targets (claude-sub, codex-sub) are both filled in default_tier so
+# there is a real same-row target to fall through to, exactly like an
+# operator's real two-target config; t1-deep exists only to prove select_cell
+# never consults a row other than default_tier.
 
 _ROUTING_TWO_CLAUDE_MODELS = {
-    "targets": {"claude-sub": {"harness": "claude", "pool": "subscription"}},
+    "targets": {
+        "claude-sub": {"harness": "claude", "pool": "subscription"},
+        "codex-sub": {"harness": "codex", "pool": "subscription"},
+    },
     "tiers": {
-        "t2-build": {"claude-sub": {"model": "sonnet"}},
+        "t2-build": {"claude-sub": {"model": "sonnet", "effort": "medium"},
+                     "codex-sub": {"model": "gpt-5"}},
         "t1-deep": {"claude-sub": {"model": "opus"}},
     },
+    "default_tier": "t2-build",
 }
 
 
-def test_select_available_agent_per_model_gate_does_not_gate_whole_provider():
-    cache = {"providers": {"claude-sub:opus": {"status": "gated"}}}
+def test_select_available_agent_returns_the_cells_effort_too():
+    cache = {}
     assert select_available_agent(
-        cache, ["claude"], routing=_ROUTING_TWO_CLAUDE_MODELS) == ("claude", "sonnet")
+        cache, ["claude"], routing=_ROUTING_TWO_CLAUDE_MODELS) == ("claude", "sonnet", "medium")
 
 
-def test_select_available_agent_routing_all_models_gated_falls_back():
+def test_select_available_agent_per_target_gate_falls_through_same_tier_row():
+    cache = {"providers": {"claude-sub:sonnet": {"status": "gated"}}}
+    assert select_available_agent(
+        cache, ["claude", "codex"], routing=_ROUTING_TWO_CLAUDE_MODELS) == ("codex", "gpt-5", None)
+
+
+def test_select_available_agent_never_consults_a_row_other_than_default_tier():
+    # claude-sub's ONLY cell in default_tier (t2-build/sonnet) is gated; its
+    # other cell (t1-deep/opus) is not consulted even though it would be
+    # available -- select_cell only ever walks the one row it's given.
+    cache = {"providers": {"claude-sub:sonnet": {"status": "gated"}}}
+    assert select_available_agent(cache, ["claude"], routing=_ROUTING_TWO_CLAUDE_MODELS) is None
+
+
+def test_select_available_agent_routing_all_row_targets_gated_returns_none():
     cache = {"providers": {
         "claude-sub:sonnet": {"status": "gated"},
-        "claude-sub:opus": {"status": "gated"},
+        "codex-sub:gpt-5": {"status": "gated"},
     }}
     assert select_available_agent(
-        cache, ["claude", "codex"], routing=_ROUTING_TWO_CLAUDE_MODELS) == ("codex", None)
+        cache, ["claude", "codex"], routing=_ROUTING_TWO_CLAUDE_MODELS) is None
 
 
-def test_select_available_agent_routing_all_models_gated_none_when_no_fallback():
-    cache = {"providers": {
-        "claude-sub:sonnet": {"status": "gated"},
-        "claude-sub:opus": {"status": "gated"},
-    }}
+def test_select_available_agent_routing_candidate_with_no_declared_target_is_unreachable():
+    # "opencode" has no declared target in routing.targets at all -- once
+    # routing.default_tier governs selection, a harness absent from
+    # routing.yaml is simply not a candidate select_cell can reach (task 5.1:
+    # "--agent/--fallback-agent now take target names"), unlike the
+    # bare-sentinel fallback that still applies when routing is unset.
+    cache = {}
     assert select_available_agent(
-        cache, ["claude"], routing=_ROUTING_TWO_CLAUDE_MODELS) is None
-
-
-def test_select_available_agent_routing_candidate_absent_uses_bare_sentinel():
-    # "codex" has no routing entry of its own here -- falls back to the
-    # bare-agent sentinel key exactly like routing=None, so an operator who
-    # has not configured that harness in routing.yaml sees no behavior change.
-    cache = {"providers": {"codex": {"status": "gated"}}}
-    assert select_available_agent(
-        cache, ["codex"], routing=_ROUTING_TWO_CLAUDE_MODELS) is None
+        cache, ["opencode"], routing=_ROUTING_TWO_CLAUDE_MODELS) is None
 
 
 # ---------------------------------------------------------------------------
@@ -1271,11 +1300,13 @@ def test_drain_routing_partial_model_gate_does_not_gate_whole_provider(
 
 def test_drain_routing_all_configured_models_gated_still_capacity_gates(
         tmp_path, monkeypatch):
-    # The mirror case: once every routing-configured model of the
-    # provider is gated, the drain stops as capacity_gated exactly like the
-    # bare-sentinel case above -- per-model keying narrows what counts as
-    # "gated", it does not weaken the stop condition once it genuinely
-    # applies.
+    # The mirror case: once every candidate's target in default_tier is
+    # gated, the drain stops as capacity_gated exactly like the bare-sentinel
+    # case above -- per-target keying narrows what counts as "gated", it does
+    # not weaken the stop condition once it genuinely applies. Only a single
+    # "claude" candidate is configured here, so claude-sub's default_tier
+    # cell (sonnet) is the only one select_cell ever consults; gating
+    # claude-sub:opus (a different tier) would have no effect at all.
     fake = FakeQueue([4, 4, 4])
     install_fake_queue(monkeypatch, fake)
     monkeypatch.setattr(drain, "machine_wide_routing",
@@ -1283,7 +1314,6 @@ def test_drain_routing_all_configured_models_gated_still_capacity_gates(
     config = make_config(tmp_path, agent="claude")
     config.capacity_cache.write_text(json.dumps({"providers": {
         "claude-sub:sonnet": {"status": "gated"},
-        "claude-sub:opus": {"status": "gated"},
     }}))
 
     def spawner(cmd, timeout):
