@@ -19,7 +19,7 @@
       stored).
 - [ ] 2.2 Thread `self.dispatch_id` into the `spawnlib.spawn_agent`/
       `spawnlib.spawn_claude_p` call(s) inside `LiveSpawn.__call__`.
-- [ ] 2.3 Add a `--dispatch-id` argument (default `None`) to the `full-real`
+- [x] 2.3 Add a `--dispatch-id` argument (default `None`) to the `full-real`
       argparse subparser (`fr = sub.add_parser("full-real", ...)`).
 - [ ] 2.4 Add a `dispatch_id: str | None = None` parameter to `full_real()`, passed
       through to the `LiveSpawn` it constructs, and pass `args.dispatch_id` to it
@@ -35,7 +35,7 @@
 - [x] 3.2 In the same file, add a test that omitting `dispatch_id` (or passing
       `None`) results in `WORKTRAIL_DISPATCH_ID` being absent from the child env.
       (Requirement: No dispatch identity is invented when none is supplied)
-- [ ] 3.3 In `tests/orchestrator/test_live_extras.py` (or wherever `LiveSpawn`
+- [x] 3.3 In `tests/orchestrator/test_live_extras.py` (or wherever `LiveSpawn`
       construction is already covered), add a test that constructing `LiveSpawn`
       with `dispatch_id="go-abc123"` and invoking `__call__` reaches `spawn_agent`
       with `dispatch_id="go-abc123"`.

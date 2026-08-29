@@ -458,6 +458,7 @@ class ReviewerIndependence(unittest.TestCase):
             resume_session_id=None,
             dispatch_id=None,
             log=None,
+            dispatch_id=None,
         ):
             # A role_models override routes through explicit_cell_override(),
             # which threads the model via a swapped WORKTRAIL_ROUTING_FILE, not
