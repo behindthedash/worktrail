@@ -1484,6 +1484,9 @@ def reconcile_unreconciled_tail_evidence(
     status = {t["id"]: t.get("status", "done") for t in tasks}
     by_id = {t["id"]: t for t in tasks}
     superseded_by = _tail_superseded_by_map(findings, by_id)
+    verifier_factory = make_verifier if make_verifier is not None else (
+        lambda: _default_tail_verifier(repo, remote, base, spec_id)
+    )
     enriched: list = []
     for finding in findings:
         task_id = finding["task"]
