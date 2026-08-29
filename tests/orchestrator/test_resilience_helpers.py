@@ -456,6 +456,7 @@ class ReviewerIndependence(unittest.TestCase):
             timeout=None,
             extra_args=None,
             resume_session_id=None,
+            dispatch_id=None,
             log=None,
         ):
             # A role_models override routes through explicit_cell_override(),

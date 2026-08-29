@@ -29,7 +29,7 @@ def _fake_spawn_factory():
     """Returns a fake spawn_claude_p that records its timeout= argument."""
     calls = []
 
-    def fake(prompt, worktree, tier=None, prefer=None, exclude_harness=None, timeout=None, extra_args=None, resume_session_id=None, log=None):
+    def fake(prompt, worktree, tier=None, prefer=None, exclude_harness=None, timeout=None, extra_args=None, resume_session_id=None, dispatch_id=None, log=None):
         calls.append({"timeout": timeout})
         return (
             '{"task": "T", "step": "implement", "status": "success",'
@@ -194,7 +194,7 @@ class TestConcurrencyNoBleed(unittest.TestCase):
         received = {}
         barrier = threading.Barrier(2)
 
-        def fake_spawn(prompt, worktree, tier=None, prefer=None, exclude_harness=None, timeout=None, extra_args=None, resume_session_id=None, log=None):
+        def fake_spawn(prompt, worktree, tier=None, prefer=None, exclude_harness=None, timeout=None, extra_args=None, resume_session_id=None, dispatch_id=None, log=None):
             barrier.wait()  # both threads enter simultaneously
             received[threading.get_ident()] = timeout
             return (
@@ -260,7 +260,7 @@ class TestExpiryReportsEffectiveTimeout(unittest.TestCase):
         spawn = LiveSpawn("spec", "docs/specs/spec/", agent="claude", timeout=1800)
         task = {"id": "T001", "timeout": 2700}
 
-        def raising_spawn(prompt, worktree, tier=None, prefer=None, exclude_harness=None, timeout=None, extra_args=None, resume_session_id=None, log=None):
+        def raising_spawn(prompt, worktree, tier=None, prefer=None, exclude_harness=None, timeout=None, extra_args=None, resume_session_id=None, dispatch_id=None, log=None):
             raise subprocess.TimeoutExpired(cmd=["claude"], timeout=timeout)
 
         output = io.StringIO()
