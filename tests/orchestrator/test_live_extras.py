@@ -677,6 +677,17 @@ class LiveSpawnTierRoutingTests(unittest.TestCase):
         self.assertEqual(agent_captured, {})
         self.assertEqual(claude_captured.get("tier"), "trivial")
 
+    def test_unmatched_complexity_falls_through_to_default_tier(self):
+        """A complexity value naming no declared routing.tiers row (here
+        "medium"; ROUTING declares only complex/trivial) falls through to
+        default_tier instead of reaching select_cell() as a nonexistent row
+        and crashing the spawn with NoExecutionTarget -- confirmed live
+        2026-08-28 (t1-t4 rows only + `complexity: medium`, no purpose)."""
+        task = self._make_task(complexity="medium")
+        _, claude_captured, agent_captured = self._call("implement", task, agent="claude")
+        self.assertEqual(agent_captured, {})
+        self.assertEqual(claude_captured.get("tier"), "trivial")
+
     def test_explicit_task_tier_outranks_complexity(self):
         task = self._make_task(complexity="complex", tier="trivial")
         _, claude_captured, agent_captured = self._call("implement", task, agent="claude")
