@@ -134,6 +134,7 @@ from ..router.policy import (
 from ..router.policy_selfcheck import discover_repo_names
 from ..router.poll_run import unresolved_decision_ids as _poll_unresolved_decision_ids
 from ..router.pr_labels import ensure_pr_risk_label
+from ..router.routing_cli import _check as check_routing_liveness
 from ..shared.homedir import worktrail_home
 from ..taskformats.devkit.schema import set_status_completed
 from ..taskformats.openspec.schema import STATUS_COMPLETED, parse_tasks_md
@@ -526,13 +527,13 @@ def select_available_agent(cache: dict, candidates: List[str],
     previous `select_execution_target`-based selection, which could hop
     tiers).
 
-    The CLI's own `--agent`/`--fallback-agent` flags are NOT yet loosened to
-    accept a target name (they still validate against `SUPPORTED_AGENTS`,
-    i.e. bare harness names) -- doing so safely also requires resolving the
-    pre-loop placeholder `build_command()` call in `drain()`'s main loop,
-    which currently passes the raw CLI value straight through and would
-    crash on a target name before the loop's own `select_available_agent`
-    call ever ran. That is real, separate, still-open work.
+    The CLI's own `--agent`/`--fallback-agent` flags accept either a bare
+    harness name or a routing.yaml target (`main()` validates against
+    `SUPPORTED_AGENTS` union the declared `targets` keys). `drain()`'s
+    pre-loop placeholder `build_command()` call resolves through this same
+    function (with an empty capacity cache as a last resort when every
+    candidate is currently gated) before ever building a command, so a
+    target-name candidate never reaches `build_command()` unresolved.
 
     Called fresh every iteration (not cached across the drain run), so a
     higher-priority agent is picked back up automatically once its persisted
@@ -1906,8 +1907,36 @@ def drain(config: DrainConfig,
                         queue_base=config.queue_dir, log=log)
                 except Exception as exc:  # noqa: BLE001
                     log(f"seed-backlog error: {exc}")
+        if uses_builtin_spawner:
+            # Gate retired-model cells (task 6.1/6.2's `--check`) BEFORE the
+            # first spawn, not after a wasted iteration discovers the gate the
+            # hard way -- next to validate_agent_runtime()'s own fail-closed
+            # preflight (task 5.1). Best-effort like the checks above: a
+            # liveness-check error never blocks the drain itself.
+            try:
+                check_routing_liveness(capacity_path=config.capacity_cache)
+            except Exception as exc:  # noqa: BLE001
+                log(f"routing liveness check error: {exc}")
+        if config.agent_cmd is None:
+            # Resolve the initial candidate through the same target-aware,
+            # capacity-gated selector the loop uses every iteration (task
+            # 5.1): --agent/--fallback-agent may now name a routing.yaml
+            # target (e.g. "claude-sub"), not only a bare harness, and
+            # build_command() only understands harness names -- resolving
+            # here first is what keeps this pre-loop call from crashing on a
+            # target name before the loop's own selection ever ran. When
+            # every candidate is currently capacity-gated, re-resolve against
+            # an empty cache (nothing gated) purely to get a valid harness
+            # shape for this placeholder command; the loop's own first-pass
+            # selection re-evaluates real capacity immediately after.
+            initial_cache = read_capacity_cache(config.capacity_cache)
+            selection = (select_available_agent(initial_cache, candidates, routing)
+                         or select_available_agent({}, candidates, routing))
+            if selection is not None:
+                active_agent, active_model, active_effort = selection
         cmd = build_command(active_agent, config.permission_args,
-                            config.agent_cmd, config.go_repo)
+                            config.agent_cmd, config.go_repo,
+                            model=active_model, effort=active_effort)
         while True:
             queue = list_queue(config.work_queue_py, config.queue_dir)
             state.ready_count = count_ready_briefs(queue)
@@ -2144,18 +2173,20 @@ def main(argv: Optional[List[str]] = None) -> int:
                         help="iteration ceiling (0 = until queue empty)")
     parser.add_argument("--budget-minutes", type=int, default=0,
                         help="wall-clock budget (0 = none)")
-    parser.add_argument("--agent", default=None, choices=SUPPORTED_AGENTS,
-                        help="one-shot provider; when omitted (and no --fallback-agent), "
-                             "the chain comes from routing.yaml's targets file order, "
-                             "else claude (routing.drain.agent is a retired key -- "
-                             "worktrail-routing --migrate)")
+    parser.add_argument("--agent", default=None,
+                        help="one-shot provider: a bare harness name "
+                             f"({', '.join(SUPPORTED_AGENTS)}) or a target declared in "
+                             "routing.yaml's `targets` (e.g. claude-sub); when omitted "
+                             "(and no --fallback-agent), the chain comes from routing.yaml's "
+                             "targets file order, else claude (routing.drain.agent is a "
+                             "retired key -- worktrail-routing --migrate)")
     parser.add_argument("--fallback-agent", action="append", default=[],
-                        dest="fallback_agents", choices=SUPPORTED_AGENTS, metavar="AGENT",
-                        help="additional agent to try, in priority order, when a "
-                             "higher-priority agent is capacity-gated (repeatable). "
-                             "Re-checked every iteration, so a fallback is never "
-                             "sticky -- the primary is used again automatically "
-                             "once its gate's retry_after passes.")
+                        dest="fallback_agents", metavar="AGENT",
+                        help="additional agent to try (bare harness name or routing.yaml "
+                             "target), in priority order, when a higher-priority agent is "
+                             "capacity-gated (repeatable). Re-checked every iteration, so a "
+                             "fallback is never sticky -- the primary is used again "
+                             "automatically once its gate's retry_after passes.")
     parser.add_argument("--go-repo", default=None, metavar="REPO",
                         help="restrict picks to one repo: prompt becomes "
                              "'worktrail-go REPO auto'")
@@ -2226,11 +2257,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     fallback_agents = list(args.fallback_agents)
     if agent is None and not fallback_agents:
         # No flags: candidate priority order is routing.yaml's own `targets`
-        # file order, deduped to bare harness names (the pre-loop
-        # build_command()/validate_agent_runtime() paths are harness-keyed;
-        # select_available_agent() re-resolves each harness to its
-        # first-declared target -- and that target's default_tier cell --
-        # every iteration). drain-operator-config "No flags" scenarios:
+        # file order, deduped to bare harness names (validate_agent_runtime()
+        # stays harness-keyed; select_available_agent() re-resolves each
+        # harness to its first-declared target -- and that target's
+        # default_tier cell -- every iteration). drain-operator-config
+        # "No flags" scenarios:
         # routing governs the chain, so the operator's nightly script no
         # longer needs to mirror the file with hardcoded --agent flags.
         harness_order: List[str] = []
@@ -2242,11 +2273,19 @@ def main(argv: Optional[List[str]] = None) -> int:
             agent, fallback_agents = harness_order[0], harness_order[1:]
     if agent is None:
         agent = "claude"
-    invalid = [a for a in [agent, *fallback_agents] if a not in SUPPORTED_AGENTS]
+    # An explicit --agent/--fallback-agent may name either a bare harness or a
+    # routing.yaml target (task 5.1: select_available_agent() already
+    # resolves a target name to its harness/model/effort cell); the no-flags
+    # harness_order path above never produces anything but a bare harness, so
+    # this stays correct for both origins.
+    declared_targets = set(resolved_routing.get("targets") or {})
+    invalid = [a for a in [agent, *fallback_agents]
+               if a not in SUPPORTED_AGENTS and a not in declared_targets]
     if invalid:
         print(f"error: unsupported agent(s) {', '.join(sorted(set(invalid)))} "
-              f"from {default_routing_file()}; supported: "
-              f"{', '.join(SUPPORTED_AGENTS)}", file=sys.stderr)
+              f"from --agent/--fallback-agent; must be one of {', '.join(SUPPORTED_AGENTS)} "
+              f"or a target declared in {default_routing_file()}: "
+              f"{', '.join(sorted(declared_targets)) or 'none declared'}", file=sys.stderr)
         return 2
     max_workers = (args.max_workers if args.max_workers is not None
                    else routing_drain.get("max_workers", 2))
