@@ -948,11 +948,16 @@ class ReconcileUnreconciledTailEvidence(unittest.TestCase):
             task = _tail_task("T022", "e2e", status="done")
             task["reqs"] = ["REQ-009"]
 
+            class NoOpVerifier:
+                def verify_one(self, *args, **kwargs):
+                    pass
+
             with patch("worktrail.orchestrator.integrate._git", side_effect=run):
                 with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
                     result = integrate.reconcile_unreconciled_tail_evidence(
                         findings, Path("/repo"), "spec-001", [task], "origin",
                         "run-1", "main", str(journal_path),
+                        make_verifier=lambda: NoOpVerifier(),
                     )
 
             # Enriched contract (post-1.2/1.3): a new list carrying each finding's

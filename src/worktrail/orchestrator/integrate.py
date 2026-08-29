@@ -1484,7 +1484,16 @@ def reconcile_unreconciled_tail_evidence(
     returns (it, like `integrate_one`, communicates outcome via the
     journal rather than a return value) so `reconcile_state`/`reconcile_pr_url`
     reflect verify's outcome (e.g. a confirmed merge) rather than the
-    pre-verify OPEN snapshot.
+    pre-verify OPEN snapshot. A `verify_one` exception for one finding is
+    caught and recorded as "quarantined" for that finding without preventing
+    reconciliation of other findings.
+
+    make_verifier: optional callable that constructs a `Verifier` instance
+    for the verify step. When None (standalone/non-pipeline calls), uses
+    `_default_tail_verifier` which builds a Verifier with private locks and
+    default agent/model/timeout settings. Pipeline callers inject their own
+    factory to share run-wide locks and configuration across multiple verify
+    calls for efficiency.
 
     Each finding is reconciled independently by its own task id: an
     unexpected failure reconciling one finding (e.g. `detect_unreconciled_tail_evidence`
