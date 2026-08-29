@@ -303,9 +303,9 @@ def test_repo_policy_roles_compile_tier_wins_over_default_tier(change, tmp_path)
     from unittest.mock import patch
 
     repo = change.parents[2]
-    policy_dir = repo / "docs" / "specs"
+    policy_dir = repo / ".worktrail"
     policy_dir.mkdir(parents=True, exist_ok=True)
-    (policy_dir / "worktrail-go-policy.yaml").write_text(
+    (policy_dir / "policy.yaml").write_text(
         "routing:\n"
         "  targets:\n"
         "    codex-sub:\n"
@@ -1302,9 +1302,9 @@ def test_extract_returns_none_when_there_is_nothing_to_parse():
 # TaskPlan.purpose: constrained to the repo's configured vocabulary
 # --------------------------------------------------------------------------- #
 def _with_purpose_tiers(repo: Path, tiers: str) -> None:
-    policy_dir = repo / "docs" / "specs"
+    policy_dir = repo / ".worktrail"
     policy_dir.mkdir(parents=True, exist_ok=True)
-    (policy_dir / "go-policy.yaml").write_text(f"routing:\n  purposes:\n{tiers}")
+    (policy_dir / "policy.yaml").write_text(f"routing:\n  purposes:\n{tiers}")
 
 
 def test_a_purpose_within_the_configured_vocabulary_is_kept(change, tmp_path):

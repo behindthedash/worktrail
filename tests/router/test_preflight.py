@@ -33,9 +33,9 @@ class _GitRepoCase(unittest.TestCase):
         self._git(d, "init", "-q", "-b", "main")
         self._git(d, "config", "user.email", "test@example.com")
         self._git(d, "config", "user.name", "Test")
-        spec = Path(d) / "docs" / "specs"
-        spec.mkdir(parents=True)
-        (spec / "go-policy.yaml").write_text(policy_yaml, encoding="utf-8")
+        worktrail_dir = Path(d) / ".worktrail"
+        worktrail_dir.mkdir(parents=True)
+        (worktrail_dir / "policy.yaml").write_text(policy_yaml, encoding="utf-8")
         self._git(d, "add", ".")
         self._git(d, "commit", "-q", "-m", "base")
         return d
@@ -87,15 +87,15 @@ class TestDirtyTreeReason(_GitRepoCase):
 
     def test_unstaged_change_to_tracked_file_returns_reason(self) -> None:
         repo = self._init_repo()
-        self._write(repo, "docs/specs/go-policy.yaml", 'pre_pr_cmd: "false"\n')
+        self._write(repo, ".worktrail/policy.yaml", 'pre_pr_cmd: "false"\n')
         reason = dirty_tree_reason(Path(repo))
         self.assertIsNotNone(reason)
-        self.assertIn("go-policy.yaml", reason)
+        self.assertIn("policy.yaml", reason)
         self.assertIn("git commit", reason)
 
     def test_staged_change_to_tracked_file_returns_reason(self) -> None:
         repo = self._init_repo()
-        self._write(repo, "docs/specs/go-policy.yaml", 'pre_pr_cmd: "false"\n')
+        self._write(repo, ".worktrail/policy.yaml", 'pre_pr_cmd: "false"\n')
         self._git(repo, "add", ".")
         self.assertIsNotNone(dirty_tree_reason(Path(repo)))
 
@@ -109,7 +109,7 @@ class TestDirtyTreeReason(_GitRepoCase):
 
     def test_committing_the_change_clears_it(self) -> None:
         repo = self._init_repo()
-        self._write(repo, "docs/specs/go-policy.yaml", 'pre_pr_cmd: "false"\n')
+        self._write(repo, ".worktrail/policy.yaml", 'pre_pr_cmd: "false"\n')
         self.assertIsNotNone(dirty_tree_reason(Path(repo)))
         self._git(repo, "add", ".")
         self._git(repo, "commit", "-q", "-m", "update policy")
@@ -548,7 +548,7 @@ class TestRunCli(_GitRepoCase):
         the very next `git commit` changes the tree hash and invalidates it.
         `run` must refuse before spending time on `pre_pr_cmd`, not after."""
         repo = self._init_repo('pre_pr_cmd: "true"\n')
-        self._write(repo, "docs/specs/go-policy.yaml", 'pre_pr_cmd: "false"\n')
+        self._write(repo, ".worktrail/policy.yaml", 'pre_pr_cmd: "false"\n')
         code = main(["run", "--repo", repo])
         self.assertEqual(code, DIRTY_TREE_EXIT)
         self.assertIsNone(read_marker(Path(repo)))
@@ -557,7 +557,7 @@ class TestRunCli(_GitRepoCase):
     def test_run_dirty_tree_refusal_leaves_no_running_lock(self) -> None:
         repo = self._init_repo('pre_pr_cmd: "true"\n')
         self._write(repo, "untracked-does-not-matter.txt")
-        self._write(repo, "docs/specs/go-policy.yaml", 'pre_pr_cmd: "false"\n')
+        self._write(repo, ".worktrail/policy.yaml", 'pre_pr_cmd: "false"\n')
         code = main(["run", "--repo", repo])
         self.assertEqual(code, DIRTY_TREE_EXIT)
         self.assertIsNone(read_running_lock(Path(repo)))

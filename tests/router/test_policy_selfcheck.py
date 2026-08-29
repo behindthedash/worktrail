@@ -10,9 +10,9 @@ from worktrail.router.policy_selfcheck import check_repo, discover_repo_names, s
 def _git_repo(root: Path, name: str, policy_text: str) -> Path:
     repo = root / name
     (repo / ".git").mkdir(parents=True)
-    specs = repo / "docs" / "specs"
-    specs.mkdir(parents=True)
-    (specs / "go-policy.yaml").write_text(policy_text)
+    worktrail_dir = repo / ".worktrail"
+    worktrail_dir.mkdir(parents=True)
+    (worktrail_dir / "policy.yaml").write_text(policy_text)
     return repo
 
 

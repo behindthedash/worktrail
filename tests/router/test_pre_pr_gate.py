@@ -39,9 +39,9 @@ class TestPrePrGate(unittest.TestCase):
     def _repo(self, policy_yaml: str | None) -> str:
         d = tempfile.mkdtemp(prefix="prepr-")
         if policy_yaml is not None:
-            spec = Path(d) / "docs" / "specs"
-            spec.mkdir(parents=True)
-            (spec / "go-policy.yaml").write_text(policy_yaml, encoding="utf-8")
+            worktrail_dir = Path(d) / ".worktrail"
+            worktrail_dir.mkdir(parents=True)
+            (worktrail_dir / "policy.yaml").write_text(policy_yaml, encoding="utf-8")
         return d
 
     # --- resolve_cmd -------------------------------------------------------
@@ -79,7 +79,7 @@ class TestPrePrGate(unittest.TestCase):
         self.assertEqual(main(["--repo", repo]), 3)
 
     def test_command_runs_in_repo_root(self) -> None:
-        repo = self._repo('pre_pr_cmd: "test -f docs/specs/go-policy.yaml"\n')
+        repo = self._repo('pre_pr_cmd: "test -f .worktrail/policy.yaml"\n')
         self.assertEqual(main(["--repo", repo]), 0)
 
     def test_print_cmd_does_not_execute(self) -> None:
@@ -196,9 +196,9 @@ class TestSpecSyncDriftGate(unittest.TestCase):
 
     def _repo(self, policy_yaml: str) -> str:
         d = tempfile.mkdtemp(prefix="prepr-specsync-")
-        spec = Path(d) / "docs" / "specs"
-        spec.mkdir(parents=True)
-        (spec / "go-policy.yaml").write_text(policy_yaml, encoding="utf-8")
+        worktrail_dir = Path(d) / ".worktrail"
+        worktrail_dir.mkdir(parents=True)
+        (worktrail_dir / "policy.yaml").write_text(policy_yaml, encoding="utf-8")
         return d
 
     def test_no_docs_specs_dir_is_not_applicable(self) -> None:
@@ -263,9 +263,9 @@ class TestDocsOnlySkip(unittest.TestCase):
         self._git(d, "init", "-q", "-b", base_branch)
         self._git(d, "config", "user.email", "test@example.com")
         self._git(d, "config", "user.name", "Test")
-        spec = Path(d) / "docs" / "specs"
-        spec.mkdir(parents=True)
-        (spec / "go-policy.yaml").write_text(policy_yaml, encoding="utf-8")
+        worktrail_dir = Path(d) / ".worktrail"
+        worktrail_dir.mkdir(parents=True)
+        (worktrail_dir / "policy.yaml").write_text(policy_yaml, encoding="utf-8")
         self._git(d, "add", ".")
         self._git(d, "commit", "-q", "-m", "base")
         return d
@@ -345,9 +345,9 @@ class TestPromotionPrSkip(unittest.TestCase):
         self._git(d, "config", "user.email", "test@example.com")
         self._git(d, "config", "user.name", "Test")
         self._git(d, "remote", "add", "origin", bare)
-        spec = Path(d) / "docs" / "specs"
-        spec.mkdir(parents=True)
-        (spec / "go-policy.yaml").write_text(policy_yaml, encoding="utf-8")
+        worktrail_dir = Path(d) / ".worktrail"
+        worktrail_dir.mkdir(parents=True)
+        (worktrail_dir / "policy.yaml").write_text(policy_yaml, encoding="utf-8")
         self._git(d, "add", ".")
         self._git(d, "commit", "-q", "-m", "base")
         self._git(d, "push", "-q", "origin", base_branch)
@@ -417,9 +417,9 @@ class TestPromotionPrSkip(unittest.TestCase):
         self._git(d, "init", "-q", "-b", "prd")
         self._git(d, "config", "user.email", "test@example.com")
         self._git(d, "config", "user.name", "Test")
-        spec = Path(d) / "docs" / "specs"
-        spec.mkdir(parents=True)
-        (spec / "go-policy.yaml").write_text(self._POLICY, encoding="utf-8")
+        worktrail_dir = Path(d) / ".worktrail"
+        worktrail_dir.mkdir(parents=True)
+        (worktrail_dir / "policy.yaml").write_text(self._POLICY, encoding="utf-8")
         self._git(d, "add", ".")
         self._git(d, "commit", "-q", "-m", "base")
         self._git(d, "checkout", "-q", "-b", "stg")
@@ -468,9 +468,9 @@ class TestDocsOnlyRiskCap(unittest.TestCase):
         self._git(d, "init", "-q", "-b", "main")
         self._git(d, "config", "user.email", "test@example.com")
         self._git(d, "config", "user.name", "Test")
-        spec = Path(d) / "docs" / "specs"
-        spec.mkdir(parents=True)
-        (spec / "go-policy.yaml").write_text(self._POLICY, encoding="utf-8")
+        worktrail_dir = Path(d) / ".worktrail"
+        worktrail_dir.mkdir(parents=True)
+        (worktrail_dir / "policy.yaml").write_text(self._POLICY, encoding="utf-8")
         self._git(d, "add", ".")
         self._git(d, "commit", "-q", "-m", "base")
         return d
@@ -571,9 +571,9 @@ class TestClarificationIntegrityGate(unittest.TestCase):
         self._git(d, "init", "-q", "-b", "main")
         self._git(d, "config", "user.email", "test@example.com")
         self._git(d, "config", "user.name", "Test")
-        spec = Path(d) / "docs" / "specs"
-        spec.mkdir(parents=True)
-        (spec / "go-policy.yaml").write_text('pre_pr_cmd: "true"\n', encoding="utf-8")
+        worktrail_dir = Path(d) / ".worktrail"
+        worktrail_dir.mkdir(parents=True)
+        (worktrail_dir / "policy.yaml").write_text('pre_pr_cmd: "true"\n', encoding="utf-8")
         self._git(d, "add", ".")
         self._git(d, "commit", "-q", "-m", "base")
         return d
@@ -632,9 +632,9 @@ class TestDodVerificationGate(unittest.TestCase):
         self._git(d, "init", "-q", "-b", "main")
         self._git(d, "config", "user.email", "test@example.com")
         self._git(d, "config", "user.name", "Test")
-        spec = Path(d) / "docs" / "specs"
-        spec.mkdir(parents=True)
-        (spec / "go-policy.yaml").write_text('pre_pr_cmd: "true"\n', encoding="utf-8")
+        worktrail_dir = Path(d) / ".worktrail"
+        worktrail_dir.mkdir(parents=True)
+        (worktrail_dir / "policy.yaml").write_text('pre_pr_cmd: "true"\n', encoding="utf-8")
         self._git(d, "add", ".")
         self._git(d, "commit", "-q", "-m", "base")
         return d
@@ -701,9 +701,9 @@ class TestDodVerificationDerivationGate(unittest.TestCase):
         self._git(d, "init", "-q", "-b", "main")
         self._git(d, "config", "user.email", "test@example.com")
         self._git(d, "config", "user.name", "Test")
-        spec = Path(d) / "docs" / "specs"
-        spec.mkdir(parents=True)
-        (spec / "go-policy.yaml").write_text('pre_pr_cmd: "true"\n', encoding="utf-8")
+        worktrail_dir = Path(d) / ".worktrail"
+        worktrail_dir.mkdir(parents=True)
+        (worktrail_dir / "policy.yaml").write_text('pre_pr_cmd: "true"\n', encoding="utf-8")
         self._git(d, "add", ".")
         self._git(d, "commit", "-q", "-m", "base")
         return d
@@ -783,9 +783,9 @@ class TestReqAcCoverageGate(unittest.TestCase):
         self._git(d, "init", "-q", "-b", "main")
         self._git(d, "config", "user.email", "test@example.com")
         self._git(d, "config", "user.name", "Test")
-        spec = Path(d) / "docs" / "specs"
-        spec.mkdir(parents=True)
-        (spec / "go-policy.yaml").write_text('pre_pr_cmd: "true"\n', encoding="utf-8")
+        worktrail_dir = Path(d) / ".worktrail"
+        worktrail_dir.mkdir(parents=True)
+        (worktrail_dir / "policy.yaml").write_text('pre_pr_cmd: "true"\n', encoding="utf-8")
         self._git(d, "add", ".")
         self._git(d, "commit", "-q", "-m", "base")
         return d
@@ -832,9 +832,9 @@ class TestOrphanedTestsWarning(unittest.TestCase):
     def _git_repo(self, policy_yaml: str, test_files: list[str]) -> str:
         d = tempfile.mkdtemp(prefix="prepr-drift-")
         subprocess.run(["git", "init", "-q"], cwd=d, check=True)
-        spec = Path(d) / "docs" / "specs"
-        spec.mkdir(parents=True)
-        (spec / "go-policy.yaml").write_text(policy_yaml, encoding="utf-8")
+        worktrail_dir = Path(d) / ".worktrail"
+        worktrail_dir.mkdir(parents=True)
+        (worktrail_dir / "policy.yaml").write_text(policy_yaml, encoding="utf-8")
         for rel in test_files:
             p = Path(d) / rel
             p.parent.mkdir(parents=True, exist_ok=True)
@@ -898,9 +898,9 @@ class TestChecksOnly(unittest.TestCase):
         self._git(d, "init", "-q", "-b", "main")
         self._git(d, "config", "user.email", "test@example.com")
         self._git(d, "config", "user.name", "Test")
-        spec = Path(d) / "docs" / "specs"
-        spec.mkdir(parents=True)
-        (spec / "go-policy.yaml").write_text(policy_yaml, encoding="utf-8")
+        worktrail_dir = Path(d) / ".worktrail"
+        worktrail_dir.mkdir(parents=True)
+        (worktrail_dir / "policy.yaml").write_text(policy_yaml, encoding="utf-8")
         self._git(d, "add", ".")
         self._git(d, "commit", "-q", "-m", "base")
         return d

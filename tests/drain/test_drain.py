@@ -3190,7 +3190,9 @@ def _make_ready_to_implement_repo(repos_root, name, spec_id):
     tasks_dir.mkdir()
     (tasks_dir / "TASK-001.md").write_text(
         "---\nid: TASK-001\nstatus: pending\nkind: impl\n---\n")
-    (specs_dir / "go-policy.yaml").write_text("allow_seeded_implementation: true\n")
+    worktrail_dir = repo / ".worktrail"
+    worktrail_dir.mkdir(parents=True, exist_ok=True)
+    (worktrail_dir / "policy.yaml").write_text("allow_seeded_implementation: true\n")
     return repo
 
 

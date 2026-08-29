@@ -121,9 +121,9 @@ def _mk_openspec_ready_change(repo: Path, slug: str) -> Path:
 
 
 def _opt_in(repo: Path) -> None:
-    specs = repo / "docs" / "specs"
-    specs.mkdir(parents=True, exist_ok=True)
-    (specs / "go-policy.yaml").write_text(
+    worktrail_dir = repo / ".worktrail"
+    worktrail_dir.mkdir(parents=True, exist_ok=True)
+    (worktrail_dir / "policy.yaml").write_text(
         "allow_seeded_implementation: true\n", encoding="utf-8")
 
 

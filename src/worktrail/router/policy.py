@@ -38,17 +38,6 @@ class OperatorConfigError(ValueError):
 
 
 POLICY_RELPATH = ".worktrail/policy.yaml"
-# Prior conventions, checked in this order when POLICY_RELPATH is absent, so no
-# repo is forced through a synchronized flag-day rename -- each migrates on its
-# own schedule via a plain `git mv`:
-#   1. docs/specs/worktrail-go-policy.yaml -- briefly canonical (2026-08-22),
-#      live only in the first repo onboarded before this second relocation.
-#   2. docs/specs/go-policy.yaml -- the original convention, still used by the
-#      ~15 already-onboarded repos.
-LEGACY_POLICY_RELPATHS = (
-    "docs/specs/worktrail-go-policy.yaml",
-    "docs/specs/go-policy.yaml",
-)
 ROUTING_FILE_ENV = "WORKTRAIL_ROUTING_FILE"
 
 
@@ -1046,34 +1035,14 @@ def detect_external_automerge(repo: Path) -> Dict[str, Any]:
 
 
 def policy_file_path(repo: Path) -> Path:
-    """POLICY_RELPATH if present, else the first of LEGACY_POLICY_RELPATHS that
-    exists, else POLICY_RELPATH (possibly nonexistent) -- the single source of
-    truth for "where is this repo's policy file", used by every repo-detection
-    gate (policy_selfcheck, policy_drift_selfcheck, reconcile_pr_labels) so
-    they don't go blind to a repo still on a prior convention."""
-    current = repo / POLICY_RELPATH
-    if current.is_file():
-        return current
-    for relpath in LEGACY_POLICY_RELPATHS:
-        legacy = repo / relpath
-        if legacy.is_file():
-            return legacy
-    return current
+    """POLICY_RELPATH (possibly nonexistent) -- the single source of truth for
+    "where is this repo's policy file", used by every repo-detection gate
+    (policy_selfcheck, policy_drift_selfcheck, reconcile_pr_labels)."""
+    return repo / POLICY_RELPATH
 
 
 def has_policy_file(repo: Path) -> bool:
     return policy_file_path(repo).is_file()
-
-
-def _resolve_policy_src(repo: Path, meta: Dict[str, Any]) -> Path:
-    """policy_file_path(), plus a one-time deprecation warning when it
-    resolved to a legacy relpath."""
-    src = policy_file_path(repo)
-    if src.is_file() and str(src) != str(repo / POLICY_RELPATH):
-        meta["warnings"].append(
-            f"{src.relative_to(repo)} is deprecated -- rename to {POLICY_RELPATH} "
-            "(git mv, no content changes needed)")
-    return src
 
 
 def load_policy(repo: Path) -> Dict[str, Any]:
@@ -1082,7 +1051,7 @@ def load_policy(repo: Path) -> Dict[str, Any]:
     # a repo-declared `run_record_dir` below still overrides it.
     policy["run_record_dir"] = default_run_record_dir()
     meta: Dict[str, Any] = {"source": None, "unknown_keys": [], "warnings": []}
-    src = _resolve_policy_src(repo, meta)
+    src = policy_file_path(repo)
     parsed: Dict[str, Any] = {}
     if src.is_file():
         meta["source"] = str(src)

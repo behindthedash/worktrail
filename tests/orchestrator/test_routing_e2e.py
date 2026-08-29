@@ -228,9 +228,9 @@ class E2EDashboardAdditiveJSONTest(unittest.TestCase):
     def test_planned_agent_additive_rendered_text_unchanged(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            specs = repo / "docs" / "specs"
-            specs.mkdir(parents=True)
-            (specs / "go-policy.yaml").write_text(
+            worktrail_dir = repo / ".worktrail"
+            worktrail_dir.mkdir(parents=True)
+            (worktrail_dir / "policy.yaml").write_text(
                 "agent_cli: claude\n"
                 "routing:\n"
                 "  targets:\n"
@@ -324,9 +324,9 @@ class E2ETierAccuracyDispatchInvarianceTest(unittest.TestCase):
     def test_resolve_routing_identical_regardless_of_tier_accuracy_report(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp) / "repo"
-            specs = repo / "docs" / "specs"
-            specs.mkdir(parents=True)
-            (specs / "go-policy.yaml").write_text(
+            worktrail_dir = repo / ".worktrail"
+            worktrail_dir.mkdir(parents=True)
+            (worktrail_dir / "policy.yaml").write_text(
                 "agent_cli: claude\n"
                 "routing:\n"
                 "  defaults:\n"
