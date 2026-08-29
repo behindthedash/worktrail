@@ -217,6 +217,18 @@ class SpawnRetry(unittest.TestCase):
         with self.assertRaises(subprocess.TimeoutExpired):
             spawnlib.spawn_claude_p("p", "/tmp", tier="t2-build", retries=2, sleep=lambda *_: None)
 
+    def test_dispatch_id_sets_env_var(self):
+        out, fr = self._run([Proc(0, "ok report", "")], dispatch_id="go-abc123")
+        self.assertEqual(fr.kwargs[0]["env"]["WORKTRAIL_DISPATCH_ID"], "go-abc123")
+
+    def test_dispatch_id_omitted_does_not_set_env_var(self):
+        out, fr = self._run([Proc(0, "ok report", "")])
+        self.assertNotIn("WORKTRAIL_DISPATCH_ID", fr.kwargs[0]["env"])
+
+    def test_dispatch_id_none_does_not_set_env_var(self):
+        out, fr = self._run([Proc(0, "ok report", "")], dispatch_id=None)
+        self.assertNotIn("WORKTRAIL_DISPATCH_ID", fr.kwargs[0]["env"])
+
 
 class KeepTranscripts(unittest.TestCase):
     def setUp(self):
