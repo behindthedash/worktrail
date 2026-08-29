@@ -110,7 +110,7 @@ class OpenSpecTaskSource:
                     "status": t.status,
                     "deps": deps,
                     "external_deps": [],
-                    "files": list(getattr(t, "files", [])),
+                    "files": list(t.files),
                     "kind": t.kind,
                     "tags": list(t.tags),
                     "group": t.group,
