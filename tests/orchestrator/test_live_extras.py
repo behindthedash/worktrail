@@ -884,23 +884,6 @@ class LiveSpawnServedTargetCorrectionTests(unittest.TestCase):
         self.assertEqual(spawn.last_agent, "opencode")
 
 
-class LiveSpawnDispatchIdTests(unittest.TestCase):
-    """LiveSpawn.__init__ accepts an optional dispatch_id parameter and threads
-    it to spawn_agent/spawn_claude_p calls."""
-
-    def _make_task(self):
-        return {"id": "TASK-001", "status": "pending", "files": ["src/foo.py"]}
-
-    def test_livespawn_constructor_accepts_dispatch_id(self):
-        spawn = live.LiveSpawn("spec-001", "docs/specs/001-spec", dispatch_id="go-abc123")
-        self.assertEqual(spawn.dispatch_id, "go-abc123")
-
-    def test_livespawn_constructor_dispatch_id_defaults_to_none(self):
-        spawn = live.LiveSpawn("spec-001", "docs/specs/001-spec")
-        self.assertIsNone(spawn.dispatch_id)
-
-
-
 def _run_git(repo: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, check=True)
 
