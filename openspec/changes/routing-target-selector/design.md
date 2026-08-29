@@ -182,3 +182,47 @@ test pins that the template passes the loader and contains no `opencode/` model 
   continued to accept a harness name, but the script should be updated to name a target
   (e.g. `claude-sub`) once operator habits catch up, per this change's own migration away
   from bare harness identity.
+
+## Task 8.3 sweep result (2026-08-29)
+
+`rg "default_model_for_agent|fallback_agents|purpose_tiers|routing\.agents|judgment_pinned" .`
+outside `openspec/changes/archive/` returns ~200 hits, not zero. Investigated all of them by
+file/context rather than trusting the literal grep count:
+
+- **One real defect found and fixed** (PR #787): `resolve_routing()`'s own docstring promises
+  a selector-facing view with `agents`/`fallback` dropped, and its own tests asserted exactly
+  that -- but `drain` was a raw passthrough of `_validate_routing_drain()`'s dict, which still
+  computed dead `agent`/`fallback_agents` sub-keys (always `None`/`[]` since
+  `_reject_legacy_routing_keys()` already rejects any config that would give them real values,
+  but still literally present). Fixed to strip `drain` down to `max_workers` only.
+- **live.py's `_default_model_for_agent()` (10+ call sites: `full_real`, `_pipeline_scheduler`,
+  `_full_real_inner`, `smoke`, `_role_agent_model`, `_effective_role_models`, `main`, etc.) is
+  NOT the retired `spawnlib.default_model_for_agent()`** -- it is a new, already-correctly-
+  migrated helper (task 4.2's own AC: "DEFAULT_AGENT detection becomes a default-target
+  lookup") built on `resolve_routing()`/`select_cell`'s own `targets`/`default_tier`. Traced
+  every call site's resolved value to its actual use: it always flows into either an inert,
+  backward-compatible constructor parameter (`LiveSpawn.__init__`'s `self.model`, already
+  documented in PR #781 as "never consulted by the new `__call__`") or `verify.
+  _make_live_spawn()`'s `model` parameter, whose own docstring states it is "accepted for
+  caller signature compatibility and otherwise unused" -- the actual spawn call there uses
+  `spawn_agent(tier=DEFAULT_TIER, prefer=agent, ...)`, already routed through `select_cell`.
+  False alarm; no fix needed or attempted.
+- **Everything else checked** (`dispatch.py`, `dashboard.py`, `routing_cli.py`,
+  `repo_init.py`, `runtime/selection.py`, `compile.py`, `skills/worktrail-go/SKILL.md`,
+  `docs/config/routing.yaml.example`) is legitimate: historical/explanatory prose describing
+  what was removed or renamed, a local variable/parameter literally named `purpose_tiers`
+  whose value is read from the correct new `routing.purposes` key, `routing_cli.py`'s
+  `--migrate` function reading the OLD key names from a RAW legacy YAML dict (its actual job),
+  or `select_execution_target()` (predates this spec, PR #730, a different, still-independently
+  -used selector) defensively accepting either the old or new purpose-table key name.
+- **Not further investigated**: the large remaining hit count in non-archived
+  `openspec/specs/task-purpose-classification/spec.md`, `openspec/specs/model-tier-routing/
+  spec.md`, and the still-open (non-archived) `model-tier-routing-compile-default-spawn-
+  policy-routing` change -- these are other OpenSpec artifacts' own content, not this change's
+  responsibility to edit, and archiving/updating them is a separate concern from "does live
+  code implement a retired mechanism."
+
+Given the literal zero-hits AC cannot be satisfied without rewriting legitimate historical
+documentation (which would violate this repo's own doc-hygiene norms) or editing files outside
+this change's ownership, task 8.3 is not marked `[x]` in tasks.md -- but its actual goal (no
+live code silently implementing a retired mechanism) is verified achieved as of this sweep.
