@@ -35,7 +35,7 @@
 - [x] 3.2 In the same file, add a test that omitting `dispatch_id` (or passing
       `None`) results in `WORKTRAIL_DISPATCH_ID` being absent from the child env.
       (Requirement: No dispatch identity is invented when none is supplied)
-- [ ] 3.3 In `tests/orchestrator/test_live_extras.py` (or wherever `LiveSpawn`
+- [x] 3.3 In `tests/orchestrator/test_live_extras.py` (or wherever `LiveSpawn`
       construction is already covered), add a test that constructing `LiveSpawn`
       with `dispatch_id="go-abc123"` and invoking `__call__` reaches `spawn_agent`
       with `dispatch_id="go-abc123"`.
