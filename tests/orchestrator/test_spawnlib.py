@@ -2000,5 +2000,68 @@ class BuildChildEnv(unittest.TestCase):
                 self.assertEqual(env, base)
 
 
+class DispatchIdEnvVar(unittest.TestCase):
+    """Tests for dispatch_id parameter and WORKTRAIL_DISPATCH_ID env var plumbing."""
+
+    def setUp(self):
+        self._cache = tempfile.TemporaryDirectory()
+        self._old_cache = os.environ.get("GO_AGENT_CAPACITY_CACHE")
+        os.environ["GO_AGENT_CAPACITY_CACHE"] = os.path.join(
+            self._cache.name, "capacity.json"
+        )
+
+    def tearDown(self):
+        if self._old_cache is None:
+            os.environ.pop("GO_AGENT_CAPACITY_CACHE", None)
+        else:
+            os.environ["GO_AGENT_CAPACITY_CACHE"] = self._old_cache
+        self._cache.cleanup()
+
+    def test_dispatch_id_sets_env_var_in_child(self):
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["env"] = kwargs["env"]
+            return Proc(0, "ok", "")
+
+        with _patch_routing(SINGLE_CLAUDE_ROUTING), \
+                patch.object(spawnlib.subprocess, "run", side_effect=fake_run):
+            spawnlib.spawn_agent(
+                "prompt", "/tmp", tier="t2-build", dispatch_id="go-abc123", retries=0
+            )
+
+        self.assertEqual(captured["env"]["WORKTRAIL_DISPATCH_ID"], "go-abc123")
+
+    def test_no_dispatch_id_omits_env_var(self):
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["env"] = kwargs["env"]
+            return Proc(0, "ok", "")
+
+        with _patch_routing(SINGLE_CLAUDE_ROUTING), \
+                patch.object(spawnlib.subprocess, "run", side_effect=fake_run):
+            spawnlib.spawn_agent(
+                "prompt", "/tmp", tier="t2-build", retries=0
+            )
+
+        self.assertNotIn("WORKTRAIL_DISPATCH_ID", captured["env"])
+
+    def test_dispatch_id_none_omits_env_var(self):
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["env"] = kwargs["env"]
+            return Proc(0, "ok", "")
+
+        with _patch_routing(SINGLE_CLAUDE_ROUTING), \
+                patch.object(spawnlib.subprocess, "run", side_effect=fake_run):
+            spawnlib.spawn_agent(
+                "prompt", "/tmp", tier="t2-build", dispatch_id=None, retries=0
+            )
+
+        self.assertNotIn("WORKTRAIL_DISPATCH_ID", captured["env"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
