@@ -72,6 +72,15 @@ class PipelineSchedulerReconciliationTest(unittest.TestCase):
 
             reconcile_mock.assert_called_once()
             self.assertEqual(reconcile_mock.call_args.args[0], [_finding()])
+            self.assertIn(
+                "make_verifier", reconcile_mock.call_args.kwargs,
+                "the scheduler must wire its verifier factory through to "
+                "reconcile_unreconciled_tail_evidence so tail-task PRs get verified",
+            )
+            self.assertTrue(
+                callable(reconcile_mock.call_args.kwargs["make_verifier"]),
+                "make_verifier must be a callable factory",
+            )
             record_mock.assert_called_once()
             self.assertEqual(
                 call_order, ["reconcile", "record"],
