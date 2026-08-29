@@ -75,9 +75,21 @@ per the calling worktrail-sdd-workflow pipeline instead.
       - Create the artifact file using `template` as the structure and write it to `resolvedOutputPath`
       - Apply `context` and `rules` as constraints - but do NOT copy them into the file
       - **If `<artifact-id>` is `tasks`**, worktrail's own orchestrator (not OpenSpec) compiles
-        `tasks.md` into a per-task file-scope plan afterward (`worktrail-compile`), and OpenSpec's
-        checklist schema carries no field for that — get it right on the first pass instead of
-        relying on that later compile step to catch it:
+        `tasks.md` into a per-task file-scope plan afterward (`worktrail-compile`) — get it right
+        on the first pass instead of relying on that later compile step to catch it. OpenSpec's
+        checklist schema carries no dedicated field for file scope, but `worktrail-compile`
+        recognizes an optional indented `files:` continuation line immediately under a task line
+        as an inline declaration of that task's create-or-modify paths:
+        ```
+        - [ ] 2.3 Add the `files:` parser to `parse_tasks_md` (Requirement: Inline file-scope declaration parsing)
+          files: src/worktrail/taskformats/openspec/tasks_md.py tests/taskformats/test_tasks_md.py
+        ```
+        This is opt-in per task, not required on every task — list only the paths the task will
+        create or modify (never paths it merely reads). Where you're confident of a task's exact
+        file scope, declaring it here is worth doing: a `tasks.md` where every task carries a
+        `files:` declaration compiles into a RunPlan without a model call at all. Tasks that omit
+        it still compile fine — the compile step infers their file scope from context, same as
+        today.
         - **Requirement coverage**: for every requirement declared in this change's
           `specs/**/spec.md` (`### Requirement: <Name>` under `## ADDED Requirements` /
           `## MODIFIED Requirements`), make the exact requirement name appear somewhere in
