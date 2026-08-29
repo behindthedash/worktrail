@@ -1736,21 +1736,53 @@ def _validate_retained_task_branch(
     branch: str,
     start_ref: str,
     expected_head_sha: str | None = None,
-) -> None:
+    wt: Path | None = None,
+) -> list:
     """Reject a retained task branch whose lineage no longer matches the run.
 
-    Retained branches may contain user work, so this function only validates and
-    raises; it never resets, deletes, or recreates them implicitly.
+    Retained branches may contain user work, so this function never resets,
+    deletes, or recreates them. With `wt` (the branch's own retained worktree,
+    already checked out on `branch`), a stale-ancestry failure first attempts
+    the one repair that preserves all work: `git merge --no-edit <start_ref>`
+    in that worktree -- the exact mechanical fix operators applied by hand
+    every time the base advanced while a task sat quarantined/killed (observed
+    repeatedly 2026-08-28). A clean merge returns a journal-ready repair-event
+    list; a conflicted one is aborted and raises exactly as before, so
+    conflicting user work still gets a human. Without `wt` (no checkout to
+    merge in), behavior is validate-and-raise, unchanged.
     """
     branch_head = _git(repo, "rev-parse", "--verify", f"{branch}^{{commit}}", check=False)
     if branch_head.returncode != 0:
         raise WorktreeAddError(f"retained task branch {branch} has no resolvable commit")
 
+    events: list = []
     if not _is_ancestor(repo, start_ref, branch):
-        raise WorktreeAddError(
+        stale_error = WorktreeAddError(
             f"retained task branch {branch} is stale: {start_ref} is not an ancestor of "
             f"{branch}. Repair the branch or choose an explicit fresh run before retrying."
         )
+        if wt is None:
+            raise stale_error
+        merged = _git(wt, "merge", "--no-edit", start_ref, check=False)
+        if merged.returncode != 0:
+            _git(wt, "merge", "--abort", check=False)
+            raise WorktreeAddError(
+                f"{stale_error} Auto-merge of {start_ref} was attempted and hit "
+                f"conflicts: {(merged.stdout or merged.stderr or '').strip()[:300]}"
+            )
+        if not _is_ancestor(repo, start_ref, branch):
+            raise WorktreeAddError(
+                f"retained task branch {branch} is still stale after a clean merge of "
+                f"{start_ref}; repair it explicitly before resuming"
+            )
+        events.append({
+            "event": "retained_branch_auto_merged",
+            "branch": branch,
+            "start_ref": start_ref,
+            "merged_head": _git(
+                repo, "rev-parse", "--verify", f"{branch}^{{commit}}", check=False
+            ).stdout.strip(),
+        })
 
     if expected_head_sha:
         expected = _git(
@@ -1761,6 +1793,7 @@ def _validate_retained_task_branch(
                 f"retained task branch {branch} does not contain journaled task head "
                 f"{expected_head_sha}. Repair the branch or clear the stale run explicitly."
             )
+    return events
 
 
 ASSEMBLY_RESOLVE_STRIKES = 1
@@ -3486,12 +3519,17 @@ def live_run_real(
                     f"retained worktree {wt} is on {branch or 'detached HEAD'}, expected "
                     f"{expected_branch}; repair it explicitly before resuming"
                 )
-            _validate_retained_task_branch(repo, branch, start, expected_head_sha)
+            repair_events = _validate_retained_task_branch(
+                repo, branch, start, expected_head_sha, wt=wt
+            )
             drift_events = _require_dependency_files_with_repair(
                 wt, task, by_id, repo, spec_id, remote, base
             )
-            if drift_events:
+            if repair_events or drift_events:
                 with state_lock:
+                    entries.extend([
+                        {**e, "task": task["id"]} for e in repair_events
+                    ])
                     entries.extend(drift_events)
                     record()
             _require_task_file(wt, spec_rel, task["id"])
@@ -4647,12 +4685,17 @@ def _pipeline_scheduler(
                     f"retained worktree {wt} is on {branch or 'detached HEAD'}, expected "
                     f"{expected_branch}; repair it explicitly before resuming"
                 )
-            _validate_retained_task_branch(repo, branch, start, expected_head_sha)
+            repair_events = _validate_retained_task_branch(
+                repo, branch, start, expected_head_sha, wt=wt
+            )
             drift_events = _require_dependency_files_with_repair(
                 wt, task, by_id, repo, spec_id, remote, base
             )
-            if drift_events:
+            if repair_events or drift_events:
                 with state_lock:
+                    entries.extend([
+                        {**e, "task": task["id"]} for e in repair_events
+                    ])
                     entries.extend(drift_events)
                     _record()
             _require_task_file(wt, spec_rel, task["id"])
