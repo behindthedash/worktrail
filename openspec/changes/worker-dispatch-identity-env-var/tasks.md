@@ -17,11 +17,11 @@
 - [x] 2.1 Add an optional `dispatch_id: str | None = None` constructor parameter to
       `LiveSpawn.__init__`, stored as `self.dispatch_id` (mirrors how `effort` is
       stored).
-- [ ] 2.2 Thread `self.dispatch_id` into the `spawnlib.spawn_agent`/
+- [x] 2.2 Thread `self.dispatch_id` into the `spawnlib.spawn_agent`/
       `spawnlib.spawn_claude_p` call(s) inside `LiveSpawn.__call__`.
 - [x] 2.3 Add a `--dispatch-id` argument (default `None`) to the `full-real`
       argparse subparser (`fr = sub.add_parser("full-real", ...)`).
-- [ ] 2.4 Add a `dispatch_id: str | None = None` parameter to `full_real()`, passed
+- [x] 2.4 Add a `dispatch_id: str | None = None` parameter to `full_real()`, passed
       through to the `LiveSpawn` it constructs, and pass `args.dispatch_id` to it
       from `main()`'s `full-real` dispatch branch.
 
@@ -39,7 +39,7 @@
       construction is already covered), add a test that constructing `LiveSpawn`
       with `dispatch_id="go-abc123"` and invoking `__call__` reaches `spawn_agent`
       with `dispatch_id="go-abc123"`.
-- [ ] 3.4 Add a test covering `full-real`'s `--dispatch-id` argparse wiring: passing
+- [x] 3.4 Add a test covering `full-real`'s `--dispatch-id` argparse wiring: passing
       `--dispatch-id go-abc123` results in `full_real()` being called with
       `dispatch_id="go-abc123"` (mock `full_real` the way this module's existing
       CLI-dispatch tests already do for other `full-real` flags).
