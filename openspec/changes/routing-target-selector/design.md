@@ -100,10 +100,23 @@ bare-agent gate becomes bare-target. A gate on `claude-sub:opus` does not touch
   copied through (fail loud if unset).
 - opencode: model id prefix selects the provider (`opencode/`, `openrouter/`, `google/`);
   credentials come from `auth.json`/env as today; no per-spawn change.
-- codex `subscription`: ChatGPT login (verified present). codex `api`: mechanism unverified —
-  task 3.6 verifies live whether `-c preferred_auth_method=apikey` (or an equivalent) selects
-  the stored key per spawn; until verified the loader rejects a codex `api` target with a
-  message naming the task.
+- codex `subscription`: ChatGPT login (verified present). codex `api` (task 3.6, live-verified
+  2026-08-29 against codex-cli 0.149.1): **no per-invocation auth selector exists.**
+  `-c preferred_auth_method=apikey` is not a recognized config field (`codex exec --strict-config
+  -c preferred_auth_method=apikey ...` fails with "unknown configuration field"); setting
+  `OPENAI_API_KEY` in the child env has no effect at all when a ChatGPT login is already
+  persisted (a spawn with a deliberately invalid key value still succeeded, proving the env var
+  is silently ignored in favor of the stored login). The real, **verified-working** mechanism is
+  `CODEX_HOME` isolation, not a per-spawn flag: a fresh `CODEX_HOME` directory has independent
+  login state (`codex login status` reports "Not logged in" until that specific home is logged
+  in), and `codex login --with-api-key` against that isolated home successfully stores an
+  API-key credential there ("Logged in using an API key") without touching the default home's
+  ChatGPT session -- the same isolation primitive `skill_dispatch.py` already uses for per-task
+  codex homes, for a different purpose. Since the named candidate is disproven and the verified
+  alternative needs its own schema (routing.yaml's `auth` field would need to name a `CODEX_HOME`
+  path, not an env var, a materially different shape from claude's `api` lane) and spawnlib
+  wiring not yet designed, the loader still rejects a codex `api` target -- lifting the rejection
+  is real, separate follow-up work, not done here.
 
 **D7 — Retired models.** New failure class `model_unavailable` (24 h default cooldown, env
 `GO_AGENT_MODEL_UNAVAILABLE_COOLDOWN` like the others). Sources: (a) `worktrail-routing
