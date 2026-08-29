@@ -916,6 +916,37 @@ def _run_git(repo: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, check=True)
 
 
+class FullRealDispatchIdArgparseTests(unittest.TestCase):
+    """full-real --dispatch-id wiring: passing --dispatch-id go-abc123 results
+    in full_real() being called with dispatch_id="go-abc123"."""
+
+    def _main(self, *extra):
+        argv = [
+            "full-real",
+            "--repo", "/fake/repo",
+            "--spec", "docs/specs/001-foo",
+        ] + list(extra)
+        with patch.object(live, "full_real", return_value={}) as mock_fr:
+            rc = live.main(argv)
+        return rc, mock_fr
+
+    def test_dispatch_id_passed_through_to_full_real(self):
+        rc, mock_fr = self._main("--dispatch-id", "go-abc123")
+        self.assertEqual(rc, 0)
+        mock_fr.assert_called_once()
+        # Verify dispatch_id kwarg was passed to full_real
+        call_kwargs = mock_fr.call_args.kwargs
+        self.assertEqual(call_kwargs.get("dispatch_id"), "go-abc123")
+
+    def test_dispatch_id_absent_when_not_specified(self):
+        rc, mock_fr = self._main()
+        self.assertEqual(rc, 0)
+        mock_fr.assert_called_once()
+        # Verify dispatch_id is None when not provided
+        call_kwargs = mock_fr.call_args.kwargs
+        self.assertIsNone(call_kwargs.get("dispatch_id"))
+
+
 class ResumeQuarantineStalenessWarningTests(unittest.TestCase):
     """journal-resume-staleness-warning 1.3: on resume, a QUARANTINED group
     whose task branch has fallen behind `base` gets a loud, per-group warning
