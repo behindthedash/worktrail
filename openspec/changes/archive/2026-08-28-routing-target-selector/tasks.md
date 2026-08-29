@@ -48,5 +48,5 @@
 ## 8. Verification
 
 - [x] 8.1 [e2e] `PYTHONPATH=src pytest -q` green, including the golden `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` replay. (Requirement: A single selector walks a tier row across targets in preference order)
-- [ ] 8.2 [e2e] On this machine: `worktrail-routing --migrate` on the live file, `worktrail-routing --check` reports the retired `opencode/x-preview-f-free` cells as `model_unavailable`, and a `worktrail-drain --dry-run` selects a `claude-sub` cell with its model on the front-door command line. (Requirement: A retired model gates its own cell with a distinct failure class)
-- [ ] 8.3 [e2e] Repo-wide `rg "default_model_for_agent|fallback_agents|purpose_tiers|routing\.agents|judgment_pinned" .` returns no hits outside `openspec/changes/archive/`. (Requirement: Legacy routing keys fail loud and migrate deterministically)
+- [x] 8.2 [e2e] On this machine: `worktrail-routing --migrate` on the live file, `worktrail-routing --check` reports the retired `opencode/x-preview-f-free` cells as `model_unavailable`, and a `worktrail-drain --dry-run` selects a `claude-sub` cell with its model on the front-door command line. (Requirement: A retired model gates its own cell with a distinct failure class)
+- [x] 8.3 [e2e] Repo-wide `rg "default_model_for_agent|fallback_agents|purpose_tiers|routing\.agents|judgment_pinned" .` returns no hits outside `openspec/changes/archive/`. (Requirement: Legacy routing keys fail loud and migrate deterministically)
