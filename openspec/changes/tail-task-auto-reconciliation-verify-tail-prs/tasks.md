@@ -1,5 +1,7 @@
 ## 1. `reconcile_unreconciled_tail_evidence` verifier seam
 
+Implements requirement: **Reconciliation PR receives the same CI verification as a group PR**
+
 - [ ] 1.1 In `src/worktrail/orchestrator/integrate.py`, add a
       `make_verifier: Optional[Callable[[], "verify.Verifier"]] = None`
       parameter to `reconcile_unreconciled_tail_evidence`.
@@ -55,5 +57,5 @@
 
 ## 4. Verification
 
-- [ ] 4.1 Run `PYTHONPATH=src pytest -q`.
-- [ ] 4.2 Run `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`.
+- [ ] 4.1 [e2e] Run `PYTHONPATH=src pytest -q`.
+- [ ] 4.2 [e2e] Run `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`.
