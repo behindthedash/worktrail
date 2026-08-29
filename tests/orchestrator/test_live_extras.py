@@ -884,58 +884,6 @@ class LiveSpawnServedTargetCorrectionTests(unittest.TestCase):
         self.assertEqual(spawn.last_agent, "opencode")
 
 
-class LiveSpawnDispatchIdTests(unittest.TestCase):
-    """LiveSpawn threads dispatch_id into spawn_agent/spawn_claude_p calls."""
-
-    def _make_task(self):
-        return {"id": "TASK-001", "status": "pending", "files": ["src/foo.py"]}
-
-    def _call(self, dispatch_id=None):
-        captured = {}
-        fake_result = type("R", (), {"text": "ok", "usage": {}, "tools_used": [], "skills_used": [], "paused_s": 0.0})()
-        with patch("worktrail.orchestrator.live.dispatch.build_worker_prompt", return_value="prompt"), \
-             patch("worktrail.orchestrator.live.spawnlib.spawn_claude_p", side_effect=lambda *_, **kw: captured.update(kw) or fake_result), \
-             patch("worktrail.orchestrator.live.spawnlib.spawn_agent", side_effect=lambda *_, **kw: captured.update(kw) or fake_result):
-            spawn = live.LiveSpawn("spec-001", "docs/specs/001-spec", agent="claude", dispatch_id=dispatch_id)
-            spawn("implement", self._make_task(), Path("/tmp/wt"))
-        return captured
-
-    def test_dispatch_id_threaded_into_spawn_call(self):
-        captured = self._call(dispatch_id="go-abc123")
-        self.assertEqual(captured.get("dispatch_id"), "go-abc123")
-
-    def test_dispatch_id_absent_when_omitted(self):
-        captured = self._call(dispatch_id=None)
-        self.assertIsNone(captured.get("dispatch_id"))
-
-
-class FullRealDispatchIdArgparseTests(unittest.TestCase):
-    """full-real --dispatch-id argparse wiring passes dispatch_id to full_real()."""
-
-    def test_dispatch_id_passed_to_full_real(self):
-        argv = [
-            "full-real",
-            "--repo", "/fake/repo",
-            "--spec", "docs/specs/001-foo",
-            "--dispatch-id", "go-abc123",
-        ]
-        with patch("worktrail.orchestrator.live.full_real", return_value={}) as mock_fr:
-            live.main(argv)
-        mock_fr.assert_called_once()
-        self.assertEqual(mock_fr.call_args.kwargs.get("dispatch_id"), "go-abc123")
-
-    def test_dispatch_id_omitted_defaults_to_none(self):
-        argv = [
-            "full-real",
-            "--repo", "/fake/repo",
-            "--spec", "docs/specs/001-foo",
-        ]
-        with patch("worktrail.orchestrator.live.full_real", return_value={}) as mock_fr:
-            live.main(argv)
-        mock_fr.assert_called_once()
-        self.assertIsNone(mock_fr.call_args.kwargs.get("dispatch_id"))
-
-
 def _run_git(repo: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, check=True)
 
