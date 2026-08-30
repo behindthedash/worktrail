@@ -53,7 +53,13 @@ class BuildWorkerPromptTests(unittest.TestCase):
 
     def test_worker_prompt_explains_gitnexus_worktree_boundary(self):
         task = {"id": "TASK-001", "files": ["src/a.ts"]}
-        prompt = dispatch.build_worker_prompt(dispatch.ROLE_IMPLEMENT, task, _ctx())
+        # _ctx() is shared with BuildGroupPromptTests below and carries
+        # group_branch/base_branch, which are build_group_prompt's ctx fields,
+        # not build_worker_prompt's WorkerPromptCtx -- drop them here.
+        ctx = {
+            k: v for k, v in _ctx().items() if k not in ("group_branch", "base_branch")
+        }
+        prompt = dispatch.build_worker_prompt(dispatch.ROLE_IMPLEMENT, task, ctx)
         self.assertIn("generated worktree normally has no GitNexus index", prompt)
         self.assertIn("the worktree wins", prompt)
         self.assertIn("do not search for or create", prompt)
