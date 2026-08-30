@@ -5435,10 +5435,22 @@ class EpicStageDetection(unittest.TestCase):
 
         # Feature 1 is cited (cited=1), next_n=2. There is no gate prose
         # at all, so no gate applies. Result is epic-gap, with no gating
-        # information in the result.
-        self.assertEqual(result["stage"], "epic-gap")
-        self.assertEqual(result["features"], 2)
-        self.assertEqual(result["cited"], 1)
+        # information in the result. Verify all fields remain identical to
+        # pre-change behavior.
+        expected = {
+            "id": "012-no-gate-prose",
+            "epic_file": "012-no-gate-prose.md",
+            "status_header": None,
+            "stage": "epic-gap",
+            "features": 2,
+            "cited": 1,
+            "citing_specs": ["010-feature-one-impl"],
+            "next_action": (
+                "spec the next unspecced feature from its decomposition "
+                "(docs/specs/epics/012-no-gate-prose.md)"
+            ),
+        }
+        self.assertEqual(result, expected)
         self.assertNotIn("blocked_feature", result)
         self.assertNotIn("gates", result)
 
