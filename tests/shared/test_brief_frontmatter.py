@@ -144,6 +144,38 @@ class ValidateBrief(unittest.TestCase):
         self.assertIn("cannot read", err)
 
 
+class ValidateBriefPath(unittest.TestCase):
+    def test_directory_is_malformed(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            claimed_dir = Path(d) / "20260101-000000-some-brief"
+            claimed_dir.mkdir()
+            ok, err = bf.validate_brief_path(claimed_dir)
+            self.assertFalse(ok)
+            self.assertIn("directory", err)
+
+    def test_missing_md_suffix_is_malformed(self):
+        ok, err = bf.validate_brief_path(Path("/no/such/brief"))
+        self.assertFalse(ok)
+        self.assertIn(".md", err)
+
+    def test_missing_but_correctly_suffixed_path_is_not_malformed(self):
+        """Shape validity is independent of existence -- a caller that also
+        needs the file to exist still does its own stat()/read_text()."""
+        ok, err = bf.validate_brief_path(Path("/no/such/brief.md"))
+        self.assertTrue(ok, msg=err)
+
+    def test_valid_md_path_is_not_malformed(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "brief.md"
+            p.write_text("---\nid: a\nstatus: queued\n---\nbody\n", encoding="utf-8")
+            ok, err = bf.validate_brief_path(p)
+            self.assertTrue(ok, msg=err)
+
+
 class SerializeFrontmatter(unittest.TestCase):
     def test_focus_renders_as_literal_block(self):
         text = bf.serialize_frontmatter(

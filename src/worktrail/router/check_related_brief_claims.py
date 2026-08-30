@@ -42,7 +42,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from ..shared.brief_frontmatter import read_frontmatter
+from ..shared.brief_frontmatter import read_frontmatter, validate_brief_path
 from ..shared.homedir import worktrail_home
 from ..workqueue import work_queue as _wq
 from ..workqueue.work_queue import _agent_label as _wq_agent_label
@@ -305,6 +305,17 @@ def check(
     }
 
     claimed_brief_path = Path(claimed_brief_path)
+    # A directory passes a bare `.stat()` cleanly, so the shape check below
+    # (not a directory, has a `.md` suffix) runs first -- without it, a
+    # picked-brief directory passed by mistake would fall through to
+    # `read_frontmatter`, which swallows the resulting OSError into `{}` and
+    # reports `checked: true, active: []`, silently hiding a malformed input
+    # behind "nothing collides" instead of surfacing it as unanswerable.
+    valid, shape_error = validate_brief_path(claimed_brief_path)
+    if not valid:
+        result["warning"] = shape_error
+        return result
+
     # `read_frontmatter` itself swallows OSError and returns `{}`, which
     # would make "file unreadable" and "file readable with genuinely empty
     # frontmatter" indistinguishable here -- so readability is checked

@@ -59,7 +59,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from ..shared.brief_frontmatter import read_frontmatter
+from ..shared.brief_frontmatter import read_frontmatter, validate_brief_path
 from ..shared.homedir import worktrail_home
 from .poll_run import read_run_record
 
@@ -189,20 +189,10 @@ def check(
     }
     brief_path = Path(brief_path)
 
-    if brief_path.is_dir():
+    valid, shape_error = validate_brief_path(brief_path)
+    if not valid:
         result["malformed"] = True
-        result["warning"] = (
-            f"claimed brief path is a directory, not the .md file: {brief_path} "
-            "-- pass the full picked-brief .md path, not its containing directory"
-        )
-        return result
-
-    if brief_path.suffix != ".md":
-        result["malformed"] = True
-        result["warning"] = (
-            f"claimed brief path is missing its .md filename: {brief_path} "
-            "-- pass the full picked-brief .md path"
-        )
+        result["warning"] = shape_error
         return result
 
     try:

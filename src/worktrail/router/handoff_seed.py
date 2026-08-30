@@ -42,7 +42,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from ..shared.brief_frontmatter import split_frontmatter
+from ..shared.brief_frontmatter import split_frontmatter, validate_brief_path
 
 # --------------------------------------------------------------------------- #
 # Core brief parsing
@@ -56,6 +56,10 @@ def parse_brief(path: Path) -> dict[str, Any]:
     On read failure the "error" key is set; frontmatter and sections are empty.
     Uses yaml.safe_load exclusively (never yaml.load).
     """
+    valid, shape_error = validate_brief_path(Path(path))
+    if not valid:
+        return {"frontmatter": {}, "sections": {}, "error": shape_error}
+
     try:
         content = Path(path).read_text(encoding="utf-8")
     except OSError as exc:
