@@ -790,7 +790,7 @@ def detect_checkbox_status_divergence(
     try:
         try:
             _, base_tasks = taskformats.load_spec(str(_spec_path_for(wt, spec_id)))
-        except Exception:
+        except Exception:  # noqa: BLE001 -- best-effort; an unreadable/missing artifact on base must never fail the run
             return []
         base_status = {t["id"]: t.get("status") for t in base_tasks}
         findings = []
