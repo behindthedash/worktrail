@@ -126,6 +126,37 @@ class OpsxCommandNamespacingTests(unittest.TestCase):
         command = skill_dispatch.build_command("claude", "openspec-propose", "req")
         self.assertIn("/openspec-propose req", command)
 
+    # Codex has no namespace-prefix mechanism -- it discovers skills by
+    # directory name under CODEX_HOME/skills, and the bundled OpenSpec
+    # integration's actual Codex-discoverable directories are named
+    # `openspec-propose`, `openspec-sync-specs`, etc, not the short `opsx:*`
+    # command name every caller passes uniformly across agents. A raw
+    # `opsx:sync` bootstrap therefore looks for a directory that never
+    # exists and fails with "skill was not found for the Codex child",
+    # distinct from the claude/opencode namespacing bug fixed in PR #686.
+
+    def test_codex_bootstrap_finds_the_real_openspec_skill_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "skills"
+            (source / "openspec-sync-specs").mkdir(parents=True)
+            child = Path(tmp) / "child-home"
+            with patch.object(
+                skill_dispatch, "_codex_skill_roots", return_value=[source]
+            ):
+                self.assertTrue(
+                    skill_dispatch.bootstrap_codex_skills(str(child), "opsx:sync")
+                )
+            self.assertTrue((child / "skills/openspec-sync-specs").is_symlink())
+
+    def test_codex_prompt_names_the_real_openspec_skill(self):
+        command = skill_dispatch.build_command("codex", "opsx:sync", "spec-a")
+        self.assertIn("openspec-sync-specs", command[-1])
+        self.assertNotIn("opsx:sync", command[-1])
+
+    def test_a_non_opsx_skill_is_never_remapped_for_codex(self):
+        command = skill_dispatch.build_command("codex", "worktrail-go", "auto")
+        self.assertIn("worktrail-go", command[-1])
+
     @patch("worktrail.router.skill_dispatch.subprocess.run")
     def test_default_cli_executes_the_selected_provider(self, run):
         run.return_value.returncode = 0

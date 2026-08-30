@@ -49,6 +49,20 @@ _MAX_DISPATCH_DEPTH = 1
 # artifacts written); `/worktrail:opsx:propose` is accepted.
 _OPSX_COMMAND_PREFIX = "opsx:"
 _OPSX_NAMESPACE = "worktrail:"
+# Codex has no namespace-prefix mechanism -- it discovers skills by
+# directory name under CODEX_HOME/skills, and the bundled OpenSpec
+# integration's Codex-discoverable directories are named `openspec-propose`,
+# `openspec-sync-specs`, etc, not the short `opsx:*` command name every
+# caller passes uniformly across agents (`build_sync_command` in drain.py,
+# `#openspec-authoring` in subagent-prompts.md). A raw `opsx:sync` bootstrap
+# therefore looks for a directory that never exists.
+_OPSX_CODEX_SKILL = {
+    "opsx:propose": "openspec-propose",
+    "opsx:explore": "openspec-explore",
+    "opsx:update": "openspec-update-change",
+    "opsx:sync": "openspec-sync-specs",
+    "opsx:archive": "openspec-archive-change",
+}
 
 
 def _validate_skill_name(name: str) -> str:
@@ -70,6 +84,16 @@ def _namespaced_invocation_skill(agent: str, skill: str) -> str:
     ):
         return f"{_OPSX_NAMESPACE}{skill}"
     return skill
+
+
+def _codex_skill_name(skill: str) -> str:
+    """Return the skill directory a Codex child actually has installed.
+
+    Only the bundled `opsx:*` short names need translation -- everything
+    else (worktrail-sdd-workflow, an already-resolved openspec-* name) is
+    returned unchanged.
+    """
+    return _OPSX_CODEX_SKILL.get(skill, skill)
 
 
 # --- pending-decision boundary (presentation + exact-id resume) ---------------
@@ -191,7 +215,8 @@ def _prompt(agent: str, skill: str, args: str) -> str:
     if agent in {"claude", "opencode"}:
         invocation_skill = _namespaced_invocation_skill(agent, skill)
         return f"/{invocation_skill} {args}".rstrip()
-    return f"Use the installed skill {skill!r}. Execute it with these arguments: {args}".rstrip()
+    invocation_skill = _codex_skill_name(skill)
+    return f"Use the installed skill {invocation_skill!r}. Execute it with these arguments: {args}".rstrip()
 
 
 # --- dispatch cell resolution (design D3: a single selector walks a tier row
@@ -529,7 +554,11 @@ def bootstrap_codex_skills(codex_home: str, skill: str) -> bool:
     symlinks are refreshed on every dispatch because plugin-cache versions and
     source worktrees are replaceable.  Real files and directories are
     preserved, so this remains safe for a user-maintained child home.
+
+    ``skill`` may be a bundled `opsx:*` short name -- resolved to the real
+    skill directory Codex needs (see `_codex_skill_name`) before searching.
     """
+    skill = _codex_skill_name(skill)
     source_root = next(
         (root for root in _codex_skill_roots() if (root / skill).is_dir()), None
     )
