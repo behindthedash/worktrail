@@ -1427,6 +1427,27 @@ _EPIC_FUTURE_SPEC_ID_RE = re.compile(
     r"\*\*Future spec id:\*\*\s*`([a-z][a-z0-9-]*)`", re.IGNORECASE
 )
 
+# Sequencing-gate prose an epic author writes when a later feature is
+# intentionally blocked on an earlier one shipping first. Two shapes, per
+# design.md Decision 3:
+#   - pairwise: "Feature <next_n> depends on Feature <M>" -- names the exact
+#     blocked feature, so `_EPIC_GATE_PAIRWISE_TEMPLATE` is a `str.format`
+#     template rather than a precompiled pattern: the caller substitutes the
+#     specific `next_n` it is checking before compiling, so a match only
+#     fires for that feature and not any other "Feature X depends on
+#     Feature Y" prose elsewhere in the document.
+#   - blanket: "Feature <M> gates the rest/remaining (features)/later
+#     features/all later features" -- names only the gating feature and
+#     covers every feature after it, so this one needs no per-call
+#     substitution; callers instead filter matches to `< next_n` rather than
+#     matching an exact number.
+_EPIC_GATE_PAIRWISE_TEMPLATE = r"Feature\s+{next_n}\s+depends\s+on\s+Feature\s+(\d+)"
+_EPIC_GATE_BLANKET_RE = re.compile(
+    r"Feature\s+(\d+)\s+gates\s+(?:the\s+rest|the\s+remaining(?:\s+"
+    r"features?)?|later\s+features?|all\s+later\s+features?)",
+    re.IGNORECASE,
+)
+
 
 def _epic_status_header(text: str) -> str | None:
     match = _EPIC_STATUS_LINE_RE.search(text)
