@@ -1463,6 +1463,19 @@ def _epic_feature_blocks(text: str) -> dict[int, str]:
     return blocks
 
 
+def _epic_block_future_spec_id(block: str) -> str | None:
+    """Extract one feature block's `**Future spec id:**` value, if present.
+
+    Reuses `_EPIC_FUTURE_SPEC_ID_RE`, the same matcher `_epic_citation_patterns`
+    applies to a whole epic's text, but scoped to a single block returned by
+    `_epic_feature_blocks` so a gate can be resolved against the specific
+    feature it names instead of the first (or any) `**Future spec id:**` in
+    the document.
+    """
+    match = _EPIC_FUTURE_SPEC_ID_RE.search(block)
+    return match.group(1) if match else None
+
+
 def _epic_citation_patterns(epic_id: str, epic_text: str) -> list[re.Pattern]:
     """Signals that count a spec/change folder as citing this epic.
 
