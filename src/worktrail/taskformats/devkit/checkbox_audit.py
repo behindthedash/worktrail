@@ -29,6 +29,7 @@ from .schema import (
 UNCHECKED_RE = re.compile(r"- \[ \]")
 CHECKED_RE = re.compile(r"- \[x\]")
 HEADING_RE = re.compile(r"^(#{2,3})\s+(.*)$", re.MULTILINE)
+RECONCILIATION_NOTE_RE = re.compile(r"\s*-\s+Reconciliation note:")
 
 
 class Hit:
@@ -39,11 +40,31 @@ class Hit:
         self.sections = sections
 
 
+def _is_reconciled(text: str, match_end: int) -> bool:
+    """Whether the unchecked box ending at ``match_end`` is immediately followed by
+    a line matching the "Reconciliation note:" convention (PR #669) -- meaning it
+    was individually verified and deliberately left unchecked with cited evidence,
+    not genuine drift.
+    """
+    next_newline = text.find("\n", match_end)
+    if next_newline == -1:
+        return False
+    line_end = text.find("\n", next_newline + 1)
+    next_line = text[next_newline + 1 : line_end if line_end != -1 else len(text)]
+    return RECONCILIATION_NOTE_RE.match(next_line) is not None
+
+
+def _unreconciled_unchecked_matches(text: str) -> list:
+    """Unchecked-checkbox matches in ``text``, excluding ones with a Reconciliation note."""
+    return [m for m in UNCHECKED_RE.finditer(text) if not _is_reconciled(text, m.end())]
+
+
 def _unchecked_sections(body: str) -> list:
-    """Return the ``##``/``###`` headings that contain >=1 unchecked box, in order."""
+    """Return the ``##``/``###`` headings that contain >=1 unreconciled unchecked box,
+    in order."""
     headings = [(m.start(), m.group(2).strip()) for m in HEADING_RE.finditer(body)]
     sections: list = []
-    for m in UNCHECKED_RE.finditer(body):
+    for m in _unreconciled_unchecked_matches(body):
         pos = m.start()
         heading = "(no heading)"
         for h_start, h_text in headings:
@@ -75,7 +96,9 @@ def audit_repo(repo: Path) -> list[Hit]:
         if _all_checkboxes_checked(body, sections=COMPLETION_AUDIT_SECTIONS):
             continue
         scoped_text = _extract_sections(body, COMPLETION_AUDIT_SECTIONS)
-        unchecked = len(UNCHECKED_RE.findall(scoped_text))
+        unchecked = len(_unreconciled_unchecked_matches(scoped_text))
+        if unchecked == 0:
+            continue
         checked = len(CHECKED_RE.findall(scoped_text))
         hits.append(
             Hit(
