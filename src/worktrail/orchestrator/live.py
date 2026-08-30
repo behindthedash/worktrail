@@ -601,6 +601,24 @@ def _format_unreconciled_tail_note(findings: list[dict]) -> str | None:
     )
 
 
+def _format_checkbox_divergence_note(findings: list[dict]) -> str | None:
+    """Human-readable warning for `integrate.detect_checkbox_status_divergence`'s
+    findings -- tasks this run's in-memory record calls DONE whose task-source
+    artifact does not show done on `<remote>/<base>` right now (PR #414/#847's
+    bug class). Returns None for empty findings so callers can `if note:`.
+    """
+    if not findings:
+        return None
+    entries = ", ".join(
+        f"{f['task']} (base status: {f['base_status']})" for f in findings
+    )
+    return (
+        f"!! {len(findings)} task(s) reported DONE but diverge from the "
+        f"task-source artifact on base (checkbox never landed or was reverted -- "
+        f"see journal `checkbox_status_divergence`): {entries}"
+    )
+
+
 def _format_migration_quarantine_warning(
     groups: list[dict],
     tasks: list[dict],
@@ -5392,6 +5410,29 @@ def _pipeline_scheduler(
     unreconciled_note = _format_unreconciled_tail_note(unreconciled_tail)
     if unreconciled_note:
         print(f"{_ts()} {unreconciled_note}")
+    # A task can carry its own DONE status while its owning group never reached
+    # base (quarantined -- e.g. a dependency never merged); that is expected,
+    # routine behavior, not a divergence, so exclude quarantined groups' tasks
+    # before checking, or every ordinary partial run would false-positive.
+    _quarantined_task_ids = {
+        tid for g in groups if g["name"] in quarantined for tid in g.get("tasks", [])
+    }
+    checkbox_divergence = integrate_module.detect_checkbox_status_divergence(
+        repo,
+        remote,
+        base,
+        spec_id,
+        [
+            t
+            for t in (tail_res or {}).get("tasks", tasks)
+            if t["id"] not in _quarantined_task_ids
+        ],
+        git_lock=iv_lock,
+    )
+    integrate_module._record_checkbox_status_divergence(journal_path, checkbox_divergence)
+    checkbox_note = _format_checkbox_divergence_note(checkbox_divergence)
+    if checkbox_note:
+        print(f"{_ts()} {checkbox_note}")
     progress.set_phase(journal_path, "done")
     _print_usage_report(journal_path)
     print(f"{_ts()} === PIPELINE RUN COMPLETE ===")
@@ -5684,6 +5725,24 @@ def _full_real_inner(
         note = _format_automerge_evidence_note(automerge_evidence)
         if note:
             print(note)
+        # Same quarantine exclusion as the pipeline scheduler's equivalent check
+        # (see its comment): a quarantined group's tasks may still carry their
+        # own DONE status without ever having reached base -- expected, not a
+        # divergence.
+        _quarantined_task_ids = {
+            tid for g in groups if g["name"] in quarantined for tid in g.get("tasks", [])
+        }
+        checkbox_divergence = integrate.detect_checkbox_status_divergence(
+            repo,
+            remote,
+            base,
+            spec_id,
+            [t for t in tasks if t["id"] not in _quarantined_task_ids],
+        )
+        integrate._record_checkbox_status_divergence(journal_path, checkbox_divergence)
+        checkbox_note = _format_checkbox_divergence_note(checkbox_divergence)
+        if checkbox_note:
+            print(checkbox_note)
         progress.set_phase(journal_path, "done")
         _print_usage_report(journal_path)
         print("=== FULL RUN COMPLETE ===")

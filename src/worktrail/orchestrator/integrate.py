@@ -728,6 +728,110 @@ def detect_unreconciled_evidence(
 detect_unreconciled_tail_evidence = detect_unreconciled_evidence
 
 
+def detect_checkbox_status_divergence(
+    repo: Path,
+    remote: str | None,
+    base: str | None,
+    spec_id: str,
+    tasks: list,
+    git_lock: threading.Lock | None = None,
+) -> list:
+    """Flag any task this run's in-memory record calls DONE whose task-source
+    artifact (a devkit `TASK-*.md` `status:` field, or an OpenSpec/speckit
+    `tasks.md` checkbox) does not show it done on `<remote>/<base>` right now --
+    the conservation invariant: *every task this run believes it delivered must
+    be provably reflected in the artifact that tracks completion, on the branch
+    that artifact actually lives on.*
+
+    This generalizes two incidents each fixed one-off before this check existed:
+    - PR #414: `integrate_one`'s dependency-branch-gone fallback reconciled a
+      stale reconstructed start point against the live base with an
+      unconditioned `-X ours` merge, silently reverting a *different* group's
+      already-landed `tasks.md` checkboxes (see
+      `docs/specs/research/integrate-one-dep-branch-gone-fallback-root-cause.md`).
+    - PR #847: a synthetic tail-reconciliation group's `_write_group_task_status`
+      call was scoped to only the leaf task id, so every superseded ancestor's
+      checkbox was ticked nowhere at all.
+
+    Both were only caught by a human manually diffing `origin/<base>` against
+    the spec artifact after the fact. This check re-reads the artifact from a
+    disposable, detached checkout of `<remote>/<base>` -- the same source of
+    truth a human diff would use -- via the format-agnostic
+    `taskformats.load_spec`, instead of trusting any bookkeeping this run
+    performed along the way.
+
+    Detection only -- this never writes, merges, or pushes anything. Best
+    effort: a `git worktree add`/fetch failure or an unreadable/missing
+    artifact on base returns no findings rather than raising, since an infra
+    hiccup here must never fail an otherwise-complete run.
+    """
+    if not remote or not base:
+        return []
+    done_ids = sorted({t["id"] for t in tasks if t.get("status") in coordinator.DONE})
+    if not done_ids:
+        return []
+    repo = Path(repo)
+    _git(repo, "fetch", "-q", remote, base, check=False)
+    remote_base_ref = f"{remote}/{base}"
+    lock = git_lock if git_lock is not None else contextlib.nullcontext()
+    wt = (
+        repo.parent
+        / f"{repo.name}-checkbox-check"
+        / f"{base.replace('/', '-')}-{uuid.uuid4().hex[:8]}"
+    )
+    with lock:
+        _git(repo, "worktree", "prune", check=False)
+        r = _git(
+            repo, "worktree", "add", "-f", "--detach", str(wt), remote_base_ref,
+            check=False,
+        )
+    if r.returncode != 0:
+        return []
+    try:
+        try:
+            _, base_tasks = taskformats.load_spec(str(_spec_path_for(wt, spec_id)))
+        except Exception:
+            return []
+        base_status = {t["id"]: t.get("status") for t in base_tasks}
+        findings = []
+        for tid in done_ids:
+            status_on_base = base_status.get(tid)
+            if status_on_base not in coordinator.DONE:
+                findings.append({"task": tid, "base_status": status_on_base or "missing"})
+        return findings
+    finally:
+        with lock:
+            _git(repo, "worktree", "remove", "--force", str(wt), check=False)
+        shutil.rmtree(wt, ignore_errors=True)
+
+
+def _record_checkbox_status_divergence(journal_path: str | None, findings: list) -> None:
+    """Persist `detect_checkbox_status_divergence`'s findings into the run
+    journal as `checkbox_status_divergence`, mirroring
+    `_record_unreconciled_tail_evidence` -- `journal_selfcheck.check_repo()`
+    reads this field into a `checkbox-status-divergence` finding, which the
+    `go` dashboard's existing "Stranded runs" section renders generically by
+    kind (no dashboard change needed). Cleared when there is nothing to
+    report (idempotent).
+    """
+    if not journal_path:
+        return
+    try:
+        journal_file = Path(journal_path)
+        journal: dict = {}
+        if journal_file.exists():
+            journal = json.loads(journal_file.read_text())
+        if findings:
+            journal["checkbox_status_divergence"] = findings
+        else:
+            journal.pop("checkbox_status_divergence", None)
+        progress.atomic_write_text(
+            journal_file, json.dumps(journal, indent=2, sort_keys=True) + "\n"
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"  WARNING: Failed to record checkbox status divergence: {e}")
+
+
 def _record_unreconciled_tail_evidence(
     journal_path: str | None, findings: list
 ) -> None:
