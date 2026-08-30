@@ -5366,6 +5366,45 @@ class EpicStageDetection(unittest.TestCase):
         self.assertEqual(gate_2["resolved_name"], "020-feature-one")
         self.assertFalse(gate_2["closed"])  # citing spec is not done
 
+    def test_epic_gap_with_gate_prose_for_non_next_n_feature(self):
+        # Epic with 3 features; Feature 1 is cited (cited=1, next_n=2).
+        # Gate prose mentions "Feature 3 depends on Feature 2" (not a gate
+        # for next_n=2), so no gate applies. Result is epic-gap, unchanged
+        # from today's behavior.
+        epics = self.repo / "docs" / "specs" / "epics"
+        epics.mkdir(parents=True, exist_ok=True)
+        body = [
+            "# Epic: 011-gate-for-other-feature",
+            "",
+            "### Feature 1",
+            "Feature 1 body.",
+            "**Future spec id:** `feature-1-contract`",
+            "",
+            "### Feature 2",
+            "Feature 2 body.",
+            "",
+            "### Feature 3",
+            "Feature 3 depends on Feature 2 being ready first.",
+            "",
+        ]
+        epic_file = epics / "011-gate-for-other-feature.md"
+        epic_file.write_text("\n".join(body), encoding="utf-8")
+
+        # Feature 1 is cited by a spec
+        self._mk_citing_spec("010-feature-one-impl", "011-gate-for-other-feature")
+
+        result = dashboard.detect_epic_stage(epic_file, self.repo)
+
+        # Feature 1 is cited (cited=1), next_n=2. The gate prose
+        # "Feature 3 depends on Feature 2" does not match the pairwise
+        # pattern for next_n=2 (which looks for "Feature 2 depends on"),
+        # and is not a blanket gate, so no gate applies. Result is epic-gap.
+        self.assertEqual(result["stage"], "epic-gap")
+        self.assertEqual(result["features"], 3)
+        self.assertEqual(result["cited"], 1)
+        self.assertNotIn("blocked_feature", result)
+        self.assertNotIn("gates", result)
+
     def test_non_epic_named_file_is_ignored_by_epic_id_pattern_against_real_directory(
         self,
     ):
