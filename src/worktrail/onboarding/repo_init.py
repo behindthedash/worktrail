@@ -526,7 +526,7 @@ permissions:
 
 jobs:
   rulesets-check:
-    name: Rulesets drift check
+    name: Rulesets drift guard
     runs-on: ubuntu-latest
     env:
       RULESETS_APP_ID: ${{{{ vars.RELEASE_NOTES_APP_ID }}}}

@@ -110,6 +110,13 @@ finish PATH --status completed_pr_open [--pr URL] [--merge-result ...]
             treats a record with no `base_branch` as live, not stale, which is
             true for most long-orphaned records -- see
             docs/specs/research/dead-dispatch-backlog-investigation.md).
+  assert-terminal RUN_PATH
+         -> read-only: exit 0 with final_status when `status == "done"` and
+            `final_status` is set; exit 1 otherwise. A blocking adapter/
+            headless spawn only proves the child *process* exited, not that
+            it called `finish` before dying -- required after any such
+            dispatch returns, so an unwritten finish is a hard failure the
+            caller must act on, not a silent success inferred from exit code.
   liveness RUN_PATH [--ttl-seconds N] [--dispatch-id ID]
          -> read-only: is this non-terminal run still actively being worked?
             `updated_at` (stamped by every `_save()`, i.e. every mutating
@@ -1203,6 +1210,52 @@ def _run_liveness(
     }
 
 
+def cmd_assert_terminal(args: argparse.Namespace) -> int:
+    """Read-only: did this run actually reach a terminal `finish()` state?
+
+    A blocking adapter/headless spawn (`skill_dispatch.py`'s
+    `_run_command_with_sigterm_forwarding`, which already waits on
+    `child.wait()`) only proves the *process* exited -- not that the child
+    ever called `finish`. A child that crashes, is killed, or is interrupted
+    mid-CI-watch before calling `finish` leaves the run record's `status`
+    non-terminal (`final_status` unset) with no further signal; the caller
+    that only checked the child's exit code would otherwise treat that
+    silently as success. This turns "check the run record, not the return
+    code" (`worktrail-go/SKILL.md`'s adapter-dispatch prose) into an
+    actual gate: exit 0 with `final_status` when `record["status"] ==
+    "done"` and `final_status` is set, exit 1 with the reason otherwise.
+    """
+    run_path = Path(args.run)
+    record = _load(run_path)
+    final_status = record.get("final_status")
+    if record.get("status") == "done" and final_status is not None:
+        print(
+            json.dumps(
+                {
+                    "terminal": True,
+                    "final_status": final_status,
+                    "run_id": record.get("run_id"),
+                    "path": str(run_path),
+                }
+            )
+        )
+        return 0
+    print(
+        json.dumps(
+            {
+                "terminal": False,
+                "final_status": final_status,
+                "status": record.get("status"),
+                "run_id": record.get("run_id"),
+                "path": str(run_path),
+                "reason": "run record has no final_status -- the dispatch "
+                "exited without calling `finish`",
+            }
+        )
+    )
+    return 1
+
+
 def cmd_liveness(args: argparse.Namespace) -> int:
     """Read-only: is this run's owning process plausibly still active?
 
@@ -2033,6 +2086,10 @@ def main(argv=None) -> int:
         help="report what would be closed without writing",
     )
     s.set_defaults(func=cmd_sweep_orphans)
+
+    s = sub.add_parser("assert-terminal")
+    s.add_argument("run")
+    s.set_defaults(func=cmd_assert_terminal)
 
     s = sub.add_parser("liveness")
     s.add_argument("run")

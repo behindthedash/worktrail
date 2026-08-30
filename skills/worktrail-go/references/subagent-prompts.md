@@ -1283,12 +1283,43 @@ for r in (c.get('conflicts') or [c]):
 fi
 ```
 
-Unlike `#active-conflicts-scan`'s sibling worktree/branch grep (advisory, spec-only),
-this is a **hard stop**: it is the only ownership guard unspecced fix work gets, so
-there is no fallback advisory check to catch what it misses. If `$CLAIM_STATUS` is
-`claimed`, proceed to the worktree creation below. The claim releases automatically
-when `$RUN` reaches any `finish` completion state, same recovery path as
-`#active-conflicts-scan`.
+Unlike `#active-conflicts-scan`'s sibling worktree/branch grep (advisory, spec-only,
+keyed on `$SPEC_ID`), this hard stop is keyed on the caller-chosen `$SLUG` alone — it
+cannot catch two different slugs converging on the same underlying files. Live-verified
+2026-08-29: two concurrent `/go` dispatches fixed the identical unspecced defect under
+different slugs, each in its own worktree, and produced a line-for-line duplicate diff
+to the same two files with nothing tracking either — the first PR merged and the second
+session's work was already stale. The sibling diff overlap scan below is the fallback
+for exactly that gap. If `$CLAIM_STATUS` is `claimed`, run the scan, then proceed to the
+worktree creation below. The claim releases automatically when `$RUN` reaches any
+`finish` completion state, same recovery path as `#active-conflicts-scan`.
+
+**Sibling diff overlap scan (advisory).** Set `$EXPECTED_FILES` (repo-relative paths,
+one per line) from the root-cause step (Route F step 3) — the files this fix already
+knows it will touch. Skip the scan (not a stop) when the fix hasn't narrowed to specific
+files yet; there is nothing to compare against.
+
+```bash
+SIBLING_ROOT="$REPO-worktrees"
+if [ -n "$EXPECTED_FILES" ] && [ -d "$SIBLING_ROOT" ]; then
+  find "$SIBLING_ROOT" -maxdepth 1 -type d -name 'fix-*' | while IFS= read -r SIBLING_WT; do
+    SIBLING_DIFF=$(git -C "$SIBLING_WT" diff --name-only HEAD 2>/dev/null | sort -u)
+    [ -z "$SIBLING_DIFF" ] && continue
+    OVERLAP=$(comm -12 <(echo "$EXPECTED_FILES" | sort -u) <(echo "$SIBLING_DIFF"))
+    if [ -n "$OVERLAP" ]; then
+      echo "ADVISORY: sibling fix-branch worktree $SIBLING_WT has an uncommitted diff overlapping expected files:" >&2
+      echo "$OVERLAP" >&2
+    fi
+  done
+fi
+```
+
+This is **advisory, not a hard stop** — mirrors `#sibling-worktree-check`'s framing:
+`/go auto` runs unattended and must not stall on it. On a hit, inspect the sibling's
+diff (`git -C <sibling-worktree> diff`) before proceeding and reconcile rather than
+duplicating work already in flight. Cross-machine detection is out of scope here for
+the same reason as `#sibling-worktree-check`: this only sees worktrees this machine
+already has.
 
 ```bash
 WT="$REPO-worktrees/fix-$SLUG"

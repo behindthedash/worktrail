@@ -1,9 +1,9 @@
 ## 1. Dashboard: per-feature block and gate-prose parsing
 
-- [ ] 1.1 Add a helper that splits epic text into per-`### Feature N` blocks (heading number ->
+- [x] 1.1 Add a helper that splits epic text into per-`### Feature N` blocks (heading number ->
       block text), reusing `_EPIC_FEATURE_HEADING_RE`'s heading detection but keyed by feature
       number instead of a bare count.
-- [ ] 1.2 Add a helper that extracts a block's `**Future spec id:**` value via the existing
+- [x] 1.2 Add a helper that extracts a block's `**Future spec id:**` value via the existing
       `_EPIC_FUTURE_SPEC_ID_RE`, applied to one feature block instead of the whole document.
 - [ ] 1.3 Add the pairwise gate regex (`Feature\s+<next_n>\s+depends\s+on\s+Feature\s+(\d+)`) and
       the blanket gate regex (`Feature\s+(\d+)\s+gates\s+(?:the\s+rest|the\s+remaining(?:\s+
