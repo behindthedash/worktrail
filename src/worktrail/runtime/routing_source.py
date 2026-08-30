@@ -11,10 +11,11 @@ harness.
 
 from __future__ import annotations
 
-from typing import Any, Iterator, Mapping, Optional
+from collections.abc import Iterator, Mapping
+from typing import Any
 
 
-def routing_candidates(routing: Optional[Mapping[str, Any]]) -> Iterator[dict[str, Any]]:
+def routing_candidates(routing: Mapping[str, Any] | None) -> Iterator[dict[str, Any]]:
     """Yield `{target, harness, model, tiers, purposes}` candidates from
     `routing["targets"]` and `routing["tiers"]`.
 
@@ -45,8 +46,13 @@ def routing_candidates(routing: Optional[Mapping[str, Any]]) -> Iterator[dict[st
         key = (target, model)
         entry = seen.get(key)
         if entry is None:
-            entry = {"target": target, "harness": harness, "model": model,
-                      "tiers": set(), "purposes": set()}
+            entry = {
+                "target": target,
+                "harness": harness,
+                "model": model,
+                "tiers": set(),
+                "purposes": set(),
+            }
             seen[key] = entry
         return entry
 

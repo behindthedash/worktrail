@@ -14,7 +14,7 @@ import os
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from ..orchestrator.agent_capacity import write_lock
 from ..shared.homedir import env_setting, worktrail_home
@@ -29,7 +29,7 @@ def history_path() -> Path:
     return worktrail_home() / "remediation-history.json"
 
 
-def load(path: Path) -> Dict[str, Any]:
+def load(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, TypeError):
@@ -39,7 +39,7 @@ def load(path: Path) -> Dict[str, Any]:
     return value
 
 
-def save(value: Dict[str, Any], path: Path) -> None:
+def save(value: dict[str, Any], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
     try:
@@ -55,12 +55,12 @@ def save(value: Dict[str, Any], path: Path) -> None:
 
 
 def record_and_detect(
-    history: Dict[str, Any],
-    resumed: Dict[str, List[Dict[str, Any]]],
+    history: dict[str, Any],
+    resumed: dict[str, list[dict[str, Any]]],
     now: datetime,
     threshold: int,
     retention: timedelta,
-) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Extend the streak for every identity re-affirmed this sweep and drop
     every other identity, returning the identities that reached `threshold`.
 
@@ -74,8 +74,8 @@ def record_and_detect(
     guarantee than "pruned after `retention`").
     """
     prior = history.get("identities", {}) if isinstance(history, dict) else {}
-    updated: Dict[str, Any] = {}
-    stuck: List[Dict[str, Any]] = []
+    updated: dict[str, Any] = {}
+    stuck: list[dict[str, Any]] = []
     for key, findings in resumed.items():
         for finding in findings:
             repo_name, spec_id = finding.get("repo"), finding.get("spec_id")
@@ -85,25 +85,29 @@ def record_and_detect(
             streak = prior.get(ident, {}).get("streak", 0) + 1
             updated[ident] = {"streak": streak, "last_seen": now.isoformat()}
             if streak >= threshold:
-                stuck.append({
-                    "key": key,
-                    "repo_name": repo_name,
-                    "spec_id": spec_id,
-                    "streak": streak,
-                })
+                stuck.append(
+                    {
+                        "key": key,
+                        "repo_name": repo_name,
+                        "spec_id": spec_id,
+                        "streak": streak,
+                    }
+                )
     return {"version": 1, "identities": updated}, stuck
 
 
 def sweep_and_record(
-    resumed: Dict[str, List[Dict[str, Any]]],
+    resumed: dict[str, list[dict[str, Any]]],
     path: Path,
     threshold: int = 3,
     retention: timedelta = DEFAULT_RETENTION,
-    now: Optional[datetime] = None,
-) -> List[Dict[str, Any]]:
+    now: datetime | None = None,
+) -> list[dict[str, Any]]:
     now = now or datetime.now(timezone.utc)
     with write_lock(path):
         history = load(path)
-        new_history, stuck = record_and_detect(history, resumed, now, threshold, retention)
+        new_history, stuck = record_and_detect(
+            history, resumed, now, threshold, retention
+        )
         save(new_history, path)
     return stuck

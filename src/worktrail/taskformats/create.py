@@ -21,7 +21,9 @@ _FORMATS = {"openspec", "devkit"}
 def _require_slug(value: str, label: str = "id") -> str:
     value = value.strip()
     if not value or not _SLUG_RE.fullmatch(value):
-        raise ValueError(f"{label} must contain only lowercase letters, numbers, '.', '_' or '-'")
+        raise ValueError(
+            f"{label} must contain only lowercase letters, numbers, '.', '_' or '-'"
+        )
     return value
 
 
@@ -32,7 +34,9 @@ def _write_new(path: Path, content: str) -> None:
     path.write_text(content)
 
 
-def create_spec(repo: Path | str, spec_id: str, request: str, fmt: str = "openspec") -> dict:
+def create_spec(
+    repo: Path | str, spec_id: str, request: str, fmt: str = "openspec"
+) -> dict:
     """Create a new spec scaffold and return its format/path metadata."""
     repo = Path(repo).resolve()
     fmt = fmt.strip().lower()
@@ -46,17 +50,28 @@ def create_spec(repo: Path | str, spec_id: str, request: str, fmt: str = "opensp
     if fmt == "openspec":
         root = repo / "openspec" / "changes" / spec_id
         _write_new(root / "proposal.md", f"# Proposal: {spec_id}\n\n{request}\n")
-        _write_new(root / "design.md", f"# Design: {spec_id}\n\n## Context\n\n{request}\n")
+        _write_new(
+            root / "design.md", f"# Design: {spec_id}\n\n## Context\n\n{request}\n"
+        )
         _write_new(
             root / "specs" / spec_id / "spec.md",
             f"# {spec_id}\n\n## ADDED Requirements\n\n### Requirement: Define the outcome\n\nThe system MUST deliver the following outcome: {request}\n\n#### Scenario: Initial behavior\n\n- **WHEN** the implementation is complete\n- **THEN** the requested outcome is observable\n",
         )
-        _write_new(root / "tasks.md", "# Tasks\n\n## 1. Implementation\n\n- [ ] 1.1 Define implementation tasks\n")
+        _write_new(
+            root / "tasks.md",
+            "# Tasks\n\n## 1. Implementation\n\n- [ ] 1.1 Define implementation tasks\n",
+        )
     else:
         root = repo / "docs" / "specs" / spec_id
         _write_new(root / "user-request.md", request + "\n")
-        _write_new(root / "spec.md", f"# {spec_id}\n\n## Feature Summary\n\n{request}\n\n## Acceptance Criteria\n\n- [ ] Define the observable acceptance criteria.\n")
-        _write_new(root / "tasks" / "TASK-001.md", "---\nid: TASK-001\ntitle: Define implementation tasks\nstatus: pending\ndependencies: []\nfiles: []\nkind: impl\n---\n\n## Implementation Details\n\nDescribe the implementation work.\n")
+        _write_new(
+            root / "spec.md",
+            f"# {spec_id}\n\n## Feature Summary\n\n{request}\n\n## Acceptance Criteria\n\n- [ ] Define the observable acceptance criteria.\n",
+        )
+        _write_new(
+            root / "tasks" / "TASK-001.md",
+            "---\nid: TASK-001\ntitle: Define implementation tasks\nstatus: pending\ndependencies: []\nfiles: []\nkind: impl\n---\n\n## Implementation Details\n\nDescribe the implementation work.\n",
+        )
 
     return {"format": fmt, "spec_id": spec_id, "path": str(root), "created": True}
 

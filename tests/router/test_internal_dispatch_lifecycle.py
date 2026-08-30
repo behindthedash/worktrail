@@ -18,19 +18,23 @@ from unittest import mock
 from worktrail.router import skill_dispatch
 from worktrail.workqueue import decisions as decisions_mod
 
-
 _FAKE_AGENT = Path(__file__).with_name("fake_internal_dispatch_agent.py")
 
 
 class InternalDispatchLifecycleTests(unittest.TestCase):
     def _run_seeded_lifecycle(
-        self, root: Path, agent: str, outcome: str, *, wrapper: bool = False,
+        self,
+        root: Path,
+        agent: str,
+        outcome: str,
+        *,
+        wrapper: bool = False,
     ) -> tuple[int, str, int | None, int | None]:
         bin_dir = root / "bin"
         bin_dir.mkdir()
         shim = bin_dir / agent
         shim.write_text(
-            f"#!/bin/sh\nexec {sys.executable} {_FAKE_AGENT} {agent} \"$@\"\n"
+            f'#!/bin/sh\nexec {sys.executable} {_FAKE_AGENT} {agent} "$@"\n'
         )
         shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
         skills = root / "skills" / "worktrail-sdd-workflow"
@@ -52,11 +56,25 @@ class InternalDispatchLifecycleTests(unittest.TestCase):
         brief.write_text("shared run lifecycle\n")
         seed = subprocess.run(
             [
-                shutil.which("worktrail-go-seed"), "--repo", str(root),
-                "--base", "main", "--route", "F", "--spec", "handoff:lifecycle",
-                "--run", str(run), "--brief", str(brief), "--agent", agent,
+                shutil.which("worktrail-go-seed"),
+                "--repo",
+                str(root),
+                "--base",
+                "main",
+                "--route",
+                "F",
+                "--spec",
+                "handoff:lifecycle",
+                "--run",
+                str(run),
+                "--brief",
+                str(brief),
+                "--agent",
+                agent,
             ],
-            check=True, capture_output=True, text=True,
+            check=True,
+            capture_output=True,
+            text=True,
         ).stdout.strip()
         proof = root / "proof"
         ready = root / "ready"
@@ -84,23 +102,42 @@ class InternalDispatchLifecycleTests(unittest.TestCase):
         if wrapper:
             environment["FAKE_INTERNAL_DISPATCH_WRAPPER"] = "1"
         command = [
-            shutil.which("worktrail-skill-dispatch"), "--agent", agent,
-            "--skill", "worktrail-sdd-workflow", "--args", seed,
-            "--cwd", str(root), "--write",
+            shutil.which("worktrail-skill-dispatch"),
+            "--agent",
+            agent,
+            "--skill",
+            "worktrail-sdd-workflow",
+            "--args",
+            seed,
+            "--cwd",
+            str(root),
+            "--write",
         ]
         if agent == "codex":
             command.append("--no-inherit-codex-auth")
         process = subprocess.Popen(command, env=environment)
         if outcome == "interrupted":
             deadline = time.monotonic() + 5
-            while not ready.exists() and process.poll() is None and time.monotonic() < deadline:
+            while (
+                not ready.exists()
+                and process.poll() is None
+                and time.monotonic() < deadline
+            ):
                 time.sleep(0.01)
-            self.assertTrue(ready.exists(), "fake seeded child never became interruptible")
+            self.assertTrue(
+                ready.exists(), "fake seeded child never became interruptible"
+            )
             if wrapper:
                 deadline = time.monotonic() + 5
-                while not wrapper_pid.exists() and process.poll() is None and time.monotonic() < deadline:
+                while (
+                    not wrapper_pid.exists()
+                    and process.poll() is None
+                    and time.monotonic() < deadline
+                ):
                     time.sleep(0.01)
-                self.assertTrue(wrapper_pid.exists(), "fake seeded wrapper never published its pid")
+                self.assertTrue(
+                    wrapper_pid.exists(), "fake seeded wrapper never published its pid"
+                )
                 target_pid = int(wrapper_pid.read_text())
             else:
                 target_pid = int(ready.read_text())
@@ -117,11 +154,14 @@ class InternalDispatchLifecycleTests(unittest.TestCase):
             with self.subTest(agent=agent), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 returncode, record, _, _ = self._run_seeded_lifecycle(
-                    root, agent, "complete",
+                    root,
+                    agent,
+                    "complete",
                 )
                 self.assertEqual(returncode, 0)
                 self.assertEqual(
-                    list((root / "runs").glob("*.yaml")), [root / "runs/parent.yaml"],
+                    list((root / "runs").glob("*.yaml")),
+                    [root / "runs/parent.yaml"],
                 )
                 self.assertIn("dispatch_id: go-parent-dispatch-owner", record)
                 self.assertIn("- fake-child", record)
@@ -131,7 +171,9 @@ class InternalDispatchLifecycleTests(unittest.TestCase):
         for agent in skill_dispatch.SUPPORTED_AGENTS:
             with self.subTest(agent=agent), tempfile.TemporaryDirectory() as tmp:
                 returncode, record, _, _ = self._run_seeded_lifecycle(
-                    Path(tmp), agent, "nonzero",
+                    Path(tmp),
+                    agent,
+                    "nonzero",
                 )
                 self.assertEqual(returncode, 9)
                 self.assertIn("dispatch_id: go-parent-dispatch-owner", record)
@@ -142,9 +184,17 @@ class InternalDispatchLifecycleTests(unittest.TestCase):
         for agent in skill_dispatch.SUPPORTED_AGENTS:
             for wrapper in (False, True):
                 label = "wrapper" if wrapper else "child"
-                with self.subTest(agent=agent, interruption=label), tempfile.TemporaryDirectory() as tmp:
-                    returncode, record, child_pid, wrapper_pid = self._run_seeded_lifecycle(
-                        Path(tmp), agent, "interrupted", wrapper=wrapper,
+                with (
+                    self.subTest(agent=agent, interruption=label),
+                    tempfile.TemporaryDirectory() as tmp,
+                ):
+                    returncode, record, child_pid, wrapper_pid = (
+                        self._run_seeded_lifecycle(
+                            Path(tmp),
+                            agent,
+                            "interrupted",
+                            wrapper=wrapper,
+                        )
                     )
                     self.assertEqual(returncode, 130)
                     self.assertIn("dispatch_id: go-parent-dispatch-owner", record)
@@ -166,7 +216,7 @@ class InternalDispatchLifecycleTests(unittest.TestCase):
             for agent in skill_dispatch.SUPPORTED_AGENTS:
                 shim = bin_dir / agent
                 shim.write_text(
-                    f"#!/bin/sh\nexec {sys.executable} {_FAKE_AGENT} {agent} \"$@\"\n"
+                    f'#!/bin/sh\nexec {sys.executable} {_FAKE_AGENT} {agent} "$@"\n'
                 )
                 shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
             skills = root / "skills" / "worktrail-sdd-workflow"
@@ -184,9 +234,15 @@ class InternalDispatchLifecycleTests(unittest.TestCase):
                         "WORKTRAIL_CODEX_HOME": str(root / f"{agent}-home"),
                     }
                     arguments = [
-                        "--agent", agent, "--skill", "worktrail-sdd-workflow",
-                        "--args", "handoff:20260812-083302 route:F",
-                        "--cwd", str(root), "--write",
+                        "--agent",
+                        agent,
+                        "--skill",
+                        "worktrail-sdd-workflow",
+                        "--args",
+                        "handoff:20260812-083302 route:F",
+                        "--cwd",
+                        str(root),
+                        "--write",
                     ]
                     if agent == "codex":
                         arguments.append("--no-inherit-codex-auth")
@@ -201,7 +257,9 @@ class InternalDispatchLifecycleTests(unittest.TestCase):
         seed_command = shutil.which("worktrail-go-seed")
         dispatch_command = shutil.which("worktrail-skill-dispatch")
         self.assertIsNotNone(seed_command, "worktrail-go-seed is not installed")
-        self.assertIsNotNone(dispatch_command, "worktrail-skill-dispatch is not installed")
+        self.assertIsNotNone(
+            dispatch_command, "worktrail-skill-dispatch is not installed"
+        )
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -217,7 +275,7 @@ class InternalDispatchLifecycleTests(unittest.TestCase):
             for agent in skill_dispatch.SUPPORTED_AGENTS:
                 shim = bin_dir / agent
                 shim.write_text(
-                    f"#!/bin/sh\nexec {sys.executable} {_FAKE_AGENT} {agent} \"$@\"\n"
+                    f'#!/bin/sh\nexec {sys.executable} {_FAKE_AGENT} {agent} "$@"\n'
                 )
                 shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
 
@@ -225,11 +283,25 @@ class InternalDispatchLifecycleTests(unittest.TestCase):
                 with self.subTest(agent=agent):
                     seed = subprocess.run(
                         [
-                            seed_command, "--repo", str(root), "--base", "main",
-                            "--route", "F", "--spec", "handoff:20260812-090245",
-                            "--run", str(run), "--brief", str(brief), "--agent", agent,
+                            seed_command,
+                            "--repo",
+                            str(root),
+                            "--base",
+                            "main",
+                            "--route",
+                            "F",
+                            "--spec",
+                            "handoff:20260812-090245",
+                            "--run",
+                            str(run),
+                            "--brief",
+                            str(brief),
+                            "--agent",
+                            agent,
                         ],
-                        check=True, capture_output=True, text=True,
+                        check=True,
+                        capture_output=True,
+                        text=True,
                     ).stdout.strip()
                     self.assertIn("Route: F", seed)
                     self.assertIn("Spec: handoff:20260812-090245", seed)
@@ -249,47 +321,81 @@ class InternalDispatchLifecycleTests(unittest.TestCase):
                         "WORKTRAIL_CODEX_HOME": str(root / f"{agent}-home"),
                     }
                     command = [
-                        dispatch_command, "--agent", agent,
-                        "--skill", "worktrail-sdd-workflow", "--args", seed,
-                        "--cwd", str(root), "--write",
+                        dispatch_command,
+                        "--agent",
+                        agent,
+                        "--skill",
+                        "worktrail-sdd-workflow",
+                        "--args",
+                        seed,
+                        "--cwd",
+                        str(root),
+                        "--write",
                     ]
                     if agent == "codex":
                         command.append("--no-inherit-codex-auth")
-                    result = subprocess.run(command, env=environment, capture_output=True, text=True)
+                    result = subprocess.run(
+                        command,
+                        check=False,
+                        env=environment,
+                        capture_output=True,
+                        text=True,
+                    )
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertEqual(proof.read_text(), f"executed:{agent}:{seed}\n")
                     provider_argv = json.loads(argv_proof.read_text())
-                    prompt = next(arg for arg in provider_argv if "worktrail-sdd-workflow" in arg)
+                    prompt = next(
+                        arg for arg in provider_argv if "worktrail-sdd-workflow" in arg
+                    )
                     self.assertIn("[WORKTRAIL INTERNAL DISPATCH]", prompt)
                     self.assertIn(seed, prompt)
                     expected_argv = {
-                        "claude": ["-p", prompt, "--permission-mode", "bypassPermissions"],
+                        "claude": [
+                            "-p",
+                            prompt,
+                            "--permission-mode",
+                            "bypassPermissions",
+                        ],
                         "codex": [
-                            "exec", "--json", "-s", "danger-full-access",
-                            "-C", str(root), prompt,
+                            "exec",
+                            "--json",
+                            "-s",
+                            "danger-full-access",
+                            "-C",
+                            str(root),
+                            prompt,
                         ],
                         "opencode": [
-                            "run", "--format", "json", "--dir", str(root),
-                            "--auto", prompt,
+                            "run",
+                            "--format",
+                            "json",
+                            "--dir",
+                            str(root),
+                            "--auto",
+                            prompt,
                         ],
                     }
                     self.assertEqual(provider_argv, expected_argv[agent])
 
                     blocked = subprocess.run(
                         command,
+                        check=False,
                         env={**environment, "WORKTRAIL_SKILL_DISPATCH_DEPTH": "1"},
-                        capture_output=True, text=True,
+                        capture_output=True,
+                        text=True,
                     )
                     self.assertEqual(blocked.returncode, 2)
                     self.assertIn("blocked_internal_dispatch_recursion", blocked.stderr)
 
                     unseeded = subprocess.run(
                         [*command[:6], "handoff:20260812-090245", *command[7:]],
+                        check=False,
                         env={
                             **environment,
                             "FAKE_INTERNAL_DISPATCH_EXPECTED": "handoff:20260812-090245",
                         },
-                        capture_output=True, text=True,
+                        capture_output=True,
+                        text=True,
                     )
                     self.assertEqual(unseeded.returncode, 6)
                     self.assertEqual(proof.read_text(), f"unseeded:{agent}\n")
@@ -320,13 +426,12 @@ class DecisionResumeLifecycleTests(unittest.TestCase):
         for agent in skill_dispatch.SUPPORTED_AGENTS:
             shim = bin_dir / agent
             shim.write_text(
-                f"#!/bin/sh\nexec {sys.executable} {recorder} {agent} \"$@\"\n"
+                f'#!/bin/sh\nexec {sys.executable} {recorder} {agent} "$@"\n'
             )
             shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
         skills = self.root / "skills" / "openspec-propose"
         skills.mkdir(parents=True)
-        (skills / "SKILL.md").write_text(
-            "---\nname: openspec-propose\n---\n")
+        (skills / "SKILL.md").write_text("---\nname: openspec-propose\n---\n")
         self.environment = {
             **os.environ,
             "PATH": f"{bin_dir}:{os.environ['PATH']}",
@@ -342,8 +447,10 @@ class DecisionResumeLifecycleTests(unittest.TestCase):
             background="The shipped spec already covers the requested scope.",
             why="Scope direction is a product call.",
             context="verify() confirmed Implemented status and tracked files.",
-            options=["extend: continue the existing spec",
-                     "redirect: choose different scope"],
+            options=[
+                "extend: continue the existing spec",
+                "redirect: choose different scope",
+            ],
             source="check_spec_collision",
             repo=str(self.root),
             subject="spec-a",
@@ -353,16 +460,25 @@ class DecisionResumeLifecycleTests(unittest.TestCase):
         assert result["status"] == "created", result
         if answer_it:
             answered = decisions_mod.answer(
-                self.DECISION_ID, "extend: continue the existing spec",
-                queue_base=self.queue_base)
+                self.DECISION_ID,
+                "extend: continue the existing spec",
+                queue_base=self.queue_base,
+            )
             assert answered["status"] == "answered", answered
 
     def _dispatch_command(self, agent, extra=()):
         command = [
-            sys.executable, "-m", "worktrail.router.skill_dispatch",
-            "--agent", agent, "--skill", "openspec-propose",
-            "--args", "route:C spec:demo",
-            "--cwd", str(self.root),
+            sys.executable,
+            "-m",
+            "worktrail.router.skill_dispatch",
+            "--agent",
+            agent,
+            "--skill",
+            "openspec-propose",
+            "--args",
+            "route:C spec:demo",
+            "--cwd",
+            str(self.root),
             *extra,
         ]
         if agent == "codex":
@@ -378,8 +494,12 @@ class DecisionResumeLifecycleTests(unittest.TestCase):
                 env = {**self.environment, "DECISION_RECORDER_PROOF": str(proof)}
                 result = subprocess.run(
                     self._dispatch_command(
-                        agent, ["--resume-decision", self.DECISION_ID]),
-                    env=env, capture_output=True, text=True,
+                        agent, ["--resume-decision", self.DECISION_ID]
+                    ),
+                    check=False,
+                    env=env,
+                    capture_output=True,
+                    text=True,
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 recorded = json.loads(proof.read_text())
@@ -396,8 +516,12 @@ class DecisionResumeLifecycleTests(unittest.TestCase):
                 env = {**self.environment, "DECISION_RECORDER_PROOF": str(proof)}
                 result = subprocess.run(
                     self._dispatch_command(
-                        agent, ["--resume-decision", self.DECISION_ID]),
-                    env=env, capture_output=True, text=True,
+                        agent, ["--resume-decision", self.DECISION_ID]
+                    ),
+                    check=False,
+                    env=env,
+                    capture_output=True,
+                    text=True,
                 )
                 self.assertEqual(result.returncode, 2)
                 self.assertIn("blocked_pending_decision", result.stderr)
@@ -412,17 +536,27 @@ class DecisionResumeLifecycleTests(unittest.TestCase):
         for agent in skill_dispatch.SUPPORTED_AGENTS:
             with self.subTest(agent=agent):
                 result = subprocess.run(
-                    [sys.executable, "-m", "worktrail.router.skill_dispatch",
-                     "--agent", agent, "--skill", "openspec-propose",
-                     "--present-decision", self.DECISION_ID],
-                    env=self.environment, capture_output=True, text=True,
+                    [
+                        sys.executable,
+                        "-m",
+                        "worktrail.router.skill_dispatch",
+                        "--agent",
+                        agent,
+                        "--skill",
+                        "openspec-propose",
+                        "--present-decision",
+                        self.DECISION_ID,
+                    ],
+                    check=False,
+                    env=self.environment,
+                    capture_output=True,
+                    text=True,
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 envelope = json.loads(result.stdout)
                 self.assertEqual(envelope["decision_id"], self.DECISION_ID)
                 self.assertEqual(envelope["status"], "answered")
-                self.assertIn("extend: continue the existing spec",
-                              envelope["answer"])
+                self.assertIn("extend: continue the existing spec", envelope["answer"])
 
 
 if __name__ == "__main__":

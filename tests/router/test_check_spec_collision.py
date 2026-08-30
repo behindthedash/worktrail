@@ -6,6 +6,7 @@ Exercises real throwaway fixture directories/git repos rather than mocking --
 `_git_tracked`/`_task_files_are_shipped`), so a fake would just re-assert the
 mock. Mirrors test_check_repo_freshness.py's shape and philosophy.
 """
+
 from __future__ import annotations
 
 import subprocess
@@ -18,7 +19,9 @@ from worktrail.workqueue import decisions
 
 
 def _git(repo: str, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=True)
+    return subprocess.run(
+        ["git", *args], cwd=repo, capture_output=True, text=True, check=True
+    )
 
 
 def _init_repo(branch: str = "main") -> str:
@@ -55,7 +58,9 @@ def _make_spec(
     return spec_dir
 
 
-def _make_task(spec_dir: Path, task_id: str, files: list, status: str = "completed") -> None:
+def _make_task(
+    spec_dir: Path, task_id: str, files: list, status: str = "completed"
+) -> None:
     files_literal = ", ".join(files)
     _write(
         spec_dir / "tasks" / f"{task_id}.md",
@@ -85,14 +90,20 @@ class TestCheckEmptySpecsDir(unittest.TestCase):
 class TestCheckWithCandidates(unittest.TestCase):
     def test_populates_candidates_with_spec_id_and_title(self):
         with tempfile.TemporaryDirectory() as tmp:
-            _make_spec(tmp, "007-example-feature", feature_summary="Donors can search nonprofits.")
+            _make_spec(
+                tmp,
+                "007-example-feature",
+                feature_summary="Donors can search nonprofits.",
+            )
             res = csc.check(Path(tmp))
             self.assertTrue(res["checked"])
             self.assertEqual(len(res["candidates"]), 1)
             candidate = res["candidates"][0]
             self.assertEqual(candidate["spec_id"], "007-example-feature")
             self.assertEqual(candidate["title"], "Example Feature")
-            self.assertEqual(candidate["feature_summary"], "Donors can search nonprofits.")
+            self.assertEqual(
+                candidate["feature_summary"], "Donors can search nonprofits."
+            )
             self.assertIn("stage", candidate)
 
     def test_multiple_specs_all_surfaced(self):
@@ -211,8 +222,12 @@ class TestVerifyEdgeCases(unittest.TestCase):
 class TestCheckThenVerifyIntegration(unittest.TestCase):
     def test_full_chain_matches_confirmed_collision_shape(self):
         repo = _init_repo()
-        spec_dir = _make_spec(repo, "001-example", status="Implemented",
-                              feature_summary="Donors can search nonprofits.")
+        spec_dir = _make_spec(
+            repo,
+            "001-example",
+            status="Implemented",
+            feature_summary="Donors can search nonprofits.",
+        )
         target = Path(repo) / "src" / "feature.py"
         _write(target, "print('shipped')\n")
         _git(repo, "add", ".")
@@ -221,7 +236,9 @@ class TestCheckThenVerifyIntegration(unittest.TestCase):
 
         checked = csc.check(Path(repo))
         self.assertTrue(checked["checked"])
-        candidate = next(c for c in checked["candidates"] if c["spec_id"] == "001-example")
+        candidate = next(
+            c for c in checked["candidates"] if c["spec_id"] == "001-example"
+        )
         self.assertEqual(candidate["title"], "Example Feature")
 
         verified = csc.verify(Path(repo), candidate["spec_id"])
@@ -251,7 +268,8 @@ class TestCheckTaskCandidatesDistinctFromWholeSpecMatch(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             _write_openspec_proposal(tmp, "add-auth", "Users can log in.")
             _write_openspec_tasks(
-                tmp, "add-auth",
+                tmp,
+                "add-auth",
                 "## 1. Login\n\n"
                 "- [ ] 1.1 Add login form\n"
                 "- [x] 1.2 Add logout button\n",
@@ -270,7 +288,8 @@ class TestCheckTaskCandidatesDistinctFromWholeSpecMatch(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             _write_openspec_proposal(tmp, "add-auth", "Users can log in.")
             _write_openspec_tasks(
-                tmp, "add-auth",
+                tmp,
+                "add-auth",
                 "## 1. Login\n\n- [ ] 1.1 Add login form\n",
             )
             res = csc.check(Path(tmp), root="openspec", target="add-auth")
@@ -288,7 +307,8 @@ class TestCheckTaskCandidatesDistinctFromWholeSpecMatch(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             _write_openspec_proposal(tmp, "add-auth", "Users can log in.")
             _write_openspec_tasks(
-                tmp, "add-auth",
+                tmp,
+                "add-auth",
                 "## 1. Login\n\n- [ ] 1.1 Add login form\n",
             )
             res = csc.check(Path(tmp), root="openspec")
@@ -302,7 +322,8 @@ class TestCheckTaskCandidatesDistinctFromWholeSpecMatch(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             _write_openspec_proposal(tmp, "add-auth", "Users can log in.")
             _write_openspec_tasks(
-                tmp, "add-auth",
+                tmp,
+                "add-auth",
                 "## 1. Login\n\n- [x] 1.1 Add login form\n- [x] 1.2 Add logout button\n",
             )
             res = csc.check(Path(tmp), root="openspec", target="add-auth")
@@ -342,7 +363,8 @@ class TestTaskLevelMatchNeverAutoCloses(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             _write_openspec_proposal(tmp, "add-auth", "Users can log in.")
             _write_openspec_tasks(
-                tmp, "add-auth",
+                tmp,
+                "add-auth",
                 "## 1. Login\n\n- [ ] 1.1 Add login form\n",
             )
             checked = csc.check(Path(tmp), root="openspec", target="add-auth")
@@ -352,7 +374,9 @@ class TestTaskLevelMatchNeverAutoCloses(unittest.TestCase):
             self.assertFalse(verified["confirmed"])
             self.assertIsNotNone(verified["warning"])
 
-    def test_task_candidates_present_alongside_a_separate_confirmed_whole_spec_match(self):
+    def test_task_candidates_present_alongside_a_separate_confirmed_whole_spec_match(
+        self,
+    ):
         """A task-level match on `target` (open, unchecked work under
         `openspec/`) and a confirmed whole-spec match on a different,
         already-`Implemented` spec (under `docs/specs/`) coexist without
@@ -362,7 +386,8 @@ class TestTaskLevelMatchNeverAutoCloses(unittest.TestCase):
         repo = _init_repo()
         _write_openspec_proposal(repo, "add-auth", "Users can log in.")
         _write_openspec_tasks(
-            repo, "add-auth",
+            repo,
+            "add-auth",
             "## 1. Login\n\n- [ ] 1.1 Add login form\n",
         )
         spec_dir = _make_spec(repo, "001-example", status="Implemented")
@@ -422,15 +447,22 @@ class TestPendingDecisionEnvelope(unittest.TestCase):
         self.assertEqual(
             first["decision_id"],
             decisions.decision_identity(
-                csc.GUARD_SOURCE, str(Path(repo).resolve()), "001-example",
-                csc.DECISION_QUESTION),
+                csc.GUARD_SOURCE,
+                str(Path(repo).resolve()),
+                "001-example",
+                csc.DECISION_QUESTION,
+            ),
         )
 
     def test_provenance_threads_run_id_and_dispatch_mode(self):
         repo = _init_repo()
         self._confirm_collision(repo)
-        res = csc.verify(Path(repo), "001-example",
-                         run_id="go-20260825-101010", dispatch_mode="adapter")
+        res = csc.verify(
+            Path(repo),
+            "001-example",
+            run_id="go-20260825-101010",
+            dispatch_mode="adapter",
+        )
         prov = res["pending_decision"]["provenance"]
         self.assertEqual(prov["run_id"], "go-20260825-101010")
         self.assertEqual(prov["dispatch_mode"], "adapter")
@@ -502,7 +534,9 @@ class TestCli(unittest.TestCase):
         with redirect_stdout(buf):
             rc = csc.main(["--repo", repo, "--verify", "001-example", "--json"])
         self.assertEqual(rc, 0)
-        self.assertEqual(json.loads(buf.getvalue()), csc.verify(Path(repo), "001-example"))
+        self.assertEqual(
+            json.loads(buf.getvalue()), csc.verify(Path(repo), "001-example")
+        )
 
 
 if __name__ == "__main__":

@@ -96,6 +96,7 @@ class AspensAddOn:
             cmd.append("--refresh")
         result = subprocess.run(
             cmd,
+            check=False,
             cwd=str(worktree),
             capture_output=True,
             text=True,
@@ -103,7 +104,9 @@ class AspensAddOn:
         )
         if result.returncode != 0:
             tail = ((result.stderr or "") + (result.stdout or "")).strip()[-300:]
-            raise RuntimeError(f"aspens doc sync failed (exit {result.returncode}): {tail}")
+            raise RuntimeError(
+                f"aspens doc sync failed (exit {result.returncode}): {tail}"
+            )
         paths = self._changed_paths(worktree)
         if not paths:
             return AddOnResult(changed=False, detail="no changes", paths=[])

@@ -25,6 +25,7 @@ detached HEAD, or an unreachable network all degrade to "unknown"
 (`checked: false`) rather than raising or blocking; staleness detection is a
 nudge, not a hard gate.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -32,19 +33,22 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from typing import Dict, Optional, Tuple
 
 
-def _run(args, timeout: int) -> Optional[subprocess.CompletedProcess]:
+def _run(args, timeout: int) -> subprocess.CompletedProcess | None:
     try:
-        return subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+        return subprocess.run(
+            args, check=False, capture_output=True, text=True, timeout=timeout
+        )
     except (OSError, subprocess.TimeoutExpired):
         return None
 
 
-def current_branch(repo: Path) -> Optional[str]:
+def current_branch(repo: Path) -> str | None:
     """The checked-out branch name, or None on a detached HEAD / non-repo."""
-    out = _run(["git", "-C", str(repo), "symbolic-ref", "--short", "-q", "HEAD"], timeout=5)
+    out = _run(
+        ["git", "-C", str(repo), "symbolic-ref", "--short", "-q", "HEAD"], timeout=5
+    )
     if out is None or out.returncode != 0:
         return None
     return out.stdout.strip() or None
@@ -57,19 +61,28 @@ def fetch_remote(repo: Path, remote: str, branch: str, timeout: int = 10) -> boo
     caller falls back to whatever remote-tracking ref is already cached
     locally, if any.
     """
-    out = _run(["git", "-C", str(repo), "fetch", "--quiet", remote, branch], timeout=timeout)
+    out = _run(
+        ["git", "-C", str(repo), "fetch", "--quiet", remote, branch], timeout=timeout
+    )
     return out is not None and out.returncode == 0
 
 
-def ahead_behind(repo: Path, remote: str, branch: str) -> Optional[Tuple[int, int]]:
+def ahead_behind(repo: Path, remote: str, branch: str) -> tuple[int, int] | None:
     """(ahead, behind) of HEAD vs `<remote>/<branch>`.
 
     None if that remote-tracking ref doesn't exist locally (never fetched,
     wrong remote/branch name, ...).
     """
     out = _run(
-        ["git", "-C", str(repo), "rev-list", "--left-right", "--count",
-         f"HEAD...{remote}/{branch}"],
+        [
+            "git",
+            "-C",
+            str(repo),
+            "rev-list",
+            "--left-right",
+            "--count",
+            f"HEAD...{remote}/{branch}",
+        ],
         timeout=5,
     )
     if out is None or out.returncode != 0:
@@ -83,8 +96,13 @@ def ahead_behind(repo: Path, remote: str, branch: str) -> Optional[Tuple[int, in
         return None
 
 
-def check(repo: Path, remote: str = "origin", branch: Optional[str] = None,
-          do_fetch: bool = True, fetch_timeout: int = 10) -> Dict[str, object]:
+def check(
+    repo: Path,
+    remote: str = "origin",
+    branch: str | None = None,
+    do_fetch: bool = True,
+    fetch_timeout: int = 10,
+) -> dict[str, object]:
     """Is `repo`'s checked-out branch behind `<remote>/<branch>`?
 
     Returns `{"checked": bool, "stale": bool, "branch": str|None, "ahead": int,
@@ -93,16 +111,22 @@ def check(repo: Path, remote: str = "origin", branch: Optional[str] = None,
     remote branch) -- callers must treat that as "no signal", not as "fresh".
     """
     repo = Path(repo)
-    result: Dict[str, object] = {
-        "checked": False, "stale": False, "branch": None,
-        "ahead": 0, "behind": 0, "warning": None,
+    result: dict[str, object] = {
+        "checked": False,
+        "stale": False,
+        "branch": None,
+        "ahead": 0,
+        "behind": 0,
+        "warning": None,
     }
     if not (repo / ".git").exists():
         return result
 
     br = branch or current_branch(repo)
     if not br:
-        result["warning"] = "detached HEAD or unresolvable branch; cannot verify freshness"
+        result["warning"] = (
+            "detached HEAD or unresolvable branch; cannot verify freshness"
+        )
         return result
     result["branch"] = br
 
@@ -136,16 +160,22 @@ def main(argv=None) -> int:
     p.add_argument("--remote", default="origin")
     p.add_argument("--branch", default=None, help="defaults to the checked-out branch")
     p.add_argument(
-        "--no-fetch", action="store_true",
+        "--no-fetch",
+        action="store_true",
         help="skip the network `git fetch`; compare against whatever remote-tracking "
-             "ref is already cached locally",
+        "ref is already cached locally",
     )
     p.add_argument("--fetch-timeout", type=int, default=10)
     p.add_argument("--json", action="store_true")
     args = p.parse_args(argv)
 
-    res = check(Path(args.repo), remote=args.remote, branch=args.branch,
-                do_fetch=not args.no_fetch, fetch_timeout=args.fetch_timeout)
+    res = check(
+        Path(args.repo),
+        remote=args.remote,
+        branch=args.branch,
+        do_fetch=not args.no_fetch,
+        fetch_timeout=args.fetch_timeout,
+    )
     if args.json:
         print(json.dumps(res))
     elif res["stale"]:

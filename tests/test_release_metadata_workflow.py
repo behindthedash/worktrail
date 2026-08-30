@@ -59,7 +59,9 @@ def test_ruleset_requires_the_release_metadata_check():
     contexts = []
     for rule in ruleset["rules"]:
         if rule["type"] == "required_status_checks":
-            contexts = [c["context"] for c in rule["parameters"]["required_status_checks"]]
+            contexts = [
+                c["context"] for c in rule["parameters"]["required_status_checks"]
+            ]
     assert "Release metadata check" in contexts
 
 

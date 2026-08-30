@@ -16,9 +16,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from worktrail.orchestrator import dispatch
-from worktrail.orchestrator import spawnlib
-from worktrail.orchestrator.live import LiveSpawn, WORKER_TIMEOUT_DEFAULT
+from worktrail.orchestrator import dispatch, spawnlib
+from worktrail.orchestrator.live import WORKER_TIMEOUT_DEFAULT, LiveSpawn
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -29,7 +28,18 @@ def _fake_spawn_factory():
     """Returns a fake spawn_claude_p that records its timeout= argument."""
     calls = []
 
-    def fake(prompt, worktree, tier=None, prefer=None, exclude_harness=None, timeout=None, extra_args=None, resume_session_id=None, log=None, dispatch_id=None):
+    def fake(
+        prompt,
+        worktree,
+        tier=None,
+        prefer=None,
+        exclude_harness=None,
+        timeout=None,
+        extra_args=None,
+        resume_session_id=None,
+        log=None,
+        dispatch_id=None,
+    ):
         calls.append({"timeout": timeout})
         return (
             '{"task": "T", "step": "implement", "status": "success",'
@@ -54,16 +64,18 @@ def _started_line(spawn_obj, task):
 
 def _call(spawn_obj, task, role="implement"):
     """Invoke LiveSpawn.__call__ with mocked dependencies."""
-    with patch.object(dispatch, "build_worker_prompt", return_value="fake-prompt"), patch.object(
-        spawnlib, "spawn_claude_p", _fake_spawn_factory()
+    with (
+        patch.object(dispatch, "build_worker_prompt", return_value="fake-prompt"),
+        patch.object(spawnlib, "spawn_claude_p", _fake_spawn_factory()),
     ):
         return spawn_obj(role, task, Path("/fake/wt"))
 
 
 def _call_capturing_timeout(spawn_obj, task, fake):
     """Invoke LiveSpawn.__call__ with a provided fake; return fake's recorded calls."""
-    with patch.object(dispatch, "build_worker_prompt", return_value="fake-prompt"), patch.object(
-        spawnlib, "spawn_claude_p", fake
+    with (
+        patch.object(dispatch, "build_worker_prompt", return_value="fake-prompt"),
+        patch.object(spawnlib, "spawn_claude_p", fake),
     ):
         spawn_obj("implement", task, Path("/fake/wt"))
     return fake.calls
@@ -75,10 +87,11 @@ def _call_capturing_timeout(spawn_obj, task, fake):
 
 
 class TestWorkerTimeoutDefault(unittest.TestCase):
-
     def test_default_is_1800_when_env_not_set(self):
         """AC-1: default formula yields 1800 when ORCH_WORKER_TIMEOUT is absent."""
-        env_without_var = {k: v for k, v in os.environ.items() if k != "ORCH_WORKER_TIMEOUT"}
+        env_without_var = {
+            k: v for k, v in os.environ.items() if k != "ORCH_WORKER_TIMEOUT"
+        }
         with patch.dict(os.environ, env_without_var, clear=True):
             result = int(os.environ.get("ORCH_WORKER_TIMEOUT", "1800"))
         self.assertEqual(result, 1800)
@@ -102,7 +115,6 @@ class TestWorkerTimeoutDefault(unittest.TestCase):
 
 
 class TestLiveSpawnCallTimeout(unittest.TestCase):
-
     def test_per_task_timeout_greater_passed_to_spawn(self):
         """AC-5: task["timeout"]=2700, run default 1800 → spawn_claude_p called with 2700."""
         spawn = LiveSpawn("spec", "docs/specs/spec/", agent="claude", timeout=1800)
@@ -150,7 +162,6 @@ class TestLiveSpawnCallTimeout(unittest.TestCase):
 
 
 class TestStartedLogLineFormat(unittest.TestCase):
-
     def test_override_marker_present_when_task_timeout_greater(self):
         """AC-5: started line contains '2700s [task-override]' for upward override."""
         spawn = LiveSpawn("spec", "docs/specs/spec/", agent="claude", timeout=1800)
@@ -186,7 +197,6 @@ class TestStartedLogLineFormat(unittest.TestCase):
 
 
 class TestConcurrencyNoBleed(unittest.TestCase):
-
     def test_concurrent_calls_each_get_own_timeout(self):
         """AC-8: two concurrent __call__ invocations each use their own task timeout."""
         spawn = LiveSpawn("spec", "docs/specs/spec/", agent="claude", timeout=1800)
@@ -194,7 +204,18 @@ class TestConcurrencyNoBleed(unittest.TestCase):
         received = {}
         barrier = threading.Barrier(2)
 
-        def fake_spawn(prompt, worktree, tier=None, prefer=None, exclude_harness=None, timeout=None, extra_args=None, resume_session_id=None, log=None, dispatch_id=None):
+        def fake_spawn(
+            prompt,
+            worktree,
+            tier=None,
+            prefer=None,
+            exclude_harness=None,
+            timeout=None,
+            extra_args=None,
+            resume_session_id=None,
+            log=None,
+            dispatch_id=None,
+        ):
             barrier.wait()  # both threads enter simultaneously
             received[threading.get_ident()] = timeout
             return (
@@ -218,18 +239,21 @@ class TestConcurrencyNoBleed(unittest.TestCase):
         # a per-thread `with patch.object(...)` here left spawnlib.spawn_claude_p
         # permanently monkey-patched to this test's own closure afterward,
         # breaking every later test in the suite that spawns for real.
-        with patch.object(dispatch, "build_worker_prompt", return_value="fake"), patch.object(
-            spawnlib, "spawn_claude_p", fake_spawn
+        with (
+            patch.object(dispatch, "build_worker_prompt", return_value="fake"),
+            patch.object(spawnlib, "spawn_claude_p", fake_spawn),
+            ThreadPoolExecutor(max_workers=2) as ex,
         ):
-            with ThreadPoolExecutor(max_workers=2) as ex:
-                fa = ex.submit(run, task_a)
-                fb = ex.submit(run, task_b)
-                fa.result()
-                fb.result()
+            fa = ex.submit(run, task_a)
+            fb = ex.submit(run, task_b)
+            fa.result()
+            fb.result()
 
         self.assertEqual(received[thread_ids["T001"]], 900)
         self.assertEqual(received[thread_ids["T002"]], 3600)
-        self.assertEqual(spawn.timeout, 1800, "shared spawn.timeout must not be mutated")
+        self.assertEqual(
+            spawn.timeout, 1800, "shared spawn.timeout must not be mutated"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -238,7 +262,6 @@ class TestConcurrencyNoBleed(unittest.TestCase):
 
 
 class TestExpiryReportsEffectiveTimeout(unittest.TestCase):
-
     def test_expiry_formula_uses_per_task_timeout(self):
         """AC-9: drive()/drive_task() expiry expression yields per-task value."""
         spawn = LiveSpawn("spec", "docs/specs/spec/", agent="claude", timeout=1800)
@@ -260,12 +283,24 @@ class TestExpiryReportsEffectiveTimeout(unittest.TestCase):
         spawn = LiveSpawn("spec", "docs/specs/spec/", agent="claude", timeout=1800)
         task = {"id": "T001", "timeout": 2700}
 
-        def raising_spawn(prompt, worktree, tier=None, prefer=None, exclude_harness=None, timeout=None, extra_args=None, resume_session_id=None, log=None, dispatch_id=None):
+        def raising_spawn(
+            prompt,
+            worktree,
+            tier=None,
+            prefer=None,
+            exclude_harness=None,
+            timeout=None,
+            extra_args=None,
+            resume_session_id=None,
+            log=None,
+            dispatch_id=None,
+        ):
             raise subprocess.TimeoutExpired(cmd=["claude"], timeout=timeout)
 
         output = io.StringIO()
-        with patch.object(dispatch, "build_worker_prompt", return_value="p"), patch.object(
-            spawnlib, "spawn_claude_p", raising_spawn
+        with (
+            patch.object(dispatch, "build_worker_prompt", return_value="p"),
+            patch.object(spawnlib, "spawn_claude_p", raising_spawn),
         ):
             try:
                 spawn("implement", task, Path("/fake/wt"))

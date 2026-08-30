@@ -57,13 +57,15 @@ to additionally search that ref's history for a commit touching the
 thread's path since it was opened -- opt-in and additive: omitting it
 reproduces the exact prior behavior.
 """
+
 from __future__ import annotations
 
 import argparse
 import json
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any
 
 from .automerge_preflight import owner_repo_from_git
 from .pr_labels import ensure_pr_no_automerge_label
@@ -79,7 +81,8 @@ GIT_TIMEOUT_SECONDS = 5
 MAX_PAGES = 20
 PAGE_SIZE = 50
 
-_THREADS_QUERY = """
+_THREADS_QUERY = (
+    """
 query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
@@ -99,7 +102,9 @@ query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
     }
   }
 }
-""" % PAGE_SIZE
+"""  # noqa: UP031 -- %d inside a GraphQL template string, not worth escaping braces for
+    % PAGE_SIZE
+)
 
 _REPLY_MUTATION = """
 mutation($threadId: ID!, $body: String!) {
@@ -137,7 +142,7 @@ COMMIT_REPLY_TEMPLATE = (
 )
 
 
-def _reply_body_for(thread: Dict[str, Any]) -> str:
+def _reply_body_for(thread: dict[str, Any]) -> str:
     """The reply text for an addressed thread -- the actual decisions-log
     reasoning when that's how it was correlated, the specific commit SHA
     when a later commit is how it was correlated, the generic fallback
@@ -151,8 +156,9 @@ def _reply_body_for(thread: Dict[str, Any]) -> str:
     return DEFAULT_REPLY_BODY
 
 
-def _run_gh(args: List[str], timeout: int = GH_TIMEOUT_SECONDS,
-            runner: Runner = subprocess.run) -> Optional["subprocess.CompletedProcess[str]"]:
+def _run_gh(
+    args: list[str], timeout: int = GH_TIMEOUT_SECONDS, runner: Runner = subprocess.run
+) -> subprocess.CompletedProcess[str] | None:
     try:
         return runner(["gh", *args], capture_output=True, text=True, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired):
@@ -160,19 +166,27 @@ def _run_gh(args: List[str], timeout: int = GH_TIMEOUT_SECONDS,
 
 
 def fetch_review_threads(
-    owner: str, name: str, number: int, runner: Runner = subprocess.run,
-) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
+    owner: str,
+    name: str,
+    number: int,
+    runner: Runner = subprocess.run,
+) -> tuple[list[dict[str, Any]] | None, str | None]:
     """All review threads on `owner/name#number`, paginated. `(threads, warning)`;
     `threads is None` means the question could not be answered at all."""
-    threads: List[Dict[str, Any]] = []
-    cursor: Optional[str] = None
+    threads: list[dict[str, Any]] = []
+    cursor: str | None = None
     for _ in range(MAX_PAGES):
         args = [
-            "api", "graphql",
-            "-f", f"query={_THREADS_QUERY}",
-            "-f", f"owner={owner}",
-            "-f", f"name={name}",
-            "-F", f"number={number}",
+            "api",
+            "graphql",
+            "-f",
+            f"query={_THREADS_QUERY}",
+            "-f",
+            f"owner={owner}",
+            "-f",
+            f"name={name}",
+            "-F",
+            f"number={number}",
         ]
         if cursor:
             args += ["-f", f"cursor={cursor}"]
@@ -198,14 +212,30 @@ def fetch_review_threads(
 
 
 def _commit_touched_path_since(
-    repo: Path, path: str, since_iso: str, ref: str = "HEAD", runner: Runner = subprocess.run,
-) -> Optional[str]:
+    repo: Path,
+    path: str,
+    since_iso: str,
+    ref: str = "HEAD",
+    runner: Runner = subprocess.run,
+) -> str | None:
     """The SHA of the most recent commit on `ref` that touched `path` since
     `since_iso`, or `None` if none did (or the lookup failed)."""
     try:
         result = runner(
-            ["git", "-C", str(repo), "log", ref, f"--since={since_iso}", "--format=%H", "--", path],
-            capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS,
+            [
+                "git",
+                "-C",
+                str(repo),
+                "log",
+                ref,
+                f"--since={since_iso}",
+                "--format=%H",
+                "--",
+                path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -215,7 +245,7 @@ def _commit_touched_path_since(
     return output.splitlines()[0] if output else None
 
 
-def _find_matching_decision(decisions: List[str], thread: Dict[str, Any]) -> Optional[str]:
+def _find_matching_decision(decisions: list[str], thread: dict[str, Any]) -> str | None:
     """The first decisions-log entry that names this thread's id or path, or
     `None`. The matched text (not just a bool) is what lets the reply quote
     the actual reasoning instead of a generic template."""
@@ -232,9 +262,12 @@ def _find_matching_decision(decisions: List[str], thread: Dict[str, Any]) -> Opt
 
 
 def correlate(
-    repo: Path, threads: List[Dict[str, Any]], decisions: List[str],
-    runner: Runner = subprocess.run, base_ref: Optional[str] = None,
-) -> Dict[str, List[Dict[str, Any]]]:
+    repo: Path,
+    threads: list[dict[str, Any]],
+    decisions: list[str],
+    runner: Runner = subprocess.run,
+    base_ref: str | None = None,
+) -> dict[str, list[dict[str, Any]]]:
     """Split a PR's threads into unresolved-and-addressed (safe to auto-reply
     and resolve) vs unresolved-and-unaddressed (blocking). A thread already
     marked `isResolved` by GitHub is excluded from both -- nothing to do.
@@ -252,8 +285,8 @@ def correlate(
     finding resolved via a separate PR merged into the base branch (see
     module docstring)."""
     unresolved = [t for t in threads if not t.get("isResolved")]
-    addressed: List[Dict[str, Any]] = []
-    unaddressed: List[Dict[str, Any]] = []
+    addressed: list[dict[str, Any]] = []
+    unaddressed: list[dict[str, Any]] = []
     for thread in unresolved:
         comments = (thread.get("comments") or {}).get("nodes") or []
         created_at = comments[0].get("createdAt") if comments else None
@@ -261,7 +294,8 @@ def correlate(
         is_addressed = False
         matched_commit = (
             _commit_touched_path_since(repo, path, created_at, runner=runner)
-            if path and created_at else None
+            if path and created_at
+            else None
         )
         if matched_commit:
             is_addressed = True
@@ -279,18 +313,32 @@ def correlate(
                     is_addressed = True
                     thread = {**thread, "_matched_commit": base_matched_commit}
         (addressed if is_addressed else unaddressed).append(thread)
-    return {"unresolved": unresolved, "addressed": addressed, "unaddressed": unaddressed}
+    return {
+        "unresolved": unresolved,
+        "addressed": addressed,
+        "unaddressed": unaddressed,
+    }
 
 
 def reply_and_resolve(
-    thread_id: str, body: str, runner: Runner = subprocess.run,
-) -> Tuple[bool, Optional[str]]:
+    thread_id: str,
+    body: str,
+    runner: Runner = subprocess.run,
+) -> tuple[bool, str | None]:
     """Post `body` as a reply on `thread_id`, then resolve it. Both steps must
     succeed for `True`; a reply that lands but fails to resolve is reported,
     never silently swallowed (the thread stays open on GitHub either way)."""
     reply = _run_gh(
-        ["api", "graphql", "-f", f"query={_REPLY_MUTATION}",
-         "-f", f"threadId={thread_id}", "-f", f"body={body}"],
+        [
+            "api",
+            "graphql",
+            "-f",
+            f"query={_REPLY_MUTATION}",
+            "-f",
+            f"threadId={thread_id}",
+            "-f",
+            f"body={body}",
+        ],
         runner=runner,
     )
     if reply is None or reply.returncode != 0:
@@ -298,16 +346,25 @@ def reply_and_resolve(
         return False, f"reply failed: {detail}"
 
     resolve = _run_gh(
-        ["api", "graphql", "-f", f"query={_RESOLVE_MUTATION}", "-f", f"threadId={thread_id}"],
+        [
+            "api",
+            "graphql",
+            "-f",
+            f"query={_RESOLVE_MUTATION}",
+            "-f",
+            f"threadId={thread_id}",
+        ],
         runner=runner,
     )
     if resolve is None or resolve.returncode != 0:
-        detail = resolve.stderr.strip()[:300] if resolve is not None else "gh unavailable"
+        detail = (
+            resolve.stderr.strip()[:300] if resolve is not None else "gh unavailable"
+        )
         return False, f"reply posted but resolve failed: {detail}"
     return True, None
 
 
-def _load_decisions(run_record_path: Optional[Path]) -> Tuple[List[str], Optional[str]]:
+def _load_decisions(run_record_path: Path | None) -> tuple[list[str], str | None]:
     if run_record_path is None:
         return [], None
     try:
@@ -323,11 +380,15 @@ def _load_decisions(run_record_path: Optional[Path]) -> Tuple[List[str], Optiona
 
 
 def check(
-    repo: Path, pr_number: int, run_record_path: Optional[Path] = None,
-    owner: Optional[str] = None, name: Optional[str] = None, dry_run: bool = False,
-    base_ref: Optional[str] = None,
+    repo: Path,
+    pr_number: int,
+    run_record_path: Path | None = None,
+    owner: str | None = None,
+    name: str | None = None,
+    dry_run: bool = False,
+    base_ref: str | None = None,
     runner: Runner = subprocess.run,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Did this PR leave any unresolved review thread that isn't yet
     addressed? Never raises. `checked: false` means the question could not be
     answered (gh unavailable, unresolvable owner/repo, bad GraphQL response)
@@ -344,7 +405,7 @@ def check(
     branch rather than a commit on this PR's own branch. Omitting it (the
     default) reproduces the exact prior HEAD-only/decisions-log behavior.
     """
-    result: Dict[str, Any] = {
+    result: dict[str, Any] = {
         "checked": False,
         "blocking": False,
         "unresolved_count": 0,
@@ -362,7 +423,9 @@ def check(
             return result
         resolved_owner, resolved_name = owner_repo.split("/", 1)
 
-    threads, fetch_warning = fetch_review_threads(resolved_owner, resolved_name, pr_number, runner=runner)
+    threads, fetch_warning = fetch_review_threads(
+        resolved_owner, resolved_name, pr_number, runner=runner
+    )
     if threads is None:
         result["warning"] = fetch_warning
         return result
@@ -374,11 +437,17 @@ def check(
     result["unresolved_count"] = len(grouped["unresolved"])
 
     for thread in grouped["addressed"]:
-        entry: Dict[str, Any] = {"id": thread.get("id"), "path": thread.get("path"), "line": thread.get("line")}
+        entry: dict[str, Any] = {
+            "id": thread.get("id"),
+            "path": thread.get("path"),
+            "line": thread.get("line"),
+        }
         if dry_run:
             entry["dry_run"] = True
         else:
-            ok, err = reply_and_resolve(thread["id"], _reply_body_for(thread), runner=runner)
+            ok, err = reply_and_resolve(
+                thread["id"], _reply_body_for(thread), runner=runner
+            )
             entry["resolved"] = ok
             if err:
                 entry["error"] = err
@@ -387,19 +456,22 @@ def check(
     for thread in grouped["unaddressed"]:
         comments = (thread.get("comments") or {}).get("nodes") or []
         first = comments[0] if comments else {}
-        result["unaddressed"].append({
-            "id": thread.get("id"),
-            "path": thread.get("path"),
-            "line": thread.get("line"),
-            "author": (first.get("author") or {}).get("login"),
-            "body": (first.get("body") or "")[:300],
-        })
+        result["unaddressed"].append(
+            {
+                "id": thread.get("id"),
+                "path": thread.get("path"),
+                "line": thread.get("line"),
+                "author": (first.get("author") or {}).get("login"),
+                "body": (first.get("body") or "")[:300],
+            }
+        )
 
     result["blocking"] = bool(result["unaddressed"])
 
     if result["blocking"] and not dry_run:
         result["no_automerge_label_applied"] = ensure_pr_no_automerge_label(
-            str(repo), str(pr_number), eligible=False, runner=runner)
+            str(repo), str(pr_number), eligible=False, runner=runner
+        )
 
     warnings = [w for w in (fetch_warning, decisions_warning) if w]
     if warnings:
@@ -408,19 +480,27 @@ def check(
     return result
 
 
-def _format_human(res: Dict[str, Any]) -> str:
+def _format_human(res: dict[str, Any]) -> str:
     if not res["checked"]:
         return f"unknown: {res.get('warning') or 'review-thread status could not be determined'}"
     if not res["unresolved_count"]:
         return "clean: no unresolved review threads"
     lines = [f"{res['unresolved_count']} unresolved thread(s) found"]
     for entry in res["resolved_now"]:
-        status = "resolved" if entry.get("resolved") or entry.get("dry_run") else f"FAILED ({entry.get('error')})"
+        status = (
+            "resolved"
+            if entry.get("resolved") or entry.get("dry_run")
+            else f"FAILED ({entry.get('error')})"
+        )
         lines.append(f"  addressed+{status}: {entry.get('path')}:{entry.get('line')}")
     for entry in res["unaddressed"]:
-        lines.append(f"  BLOCKING: {entry.get('path')}:{entry.get('line')} ({entry.get('author')}): {entry.get('body')}")
+        lines.append(
+            f"  BLOCKING: {entry.get('path')}:{entry.get('line')} ({entry.get('author')}): {entry.get('body')}"
+        )
     if res["blocking"]:
-        lines.append("  -> unresolved+unaddressed threads present; do not finish() this route yet")
+        lines.append(
+            "  -> unresolved+unaddressed threads present; do not finish() this route yet"
+        )
         if res.get("no_automerge_label_applied"):
             lines.append(f"  applied label: {res['no_automerge_label_applied']}")
     if res.get("warning"):
@@ -428,27 +508,43 @@ def _format_human(res: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--repo", required=True)
     p.add_argument("--pr", required=True, type=int)
-    p.add_argument("--owner", default=None, help="override the git-remote-derived owner")
-    p.add_argument("--name", default=None, help="override the git-remote-derived repo name")
-    p.add_argument("--run", default=None, help="run record path, for decision-log correlation")
-    p.add_argument("--base-ref", default=None,
-                    help="also search this ref's history (e.g. origin/main) for a commit "
-                         "touching a thread's path since it was opened -- covers a finding "
-                         "resolved via a separate PR merged into the base branch rather than "
-                         "a commit on this PR's own branch (see module docstring)")
-    p.add_argument("--dry-run", action="store_true",
-                    help="report only; never post replies or resolve threads")
+    p.add_argument(
+        "--owner", default=None, help="override the git-remote-derived owner"
+    )
+    p.add_argument(
+        "--name", default=None, help="override the git-remote-derived repo name"
+    )
+    p.add_argument(
+        "--run", default=None, help="run record path, for decision-log correlation"
+    )
+    p.add_argument(
+        "--base-ref",
+        default=None,
+        help="also search this ref's history (e.g. origin/main) for a commit "
+        "touching a thread's path since it was opened -- covers a finding "
+        "resolved via a separate PR merged into the base branch rather than "
+        "a commit on this PR's own branch (see module docstring)",
+    )
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="report only; never post replies or resolve threads",
+    )
     p.add_argument("--json", action="store_true")
     args = p.parse_args(argv)
 
     res = check(
-        Path(args.repo), args.pr,
+        Path(args.repo),
+        args.pr,
         run_record_path=Path(args.run) if args.run else None,
-        owner=args.owner, name=args.name, dry_run=args.dry_run, base_ref=args.base_ref,
+        owner=args.owner,
+        name=args.name,
+        dry_run=args.dry_run,
+        base_ref=args.base_ref,
     )
 
     if args.json:
@@ -464,4 +560,5 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 if __name__ == "__main__":
     import sys
+
     sys.exit(main())

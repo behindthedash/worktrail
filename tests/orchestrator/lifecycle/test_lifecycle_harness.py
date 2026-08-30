@@ -41,7 +41,7 @@ import unittest.mock
 from pathlib import Path
 
 from worktrail.conductor import compile as conductor_compile
-from worktrail.orchestrator import live, spawnlib, verify, worktree
+from worktrail.orchestrator import live, spawnlib, worktree
 
 _HERE = Path(__file__).resolve().parent
 _FAKE_GH = _HERE / "fake_gh.py"
@@ -54,6 +54,7 @@ OPENSPEC_SPEC_REL = "openspec/changes/001-x"
 # Environment: PATH-level fake gh + bare origin
 # --------------------------------------------------------------------------- #
 
+
 def _git(cwd, *args, check=True):
     return subprocess.run(
         ["git", "-C", str(cwd), *args], check=check, capture_output=True, text=True
@@ -65,15 +66,19 @@ def _install_fake_gh(tmp: Path, remote: Path) -> dict:
     bin_dir = tmp / "bin"
     bin_dir.mkdir(exist_ok=True)
     shim = bin_dir / "gh"
-    shim.write_text(f"#!/bin/sh\nexec {sys.executable} {_FAKE_GH} \"$@\"\n")
+    shim.write_text(f'#!/bin/sh\nexec {sys.executable} {_FAKE_GH} "$@"\n')
     shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
     state = tmp / "gh-state.json"
-    state.write_text(json.dumps({
-        "remote": str(remote),
-        "base": "main",
-        "next_number": 1,
-        "prs": {},
-    }))
+    state.write_text(
+        json.dumps(
+            {
+                "remote": str(remote),
+                "base": "main",
+                "next_number": 1,
+                "prs": {},
+            }
+        )
+    )
     return {
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
         "GH_FAKE_STATE": str(state),
@@ -192,14 +197,15 @@ def _precompile_openspec_runplan(repo: Path) -> None:
 # The scripted worker (replaces LiveSpawn only)
 # --------------------------------------------------------------------------- #
 
+
 class ScriptedWorker:
     """Real git commit per implement/fix; valid report-backs; optional hard
     process death at a chosen (task, role) — simulating a harness/machine kill
     mid-run, the scenario behind the resume bug class (#235/#238)."""
 
-    def __init__(self, exit_on: "tuple[str, str] | None" = None):
+    def __init__(self, exit_on: tuple[str, str] | None = None):
         self.exit_on = exit_on
-        self.calls: "list[tuple[str, str]]" = []
+        self.calls: list[tuple[str, str]] = []
         self._lock = threading.Lock()
 
     def __call__(self, role, task, wt):
@@ -223,7 +229,9 @@ class ScriptedWorker:
             # on CI in PR #258's run).
             if _git(wt, "diff", "--cached", "--quiet", check=False).returncode != 0:
                 _git(wt, "commit", "-q", "-m", f"feat({tid})")
-        sha = _git(wt, "rev-parse", "HEAD", check=False).stdout.strip()[:8] or "00000000"
+        sha = (
+            _git(wt, "rev-parse", "HEAD", check=False).stdout.strip()[:8] or "00000000"
+        )
         rs = '"PASSED"' if role == "review" else "null"
         return spawnlib.SpawnResult(
             text=(
@@ -234,22 +242,30 @@ class ScriptedWorker:
         )
 
 
-def _run_full_real(repo: Path, spec_rel: str, env: dict, *,
-                   resume: bool = True, worker: "ScriptedWorker | None" = None) -> dict:
+def _run_full_real(
+    repo: Path,
+    spec_rel: str,
+    env: dict,
+    *,
+    resume: bool = True,
+    worker: ScriptedWorker | None = None,
+) -> dict:
     """Invoke the real `_full_real_inner` with only LiveSpawn + sleep patched."""
     worker = worker or ScriptedWorker()
-    with unittest.mock.patch.dict(os.environ, env):
-        with unittest.mock.patch.object(live, "LiveSpawn", return_value=worker):
-            with unittest.mock.patch.object(time, "sleep", lambda s: None):
-                result = live._full_real_inner(
-                    str(repo),
-                    spec_rel,
-                    remote="origin",
-                    base="main",
-                    max_workers=3,
-                    timeout=60,
-                    resume=resume,
-                )
+    with (
+        unittest.mock.patch.dict(os.environ, env),
+        unittest.mock.patch.object(live, "LiveSpawn", return_value=worker),
+        unittest.mock.patch.object(time, "sleep", lambda s: None),
+    ):
+        result = live._full_real_inner(
+            str(repo),
+            spec_rel,
+            remote="origin",
+            base="main",
+            max_workers=3,
+            timeout=60,
+            resume=resume,
+        )
     result["_worker"] = worker
     return result
 
@@ -258,14 +274,17 @@ def _run_full_real(repo: Path, spec_rel: str, env: dict, *,
 # Shared assertions
 # --------------------------------------------------------------------------- #
 
+
 def _journal(repo: Path, spec_rel: str) -> dict:
     return json.loads(live.journal_path_for(repo, spec_rel).read_text())
 
 
-def _remote_file(remote: Path, path: str) -> "str | None":
+def _remote_file(remote: Path, path: str) -> str | None:
     r = subprocess.run(
         ["git", "-C", str(remote), "show", f"main:{path}"],
-        capture_output=True, text=True,
+        check=False,
+        capture_output=True,
+        text=True,
     )
     return r.stdout if r.returncode == 0 else None
 
@@ -285,6 +304,7 @@ class _LifecycleCase(unittest.TestCase):
 # --------------------------------------------------------------------------- #
 # Fresh lifecycle: devkit format
 # --------------------------------------------------------------------------- #
+
 
 class DevkitFreshLifecycle(_LifecycleCase):
     def _run(self):
@@ -320,6 +340,7 @@ class DevkitFreshLifecycle(_LifecycleCase):
 # Fresh lifecycle + fresh-rerun skip: openspec format
 # --------------------------------------------------------------------------- #
 
+
 class OpenspecFreshLifecycle(_LifecycleCase):
     def _run(self):
         import tempfile
@@ -337,7 +358,9 @@ class OpenspecFreshLifecycle(_LifecycleCase):
             tasks_md = _remote_file(remote, "openspec/changes/001-x/tasks.md")
             self.assertIsNotNone(tasks_md)
             for tid in ("1.1", "1.2", "2.1"):
-                self.assertIn(f"- [x] {tid}", tasks_md, f"{tid} not ticked on remote main")
+                self.assertIn(
+                    f"- [x] {tid}", tasks_md, f"{tid} not ticked on remote main"
+                )
 
             # The user-visible resume contract end-to-end (PR #246's unit-level
             # proof, now through the REAL pipeline): sync the checkout to the
@@ -345,14 +368,13 @@ class OpenspecFreshLifecycle(_LifecycleCase):
             # gets re-implemented, because the committed tasks.md says done.
             _git(repo, "fetch", "-q", "origin")
             _git(repo, "reset", "-q", "--hard", "origin/main")
-            rerun = _run_full_real(
-                repo, OPENSPEC_SPEC_REL, env, resume=False
-            )
+            rerun = _run_full_real(repo, OPENSPEC_SPEC_REL, env, resume=False)
             implements = [
                 c for c in rerun["_worker"].calls if c[1] in ("implement", "fix")
             ]
             self.assertEqual(
-                implements, [],
+                implements,
+                [],
                 f"fresh rerun redispatched completed tasks: {implements}",
             )
 
@@ -363,6 +385,7 @@ class OpenspecFreshLifecycle(_LifecycleCase):
 # --------------------------------------------------------------------------- #
 # Kill mid-fan-out, then resume — the #235/#238 incident shape, for real
 # --------------------------------------------------------------------------- #
+
 
 def _child_run(repo_s: str, spec_rel: str, env: dict):
     """Child-process body: dies via os._exit inside the worker on TASK-003."""
@@ -403,7 +426,8 @@ class KillAndResume(_LifecycleCase):
                 t for t, r in result["_worker"].calls if r == "implement"
             ]
             self.assertNotIn(
-                "TASK-001", resumed_implements,
+                "TASK-001",
+                resumed_implements,
                 "resume re-implemented TASK-001, which the dead run completed",
             )
 
@@ -416,6 +440,7 @@ class KillAndResume(_LifecycleCase):
 # squash-merged and cleaned up before tail dispatch (stacked-worktree-conflict-
 # resolution-squash-merged-dependency-carry 1.1)
 # --------------------------------------------------------------------------- #
+
 
 class SquashMergedDependencyCarryLifecycle(_LifecycleCase):
     def _run(self):
@@ -469,7 +494,9 @@ class SquashMergedDependencyCarryLifecycle(_LifecycleCase):
             tail_roles = {
                 e["role"] for e in journal["entries"] if e.get("task") == "TASK-004"
             }
-            self.assertIn("cleanup", tail_roles, f"TASK-004 never reached cleanup: {tail_roles}")
+            self.assertIn(
+                "cleanup", tail_roles, f"TASK-004 never reached cleanup: {tail_roles}"
+            )
             # Its carry actually landed TASK-002/TASK-003's content in its own
             # worktree (not just skipped the dependency-file check some other
             # way) -- the direct proof the fix engaged.

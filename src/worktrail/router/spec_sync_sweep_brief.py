@@ -21,9 +21,7 @@ from __future__ import annotations
 
 import datetime
 import re
-import sys
 from pathlib import Path
-from typing import Dict, List
 
 from ..shared.brief_frontmatter import validate_brief
 
@@ -37,11 +35,11 @@ def _slug(repo: Path) -> str:
 
 
 def _brief_id(repo: Path) -> str:
-    timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")  # noqa: DTZ005
     return f"{timestamp}-spec-sync-drift-{_slug(repo)}"
 
 
-def _render(repo: Path, findings: List[Dict[str, str]], brief_id: str) -> str:
+def _render(repo: Path, findings: list[dict[str, str]], brief_id: str) -> str:
     created = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
     spec_count = len({f.get("spec", "") for f in findings})
     focus = (
@@ -73,7 +71,9 @@ def _render(repo: Path, findings: List[Dict[str, str]], brief_id: str) -> str:
     return "\n".join(lines)
 
 
-def file_drift_brief(repo: Path, findings: List[Dict[str, str]], queue_base: Path) -> Path:
+def file_drift_brief(
+    repo: Path, findings: list[dict[str, str]], queue_base: Path
+) -> Path:
     """Write exactly one Drift Brief for `repo` into `queue_base/queue/`.
 
     Regardless of how many entries `findings` contains (or how many

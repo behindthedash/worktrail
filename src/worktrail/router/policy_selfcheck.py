@@ -25,6 +25,7 @@ Usage:
   policy_selfcheck.py --repo /path/to/repo [--repos-root ~/projects] [--json]
   policy_selfcheck.py --repos-root ~/projects [--json]   # sweep every repo
 """
+
 from __future__ import annotations
 
 import argparse
@@ -32,7 +33,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .policy import policy_file_path
 
@@ -63,18 +64,17 @@ def _names_match(candidate: str, repo_name: str) -> bool:
     return a == b or a.startswith(b) or b.startswith(a)
 
 
-def discover_repo_names(repos_root: Path) -> List[str]:
+def discover_repo_names(repos_root: Path) -> list[str]:
     """Every immediate subdirectory of `repos_root` that is a git repo."""
     if not repos_root.is_dir():
         return []
     return sorted(
-        p.name for p in repos_root.iterdir()
-        if p.is_dir() and (p / ".git").exists()
+        p.name for p in repos_root.iterdir() if p.is_dir() and (p / ".git").exists()
     )
 
 
 def _header_block(text: str) -> str:
-    lines: List[str] = []
+    lines: list[str] = []
     for line in text.splitlines():
         stripped = line.strip()
         if stripped.startswith("#"):
@@ -86,12 +86,16 @@ def _header_block(text: str) -> str:
     return "\n".join(lines)
 
 
-def check_repo(repo: Path, sibling_names: List[str]) -> Dict[str, Any]:
+def check_repo(repo: Path, sibling_names: list[str]) -> dict[str, Any]:
     """Findings for one repo's worktrail-go-policy.yaml. Empty `findings` = clean."""
     repo = Path(repo)
     src = policy_file_path(repo)
-    result: Dict[str, Any] = {"repo": repo.name, "path": str(repo),
-                              "source": None, "findings": []}
+    result: dict[str, Any] = {
+        "repo": repo.name,
+        "path": str(repo),
+        "source": None,
+        "findings": [],
+    }
     if not src.is_file():
         return result
     result["source"] = str(src)
@@ -101,11 +105,17 @@ def check_repo(repo: Path, sibling_names: List[str]) -> Dict[str, Any]:
 
     header = _header_block(text)
     m = _HEADER_FOR_RE.search(header)
-    if m and m.group(1).lower() not in _HEADER_STOPWORDS and not _names_match(m.group(1), own):
-        findings.append({
-            "signal": "header-mismatch",
-            "detail": f"header comment says \"policy for {m.group(1)}\" but this repo is '{own}'",
-        })
+    if (
+        m
+        and m.group(1).lower() not in _HEADER_STOPWORDS
+        and not _names_match(m.group(1), own)
+    ):
+        findings.append(
+            {
+                "signal": "header-mismatch",
+                "detail": f"header comment says \"policy for {m.group(1)}\" but this repo is '{own}'",
+            }
+        )
 
     others = [s for s in sibling_names if s != own and _norm(s) != _norm(own)]
     seen = set()
@@ -122,34 +132,42 @@ def check_repo(repo: Path, sibling_names: List[str]) -> Dict[str, Any]:
             if dedup_key in seen or (repo / target).is_dir():
                 continue
             seen.add(dedup_key)
-            findings.append({
-                "signal": "missing-command-path",
-                "detail": f"{key} changes into missing repo-relative directory '{target}'",
-            })
+            findings.append(
+                {
+                    "signal": "missing-command-path",
+                    "detail": f"{key} changes into missing repo-relative directory '{target}'",
+                }
+            )
         for path_match in _PROJECTS_PATH_RE.finditer(value):
             named = path_match.group(1)
             dedup_key = ("sibling-path", key, _norm(named))
             if dedup_key in seen or not any(_names_match(named, sib) for sib in others):
                 continue
             seen.add(dedup_key)
-            findings.append({
-                "signal": "sibling-path",
-                "detail": f"{key} embeds path for sibling repo '{named}', not '{own}'",
-            })
+            findings.append(
+                {
+                    "signal": "sibling-path",
+                    "detail": f"{key} embeds path for sibling repo '{named}', not '{own}'",
+                }
+            )
         for var_match in _VENV_VAR_RE.finditer(value):
             var_repo = var_match.group(1)
             dedup_key = ("sibling-envvar", key, _norm(var_repo))
-            if dedup_key in seen or not any(_names_match(var_repo, sib) for sib in others):
+            if dedup_key in seen or not any(
+                _names_match(var_repo, sib) for sib in others
+            ):
                 continue
             seen.add(dedup_key)
-            findings.append({
-                "signal": "sibling-envvar",
-                "detail": f"{key} references ${{{var_repo}_VENV}}, naming sibling repo not '{own}'",
-            })
+            findings.append(
+                {
+                    "signal": "sibling-envvar",
+                    "detail": f"{key} references ${{{var_repo}_VENV}}, naming sibling repo not '{own}'",
+                }
+            )
     return result
 
 
-def sweep(repos_root: Path) -> List[Dict[str, Any]]:
+def sweep(repos_root: Path) -> list[dict[str, Any]]:
     """check_repo() for every repo under `repos_root` that has a policy file."""
     names = discover_repo_names(repos_root)
     results = []
@@ -160,7 +178,7 @@ def sweep(repos_root: Path) -> List[Dict[str, Any]]:
     return results
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--repo", help="single repo to check")
     p.add_argument("--repos-root", help="sweep every repo under this directory")
@@ -185,7 +203,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(json.dumps({"results": results, "flagged": len(flagged)}, indent=2))
     else:
         if not flagged:
-            print(f"policy_selfcheck: {len(results)} repo(s) checked, no cross-repo signals")
+            print(
+                f"policy_selfcheck: {len(results)} repo(s) checked, no cross-repo signals"
+            )
         for r in flagged:
             print(f"{r['repo']}:")
             for f in r["findings"]:

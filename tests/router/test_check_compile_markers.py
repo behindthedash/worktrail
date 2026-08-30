@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Unit tests for CI's structural half of the Route C scope-check gate."""
+
 from __future__ import annotations
 
 import json
@@ -58,7 +59,9 @@ def test_fresh_marker_is_reported_as_ok(change):
 
 
 def test_stale_marker_is_reported_as_stale(change):
-    conductor_compile.write_marker(change, "a-fingerprint-from-before-tasks-md-was-edited")
+    conductor_compile.write_marker(
+        change, "a-fingerprint-from-before-tasks-md-was-edited"
+    )
     result = ccm.check_marker(change)
     assert result["status"] == "stale"
     assert result["marker_fingerprint"] != result["expected_fingerprint"]
@@ -77,7 +80,9 @@ def test_the_marker_file_itself_does_not_change_the_fingerprint(change):
 # changed_change_dirs() -- real git repo, matches how CI actually invokes this
 # --------------------------------------------------------------------------- #
 def _git(repo: Path, *args: str) -> None:
-    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True)
+    subprocess.run(
+        ["git", "-C", str(repo), *args], check=True, capture_output=True, text=True
+    )
 
 
 @pytest.fixture()
@@ -108,7 +113,9 @@ def test_changed_change_dirs_finds_a_touched_change(repo_with_a_change_on_a_bran
     ]
 
 
-def test_changed_change_dirs_is_empty_when_nothing_touched(repo_with_a_change_on_a_branch):
+def test_changed_change_dirs_is_empty_when_nothing_touched(
+    repo_with_a_change_on_a_branch,
+):
     assert ccm.changed_change_dirs(repo_with_a_change_on_a_branch, "main", "main") == []
 
 
@@ -141,7 +148,9 @@ def repo_with_an_archived_change_on_a_branch(tmp_path: Path) -> Path:
     return repo
 
 
-def test_changed_change_dirs_skips_archived_changes(repo_with_an_archived_change_on_a_branch):
+def test_changed_change_dirs_skips_archived_changes(
+    repo_with_an_archived_change_on_a_branch,
+):
     """Regression: `openspec archive` moves a change to
     `openspec/changes/archive/<name>/`, one level deeper than a live change.
     `resolve._split()` assumes the fixed `openspec/changes/<id>` depth, so
@@ -150,7 +159,12 @@ def test_changed_change_dirs_skips_archived_changes(repo_with_an_archived_change
     (worktrail PR #206). An archived change's `tasks.md` is historical, not a
     still-live plan subject to fresh scope verification -- it must never reach
     `check_marker()`."""
-    assert ccm.changed_change_dirs(repo_with_an_archived_change_on_a_branch, "main", "feature") == []
+    assert (
+        ccm.changed_change_dirs(
+            repo_with_an_archived_change_on_a_branch, "main", "feature"
+        )
+        == []
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -171,19 +185,45 @@ def test_check_fails_when_a_touched_change_is_missing_its_marker(change):
 
 
 def test_main_exit_code_matches_pass_fail(change, capsys):
-    rc = ccm.main(["--repo", str(change.parents[2]), "--base-ref", "main", "--change-dir", str(change)])
+    rc = ccm.main(
+        [
+            "--repo",
+            str(change.parents[2]),
+            "--base-ref",
+            "main",
+            "--change-dir",
+            str(change),
+        ]
+    )
     capsys.readouterr()
     assert rc == 1
 
     conductor_compile.write_marker(change, _fp(change))
-    rc = ccm.main(["--repo", str(change.parents[2]), "--base-ref", "main", "--change-dir", str(change)])
+    rc = ccm.main(
+        [
+            "--repo",
+            str(change.parents[2]),
+            "--base-ref",
+            "main",
+            "--change-dir",
+            str(change),
+        ]
+    )
     capsys.readouterr()
     assert rc == 0
 
 
 def test_main_json_output_is_parseable_and_reports_failures(change, capsys):
     rc = ccm.main(
-        ["--repo", str(change.parents[2]), "--base-ref", "main", "--change-dir", str(change), "--json"]
+        [
+            "--repo",
+            str(change.parents[2]),
+            "--base-ref",
+            "main",
+            "--change-dir",
+            str(change),
+            "--json",
+        ]
     )
     out, err = capsys.readouterr()
     assert rc == 1

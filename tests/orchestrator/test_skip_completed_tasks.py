@@ -14,7 +14,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from worktrail.orchestrator import coordinator  # noqa: E402
+from worktrail.orchestrator import coordinator
 
 
 def _task(task_id, status="pending", files=None):
@@ -162,7 +162,9 @@ class TestFrontmatterCompletedPartition(unittest.TestCase):
         frontier = coordinator.runnable_frontier(tasks, max_workers=4)
         frontier_ids = {t["id"] for t in frontier}
         self.assertIn(
-            "TASK-002", frontier_ids, "Pending task with completed dep should be in frontier"
+            "TASK-002",
+            frontier_ids,
+            "Pending task with completed dep should be in frontier",
         )
 
     def test_dependency_blocked_when_failed(self):
@@ -181,7 +183,9 @@ class TestFrontmatterCompletedPartition(unittest.TestCase):
         # Both are pending but TASK-001 must complete first
         # With max_workers=4 and no file conflicts, TASK-001 should be runnable,
         # but TASK-002 should wait until TASK-001 is done.
-        self.assertIn("TASK-001", frontier_ids, "Pending dep should be in frontier for re-run")
+        self.assertIn(
+            "TASK-001", frontier_ids, "Pending dep should be in frontier for re-run"
+        )
         # TASK-002 may or may not be in the frontier depending on concurrency
         # but the critical fact is that TASK-001 was NOT pre-marked done.
 

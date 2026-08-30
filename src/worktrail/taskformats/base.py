@@ -14,44 +14,46 @@ and the OpenSpec `openspec/changes/<id>/tasks.md` convention. Nothing in
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Protocol, TypedDict
+from typing import Any, Protocol, TypedDict
 
 
 class TaskDict(TypedDict, total=False):
     id: str
     title: str
     status: str
-    deps: List[str]
-    external_deps: List[str]
-    external_deps_warnings: List[str]
-    files: List[str]
+    deps: list[str]
+    external_deps: list[str]
+    external_deps_warnings: list[str]
+    files: list[str]
     kind: str
-    reqs: List[str]
-    timeout: Optional[int]
+    reqs: list[str]
+    timeout: int | None
     review: str
     complexity: str
     domain: str
     purpose: str
     path: str
-    frontmatter_warnings: List[str]
+    frontmatter_warnings: list[str]
 
 
 class TaskSource(Protocol):
     """Where task definitions come from, and how to write status back."""
 
-    def load(self, spec_ref: str) -> tuple[str, List[TaskDict]]:
+    def load(self, spec_ref: str) -> tuple[str, list[TaskDict]]:
         """Return (spec_id, tasks) for the given spec reference."""
         ...
 
-    def mark_status(self, task_id: str, status: str, *, spec_ref: Optional[str] = None) -> bool:
+    def mark_status(
+        self, task_id: str, status: str, *, spec_ref: str | None = None
+    ) -> bool:
         """Persist a status transition for one task."""
         ...
 
-    def resolve_external_dependency(self, dep_ref: str) -> Dict[str, Any]:
+    def resolve_external_dependency(self, dep_ref: str) -> dict[str, Any]:
         """Resolve a `<spec-id>/<task-id>` cross-spec reference."""
         ...
 
-    def validate_dependencies(self, spec_id: str, tasks: List[TaskDict]) -> List[str]:
+    def validate_dependencies(self, spec_id: str, tasks: list[TaskDict]) -> list[str]:
         """Check same-spec `deps` and decision-log coverage; return diagnostic strings.
 
         Unlike `resolve_external_dependency`, which resolves one cross-spec
@@ -92,6 +94,6 @@ class TaskSource(Protocol):
         used to build safety guards like `FORBIDDEN_WORKER_PATH_PREFIXES`."""
         ...
 
-    def file_sections(self, text: str) -> tuple[List[str], List[str]]:
+    def file_sections(self, text: str) -> tuple[list[str], list[str]]:
         """Return authored create/modify file sections, when the format has them."""
         ...

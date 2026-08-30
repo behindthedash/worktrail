@@ -58,8 +58,8 @@ dispatch action documents by hand.
 ```python
 @dataclass(frozen=True)
 class StageRemediation:
-    key: str      # summary-dict key, e.g. "stale_bookkeeping"
-    label: str    # log-line prefix, e.g. "close-stale-bookkeeping"
+    key: str  # summary-dict key, e.g. "stale_bookkeeping"
+    label: str  # log-line prefix, e.g. "close-stale-bookkeeping"
     finder: Callable[[Path, Optional[str]], List[Dict[str, Any]]]
     action: Callable[[Dict[str, Any], str, int, SpawnerT, LogT], Dict[str, Any]]
     # action(finding, agent, timeout, spawner, log) -> one result dict.
@@ -67,13 +67,26 @@ class StageRemediation:
     # finding never blocks the rest (matches the existing docstring
     # guarantee on both current functions).
 
+
 REMEDIATION_TABLE: List[StageRemediation] = [
-    StageRemediation("quarantined_budget_exhausted", "resume-quarantine",
-                      find_resumable_quarantines, _resume_via_full_real),
-    StageRemediation("verify_pending", "resume-verify-pending",
-                      find_verify_pending_specs, _resume_via_full_real),
-    StageRemediation("stale_bookkeeping", "close-stale-bookkeeping",
-                      find_stale_bookkeeping_specs, close_stale_bookkeeping),
+    StageRemediation(
+        "quarantined_budget_exhausted",
+        "resume-quarantine",
+        find_resumable_quarantines,
+        _resume_via_full_real,
+    ),
+    StageRemediation(
+        "verify_pending",
+        "resume-verify-pending",
+        find_verify_pending_specs,
+        _resume_via_full_real,
+    ),
+    StageRemediation(
+        "stale_bookkeeping",
+        "close-stale-bookkeeping",
+        find_stale_bookkeeping_specs,
+        close_stale_bookkeeping,
+    ),
 ]
 ```
 
@@ -85,19 +98,23 @@ for the log-line label; factor it out once, bind `label` per table row via
 ### D2 — Generic sweep engine
 
 ```python
-def sweep_remediations(repos_root, go_repo, agent, timeout, spawner, log
-                       ) -> Dict[str, List[Dict[str, Any]]]:
+def sweep_remediations(
+    repos_root, go_repo, agent, timeout, spawner, log
+) -> Dict[str, List[Dict[str, Any]]]:
     results: Dict[str, List[Dict[str, Any]]] = {}
     for remediation in REMEDIATION_TABLE:
         applied = []
         for finding in remediation.finder(repos_root, go_repo):
             try:
-                applied.append(remediation.action(
-                    finding, agent, timeout, spawner, log))
+                applied.append(
+                    remediation.action(finding, agent, timeout, spawner, log)
+                )
             except Exception as exc:  # noqa: BLE001 — one finding must not
-                                        # block the rest of the sweep
-                log(f"{remediation.label} error: "
-                    f"{finding.get('repo_name')} {finding.get('spec_id')}: {exc}")
+                # block the rest of the sweep
+                log(
+                    f"{remediation.label} error: "
+                    f"{finding.get('repo_name')} {finding.get('spec_id')}: {exc}"
+                )
         results[remediation.key] = applied
     return results
 ```
@@ -110,19 +127,24 @@ merges the two passes' dicts key-by-key (same merge semantics the current
 ### D3 — Backward-compatible public functions
 
 ```python
-def resume_quarantined_budget_exhausted(repos_root, go_repo, agent, timeout,
-                                         spawner, log) -> List[Dict[str, Any]]:
+def resume_quarantined_budget_exhausted(
+    repos_root, go_repo, agent, timeout, spawner, log
+) -> List[Dict[str, Any]]:
     """Unchanged public signature/behavior — now a thin call into the shared
     sweep engine. See REMEDIATION_TABLE."""
-    return sweep_remediations(repos_root, go_repo, agent, timeout, spawner, log
-                              ).get("quarantined_budget_exhausted", [])
+    return sweep_remediations(repos_root, go_repo, agent, timeout, spawner, log).get(
+        "quarantined_budget_exhausted", []
+    )
 
-def resume_verify_pending(repos_root, go_repo, agent, timeout, spawner, log
-                          ) -> List[Dict[str, Any]]:
+
+def resume_verify_pending(
+    repos_root, go_repo, agent, timeout, spawner, log
+) -> List[Dict[str, Any]]:
     """Unchanged public signature/behavior — now a thin call into the shared
     sweep engine. See REMEDIATION_TABLE."""
-    return sweep_remediations(repos_root, go_repo, agent, timeout, spawner, log
-                              ).get("verify_pending", [])
+    return sweep_remediations(repos_root, go_repo, agent, timeout, spawner, log).get(
+        "verify_pending", []
+    )
 ```
 
 **Caution for the implementing task:** a naive version of D3 above calls
@@ -139,8 +161,9 @@ wrappers each pass their own single key. `drain()` itself calls
 ### D4 — `stale-bookkeeping` finder
 
 ```python
-def find_stale_bookkeeping_specs(repos_root: Path, go_repo: Optional[str] = None
-                                 ) -> List[Dict[str, Any]]:
+def find_stale_bookkeeping_specs(
+    repos_root: Path, go_repo: Optional[str] = None
+) -> List[Dict[str, Any]]:
     """Every (repo, spec) pair currently in the `stale-bookkeeping` stage,
     across every repo under `repos_root` (or just `go_repo`). Carries the
     stale task ids `detect_stage()` already computed so the action does not
@@ -159,10 +182,14 @@ def find_stale_bookkeeping_specs(repos_root: Path, go_repo: Optional[str] = None
             stale_ids = row.get("stale_task_ids") or []
             if not spec_id or not stale_ids:
                 continue
-            found.append({
-                "repo": repo_path, "repo_name": name,
-                "spec_id": spec_id, "stale_task_ids": stale_ids,
-            })
+            found.append(
+                {
+                    "repo": repo_path,
+                    "repo_name": name,
+                    "spec_id": spec_id,
+                    "stale_task_ids": stale_ids,
+                }
+            )
     return found
 ```
 
@@ -229,13 +256,24 @@ no PR.
 resumed: Dict[str, List[Dict[str, Any]]] = {}
 ...
 if config.repos_root is not None and not config.dry_run:
-    resumed = sweep_remediations(config.repos_root, config.go_repo,
-                                  active_agent, config.iteration_timeout,
-                                  spawner, log)
+    resumed = sweep_remediations(
+        config.repos_root,
+        config.go_repo,
+        active_agent,
+        config.iteration_timeout,
+        spawner,
+        log,
+    )
 ...
 if config.repos_root is not None and not config.dry_run and state.iteration > 0:
-    post = sweep_remediations(config.repos_root, config.go_repo, active_agent,
-                               config.iteration_timeout, spawner, log)
+    post = sweep_remediations(
+        config.repos_root,
+        config.go_repo,
+        active_agent,
+        config.iteration_timeout,
+        spawner,
+        log,
+    )
     for k, v in post.items():
         resumed.setdefault(k, []).extend(v)
 ...

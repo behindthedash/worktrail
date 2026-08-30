@@ -35,7 +35,9 @@ TASKS_MD = textwrap.dedent(
 )
 
 
-def _change(tmp_path: Path, change_id: str = "add-export", tasks: str = TASKS_MD) -> Path:
+def _change(
+    tmp_path: Path, change_id: str = "add-export", tasks: str = TASKS_MD
+) -> Path:
     d = tmp_path / "openspec" / "changes" / change_id
     d.mkdir(parents=True)
     (d / "tasks.md").write_text(tasks)
@@ -125,7 +127,9 @@ DECLARED_FILES_MD = textwrap.dedent(
 def test_load_carries_declared_files_into_task_dict(tmp_path):
     """The declaration reaches `task["files"]` through `load()`, not just the
     parser -- the adapter is the seam `compile.py` reads scope through."""
-    _, tasks = OpenSpecTaskSource(_change(tmp_path, tasks=DECLARED_FILES_MD)).load("add-export")
+    _, tasks = OpenSpecTaskSource(_change(tmp_path, tasks=DECLARED_FILES_MD)).load(
+        "add-export"
+    )
     by_id = {t["id"]: t for t in tasks}
     assert by_id["1.1"]["files"] == ["src/export/__init__.py", "src/export/csv.py"]
     # a task with no continuation line still carries an empty list
@@ -168,9 +172,9 @@ def test_load_surfaces_duplicate_files_declaration_as_a_frontmatter_warning(tmp_
     """A second `files:` line under the same task is tolerated, not fatal: the
     first declaration wins and the collision is reported via
     `frontmatter_warnings`."""
-    _, tasks = OpenSpecTaskSource(_change(tmp_path, tasks=DUPLICATE_FILES_DECLARED_MD)).load(
-        "add-export"
-    )
+    _, tasks = OpenSpecTaskSource(
+        _change(tmp_path, tasks=DUPLICATE_FILES_DECLARED_MD)
+    ).load("add-export")
     task = tasks[0]
     assert task["files"] == ["src/export/__init__.py"]
     assert any("more than one" in w for w in task["frontmatter_warnings"])
@@ -181,7 +185,9 @@ def test_load_surfaces_duplicate_files_declaration_as_a_frontmatter_warning(tmp_
 # --------------------------------------------------------------------------- #
 def test_every_task_resolves_to_the_single_tasks_md(tmp_path):
     src = OpenSpecTaskSource(_change(tmp_path))
-    assert src.task_file_path("1.1", "add-export") == src.task_file_path("2.2", "add-export")
+    assert src.task_file_path("1.1", "add-export") == src.task_file_path(
+        "2.2", "add-export"
+    )
     assert src.task_file_path("1.1", "add-export").name == "tasks.md"
 
 
@@ -206,7 +212,9 @@ def test_mark_status_ticks_only_the_named_task(tmp_path):
 
 def test_mark_status_is_idempotent_and_reports_no_change(tmp_path):
     src = OpenSpecTaskSource(_change(tmp_path))
-    assert src.mark_status("2.1", "completed", spec_ref="add-export") is False  # already [x]
+    assert (
+        src.mark_status("2.1", "completed", spec_ref="add-export") is False
+    )  # already [x]
 
 
 def test_mark_status_ignores_non_terminal_statuses(tmp_path):
@@ -285,8 +293,13 @@ def test_resolve_external_dependency_across_changes(tmp_path):
     src = OpenSpecTaskSource(root)
     assert src.resolve_external_dependency("add-import/1.1")["satisfied"] is True
     assert src.resolve_external_dependency("add-import/1.2")["satisfied"] is False
-    assert src.resolve_external_dependency("add-import/9.9")["reason"] == "task not found"
-    assert src.resolve_external_dependency("nope/1.1")["reason"] == "change folder not found"
+    assert (
+        src.resolve_external_dependency("add-import/9.9")["reason"] == "task not found"
+    )
+    assert (
+        src.resolve_external_dependency("nope/1.1")["reason"]
+        == "change folder not found"
+    )
     assert src.resolve_external_dependency("malformed")["reason"] == "malformed"
 
 
@@ -311,8 +324,13 @@ def test_archive_accepts_checkboxes_this_adapter_wrote(tmp_path):
     OpenSpec change at all.
     """
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
-    subprocess.run(["openspec", "init", "--tools", "none"], cwd=tmp_path, check=True,
-                   capture_output=True, text=True)
+    subprocess.run(
+        ["openspec", "init", "--tools", "none"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
     d = tmp_path / "openspec" / "changes" / "add-export"
     (d / "specs" / "data-export").mkdir(parents=True)
@@ -337,8 +355,13 @@ def test_archive_accepts_checkboxes_this_adapter_wrote(tmp_path):
     for t in tasks:
         src.mark_status(t["id"], "completed", spec_ref="add-export")
 
-    r = subprocess.run(["openspec", "archive", "add-export", "--yes"],
-                       cwd=tmp_path, capture_output=True, text=True)
+    r = subprocess.run(
+        ["openspec", "archive", "add-export", "--yes"],
+        check=False,
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
     assert r.returncode == 0, r.stderr or r.stdout
     # archive reports completion from the checkboxes THIS adapter wrote
     assert "Task status: ✓ Complete" in r.stdout, r.stdout
@@ -352,8 +375,13 @@ def test_archive_accepts_checkboxes_this_adapter_wrote(tmp_path):
 def test_parser_agrees_with_the_shipped_schema_template(tmp_path):
     """Guards against OpenSpec changing its own tasks format under us: parse the
     template the installed CLI actually resolves, not a copy pinned in this repo."""
-    r = subprocess.run(["openspec", "templates", "--json"], cwd=tmp_path,
-                       capture_output=True, text=True)
+    r = subprocess.run(
+        ["openspec", "templates", "--json"],
+        check=False,
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
     if r.returncode != 0:
         pytest.skip("openspec templates --json unavailable")
     try:
@@ -395,7 +423,13 @@ TAGGED = textwrap.dedent(
 def test_kind_is_recovered_from_a_leading_tag(tmp_path):
     _, tasks = OpenSpecTaskSource(_change(tmp_path, tasks=TAGGED)).load("add-export")
     kinds = {t["id"]: t["kind"] for t in tasks}
-    assert kinds == {"1.1": "impl", "1.2": "impl", "2.1": "impl", "3.1": "e2e", "3.2": "cleanup"}
+    assert kinds == {
+        "1.1": "impl",
+        "1.2": "impl",
+        "2.1": "impl",
+        "3.1": "e2e",
+        "3.2": "cleanup",
+    }
 
 
 def test_tag_is_stripped_from_the_title(tmp_path):

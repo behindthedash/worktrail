@@ -30,7 +30,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from worktrail.orchestrator import live  # noqa: E402
+from worktrail.orchestrator import live
 
 
 def _git(repo, *args, check=True):
@@ -139,7 +139,13 @@ class FreshWorktreeRepairsWhenFirstCarryAttemptFails(unittest.TestCase):
 
             self.assertEqual(
                 events,
-                [{"event": "worktree_drift_repaired", "task": "TASK-002", "at": mock.ANY}],
+                [
+                    {
+                        "event": "worktree_drift_repaired",
+                        "task": "TASK-002",
+                        "at": mock.ANY,
+                    }
+                ],
             )
             self.assertEqual((wt / "dep_file.py").read_text(), "dependency content\n")
             status = _git(wt, "status", "--porcelain").stdout

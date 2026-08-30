@@ -10,13 +10,7 @@ from unittest import mock
 
 import pytest
 
-from worktrail.drain.summary_contract import (
-    load_nightly_drain_summary_contract,
-    stop_semantics,
-)
-
 from worktrail.drain import drain
-from worktrail.orchestrator import agent_capacity
 from worktrail.drain.drain import (
     MAX_TRANSCRIPT_FILES,
     PROMPT,
@@ -39,7 +33,6 @@ from worktrail.drain.drain import (
     close_stale_bookkeeping,
     count_ready_briefs,
     decide,
-    ensure_pr_risk_label,
     find_complete_openspec_changes,
     find_resumable_quarantines,
     find_stale_bookkeeping_specs,
@@ -65,7 +58,11 @@ from worktrail.drain.drain import (
     worker_scratch_dir,
     write_iteration_transcript,
 )
-
+from worktrail.drain.summary_contract import (
+    load_nightly_drain_summary_contract,
+    stop_semantics,
+)
+from worktrail.orchestrator import agent_capacity
 
 # ---------------------------------------------------------------------------
 # build_command
@@ -83,12 +80,18 @@ def test_build_command_claude_permission_args_are_explicit_passthrough():
 def test_build_command_opencode_and_codex_shapes():
     assert build_command("opencode", []) == ["opencode", "run", PROMPT]
     assert build_command("codex", []) == [
-        "codex", "exec", "-s", "danger-full-access", PROMPT]
+        "codex",
+        "exec",
+        "-s",
+        "danger-full-access",
+        PROMPT,
+    ]
 
 
 def test_build_command_template_overrides_agent_shape():
-    cmd = build_command("claude", ["--ignored-by-template"],
-                        template="mycli --oneshot {prompt}")
+    cmd = build_command(
+        "claude", ["--ignored-by-template"], template="mycli --oneshot {prompt}"
+    )
     assert cmd == ["mycli", "--oneshot", PROMPT]
 
 
@@ -104,11 +107,28 @@ def test_build_command_unknown_agent_rejected():
 
 def test_build_command_model_appended_per_harness():
     assert build_command("claude", [], model="opus") == [
-        "claude", "-p", PROMPT, "--model", "opus"]
+        "claude",
+        "-p",
+        PROMPT,
+        "--model",
+        "opus",
+    ]
     assert build_command("opencode", [], model="opencode/x") == [
-        "opencode", "run", "--model", "opencode/x", PROMPT]
+        "opencode",
+        "run",
+        "--model",
+        "opencode/x",
+        PROMPT,
+    ]
     assert build_command("codex", [], model="gpt-5") == [
-        "codex", "exec", "-s", "danger-full-access", "--model", "gpt-5", PROMPT]
+        "codex",
+        "exec",
+        "-s",
+        "danger-full-access",
+        "--model",
+        "gpt-5",
+        PROMPT,
+    ]
 
 
 def test_build_command_no_model_omits_flag():
@@ -117,20 +137,49 @@ def test_build_command_no_model_omits_flag():
 
 def test_build_command_effort_appended_per_harness():
     assert build_command("claude", [], model="opus", effort="high") == [
-        "claude", "-p", PROMPT, "--model", "opus", "--effort", "high"]
+        "claude",
+        "-p",
+        PROMPT,
+        "--model",
+        "opus",
+        "--effort",
+        "high",
+    ]
     assert build_command("opencode", [], model="opencode/x", effort="medium") == [
-        "opencode", "run", "--model", "opencode/x", "--variant", "medium", PROMPT]
+        "opencode",
+        "run",
+        "--model",
+        "opencode/x",
+        "--variant",
+        "medium",
+        PROMPT,
+    ]
     assert build_command("codex", [], model="gpt-5", effort="low") == [
-        "codex", "exec", "-s", "danger-full-access", "--model", "gpt-5",
-        "-c", "model_reasoning_effort=low", PROMPT]
+        "codex",
+        "exec",
+        "-s",
+        "danger-full-access",
+        "--model",
+        "gpt-5",
+        "-c",
+        "model_reasoning_effort=low",
+        PROMPT,
+    ]
 
 
 def test_build_command_no_effort_omits_flag():
     assert build_command("claude", [], model="opus", effort=None) == [
-        "claude", "-p", PROMPT, "--model", "opus"]
+        "claude",
+        "-p",
+        PROMPT,
+        "--model",
+        "opus",
+    ]
 
 
-def test_build_agent_environment_adds_supported_user_runtime_dirs(tmp_path, monkeypatch):
+def test_build_agent_environment_adds_supported_user_runtime_dirs(
+    tmp_path, monkeypatch
+):
     home = tmp_path / "home"
     node_bin = home / ".nvm" / "versions" / "node" / "v24.16.0" / "bin"
     node_bin.mkdir(parents=True)
@@ -174,7 +223,9 @@ def test_validate_agent_runtime_reports_only_missing_node():
     def fake_which(executable, path):
         return f"/minimal/{executable}" if executable == "claude" else None
 
-    with pytest.raises(RuntimeError, match=r"required executable\(s\) unavailable: node"):
+    with pytest.raises(
+        RuntimeError, match=r"required executable\(s\) unavailable: node"
+    ):
         validate_agent_runtime("claude", env, which=fake_which)
 
 
@@ -183,12 +234,14 @@ def test_validate_agent_runtime_reports_only_missing_node():
 
 
 def test_count_ready_briefs_excludes_blocked_and_not_yet_due():
-    queue = {"briefs": [
-        {"filename": "a.md", "blocked": False, "not_yet_due": False},
-        {"filename": "b.md", "blocked": True, "not_yet_due": False},
-        {"filename": "c.md", "blocked": False, "not_yet_due": True},
-        {"filename": "d.md"},
-    ]}
+    queue = {
+        "briefs": [
+            {"filename": "a.md", "blocked": False, "not_yet_due": False},
+            {"filename": "b.md", "blocked": True, "not_yet_due": False},
+            {"filename": "c.md", "blocked": False, "not_yet_due": True},
+            {"filename": "d.md"},
+        ]
+    }
     assert count_ready_briefs(queue) == 2
 
 
@@ -214,7 +267,9 @@ def test_claimed_brief_ids_no_change_is_empty():
 
 
 def test_claimed_brief_ids_multiple_disappearances_all_returned_sorted():
-    before = {"briefs": [{"filename": "c.md"}, {"filename": "a.md"}, {"filename": "b.md"}]}
+    before = {
+        "briefs": [{"filename": "c.md"}, {"filename": "a.md"}, {"filename": "b.md"}]
+    }
     after = {"briefs": [{"filename": "c.md"}]}
     assert claimed_brief_ids(before, after) == ["a", "b"]
 
@@ -329,12 +384,13 @@ def test_newest_run_record_repo_filter_none_matches_unfiltered_default(tmp_path)
     new = repo / "new.yaml"
     new.write_text("run_id: new\n")
     os.utime(new, (2000, 2000))
-    assert (newest_run_record(tmp_path, repo_filter=None)
-            == newest_run_record(tmp_path))
-    assert (newest_run_record(tmp_path, {old}, repo_filter=None)
-            == newest_run_record(tmp_path, {old}))
-    assert (newest_run_record(tmp_path, {old, new}, repo_filter=None)
-            == newest_run_record(tmp_path, {old, new}))
+    assert newest_run_record(tmp_path, repo_filter=None) == newest_run_record(tmp_path)
+    assert newest_run_record(tmp_path, {old}, repo_filter=None) == newest_run_record(
+        tmp_path, {old}
+    )
+    assert newest_run_record(
+        tmp_path, {old, new}, repo_filter=None
+    ) == newest_run_record(tmp_path, {old, new})
 
 
 # ---------------------------------------------------------------------------
@@ -342,8 +398,11 @@ def test_newest_run_record_repo_filter_none_matches_unfiltered_default(tmp_path)
 
 
 def test_classify_outcome_success_states():
-    for state in ("completed_and_merged", "completed_pr_open",
-                  "completed_awaiting_human_approval"):
+    for state in (
+        "completed_and_merged",
+        "completed_pr_open",
+        "completed_awaiting_human_approval",
+    ):
         out = classify_outcome({"final_status": state}, claimed_delta=1, exit_code=0)
         assert out.kind == "success" and out.state == state
 
@@ -359,8 +418,10 @@ def test_provider_commands_require_unattended_terminal_ownership(agent):
 
 
 def test_classify_outcome_blocked_and_failed_states():
-    assert classify_outcome({"final_status": "blocked_external_dependency"},
-                            1, 0).kind == "blocked"
+    assert (
+        classify_outcome({"final_status": "blocked_external_dependency"}, 1, 0).kind
+        == "blocked"
+    )
     assert classify_outcome({"final_status": "failed_terminal"}, 1, 0).kind == "failed"
 
 
@@ -378,8 +439,12 @@ def test_classify_outcome_clean_exit_unfinished_record_is_recoverable_failure():
 
 
 def test_classify_outcome_clean_exit_unfinished_record_attributes_claimed_brief():
-    out = classify_outcome({"final_status": None}, claimed_delta=1, exit_code=0,
-                           claimed_briefs=["20260806-brief"])
+    out = classify_outcome(
+        {"final_status": None},
+        claimed_delta=1,
+        exit_code=0,
+        claimed_briefs=["20260806-brief"],
+    )
     assert out.kind == "failed" and out.brief_id == "20260806-brief"
 
 
@@ -392,19 +457,29 @@ def test_classify_outcome_no_record_nonzero_exit_is_failure():
 
 
 def test_classify_outcome_attributes_single_claimed_brief():
-    out = classify_outcome({"final_status": "completed_pr_open"}, claimed_delta=1,
-                           exit_code=0, claimed_briefs=["20260716-171700-x"])
+    out = classify_outcome(
+        {"final_status": "completed_pr_open"},
+        claimed_delta=1,
+        exit_code=0,
+        claimed_briefs=["20260716-171700-x"],
+    )
     assert out.brief_id == "20260716-171700-x"
 
 
 def test_classify_outcome_ambiguous_multi_claim_leaves_brief_unattributed():
-    out = classify_outcome({"final_status": "completed_pr_open"}, claimed_delta=2,
-                           exit_code=0, claimed_briefs=["a", "b"])
+    out = classify_outcome(
+        {"final_status": "completed_pr_open"},
+        claimed_delta=2,
+        exit_code=0,
+        claimed_briefs=["a", "b"],
+    )
     assert out.brief_id is None
 
 
 def test_classify_outcome_no_claimed_briefs_leaves_brief_none():
-    out = classify_outcome({"final_status": "completed_pr_open"}, claimed_delta=1, exit_code=0)
+    out = classify_outcome(
+        {"final_status": "completed_pr_open"}, claimed_delta=1, exit_code=0
+    )
     assert out.brief_id is None
 
 
@@ -421,7 +496,10 @@ def test_classify_outcome_no_record_failure_still_attributes_claimed_brief():
 def test_classify_outcome_timeout_with_pr_is_timeout_after_pr():
     out = classify_outcome(
         {"final_status": None, "pull_request": "https://github.com/x/y/pull/658"},
-        claimed_delta=1, exit_code=124, claimed_briefs=["b1"])
+        claimed_delta=1,
+        exit_code=124,
+        claimed_briefs=["b1"],
+    )
     assert out.kind == "timeout_after_pr"
     assert out.pr_url == "https://github.com/x/y/pull/658"
     assert out.brief_id == "b1"
@@ -440,7 +518,9 @@ def test_classify_outcome_non_timeout_exit_with_pr_but_unfinished_record_is_fail
     # A PR alone doesn't grant the timeout_after_pr pass — only exit 124 does.
     out = classify_outcome(
         {"final_status": None, "pull_request": "https://github.com/x/y/pull/1"},
-        claimed_delta=1, exit_code=1)
+        claimed_delta=1,
+        exit_code=1,
+    )
     assert out.kind == "failed"
 
 
@@ -448,8 +528,13 @@ def test_classify_outcome_timeout_with_pr_but_explicit_failed_state_stays_failed
     # An explicit failed_terminal from the record is a deliberate signal from
     # the agent itself and outranks the timeout+PR heuristic.
     out = classify_outcome(
-        {"final_status": "failed_terminal", "pull_request": "https://github.com/x/y/pull/1"},
-        claimed_delta=1, exit_code=124)
+        {
+            "final_status": "failed_terminal",
+            "pull_request": "https://github.com/x/y/pull/1",
+        },
+        claimed_delta=1,
+        exit_code=124,
+    )
     assert out.kind == "failed"
 
 
@@ -472,7 +557,9 @@ def test_classify_outcome_auth_failure_class_is_blocked_not_failed():
 def test_classify_outcome_transport_failure_class_stays_plain_failed():
     # transport/sandbox/startup are not account-level -- unchanged behavior,
     # still counted by the ordinary circuit breaker.
-    out = classify_outcome(None, claimed_delta=0, exit_code=1, failure_class="transport")
+    out = classify_outcome(
+        None, claimed_delta=0, exit_code=1, failure_class="transport"
+    )
     assert out.kind == "failed"
 
 
@@ -494,28 +581,34 @@ def test_classify_outcome_no_pick_outranks_failure_class():
 
 
 def test_capacity_gated_all_providers_for_agent_gated():
-    cache = {"providers": {
-        "claude": {"status": "gated"},
-        "claude:opus": {"status": "unavailable"},
-        "codex": {"status": "ok"},
-    }}
+    cache = {
+        "providers": {
+            "claude": {"status": "gated"},
+            "claude:opus": {"status": "unavailable"},
+            "codex": {"status": "ok"},
+        }
+    }
     assert capacity_gated(cache, "claude") is True
     assert capacity_gated(cache, "codex") is False
 
 
 def test_capacity_gated_bare_agent_gate_overrides_model_history():
-    cache = {"providers": {
-        "claude": {"status": "gated"},
-        "claude:sonnet": {"status": "ok"},
-    }}
+    cache = {
+        "providers": {
+            "claude": {"status": "gated"},
+            "claude:sonnet": {"status": "ok"},
+        }
+    }
     assert capacity_gated(cache, "claude") is True
 
 
 def test_capacity_gated_partial_model_gate_does_not_stop():
-    cache = {"providers": {
-        "claude:opus": {"status": "unavailable"},
-        "claude:sonnet": {"status": "ok"},
-    }}
+    cache = {
+        "providers": {
+            "claude:opus": {"status": "unavailable"},
+            "claude:sonnet": {"status": "ok"},
+        }
+    }
     assert capacity_gated(cache, "claude") is False
 
 
@@ -533,28 +626,40 @@ def test_capacity_gated_expired_retry_after_is_not_gated():
     # select_available_agent's docstring), which requires comparing
     # retry_after to "now" instead of only reading the stale "status" field.
     now = datetime(2026, 8, 22, tzinfo=timezone.utc)
-    cache = {"providers": {
-        "claude": {"status": "unavailable",
-                   "retry_after": (now - timedelta(days=3)).isoformat()},
-    }}
+    cache = {
+        "providers": {
+            "claude": {
+                "status": "unavailable",
+                "retry_after": (now - timedelta(days=3)).isoformat(),
+            },
+        }
+    }
     assert capacity_gated(cache, "claude", now=now) is False
 
 
 def test_capacity_gated_unexpired_retry_after_still_gated():
     now = datetime(2026, 8, 22, tzinfo=timezone.utc)
-    cache = {"providers": {
-        "claude": {"status": "unavailable",
-                   "retry_after": (now + timedelta(minutes=30)).isoformat()},
-    }}
+    cache = {
+        "providers": {
+            "claude": {
+                "status": "unavailable",
+                "retry_after": (now + timedelta(minutes=30)).isoformat(),
+            },
+        }
+    }
     assert capacity_gated(cache, "claude", now=now) is True
 
 
 def test_capacity_gated_expired_reset_at_falls_back_and_is_not_gated():
     now = datetime(2026, 8, 22, tzinfo=timezone.utc)
-    cache = {"providers": {
-        "codex": {"status": "unavailable",
-                  "reset_at": (now - timedelta(hours=1)).isoformat()},
-    }}
+    cache = {
+        "providers": {
+            "codex": {
+                "status": "unavailable",
+                "reset_at": (now - timedelta(hours=1)).isoformat(),
+            },
+        }
+    }
     assert capacity_gated(cache, "codex", now=now) is False
 
 
@@ -567,27 +672,44 @@ def test_capacity_gated_gated_status_without_timestamp_stays_gated():
 
 def test_capacity_gated_expired_gate_all_models_matched_ungates_agent():
     now = datetime(2026, 8, 22, tzinfo=timezone.utc)
-    cache = {"providers": {
-        "claude:opus": {"status": "unavailable",
-                        "retry_after": (now - timedelta(hours=2)).isoformat()},
-        "claude:sonnet": {"status": "unavailable",
-                          "retry_after": (now - timedelta(hours=1)).isoformat()},
-    }}
+    cache = {
+        "providers": {
+            "claude:opus": {
+                "status": "unavailable",
+                "retry_after": (now - timedelta(hours=2)).isoformat(),
+            },
+            "claude:sonnet": {
+                "status": "unavailable",
+                "retry_after": (now - timedelta(hours=1)).isoformat(),
+            },
+        }
+    }
     assert capacity_gated(cache, "claude", now=now) is False
 
 
 def test_select_available_agent_picks_agent_back_up_after_retry_after_expires():
     now = datetime(2026, 8, 22, tzinfo=timezone.utc)
-    cache = {"providers": {
-        "claude": {"status": "unavailable",
-                   "retry_after": (now - timedelta(days=1)).isoformat()},
-        "codex": {"status": "unavailable",
-                  "retry_after": (now - timedelta(hours=12)).isoformat()},
-        "opencode": {"status": "unavailable",
-                     "retry_after": (now - timedelta(hours=1)).isoformat()},
-    }}
-    assert select_available_agent(
-        cache, ["claude", "codex", "opencode"], now=now) == ("claude", None, None)
+    cache = {
+        "providers": {
+            "claude": {
+                "status": "unavailable",
+                "retry_after": (now - timedelta(days=1)).isoformat(),
+            },
+            "codex": {
+                "status": "unavailable",
+                "retry_after": (now - timedelta(hours=12)).isoformat(),
+            },
+            "opencode": {
+                "status": "unavailable",
+                "retry_after": (now - timedelta(hours=1)).isoformat(),
+            },
+        }
+    }
+    assert select_available_agent(cache, ["claude", "codex", "opencode"], now=now) == (
+        "claude",
+        None,
+        None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -605,10 +727,12 @@ def test_select_available_agent_skips_gated_primary_for_fallback():
 
 
 def test_select_available_agent_none_when_every_candidate_gated():
-    cache = {"providers": {
-        "codex": {"status": "gated"},
-        "claude": {"status": "unavailable"},
-    }}
+    cache = {
+        "providers": {
+            "codex": {"status": "gated"},
+            "claude": {"status": "unavailable"},
+        }
+    }
     assert select_available_agent(cache, ["codex", "claude"]) is None
 
 
@@ -642,8 +766,10 @@ _ROUTING_TWO_CLAUDE_MODELS = {
         "codex-sub": {"harness": "codex", "pool": "subscription"},
     },
     "tiers": {
-        "t2-build": {"claude-sub": {"model": "sonnet", "effort": "medium"},
-                     "codex-sub": {"model": "gpt-5"}},
+        "t2-build": {
+            "claude-sub": {"model": "sonnet", "effort": "medium"},
+            "codex-sub": {"model": "gpt-5"},
+        },
         "t1-deep": {"claude-sub": {"model": "opus"}},
     },
     "default_tier": "t2-build",
@@ -653,13 +779,15 @@ _ROUTING_TWO_CLAUDE_MODELS = {
 def test_select_available_agent_returns_the_cells_effort_too():
     cache = {}
     assert select_available_agent(
-        cache, ["claude"], routing=_ROUTING_TWO_CLAUDE_MODELS) == ("claude", "sonnet", "medium")
+        cache, ["claude"], routing=_ROUTING_TWO_CLAUDE_MODELS
+    ) == ("claude", "sonnet", "medium")
 
 
 def test_select_available_agent_per_target_gate_falls_through_same_tier_row():
     cache = {"providers": {"claude-sub:sonnet": {"status": "gated"}}}
     assert select_available_agent(
-        cache, ["claude", "codex"], routing=_ROUTING_TWO_CLAUDE_MODELS) == ("codex", "gpt-5", None)
+        cache, ["claude", "codex"], routing=_ROUTING_TWO_CLAUDE_MODELS
+    ) == ("codex", "gpt-5", None)
 
 
 def test_select_available_agent_never_consults_a_row_other_than_default_tier():
@@ -667,16 +795,25 @@ def test_select_available_agent_never_consults_a_row_other_than_default_tier():
     # other cell (t1-deep/opus) is not consulted even though it would be
     # available -- select_cell only ever walks the one row it's given.
     cache = {"providers": {"claude-sub:sonnet": {"status": "gated"}}}
-    assert select_available_agent(cache, ["claude"], routing=_ROUTING_TWO_CLAUDE_MODELS) is None
+    assert (
+        select_available_agent(cache, ["claude"], routing=_ROUTING_TWO_CLAUDE_MODELS)
+        is None
+    )
 
 
 def test_select_available_agent_routing_all_row_targets_gated_returns_none():
-    cache = {"providers": {
-        "claude-sub:sonnet": {"status": "gated"},
-        "codex-sub:gpt-5": {"status": "gated"},
-    }}
-    assert select_available_agent(
-        cache, ["claude", "codex"], routing=_ROUTING_TWO_CLAUDE_MODELS) is None
+    cache = {
+        "providers": {
+            "claude-sub:sonnet": {"status": "gated"},
+            "codex-sub:gpt-5": {"status": "gated"},
+        }
+    }
+    assert (
+        select_available_agent(
+            cache, ["claude", "codex"], routing=_ROUTING_TWO_CLAUDE_MODELS
+        )
+        is None
+    )
 
 
 def test_select_available_agent_routing_candidate_with_no_declared_target_is_unreachable():
@@ -686,8 +823,10 @@ def test_select_available_agent_routing_candidate_with_no_declared_target_is_unr
     # "--agent/--fallback-agent now take target names"), unlike the
     # bare-sentinel fallback that still applies when routing is unset.
     cache = {}
-    assert select_available_agent(
-        cache, ["opencode"], routing=_ROUTING_TWO_CLAUDE_MODELS) is None
+    assert (
+        select_available_agent(cache, ["opencode"], routing=_ROUTING_TWO_CLAUDE_MODELS)
+        is None
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -695,15 +834,20 @@ def test_select_available_agent_routing_candidate_with_no_declared_target_is_unr
 
 
 def test_write_iteration_transcript_none_dir_writes_nothing(tmp_path):
-    assert write_iteration_transcript(
-        None, 1, "claude", 0, Outcome("no_pick"), "out", "err") is None
+    assert (
+        write_iteration_transcript(
+            None, 1, "claude", 0, Outcome("no_pick"), "out", "err"
+        )
+        is None
+    )
 
 
 def test_write_iteration_transcript_content_and_naming(tmp_path):
     out_dir = tmp_path / "transcripts"
     outcome = Outcome("blocked", "blocked_capacity_billing", "brief-1", "https://pr/1")
     path = write_iteration_transcript(
-        out_dir, 3, "codex", 1, outcome, "the stdout body", "the stderr body")
+        out_dir, 3, "codex", 1, outcome, "the stdout body", "the stderr body"
+    )
     assert path is not None
     assert path.parent == out_dir
     assert path.name.endswith("-iter3-codex.log")
@@ -722,8 +866,15 @@ def test_write_iteration_transcript_bounded_retention(tmp_path):
     out_dir = tmp_path / "transcripts"
     for i in range(MAX_TRANSCRIPT_FILES + 5):
         write_iteration_transcript(
-            out_dir, i, "claude", 0, Outcome("no_pick"), f"out-{i}", "",
-            now=datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=i))
+            out_dir,
+            i,
+            "claude",
+            0,
+            Outcome("no_pick"),
+            f"out-{i}",
+            "",
+            now=datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=i),
+        )
     remaining = sorted(out_dir.glob("*.log"))
     assert len(remaining) == MAX_TRANSCRIPT_FILES
     assert "iter4-" not in remaining[0].name  # oldest 5 pruned
@@ -734,8 +885,12 @@ def test_write_iteration_transcript_write_failure_returns_none(tmp_path):
     blocker = tmp_path / "blocker"
     blocker.write_text("x")
     bad_dir = blocker / "transcripts"  # parent is a file -> mkdir must fail
-    assert write_iteration_transcript(
-        bad_dir, 1, "claude", 0, Outcome("no_pick"), "out", "err") is None
+    assert (
+        write_iteration_transcript(
+            bad_dir, 1, "claude", 0, Outcome("no_pick"), "out", "err"
+        )
+        is None
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -743,9 +898,17 @@ def test_write_iteration_transcript_write_failure_returns_none(tmp_path):
 
 
 def make_state(**kw):
-    defaults = dict(iteration=0, items_completed=0, max_items=0, deadline=None,
-                    consecutive_failures=0, failure_threshold=2,
-                    ready_count=3, last_outcome=None, agent_capacity_gated=False)
+    defaults = {
+        "iteration": 0,
+        "items_completed": 0,
+        "max_items": 0,
+        "deadline": None,
+        "consecutive_failures": 0,
+        "failure_threshold": 2,
+        "ready_count": 3,
+        "last_outcome": None,
+        "agent_capacity_gated": False,
+    }
     defaults.update(kw)
     return LoopState(**defaults)
 
@@ -768,58 +931,102 @@ def test_decide_continues_past_pending_user_decision_when_ready_briefs_remain():
     # A pending_user_decision handoff is per-brief, not a run-wide stop: the
     # blocked brief is already excluded from ready_count by the queue's own
     # awaiting-decision contract, so other ready briefs should still run.
-    d = decide(make_state(last_outcome=Outcome(
-        "pending_user_decision", "pending_user_decision",
-        pending_decisions=["dec-x"]), ready_count=2), now=0)
+    d = decide(
+        make_state(
+            last_outcome=Outcome(
+                "pending_user_decision",
+                "pending_user_decision",
+                pending_decisions=["dec-x"],
+            ),
+            ready_count=2,
+        ),
+        now=0,
+    )
     assert d.proceed is True
 
 
 def test_decide_stops_on_pending_user_decision_when_queue_empty():
-    d = decide(make_state(last_outcome=Outcome(
-        "pending_user_decision", "pending_user_decision",
-        pending_decisions=["dec-x"]), ready_count=0), now=0)
+    d = decide(
+        make_state(
+            last_outcome=Outcome(
+                "pending_user_decision",
+                "pending_user_decision",
+                pending_decisions=["dec-x"],
+            ),
+            ready_count=0,
+        ),
+        now=0,
+    )
     assert d.proceed is False and d.reason.startswith("queue_empty")
 
 
 def test_decide_pending_user_decision_does_not_consume_max_items():
     # items_completed (not the raw pass count) is what max_items counts
     # against -- a decision-blocked pass must not consume a slot.
-    d = decide(make_state(iteration=3, items_completed=1, max_items=3,
-                          last_outcome=Outcome(
-                              "pending_user_decision", "pending_user_decision",
-                              pending_decisions=["dec-x"])), now=0)
+    d = decide(
+        make_state(
+            iteration=3,
+            items_completed=1,
+            max_items=3,
+            last_outcome=Outcome(
+                "pending_user_decision",
+                "pending_user_decision",
+                pending_decisions=["dec-x"],
+            ),
+        ),
+        now=0,
+    )
     assert d.proceed is True
 
 
 def test_decide_stops_on_circuit_breaker():
-    d = decide(make_state(last_outcome=Outcome("failed"),
-                          consecutive_failures=2), now=0)
+    d = decide(
+        make_state(last_outcome=Outcome("failed"), consecutive_failures=2), now=0
+    )
     assert d.proceed is False and d.reason.startswith("circuit_breaker")
 
 
 def test_decide_continues_below_failure_threshold():
-    d = decide(make_state(last_outcome=Outcome("failed"),
-                          consecutive_failures=1), now=0)
+    d = decide(
+        make_state(last_outcome=Outcome("failed"), consecutive_failures=1), now=0
+    )
     assert d.proceed is True
 
 
 def test_decide_stops_on_capacity_gate_after_blocked_outcome():
-    d = decide(make_state(last_outcome=Outcome("blocked",
-                                               "blocked_external_dependency"),
-                          consecutive_failures=1, agent_capacity_gated=True), now=0)
+    d = decide(
+        make_state(
+            last_outcome=Outcome("blocked", "blocked_external_dependency"),
+            consecutive_failures=1,
+            agent_capacity_gated=True,
+        ),
+        now=0,
+    )
     assert d.proceed is False and d.reason.startswith("capacity_gated")
 
 
 def test_decide_capacity_gate_alone_without_blocked_outcome_continues():
     # A stale gate entry must not stop a drain whose iterations are succeeding.
-    d = decide(make_state(last_outcome=Outcome("success", "completed_pr_open"),
-                          agent_capacity_gated=True), now=0)
+    d = decide(
+        make_state(
+            last_outcome=Outcome("success", "completed_pr_open"),
+            agent_capacity_gated=True,
+        ),
+        now=0,
+    )
     assert d.proceed is True
 
 
 def test_decide_stops_on_max_items():
-    d = decide(make_state(iteration=3, items_completed=3, max_items=3,
-                          last_outcome=Outcome("success", "completed_pr_open")), now=0)
+    d = decide(
+        make_state(
+            iteration=3,
+            items_completed=3,
+            max_items=3,
+            last_outcome=Outcome("success", "completed_pr_open"),
+        ),
+        now=0,
+    )
     assert d.proceed is False and d.reason.startswith("max_items")
 
 
@@ -829,8 +1036,12 @@ def test_decide_stops_on_budget():
 
 
 def test_decide_awaiting_approval_continues():
-    d = decide(make_state(
-        last_outcome=Outcome("success", "completed_awaiting_human_approval")), now=0)
+    d = decide(
+        make_state(
+            last_outcome=Outcome("success", "completed_awaiting_human_approval")
+        ),
+        now=0,
+    )
     assert d.proceed is True
 
 
@@ -900,21 +1111,24 @@ class FakeQueue:
     def next_json(self):
         n = self.ready_counts[min(self.calls, len(self.ready_counts) - 1)]
         self.calls += 1
-        return {"briefs": [
-            {"filename": f"b{i}.md", "blocked": False, "not_yet_due": False}
-            for i in range(n)]}
+        return {
+            "briefs": [
+                {"filename": f"b{i}.md", "blocked": False, "not_yet_due": False}
+                for i in range(n)
+            ]
+        }
 
 
 def make_config(tmp_path, **kw):
     wq = tmp_path / "work_queue.py"
     wq.write_text("# placeholder; list_queue is monkeypatched in tests\n")
-    defaults = dict(
-        work_queue_py=wq,
-        runs_dir=tmp_path / "runs",
-        capacity_cache=tmp_path / "capacity.json",
-        lock_file=tmp_path / "drain.lock",
-        agent="claude",
-    )
+    defaults = {
+        "work_queue_py": wq,
+        "runs_dir": tmp_path / "runs",
+        "capacity_cache": tmp_path / "capacity.json",
+        "lock_file": tmp_path / "drain.lock",
+        "agent": "claude",
+    }
     defaults.update(kw)
     return DrainConfig(**defaults)
 
@@ -941,7 +1155,8 @@ def test_list_queue_runs_installed_module_as_package(tmp_path):
     queue_path = queue_base / "queue"
     queue_path.mkdir(parents=True)
     (queue_path / "b1.md").write_text(
-        "---\nid: b1\nstatus: queued\n---\n\nbody\n", encoding="utf-8")
+        "---\nid: b1\nstatus: queued\n---\n\nbody\n", encoding="utf-8"
+    )
 
     payload = drain.list_queue(installed_module, queue_base)
 
@@ -965,7 +1180,8 @@ def test_list_queue_plain_script_override_still_supported(tmp_path):
         encoding="utf-8",
     )
     (queue_path / "b2.md").write_text(
-        "---\nid: b2\nstatus: queued\n---\n\nbody\n", encoding="utf-8")
+        "---\nid: b2\nstatus: queued\n---\n\nbody\n", encoding="utf-8"
+    )
 
     payload = drain.list_queue(script, queue_base)
 
@@ -993,8 +1209,12 @@ def test_drain_two_briefs_then_empty(tmp_path, monkeypatch):
 
     def spawner(cmd, timeout):
         n["spawned"] += 1
-        write_run_record(config.runs_dir, f"go-{n['spawned']}",
-                         "completed_pr_open", pr=f"https://pr/{n['spawned']}")
+        write_run_record(
+            config.runs_dir,
+            f"go-{n['spawned']}",
+            "completed_pr_open",
+            pr=f"https://pr/{n['spawned']}",
+        )
         return SpawnOutcome(0)
 
     logs = []
@@ -1002,11 +1222,15 @@ def test_drain_two_briefs_then_empty(tmp_path, monkeypatch):
     assert n["spawned"] == 2
     assert summary["stopped"].startswith("queue_empty")
     assert [i["state"] for i in summary["iterations"]] == [
-        "completed_pr_open", "completed_pr_open"]
+        "completed_pr_open",
+        "completed_pr_open",
+    ]
     assert not config.lock_file.exists()
 
 
-def test_drain_passes_distinct_worker_scratch_dir_as_cwd_per_slot(tmp_path, monkeypatch):
+def test_drain_passes_distinct_worker_scratch_dir_as_cwd_per_slot(
+    tmp_path, monkeypatch
+):
     """drain()'s built-in spawner path threads worker_scratch_dir(slot) through
     as run_one_shot's cwd (drain.py task 4.3); two workers configured onto
     different slots of the same lock_file must resolve to distinct scratch
@@ -1019,14 +1243,17 @@ def test_drain_passes_distinct_worker_scratch_dir_as_cwd_per_slot(tmp_path, monk
     def run_for_slot(expected_slot, run_name):
         fake = FakeQueue([1, 0])
         install_fake_queue(monkeypatch, fake)
-        config = make_config(tmp_path, max_workers=2,
-                            lock_file=tmp_path / "drain.lock")
+        config = make_config(tmp_path, max_workers=2, lock_file=tmp_path / "drain.lock")
         calls = []
 
         def fake_run_one_shot(cmd, timeout, env=None, cwd=None):
             calls.append(cwd)
-            write_run_record(config.runs_dir, run_name,
-                             "completed_pr_open", pr=f"https://pr/{run_name}")
+            write_run_record(
+                config.runs_dir,
+                run_name,
+                "completed_pr_open",
+                pr=f"https://pr/{run_name}",
+            )
             return SpawnOutcome(0)
 
         monkeypatch.setattr(drain, "run_one_shot", fake_run_one_shot)
@@ -1049,7 +1276,8 @@ def test_drain_passes_distinct_worker_scratch_dir_as_cwd_per_slot(tmp_path, monk
 
 
 def test_drain_attributes_outcome_to_claimed_briefs_own_repo_not_other_repos_newer_record(
-        tmp_path, monkeypatch):
+    tmp_path, monkeypatch
+):
     """Two workers finish overlapping iterations against different repos: this
     worker's iteration claims a repo-a brief, but a concurrently-running
     worker's repo-b record lands (with a newer mtime) between this
@@ -1064,18 +1292,34 @@ def test_drain_attributes_outcome_to_claimed_briefs_own_repo_not_other_repos_new
         calls["n"] += 1
         if calls["n"] == 1:
             # Pre-spawn snapshot: both briefs still queued.
-            return {"briefs": [
-                {"filename": "b1.md", "blocked": False, "not_yet_due": False,
-                 "repo": "/repos/repo-a"},
-                {"filename": "b2.md", "blocked": False, "not_yet_due": False,
-                 "repo": "/repos/repo-b"},
-            ]}
+            return {
+                "briefs": [
+                    {
+                        "filename": "b1.md",
+                        "blocked": False,
+                        "not_yet_due": False,
+                        "repo": "/repos/repo-a",
+                    },
+                    {
+                        "filename": "b2.md",
+                        "blocked": False,
+                        "not_yet_due": False,
+                        "repo": "/repos/repo-b",
+                    },
+                ]
+            }
         if calls["n"] == 2:
             # Post-spawn snapshot: only b1 (repo-a) was claimed this iteration.
-            return {"briefs": [
-                {"filename": "b2.md", "blocked": False, "not_yet_due": False,
-                 "repo": "/repos/repo-b"},
-            ]}
+            return {
+                "briefs": [
+                    {
+                        "filename": "b2.md",
+                        "blocked": False,
+                        "not_yet_due": False,
+                        "repo": "/repos/repo-b",
+                    },
+                ]
+            }
         return {"briefs": []}  # next iteration's pre-spawn snapshot: queue empty
 
     monkeypatch.setattr(drain, "list_queue", fake_list_queue)
@@ -1087,7 +1331,8 @@ def test_drain_attributes_outcome_to_claimed_briefs_own_repo_not_other_repos_new
         own = repo_a_dir / "go-own.yaml"
         own.write_text(
             "run_id: own\nfinal_status: completed_pr_open\n"
-            'pull_request: "https://pr/own"\n')
+            'pull_request: "https://pr/own"\n'
+        )
         os.utime(own, (1000, 1000))
         # The other worker's overlapping iteration, landing a newer record
         # in a different repo's run directory during this same window.
@@ -1122,7 +1367,9 @@ def test_drain_stops_on_no_pick(tmp_path, monkeypatch):
     fake = FakeQueue([3])  # queue never shrinks
     install_fake_queue(monkeypatch, fake)
     config = make_config(tmp_path)
-    summary = drain.drain(config, spawner=lambda c, t: SpawnOutcome(0), log=lambda _l: None)
+    summary = drain.drain(
+        config, spawner=lambda c, t: SpawnOutcome(0), log=lambda _l: None
+    )
     assert len(summary["iterations"]) == 1
     assert summary["iterations"][0]["kind"] == "no_pick"
     assert summary["stopped"].startswith("no_pick")
@@ -1171,10 +1418,17 @@ def test_drain_awaiting_approval_noted_and_continues(tmp_path, monkeypatch):
 
     def spawner(cmd, timeout):
         n["spawned"] += 1
-        state = ("completed_awaiting_human_approval" if n["spawned"] == 1
-                 else "completed_pr_open")
-        write_run_record(config.runs_dir, f"go-{n['spawned']}", state,
-                         pr=f"https://pr/{n['spawned']}")
+        state = (
+            "completed_awaiting_human_approval"
+            if n["spawned"] == 1
+            else "completed_pr_open"
+        )
+        write_run_record(
+            config.runs_dir,
+            f"go-{n['spawned']}",
+            state,
+            pr=f"https://pr/{n['spawned']}",
+        )
         return SpawnOutcome(0)
 
     summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
@@ -1193,8 +1447,12 @@ def test_drain_captures_brief_id_via_queue_diff(tmp_path, monkeypatch):
 
     def spawner(cmd, timeout):
         n["spawned"] += 1
-        write_run_record(config.runs_dir, f"go-{n['spawned']}",
-                         "completed_pr_open", pr=f"https://pr/{n['spawned']}")
+        write_run_record(
+            config.runs_dir,
+            f"go-{n['spawned']}",
+            "completed_pr_open",
+            pr=f"https://pr/{n['spawned']}",
+        )
         return SpawnOutcome(0)
 
     summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
@@ -1215,8 +1473,9 @@ def test_drain_timeout_after_pr_does_not_trip_circuit_breaker(tmp_path, monkeypa
 
     def spawner(cmd, timeout):
         calls["n"] += 1
-        write_run_record(config.runs_dir, f"go-{calls['n']}", None,
-                         pr=f"https://pr/{calls['n']}")
+        write_run_record(
+            config.runs_dir, f"go-{calls['n']}", None, pr=f"https://pr/{calls['n']}"
+        )
         return SpawnOutcome(124)
 
     summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
@@ -1260,8 +1519,9 @@ def test_drain_capacity_gate_stops_after_blocked_iteration(tmp_path, monkeypatch
     fake = FakeQueue([4, 4, 4])
     install_fake_queue(monkeypatch, fake)
     config = make_config(tmp_path)
-    config.capacity_cache.write_text(json.dumps(
-        {"providers": {"claude": {"status": "gated"}}}))
+    config.capacity_cache.write_text(
+        json.dumps({"providers": {"claude": {"status": "gated"}}})
+    )
 
     def spawner(cmd, timeout):
         write_run_record(config.runs_dir, "go-1", "blocked_external_dependency")
@@ -1273,7 +1533,8 @@ def test_drain_capacity_gate_stops_after_blocked_iteration(tmp_path, monkeypatch
 
 
 def test_drain_routing_partial_model_gate_does_not_gate_whole_provider(
-        tmp_path, monkeypatch):
+    tmp_path, monkeypatch
+):
     # routing.yaml configures two real models for "claude" (default_model
     # sonnet + a tier's opus); only "claude:opus" is gated in the capacity
     # cache. Before D4/4.3 this whole scenario collapsed onto one bare
@@ -1282,15 +1543,18 @@ def test_drain_routing_partial_model_gate_does_not_gate_whole_provider(
     # sonnet model keeps the single configured agent (no fallback) usable.
     fake = FakeQueue([1, 0])
     install_fake_queue(monkeypatch, fake)
-    monkeypatch.setattr(drain, "machine_wide_routing",
-                         lambda: _ROUTING_TWO_CLAUDE_MODELS)
+    monkeypatch.setattr(
+        drain, "machine_wide_routing", lambda: _ROUTING_TWO_CLAUDE_MODELS
+    )
     config = make_config(tmp_path, agent="claude")
-    config.capacity_cache.write_text(json.dumps(
-        {"providers": {"claude:opus": {"status": "gated"}}}))
+    config.capacity_cache.write_text(
+        json.dumps({"providers": {"claude:opus": {"status": "gated"}}})
+    )
 
     def spawner(cmd, timeout):
-        write_run_record(config.runs_dir, "go-1", "completed_pr_open",
-                         pr="https://pr/1")
+        write_run_record(
+            config.runs_dir, "go-1", "completed_pr_open", pr="https://pr/1"
+        )
         return SpawnOutcome(0)
 
     summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
@@ -1299,7 +1563,8 @@ def test_drain_routing_partial_model_gate_does_not_gate_whole_provider(
 
 
 def test_drain_routing_all_configured_models_gated_still_capacity_gates(
-        tmp_path, monkeypatch):
+    tmp_path, monkeypatch
+):
     # The mirror case: once every candidate's target in default_tier is
     # gated, the drain stops as capacity_gated exactly like the bare-sentinel
     # case above -- per-target keying narrows what counts as "gated", it does
@@ -1309,12 +1574,19 @@ def test_drain_routing_all_configured_models_gated_still_capacity_gates(
     # claude-sub:opus (a different tier) would have no effect at all.
     fake = FakeQueue([4, 4, 4])
     install_fake_queue(monkeypatch, fake)
-    monkeypatch.setattr(drain, "machine_wide_routing",
-                         lambda: _ROUTING_TWO_CLAUDE_MODELS)
+    monkeypatch.setattr(
+        drain, "machine_wide_routing", lambda: _ROUTING_TWO_CLAUDE_MODELS
+    )
     config = make_config(tmp_path, agent="claude")
-    config.capacity_cache.write_text(json.dumps({"providers": {
-        "claude-sub:sonnet": {"status": "gated"},
-    }}))
+    config.capacity_cache.write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "claude-sub:sonnet": {"status": "gated"},
+                }
+            }
+        )
+    )
 
     def spawner(cmd, timeout):
         write_run_record(config.runs_dir, "go-1", "blocked_external_dependency")
@@ -1325,7 +1597,9 @@ def test_drain_routing_all_configured_models_gated_still_capacity_gates(
     assert summary["stopped"].startswith("capacity_gated")
 
 
-def test_drain_usage_limit_output_becomes_blocked_and_persists_gate(tmp_path, monkeypatch):
+def test_drain_usage_limit_output_becomes_blocked_and_persists_gate(
+    tmp_path, monkeypatch
+):
     # End-to-end regression for the live incident (2026-08-02): the nightly
     # drain's iteration 2 died in 16s against Codex's usage cap, but the old
     # DEVNULL discipline meant it was indistinguishable from any other bare
@@ -1338,8 +1612,9 @@ def test_drain_usage_limit_output_becomes_blocked_and_persists_gate(tmp_path, mo
     # test_capacity_gated_expired_retry_after_is_not_gated), so this test's
     # own "still gated for iteration 2" premise requires a fixed clock rather
     # than depending on wall-clock date never reaching Aug 8, 2026.
-    monkeypatch.setattr(agent_capacity, "_now",
-                         lambda: datetime(2026, 8, 8, 0, 0, tzinfo=timezone.utc))
+    monkeypatch.setattr(
+        agent_capacity, "_now", lambda: datetime(2026, 8, 8, 0, 0, tzinfo=timezone.utc)
+    )
     fake = FakeQueue([3, 3])
     install_fake_queue(monkeypatch, fake)
     config = make_config(tmp_path, agent="codex")
@@ -1347,7 +1622,8 @@ def test_drain_usage_limit_output_becomes_blocked_and_persists_gate(tmp_path, mo
         "ERROR: You've hit your usage limit. Upgrade to Pro "
         "(https://chatgpt.com/explore/pro), visit "
         "https://chatgpt.com/codex/settings/usage to purchase more credits "
-        "or try again at Aug 8th, 2026 2:17 AM.")
+        "or try again at Aug 8th, 2026 2:17 AM."
+    )
 
     def spawner(cmd, timeout):
         return SpawnOutcome(1, usage_limit_text, "")
@@ -1369,13 +1645,20 @@ def test_drain_usage_limit_output_becomes_blocked_and_persists_gate(tmp_path, mo
 
 
 def test_drain_bare_capacity_gate_overrides_available_model_history(
-        tmp_path, monkeypatch):
+    tmp_path, monkeypatch
+):
     fake = FakeQueue([2, 2, 2, 0])
     install_fake_queue(monkeypatch, fake)
     config = make_config(tmp_path, agent="claude", fallback_agents=["codex"])
-    config.capacity_cache.write_text(json.dumps({"providers": {
-        "claude:sonnet": {"status": "available"},
-    }}))
+    config.capacity_cache.write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "claude:sonnet": {"status": "available"},
+                }
+            }
+        )
+    )
     seen_cmds = []
 
     def spawner(cmd, timeout):
@@ -1383,20 +1666,23 @@ def test_drain_bare_capacity_gate_overrides_available_model_history(
         if cmd[0] == "claude":
             return SpawnOutcome(1, "You've hit your weekly limit", "")
         write_run_record(
-            config.runs_dir, "go-1", "completed_pr_open", pr="https://pr/1")
+            config.runs_dir, "go-1", "completed_pr_open", pr="https://pr/1"
+        )
         return SpawnOutcome(0)
 
     summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
 
     assert [cmd[0] for cmd in seen_cmds] == ["claude", "codex"]
     assert [item["kind"] for item in summary["iterations"]] == [
-        "blocked", "success",
+        "blocked",
+        "success",
     ]
     assert summary["stopped"].startswith("queue_empty")
 
 
 def test_drain_weekly_limit_persists_gate_and_stops_as_capacity_gated(
-        tmp_path, monkeypatch):
+    tmp_path, monkeypatch
+):
     """The summary consumed by bridge-health-guard must not look like a fault.
 
     A stale available model entry must not override the bare-agent gate written
@@ -1406,10 +1692,16 @@ def test_drain_weekly_limit_persists_gate_and_stops_as_capacity_gated(
     fake = FakeQueue([2, 2, 2, 0])
     install_fake_queue(monkeypatch, fake)
     config = make_config(tmp_path, agent="claude", fallback_agents=["codex"])
-    config.capacity_cache.write_text(json.dumps({"providers": {
-        "claude:sonnet": {"status": "available"},
-        "codex:gpt-5": {"status": "available"},
-    }}))
+    config.capacity_cache.write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "claude:sonnet": {"status": "available"},
+                    "codex:gpt-5": {"status": "available"},
+                }
+            }
+        )
+    )
     seen_agents = []
 
     def spawner(cmd, timeout):
@@ -1421,8 +1713,9 @@ def test_drain_weekly_limit_persists_gate_and_stops_as_capacity_gated(
     assert seen_agents == ["claude", "codex"]
     assert len(summary["iterations"]) == 2
     assert all(item["kind"] == "blocked" for item in summary["iterations"])
-    assert all(item["state"] == "blocked_capacity_billing"
-               for item in summary["iterations"])
+    assert all(
+        item["state"] == "blocked_capacity_billing" for item in summary["iterations"]
+    )
     assert summary["stopped"].startswith("capacity_gated")
 
     cache = json.loads(config.capacity_cache.read_text())
@@ -1466,7 +1759,9 @@ def test_drain_no_transcript_dir_writes_nothing_by_default(tmp_path, monkeypatch
     assert not (tmp_path / "transcripts").exists()
 
 
-def test_drain_generic_failure_stays_plain_failed_with_no_cache_write(tmp_path, monkeypatch):
+def test_drain_generic_failure_stays_plain_failed_with_no_cache_write(
+    tmp_path, monkeypatch
+):
     # A code bug or transient blip must not be mistaken for an account-level
     # cap: still a plain "failed" iteration, circuit breaker still applies,
     # and nothing is written to the capacity cache.
@@ -1484,13 +1779,15 @@ def test_drain_generic_failure_stays_plain_failed_with_no_cache_write(tmp_path, 
 
 
 def test_drain_capacity_blocked_iteration_with_no_brief_records_empty_attribution(
-        tmp_path, monkeypatch):
+    tmp_path, monkeypatch
+):
     # Regression (add-drain-iteration-observability 2.1): a capacity-blocked
     # iteration claims nothing, so its summary entry and log line must carry
     # the stable empty attribution values alongside the populated
     # failure_class diagnostic that explains WHY the agent was blocked.
-    monkeypatch.setattr(agent_capacity, "_now",
-                        lambda: datetime(2026, 8, 25, tzinfo=timezone.utc))
+    monkeypatch.setattr(
+        agent_capacity, "_now", lambda: datetime(2026, 8, 25, tzinfo=timezone.utc)
+    )
     fake = FakeQueue([3, 3])
     install_fake_queue(monkeypatch, fake)
     config = make_config(tmp_path)
@@ -1515,12 +1812,15 @@ def test_drain_capacity_blocked_iteration_with_no_brief_records_empty_attributio
     assert iteration["failure_class"] == "billing"
     matched = [line for line in logs if "outcome=blocked_capacity_billing" in line]
     assert len(matched) == 1
-    assert ("brief=- pr=- failure_class=billing "
-            "claimed_delta=0 claimed_brief_count=0 exit=1") in matched[0]
+    assert (
+        "brief=- pr=- failure_class=billing "
+        "claimed_delta=0 claimed_brief_count=0 exit=1"
+    ) in matched[0]
 
 
 def test_drain_failed_iteration_attributes_single_claimed_brief_and_transcript(
-        tmp_path, monkeypatch):
+    tmp_path, monkeypatch
+):
     # Regression (add-drain-iteration-observability 2.1): a failed iteration
     # whose queue diff shows exactly one claimed brief must attribute it,
     # expose the claim counts, keep the record-less-only failure_class empty
@@ -1562,8 +1862,9 @@ def test_drain_failed_iteration_attributes_single_claimed_brief_and_transcript(
     assert "partial stdout before the crash" in transcript_path.read_text()
     matched = [line for line in logs if "outcome=failed" in line]
     assert len(matched) == 1
-    assert ("brief=b0 pr=- failure_class=- "
-            "claimed_delta=1 claimed_brief_count=1 exit=1") in matched[0]
+    assert (
+        "brief=b0 pr=- failure_class=- claimed_delta=1 claimed_brief_count=1 exit=1"
+    ) in matched[0]
     assert f"transcript={transcript_path}" in matched[0]
 
 
@@ -1571,13 +1872,16 @@ def test_drain_falls_back_to_configured_agent_when_primary_gated(tmp_path, monke
     fake = FakeQueue([1, 0])
     install_fake_queue(monkeypatch, fake)
     config = make_config(tmp_path, agent="claude", fallback_agents=["opencode"])
-    config.capacity_cache.write_text(json.dumps(
-        {"providers": {"claude": {"status": "gated"}}}))
+    config.capacity_cache.write_text(
+        json.dumps({"providers": {"claude": {"status": "gated"}}})
+    )
     seen_cmds = []
 
     def spawner(cmd, timeout):
         seen_cmds.append(cmd)
-        write_run_record(config.runs_dir, "go-1", "completed_pr_open", pr="https://pr/1")
+        write_run_record(
+            config.runs_dir, "go-1", "completed_pr_open", pr="https://pr/1"
+        )
         return SpawnOutcome(0)
 
     summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
@@ -1587,14 +1891,22 @@ def test_drain_falls_back_to_configured_agent_when_primary_gated(tmp_path, monke
     assert summary["stopped"].startswith("queue_empty")
 
 
-def test_drain_capacity_gated_requires_every_configured_agent_exhausted(tmp_path, monkeypatch):
+def test_drain_capacity_gated_requires_every_configured_agent_exhausted(
+    tmp_path, monkeypatch
+):
     fake = FakeQueue([2])
     install_fake_queue(monkeypatch, fake)
     config = make_config(tmp_path, agent="claude", fallback_agents=["opencode"])
-    config.capacity_cache.write_text(json.dumps({"providers": {
-        "claude": {"status": "gated"},
-        "opencode": {"status": "unavailable"},
-    }}))
+    config.capacity_cache.write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "claude": {"status": "gated"},
+                    "opencode": {"status": "unavailable"},
+                }
+            }
+        )
+    )
 
     def spawner(cmd, timeout):
         write_run_record(config.runs_dir, "go-1", "blocked_external_dependency")
@@ -1610,7 +1922,9 @@ def test_drain_refuses_when_lock_held(tmp_path, monkeypatch):
     install_fake_queue(monkeypatch, fake)
     config = make_config(tmp_path)
     assert acquire_lock(config.lock_file) is True  # our own live pid holds it
-    summary = drain.drain(config, spawner=lambda c, t: SpawnOutcome(0), log=lambda _l: None)
+    summary = drain.drain(
+        config, spawner=lambda c, t: SpawnOutcome(0), log=lambda _l: None
+    )
     assert summary["stopped"] == "lock_held"
     release_lock(config.lock_file)
 
@@ -1641,8 +1955,9 @@ def test_drain_pre_loop_resolves_a_target_name_agent(tmp_path, monkeypatch):
     correctly rather than merely not-crashing by accident."""
     fake = FakeQueue([1])
     install_fake_queue(monkeypatch, fake)
-    monkeypatch.setattr(drain, "machine_wide_routing",
-                         lambda: _ROUTING_TWO_CLAUDE_MODELS)
+    monkeypatch.setattr(
+        drain, "machine_wide_routing", lambda: _ROUTING_TWO_CLAUDE_MODELS
+    )
     config = make_config(tmp_path, agent="claude-sub", dry_run=True)
     logs = []
 
@@ -1659,7 +1974,8 @@ def test_drain_pre_loop_resolves_a_target_name_agent(tmp_path, monkeypatch):
 
 
 def test_drain_pre_loop_falls_back_to_ungated_resolution_when_all_gated(
-        tmp_path, monkeypatch):
+    tmp_path, monkeypatch
+):
     """When the only candidate's cell is already capacity-gated before the
     first iteration, select_available_agent() returns None against the real
     cache -- the pre-loop placeholder still needs a valid harness shape (the
@@ -1668,11 +1984,13 @@ def test_drain_pre_loop_falls_back_to_ungated_resolution_when_all_gated(
     unresolved target name for build_command()."""
     fake = FakeQueue([1])
     install_fake_queue(monkeypatch, fake)
-    monkeypatch.setattr(drain, "machine_wide_routing",
-                         lambda: _ROUTING_TWO_CLAUDE_MODELS)
+    monkeypatch.setattr(
+        drain, "machine_wide_routing", lambda: _ROUTING_TWO_CLAUDE_MODELS
+    )
     config = make_config(tmp_path, agent="claude-sub", dry_run=True)
-    config.capacity_cache.write_text(json.dumps(
-        {"providers": {"claude-sub:sonnet": {"status": "gated"}}}))
+    config.capacity_cache.write_text(
+        json.dumps({"providers": {"claude-sub:sonnet": {"status": "gated"}}})
+    )
     logs = []
 
     def spawner(cmd, timeout):
@@ -1685,7 +2003,8 @@ def test_drain_pre_loop_falls_back_to_ungated_resolution_when_all_gated(
 
 
 def test_drain_runs_routing_liveness_check_before_first_iteration(
-        tmp_path, monkeypatch):
+    tmp_path, monkeypatch
+):
     """task 5.1: the routing liveness check (task 6.2's --check logic) runs
     once before the first iteration, next to validate_agent_runtime()'s own
     fail-closed preflight -- so a retired-model gate is recorded before any
@@ -1696,8 +2015,9 @@ def test_drain_runs_routing_liveness_check_before_first_iteration(
     fake = FakeQueue([1])
     install_fake_queue(monkeypatch, fake)
     calls = []
-    monkeypatch.setattr(drain, "check_routing_liveness",
-                         lambda **kw: calls.append(kw) or 0)
+    monkeypatch.setattr(
+        drain, "check_routing_liveness", lambda **kw: calls.append(kw) or 0
+    )
     config = make_config(tmp_path, dry_run=True)
 
     summary = drain.drain(config, log=lambda _l: None)
@@ -1727,20 +2047,25 @@ def test_main_accepts_routing_target_name_for_agent_flag(tmp_path, monkeypatch):
     """--agent/--fallback-agent now accept a declared routing.yaml target
     name, not only a bare harness (task 5.1)."""
     rc, config = _run_main(
-        tmp_path, monkeypatch,
+        tmp_path,
+        monkeypatch,
         argv_extra=["--agent", "claude-sub"],
-        config_payload=_TARGETS_PAYLOAD)
+        config_payload=_TARGETS_PAYLOAD,
+    )
     assert rc == 0
     assert config.agent == "claude-sub"
     assert config.fallback_agents == []
 
 
 def test_main_rejects_a_value_that_is_neither_harness_nor_declared_target(
-        tmp_path, monkeypatch, capsys):
+    tmp_path, monkeypatch, capsys
+):
     rc, config = _run_main(
-        tmp_path, monkeypatch,
+        tmp_path,
+        monkeypatch,
         argv_extra=["--agent", "not-a-real-target"],
-        config_payload=_TARGETS_PAYLOAD)
+        config_payload=_TARGETS_PAYLOAD,
+    )
     assert rc == 2
     assert config is None
     err = capsys.readouterr().err
@@ -1762,8 +2087,11 @@ def test_drive_calls_ensure_pr_risk_label_and_logs_when_applied(tmp_path, monkey
     install_fake_queue(monkeypatch, fake)
     config = make_config(tmp_path)
     seen = []
-    monkeypatch.setattr(drain, "ensure_pr_risk_label",
-                        lambda repo, pr, risk: seen.append((repo, pr, risk)) or "go:risk-low")
+    monkeypatch.setattr(
+        drain,
+        "ensure_pr_risk_label",
+        lambda repo, pr, risk: seen.append((repo, pr, risk)) or "go:risk-low",
+    )
 
     def spawner(cmd, timeout):
         (config.runs_dir / "repo").mkdir(parents=True, exist_ok=True)
@@ -1801,10 +2129,11 @@ def test_drive_skips_ensure_pr_risk_label_when_no_pr(tmp_path, monkeypatch):
 
 def test_build_command_go_repo_scopes_the_prompt():
     scoped = PROMPT.replace("worktrail-go auto", "worktrail-go ggb auto", 1)
-    assert build_command("claude", [], go_repo="ggb") == [
-        "claude", "-p", scoped]
-    assert build_command("claude", [], template="x {prompt}",
-                         go_repo="ggb") == ["x", scoped]
+    assert build_command("claude", [], go_repo="ggb") == ["claude", "-p", scoped]
+    assert build_command("claude", [], template="x {prompt}", go_repo="ggb") == [
+        "x",
+        scoped,
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -1826,11 +2155,23 @@ def _write_journal(repo: Path, spec_id: str, groups: dict) -> Path:
 
 
 _BUDGET_EXHAUSTED_GROUPS = {
-    "1.2": {"state": "QUARANTINED", "pr_url": "", "quarantine_reason": "budget_exhausted"},
+    "1.2": {
+        "state": "QUARANTINED",
+        "pr_url": "",
+        "quarantine_reason": "budget_exhausted",
+    },
 }
 _TWO_BUDGET_EXHAUSTED_GROUPS = {
-    "1.2": {"state": "QUARANTINED", "pr_url": "", "quarantine_reason": "budget_exhausted"},
-    "1.3": {"state": "QUARANTINED", "pr_url": "", "quarantine_reason": "budget_exhausted"},
+    "1.2": {
+        "state": "QUARANTINED",
+        "pr_url": "",
+        "quarantine_reason": "budget_exhausted",
+    },
+    "1.3": {
+        "state": "QUARANTINED",
+        "pr_url": "",
+        "quarantine_reason": "budget_exhausted",
+    },
 }
 
 
@@ -1838,6 +2179,7 @@ def test_resolve_spec_rel_devkit_path():
     repo = Path("/tmp/nonexistent-repo-for-unit-test")
     # Use a real tmp dir instead of a bare literal so .is_dir() checks are real.
     import tempfile
+
     with tempfile.TemporaryDirectory() as td:
         repo = Path(td)
         (repo / "docs" / "specs" / "some-spec").mkdir(parents=True)
@@ -1857,7 +2199,7 @@ def test_find_resumable_quarantines_discovers_across_repos(tmp_path):
     repo_a = _make_repo(tmp_path, "repo-a")
     (repo_a / "docs" / "specs" / "spec-a").mkdir(parents=True)
     _write_journal(repo_a, "spec-a", _BUDGET_EXHAUSTED_GROUPS)
-    repo_b = _make_repo(tmp_path, "repo-b")  # clean repo, no journal at all
+    _make_repo(tmp_path, "repo-b")  # clean repo, no journal at all
     found = find_resumable_quarantines(tmp_path)
     assert [f["repo_name"] for f in found] == ["repo-a"]
     assert found[0]["spec_id"] == "spec-a"
@@ -1911,18 +2253,20 @@ def _write_verify_pending_spec(repo: Path, spec_id: str, pr_url: str) -> None:
     )
     worktrees_dir = repo.parent / f"{repo.name}-worktrees"
     worktrees_dir.mkdir(parents=True, exist_ok=True)
-    (worktrees_dir / f"run-{spec_id}.json").write_text(json.dumps({
-        "integrate_complete": True,
-        "groups": {"base": {"pr_url": pr_url, "state": "OPEN"}},
-    }))
+    (worktrees_dir / f"run-{spec_id}.json").write_text(
+        json.dumps(
+            {
+                "integrate_complete": True,
+                "groups": {"base": {"pr_url": pr_url, "state": "OPEN"}},
+            }
+        )
+    )
 
 
 def test_find_verify_pending_specs_discovers_across_repos(tmp_path):
     repo_a = _make_repo(tmp_path, "repo-a")
-    _write_verify_pending_spec(
-        repo_a, "spec-a", "https://github.com/test/repo/pull/1"
-    )
-    repo_b = _make_repo(tmp_path, "repo-b")  # clean repo, nothing verify-pending
+    _write_verify_pending_spec(repo_a, "spec-a", "https://github.com/test/repo/pull/1")
+    _make_repo(tmp_path, "repo-b")  # clean repo, nothing verify-pending
     found = find_verify_pending_specs(tmp_path)
     assert [f["repo_name"] for f in found] == ["repo-a"]
     assert found[0]["spec_id"] == "spec-a"
@@ -1930,7 +2274,9 @@ def test_find_verify_pending_specs_discovers_across_repos(tmp_path):
     assert found[0]["repo"] == repo_a
 
 
-def _write_verify_pending_openspec_change(repo: Path, change_id: str, pr_url: str) -> None:
+def _write_verify_pending_openspec_change(
+    repo: Path, change_id: str, pr_url: str
+) -> None:
     """OpenSpec-format equivalent of `_write_verify_pending_spec`: all tasks
     checked, run journal has integrate_complete: true plus a non-MERGED group.
     Regression fixture for the drain-sweep blind spot where an OpenSpec change
@@ -1941,10 +2287,14 @@ def _write_verify_pending_openspec_change(repo: Path, change_id: str, pr_url: st
     (change_dir / "tasks.md").write_text("## 1. Export\n\n- [x] 1.1 Add exporter\n")
     worktrees_dir = repo.parent / f"{repo.name}-worktrees"
     worktrees_dir.mkdir(parents=True, exist_ok=True)
-    (worktrees_dir / f"run-{change_id}.json").write_text(json.dumps({
-        "integrate_complete": True,
-        "groups": {"base": {"pr_url": pr_url, "state": "OPEN"}},
-    }))
+    (worktrees_dir / f"run-{change_id}.json").write_text(
+        json.dumps(
+            {
+                "integrate_complete": True,
+                "groups": {"base": {"pr_url": pr_url, "state": "OPEN"}},
+            }
+        )
+    )
 
 
 def test_find_verify_pending_specs_discovers_openspec_changes(tmp_path):
@@ -1978,13 +2328,16 @@ def test_find_verify_pending_specs_excludes_non_verify_pending_stages(tmp_path):
     assert find_verify_pending_specs(tmp_path) == []
 
 
-def test_find_verify_pending_specs_skips_spec_with_no_resolvable_path(tmp_path, monkeypatch):
-    repo = _make_repo(tmp_path, "repo-a")
+def test_find_verify_pending_specs_skips_spec_with_no_resolvable_path(
+    tmp_path, monkeypatch
+):
+    _make_repo(tmp_path, "repo-a")
     # dashboard.scan reports a verify-pending row for "spec-a", but no
     # docs/specs/spec-a or openspec/changes/spec-a folder exists on disk --
     # e.g. the spec was since deleted/archived after the scan ran.
     monkeypatch.setattr(
-        drain.dashboard, "scan",
+        drain.dashboard,
+        "scan",
         lambda specs_root: [{"id": "spec-a", "stage": "verify-pending"}],
     )
     assert find_verify_pending_specs(tmp_path) == []
@@ -1992,13 +2345,9 @@ def test_find_verify_pending_specs_skips_spec_with_no_resolvable_path(tmp_path, 
 
 def test_find_verify_pending_specs_go_repo_filter(tmp_path):
     repo_a = _make_repo(tmp_path, "repo-a")
-    _write_verify_pending_spec(
-        repo_a, "spec-a", "https://github.com/test/repo/pull/1"
-    )
+    _write_verify_pending_spec(repo_a, "spec-a", "https://github.com/test/repo/pull/1")
     repo_b = _make_repo(tmp_path, "repo-b")
-    _write_verify_pending_spec(
-        repo_b, "spec-b", "https://github.com/test/repo/pull/2"
-    )
+    _write_verify_pending_spec(repo_b, "spec-b", "https://github.com/test/repo/pull/2")
     found = find_verify_pending_specs(tmp_path, go_repo="repo-b")
     assert [f["repo_name"] for f in found] == ["repo-b"]
 
@@ -2023,7 +2372,9 @@ def _write_sync_pending_spec(repo: Path, spec_id: str) -> None:
     )
 
 
-def _write_openspec_sync_pending_change(repo: Path, change_id: str) -> tuple[Path, Path]:
+def _write_openspec_sync_pending_change(
+    repo: Path, change_id: str
+) -> tuple[Path, Path]:
     change = repo / "openspec" / "changes" / change_id
     delta = change / "specs" / "export" / "spec.md"
     canonical = repo / "openspec" / "specs" / "export" / "spec.md"
@@ -2041,7 +2392,7 @@ def _write_openspec_sync_pending_change(repo: Path, change_id: str) -> tuple[Pat
 def test_find_sync_pending_specs_discovers_across_repos(tmp_path):
     repo_a = _make_repo(tmp_path, "repo-a")
     _write_sync_pending_spec(repo_a, "spec-a")
-    repo_b = _make_repo(tmp_path, "repo-b")  # clean repo, nothing sync-pending
+    _make_repo(tmp_path, "repo-b")  # clean repo, nothing sync-pending
     found = find_sync_pending_specs(tmp_path)
     assert [f["repo_name"] for f in found] == ["repo-a"]
     assert found[0]["spec_id"] == "spec-a"
@@ -2071,13 +2422,16 @@ def test_find_sync_pending_specs_excludes_non_sync_pending_stages(tmp_path):
     assert find_sync_pending_specs(tmp_path) == []
 
 
-def test_find_sync_pending_specs_skips_spec_with_no_resolvable_path(tmp_path, monkeypatch):
-    repo = _make_repo(tmp_path, "repo-a")
+def test_find_sync_pending_specs_skips_spec_with_no_resolvable_path(
+    tmp_path, monkeypatch
+):
+    _make_repo(tmp_path, "repo-a")
     # dashboard.scan reports a sync-pending row for "spec-a", but no
     # docs/specs/spec-a or openspec/changes/spec-a folder exists on disk --
     # e.g. the spec was since deleted/archived after the scan ran.
     monkeypatch.setattr(
-        drain.dashboard, "scan",
+        drain.dashboard,
+        "scan",
         lambda specs_root: [{"id": "spec-a", "stage": "sync-pending"}],
     )
     assert find_sync_pending_specs(tmp_path) == []
@@ -2124,16 +2478,15 @@ def _write_devkit_complete_spec(repo: Path, spec_id: str) -> None:
         "---\nid: TASK-001\nstatus: completed\nkind: impl\ndependencies: []\n---\n# TASK-001\n"
     )
     (spec_dir / "knowledge-graph.json").write_text(
-        '{"metadata": {"spec_id": "%s", "analysis_sources": '
+        f'{{"metadata": {{"spec_id": "{spec_id}", "analysis_sources": '
         '[{"agent": "spec-sync", "timestamp": "2026-05-31T10:05:00Z", "mode": "full"}]}}'
-        % spec_id
     )
 
 
 def test_find_complete_openspec_changes_discovers_across_repos(tmp_path):
     repo_a = _make_repo(tmp_path, "repo-a")
     _write_openspec_complete_change(repo_a, "add-export")
-    repo_b = _make_repo(tmp_path, "repo-b")  # clean repo, nothing complete
+    _make_repo(tmp_path, "repo-b")  # clean repo, nothing complete
 
     found = find_complete_openspec_changes(tmp_path)
 
@@ -2196,17 +2549,26 @@ def test_archive_openspec_change_runs_archive_and_opens_pr(tmp_path, monkeypatch
     finding = {"repo": repo, "repo_name": "repo-a", "spec_id": "add-export"}
 
     monkeypatch.setattr(
-        drain.subprocess, "run",
-        _fake_gh_and_openspec_archive_subprocess_run("https://example.invalid/pr/9"))
+        drain.subprocess,
+        "run",
+        _fake_gh_and_openspec_archive_subprocess_run("https://example.invalid/pr/9"),
+    )
 
     result = archive_openspec_change(
-        finding, "claude", 30, lambda c, t: SpawnOutcome(0), lambda _l: None)
+        finding, "claude", 30, lambda c, t: SpawnOutcome(0), lambda _l: None
+    )
 
-    assert result == {"repo": "repo-a", "spec_id": "add-export",
-                       "pr_url": "https://example.invalid/pr/9"}
+    assert result == {
+        "repo": "repo-a",
+        "spec_id": "add-export",
+        "pr_url": "https://example.invalid/pr/9",
+    }
     committed = subprocess.run(
         ["git", "-C", str(repo), "show", "chore/archive-add-export:ARCHIVED.marker"],
-        capture_output=True, text=True, check=True).stdout
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
     assert committed == "archived\n"
 
 
@@ -2234,13 +2596,17 @@ def test_archive_openspec_change_refuses_when_tasks_unchecked(tmp_path, monkeypa
 
     with pytest.raises(RuntimeError, match="unchecked task"):
         archive_openspec_change(
-            finding, "claude", 30, lambda c, t: SpawnOutcome(0), lambda _l: None)
+            finding, "claude", 30, lambda c, t: SpawnOutcome(0), lambda _l: None
+        )
 
     assert not any(c[:2] == ["openspec", "archive"] for c in calls)
     assert not any(c[:2] == ["gh", "pr"] and c[2] == "create" for c in calls)
     log = subprocess.run(
         ["git", "-C", str(repo), "log", "--all", "--oneline"],
-        capture_output=True, text=True, check=True).stdout
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
     assert "archive completed change" not in log
 
 
@@ -2254,16 +2620,21 @@ def test_archive_openspec_change_existing_pr_skips_rearchiving(tmp_path, monkeyp
         calls.append(cmd)
         if cmd[:2] == ["gh", "pr"] and cmd[2] == "list":
             return subprocess.CompletedProcess(
-                cmd, 0, stdout="https://example.invalid/pr/5\n", stderr="")
+                cmd, 0, stdout="https://example.invalid/pr/5\n", stderr=""
+            )
         return real_run(cmd, **kwargs)
 
     monkeypatch.setattr(drain.subprocess, "run", fake_run)
 
     result = archive_openspec_change(
-        finding, "claude", 30, lambda c, t: SpawnOutcome(0), lambda _l: None)
+        finding, "claude", 30, lambda c, t: SpawnOutcome(0), lambda _l: None
+    )
 
-    assert result == {"repo": "repo-a", "spec_id": "add-export",
-                       "pr_url": "https://example.invalid/pr/5"}
+    assert result == {
+        "repo": "repo-a",
+        "spec_id": "add-export",
+        "pr_url": "https://example.invalid/pr/5",
+    }
     assert not any(c[:2] == ["openspec", "archive"] for c in calls)
     assert not any(c[:2] == ["gh", "pr"] and c[2] == "create" for c in calls)
 
@@ -2280,14 +2651,17 @@ def test_archive_openspec_change_gh_pr_create_failure_raises(tmp_path, monkeypat
         if cmd[:2] == ["gh", "pr"] and cmd[2] == "list":
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         if cmd[:2] == ["gh", "pr"] and cmd[2] == "create":
-            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="label not found")
+            return subprocess.CompletedProcess(
+                cmd, 1, stdout="", stderr="label not found"
+            )
         return real_run(cmd, **kwargs)
 
     monkeypatch.setattr(drain.subprocess, "run", fake_run)
 
     with pytest.raises(RuntimeError, match="gh pr create failed"):
         archive_openspec_change(
-            finding, "claude", 30, lambda c, t: SpawnOutcome(0), lambda _l: None)
+            finding, "claude", 30, lambda c, t: SpawnOutcome(0), lambda _l: None
+        )
 
 
 def _fake_sync_spawner(calls: list, exit_codes=None):
@@ -2298,6 +2672,7 @@ def _fake_sync_spawner(calls: list, exit_codes=None):
     ARCHIVED.marker). `exit_codes` supplies one exit code per call in order,
     defaulting to always-0; a non-zero exit code still records the call but
     writes no marker, matching a failed sync producing nothing to land."""
+
     def spawner(cmd, timeout):
         idx = len(calls)
         calls.append(cmd)
@@ -2306,38 +2681,66 @@ def _fake_sync_spawner(calls: list, exit_codes=None):
             wt = Path(cmd[cmd.index("--cwd") + 1])
             (wt / "SYNCED.marker").write_text("synced\n")
         return SpawnOutcome(exit_code)
+
     return spawner
 
 
-def test_resume_sync_pending_invokes_skill_dispatch_once_per_spec(tmp_path, monkeypatch):
+def test_resume_sync_pending_invokes_skill_dispatch_once_per_spec(
+    tmp_path, monkeypatch
+):
     repo = _init_repo_with_origin(tmp_path, "repo-a")
     _write_sync_pending_spec(repo, "spec-a")
     subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
     subprocess.run(["git", "-C", str(repo), "commit", "-qm", "seed spec"], check=True)
     subprocess.run(["git", "-C", str(repo), "push", "-q", "origin", "dev"], check=True)
 
-    monkeypatch.setattr(drain.subprocess, "run",
-                         _fake_gh_subprocess_run("https://example.invalid/pr/9"))
+    monkeypatch.setattr(
+        drain.subprocess, "run", _fake_gh_subprocess_run("https://example.invalid/pr/9")
+    )
 
     calls = []
     logs = []
     result = resume_sync_pending(
-        repo.parent, None, ["claude"], tmp_path / "capacity.json", 60,
-        _fake_sync_spawner(calls), logs.append)
+        repo.parent,
+        None,
+        ["claude"],
+        tmp_path / "capacity.json",
+        60,
+        _fake_sync_spawner(calls),
+        logs.append,
+    )
     assert len(calls) == 1
     wt = repo.parent / "repo-a-worktrees" / "sync-spec-a"
-    assert calls[0] == ["worktrail-skill-dispatch", "--agent", "claude",
-                         "--skill", "opsx:sync", "--args", "spec-a",
-                         "--cwd", str(wt), "--write"]
-    assert result == [{"repo": "repo-a", "spec_id": "spec-a", "exit_code": 0,
-                        "pr_url": "https://example.invalid/pr/9"}]
+    assert calls[0] == [
+        "worktrail-skill-dispatch",
+        "--agent",
+        "claude",
+        "--skill",
+        "opsx:sync",
+        "--args",
+        "spec-a",
+        "--cwd",
+        str(wt),
+        "--write",
+    ]
+    assert result == [
+        {
+            "repo": "repo-a",
+            "spec_id": "spec-a",
+            "exit_code": 0,
+            "pr_url": "https://example.invalid/pr/9",
+        }
+    ]
     assert any("resume-sync-pending" in line for line in logs)
     # The sync lands on the fix branch (committed, pushed, PR opened) -- the
     # canonical checkout's own `dev` is never written to directly, which is
     # the bug (silent uncommitted write) this test now guards against.
     committed = subprocess.run(
         ["git", "-C", str(repo), "show", "chore/sync-spec-a:SYNCED.marker"],
-        capture_output=True, text=True, check=True).stdout
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
     assert committed == "synced\n"
 
 
@@ -2345,8 +2748,14 @@ def test_resume_sync_pending_no_hits_is_noop(tmp_path):
     _make_repo(tmp_path, "repo-a")  # no sync-pending spec at all
     calls = []
     result = resume_sync_pending(
-        tmp_path, None, ["claude"], tmp_path / "capacity.json", 60,
-        lambda c, t: calls.append(c), lambda _l: None)
+        tmp_path,
+        None,
+        ["claude"],
+        tmp_path / "capacity.json",
+        60,
+        lambda c, t: calls.append(c),
+        lambda _l: None,
+    )
     assert calls == []
     assert result == []
 
@@ -2356,34 +2765,47 @@ def test_resume_sync_pending_one_failure_does_not_block_others(tmp_path, monkeyp
     _write_sync_pending_spec(repo_a, "spec-a")
     subprocess.run(["git", "-C", str(repo_a), "add", "-A"], check=True)
     subprocess.run(["git", "-C", str(repo_a), "commit", "-qm", "seed spec"], check=True)
-    subprocess.run(["git", "-C", str(repo_a), "push", "-q", "origin", "dev"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo_a), "push", "-q", "origin", "dev"], check=True
+    )
 
     repo_b = _init_repo_with_origin(tmp_path, "repo-b")
     _write_sync_pending_spec(repo_b, "spec-b")
     subprocess.run(["git", "-C", str(repo_b), "add", "-A"], check=True)
     subprocess.run(["git", "-C", str(repo_b), "commit", "-qm", "seed spec"], check=True)
-    subprocess.run(["git", "-C", str(repo_b), "push", "-q", "origin", "dev"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo_b), "push", "-q", "origin", "dev"], check=True
+    )
 
-    monkeypatch.setattr(drain.subprocess, "run",
-                         _fake_gh_subprocess_run("https://example.invalid/pr/9"))
+    monkeypatch.setattr(
+        drain.subprocess, "run", _fake_gh_subprocess_run("https://example.invalid/pr/9")
+    )
 
     calls = []
     result = resume_sync_pending(
-        repo_a.parent, None, ["claude"], tmp_path / "capacity.json", 60,
-        _fake_sync_spawner(calls, exit_codes=[1, 0]), lambda _l: None)
+        repo_a.parent,
+        None,
+        ["claude"],
+        tmp_path / "capacity.json",
+        60,
+        _fake_sync_spawner(calls, exit_codes=[1, 0]),
+        lambda _l: None,
+    )
     assert len(calls) == 2
     assert result == [
         {"repo": "repo-a", "spec_id": "spec-a", "exit_code": 1, "pr_url": None},
-        {"repo": "repo-b", "spec_id": "spec-b", "exit_code": 0,
-         "pr_url": "https://example.invalid/pr/9"},
+        {
+            "repo": "repo-b",
+            "spec_id": "spec-b",
+            "exit_code": 0,
+            "pr_url": "https://example.invalid/pr/9",
+        },
     ]
 
 
 def test_resume_verify_pending_invokes_full_real_once_per_spec(tmp_path):
     repo = _make_repo(tmp_path, "repo-a")
-    _write_verify_pending_spec(
-        repo, "spec-a", "https://github.com/test/repo/pull/1"
-    )
+    _write_verify_pending_spec(repo, "spec-a", "https://github.com/test/repo/pull/1")
     calls = []
 
     def spawner(cmd, timeout):
@@ -2392,7 +2814,8 @@ def test_resume_verify_pending_invokes_full_real_once_per_spec(tmp_path):
 
     logs = []
     result = resume_verify_pending(
-        tmp_path, None, ["claude"], tmp_path / "capacity.json", 60, spawner, logs.append)
+        tmp_path, None, ["claude"], tmp_path / "capacity.json", 60, spawner, logs.append
+    )
     assert len(calls) == 1
     assert calls[0][:2] == ["worktrail-live", "full-real"]
     assert "--fresh" not in calls[0]
@@ -2404,21 +2827,23 @@ def test_resume_verify_pending_no_hits_is_noop(tmp_path):
     _make_repo(tmp_path, "repo-a")  # no verify-pending spec at all
     calls = []
     result = resume_verify_pending(
-        tmp_path, None, ["claude"], tmp_path / "capacity.json", 60,
-        lambda c, t: calls.append(c), lambda _l: None)
+        tmp_path,
+        None,
+        ["claude"],
+        tmp_path / "capacity.json",
+        60,
+        lambda c, t: calls.append(c),
+        lambda _l: None,
+    )
     assert calls == []
     assert result == []
 
 
 def test_resume_verify_pending_one_failure_does_not_block_others(tmp_path):
     repo_a = _make_repo(tmp_path, "repo-a")
-    _write_verify_pending_spec(
-        repo_a, "spec-a", "https://github.com/test/repo/pull/1"
-    )
+    _write_verify_pending_spec(repo_a, "spec-a", "https://github.com/test/repo/pull/1")
     repo_b = _make_repo(tmp_path, "repo-b")
-    _write_verify_pending_spec(
-        repo_b, "spec-b", "https://github.com/test/repo/pull/2"
-    )
+    _write_verify_pending_spec(repo_b, "spec-b", "https://github.com/test/repo/pull/2")
     calls = []
 
     def spawner(cmd, timeout):
@@ -2426,7 +2851,14 @@ def test_resume_verify_pending_one_failure_does_not_block_others(tmp_path):
         return SpawnOutcome(1 if len(calls) == 1 else 0)
 
     result = resume_verify_pending(
-        tmp_path, None, ["claude"], tmp_path / "capacity.json", 60, spawner, lambda _l: None)
+        tmp_path,
+        None,
+        ["claude"],
+        tmp_path / "capacity.json",
+        60,
+        spawner,
+        lambda _l: None,
+    )
     assert len(calls) == 2
     assert result == [
         {"repo": "repo-a", "spec_id": "spec-a", "exit_code": 1},
@@ -2436,18 +2868,36 @@ def test_resume_verify_pending_one_failure_does_not_block_others(tmp_path):
 
 def test_build_full_real_resume_command_has_no_fresh_flag():
     cmd = build_full_real_resume_command(
-        Path("/repo"), "docs/specs/some-spec", "dev", "claude")
-    assert cmd == ["worktrail-live", "full-real", "--repo", "/repo",
-                   "--spec", "docs/specs/some-spec", "--base", "dev", "--agent", "claude"]
+        Path("/repo"), "docs/specs/some-spec", "dev", "claude"
+    )
+    assert cmd == [
+        "worktrail-live",
+        "full-real",
+        "--repo",
+        "/repo",
+        "--spec",
+        "docs/specs/some-spec",
+        "--base",
+        "dev",
+        "--agent",
+        "claude",
+    ]
     assert "--fresh" not in cmd  # resume=True is full-real's own default
 
 
 def test_build_sync_command_uses_opsx_sync_dispatch():
     repo = Path("/tmp/repo-a")
     assert build_sync_command("claude", repo, "spec-a") == [
-        "worktrail-skill-dispatch", "--agent", "claude",
-        "--skill", "opsx:sync", "--args", "spec-a",
-        "--cwd", str(repo), "--write",
+        "worktrail-skill-dispatch",
+        "--agent",
+        "claude",
+        "--skill",
+        "opsx:sync",
+        "--args",
+        "spec-a",
+        "--cwd",
+        str(repo),
+        "--write",
     ]
 
 
@@ -2463,7 +2913,8 @@ def test_resume_quarantined_budget_exhausted_invokes_full_real_once_per_spec(tmp
 
     logs = []
     result = resume_quarantined_budget_exhausted(
-        tmp_path, None, ["claude"], tmp_path / "capacity.json", 60, spawner, logs.append)
+        tmp_path, None, ["claude"], tmp_path / "capacity.json", 60, spawner, logs.append
+    )
     assert len(calls) == 1
     assert calls[0][:2] == ["worktrail-live", "full-real"]
     assert "--fresh" not in calls[0]
@@ -2475,13 +2926,21 @@ def test_resume_quarantined_budget_exhausted_no_resumable_is_noop(tmp_path):
     _make_repo(tmp_path, "repo-a")  # no journal at all
     calls = []
     result = resume_quarantined_budget_exhausted(
-        tmp_path, None, ["claude"], tmp_path / "capacity.json", 60,
-        lambda c, t: calls.append(c), lambda _l: None)
+        tmp_path,
+        None,
+        ["claude"],
+        tmp_path / "capacity.json",
+        60,
+        lambda c, t: calls.append(c),
+        lambda _l: None,
+    )
     assert calls == []
     assert result == []
 
 
-def test_drain_resumes_budget_exhausted_quarantine_before_queue_empty(tmp_path, monkeypatch):
+def test_drain_resumes_budget_exhausted_quarantine_before_queue_empty(
+    tmp_path, monkeypatch
+):
     # Queue is already empty -- without the sweep this would be a zero-spawn
     # queue_empty stop; the sweep must still fire and invoke full-real once.
     fake = FakeQueue([0])
@@ -2504,7 +2963,8 @@ def test_drain_resumes_budget_exhausted_quarantine_before_queue_empty(tmp_path, 
     assert len(calls) == 1  # the resume call, not a queue-driving iteration
     assert calls[0][:2] == ["worktrail-live", "full-real"]
     assert summary["resumed_quarantines"] == [
-        {"repo": "repo-a", "spec_id": "spec-a", "exit_code": 0}]
+        {"repo": "repo-a", "spec_id": "spec-a", "exit_code": 0}
+    ]
 
 
 def test_drain_repos_root_none_by_default_never_sweeps(tmp_path, monkeypatch):
@@ -2512,8 +2972,11 @@ def test_drain_repos_root_none_by_default_never_sweeps(tmp_path, monkeypatch):
     install_fake_queue(monkeypatch, fake)
     config = make_config(tmp_path)  # repos_root defaults to None
     calls = []
-    summary = drain.drain(config, spawner=lambda c, t: calls.append(c) or SpawnOutcome(0),
-                          log=lambda _l: None)
+    summary = drain.drain(
+        config,
+        spawner=lambda c, t: calls.append(c) or SpawnOutcome(0),
+        log=lambda _l: None,
+    )
     assert calls == []
     assert summary["resumed_quarantines"] == []
 
@@ -2528,14 +2991,17 @@ def test_drain_dry_run_never_sweeps_quarantines(tmp_path, monkeypatch):
     config = make_config(tmp_path, repos_root=repos_root, dry_run=True)
 
     def spawner(cmd, timeout):
-        raise AssertionError("dry-run must not spawn, including for resumable quarantines")
+        raise AssertionError(
+            "dry-run must not spawn, including for resumable quarantines"
+        )
 
     summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
     assert summary["stopped"] == "dry_run"
 
 
 def test_drain_after_sweep_catches_quarantine_created_by_this_passs_own_iteration(
-        tmp_path, monkeypatch):
+    tmp_path, monkeypatch
+):
     # Queue starts with one ready brief (drained in iteration 1); the
     # resumable quarantine only appears on disk once that iteration's spawner
     # runs, simulating a full-real fan-out this pass itself dispatched and
@@ -2555,7 +3021,9 @@ def test_drain_after_sweep_catches_quarantine_created_by_this_passs_own_iteratio
         repo = repos_root / "repo-a"
         (repo / "docs" / "specs" / "spec-a").mkdir(parents=True)
         _write_journal(repo, "spec-a", _BUDGET_EXHAUSTED_GROUPS)
-        write_run_record(config.runs_dir, "go-1", "completed_pr_open", pr="https://pr/1")
+        write_run_record(
+            config.runs_dir, "go-1", "completed_pr_open", pr="https://pr/1"
+        )
         return SpawnOutcome(0)
 
     summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
@@ -2563,7 +3031,8 @@ def test_drain_after_sweep_catches_quarantine_created_by_this_passs_own_iteratio
     resume_calls = [c for c in calls if c[:2] == ["worktrail-live", "full-real"]]
     assert len(resume_calls) == 1  # only the post-loop sweep found it
     assert summary["resumed_quarantines"] == [
-        {"repo": "repo-a", "spec_id": "spec-a", "exit_code": 0}]
+        {"repo": "repo-a", "spec_id": "spec-a", "exit_code": 0}
+    ]
 
 
 def test_drain_sweeps_verify_pending_at_pre_and_post_loop_points(tmp_path, monkeypatch):
@@ -2593,7 +3062,9 @@ def test_drain_sweeps_verify_pending_at_pre_and_post_loop_points(tmp_path, monke
     def spawner(cmd, timeout):
         if cmd[:2] == ["worktrail-live", "full-real"]:
             return SpawnOutcome(0)
-        write_run_record(config.runs_dir, "go-1", "completed_pr_open", pr="https://pr/1")
+        write_run_record(
+            config.runs_dir, "go-1", "completed_pr_open", pr="https://pr/1"
+        )
         return SpawnOutcome(0)
 
     summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
@@ -2624,15 +3095,19 @@ def test_drain_non_leader_slot_never_sweeps_or_seeds_backlog(tmp_path, monkeypat
 
     sweep_calls = []
     monkeypatch.setattr(
-        drain, "sweep_remediations",
-        lambda *a, **k: sweep_calls.append((a, k)) or {})
+        drain, "sweep_remediations", lambda *a, **k: sweep_calls.append((a, k)) or {}
+    )
     seed_calls = []
     monkeypatch.setattr(
-        drain.seed_backlog_mod, "seed_backlog",
-        lambda *a, **k: seed_calls.append((a, k)) or {})
+        drain.seed_backlog_mod,
+        "seed_backlog",
+        lambda *a, **k: seed_calls.append((a, k)) or {},
+    )
 
     def spawner(cmd, timeout):
-        write_run_record(config.runs_dir, "go-1", "completed_pr_open", pr="https://pr/1")
+        write_run_record(
+            config.runs_dir, "go-1", "completed_pr_open", pr="https://pr/1"
+        )
         return SpawnOutcome(0)
 
     summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
@@ -2655,16 +3130,22 @@ def test_drain_stuck_remediations_empty_when_no_identity_recurs(tmp_path, monkey
     (repo / "docs" / "specs" / "spec-a").mkdir(parents=True)
     _write_journal(repo, "spec-a", _BUDGET_EXHAUSTED_GROUPS)
     history_path = tmp_path / "history.json"
-    config = make_config(tmp_path, repos_root=repos_root, stuck_history_path=history_path)
+    config = make_config(
+        tmp_path, repos_root=repos_root, stuck_history_path=history_path
+    )
 
-    summary = drain.drain(config, spawner=lambda c, t: SpawnOutcome(0), log=lambda _l: None)
+    summary = drain.drain(
+        config, spawner=lambda c, t: SpawnOutcome(0), log=lambda _l: None
+    )
 
     # A single sweep only advances the identity's streak to 1, below the
     # default stuck_threshold of 3, so nothing is flagged yet.
     assert summary["stuck_remediations"] == []
 
 
-def test_drain_flags_identity_recurring_across_stuck_threshold_calls(tmp_path, monkeypatch):
+def test_drain_flags_identity_recurring_across_stuck_threshold_calls(
+    tmp_path, monkeypatch
+):
     repos_root = tmp_path / "projects"
     repo = _make_repo(repos_root, "repo-a")
     (repo / "docs" / "specs" / "spec-a").mkdir(parents=True)
@@ -2676,18 +3157,30 @@ def test_drain_flags_identity_recurring_across_stuck_threshold_calls(tmp_path, m
     for _ in range(threshold):
         fake = FakeQueue([0])
         install_fake_queue(monkeypatch, fake)
-        config = make_config(tmp_path, repos_root=repos_root,
-                             stuck_history_path=history_path, stuck_threshold=threshold)
-        summaries.append(drain.drain(
-            config, spawner=lambda c, t: SpawnOutcome(0), log=lambda _l: None))
+        config = make_config(
+            tmp_path,
+            repos_root=repos_root,
+            stuck_history_path=history_path,
+            stuck_threshold=threshold,
+        )
+        summaries.append(
+            drain.drain(
+                config, spawner=lambda c, t: SpawnOutcome(0), log=lambda _l: None
+            )
+        )
 
     # The journal is untouched by the faked spawner, so the same
     # quarantined-budget-exhausted finding re-affirms on every call, building
     # its streak by one per drain() invocation sharing `history_path`.
     assert summaries[0]["stuck_remediations"] == []
     assert summaries[-1]["stuck_remediations"] == [
-        {"key": "quarantined_budget_exhausted", "repo_name": "repo-a",
-         "spec_id": "spec-a", "streak": threshold}]
+        {
+            "key": "quarantined_budget_exhausted",
+            "repo_name": "repo-a",
+            "spec_id": "spec-a",
+            "streak": threshold,
+        }
+    ]
 
 
 def test_drain_dry_run_never_writes_stuck_history(tmp_path, monkeypatch):
@@ -2698,11 +3191,14 @@ def test_drain_dry_run_never_writes_stuck_history(tmp_path, monkeypatch):
     (repo / "docs" / "specs" / "spec-a").mkdir(parents=True)
     _write_journal(repo, "spec-a", _BUDGET_EXHAUSTED_GROUPS)
     history_path = tmp_path / "history.json"
-    config = make_config(tmp_path, repos_root=repos_root, dry_run=True,
-                         stuck_history_path=history_path)
+    config = make_config(
+        tmp_path, repos_root=repos_root, dry_run=True, stuck_history_path=history_path
+    )
 
     def spawner(cmd, timeout):
-        raise AssertionError("dry-run must not spawn, including for the stuck-remediation sweep")
+        raise AssertionError(
+            "dry-run must not spawn, including for the stuck-remediation sweep"
+        )
 
     drain.drain(config, spawner=spawner, log=lambda _l: None)
 
@@ -2713,7 +3209,9 @@ def test_drain_repos_root_none_never_writes_stuck_history(tmp_path, monkeypatch)
     fake = FakeQueue([0])
     install_fake_queue(monkeypatch, fake)
     history_path = tmp_path / "history.json"
-    config = make_config(tmp_path, stuck_history_path=history_path)  # repos_root defaults to None
+    config = make_config(
+        tmp_path, stuck_history_path=history_path
+    )  # repos_root defaults to None
 
     drain.drain(config, spawner=lambda c, t: SpawnOutcome(0), log=lambda _l: None)
 
@@ -2741,8 +3239,14 @@ def test_sweep_remediations_runs_every_table_row(monkeypatch, tmp_path):
     monkeypatch.setattr(drain, "REMEDIATION_TABLE", fake_table)
 
     results = sweep_remediations(
-        Path("/fake/root"), None, ["claude"], tmp_path / "capacity.json", 60,
-        lambda c, t: SpawnOutcome(0), lambda _l: None)
+        Path("/fake/root"),
+        None,
+        ["claude"],
+        tmp_path / "capacity.json",
+        60,
+        lambda c, t: SpawnOutcome(0),
+        lambda _l: None,
+    )
 
     assert set(results) == {"row-a", "row-b"}
     assert results["row-a"] == [{"repo": "row-a", "spec_id": "spec-a"}]
@@ -2752,8 +3256,10 @@ def test_sweep_remediations_runs_every_table_row(monkeypatch, tmp_path):
 
 def test_sweep_remediations_isolates_per_finding_failure(monkeypatch, tmp_path):
     def failing_finder(repos_root, go_repo):
-        return [{"repo_name": "repo-a", "spec_id": "spec-a"},
-                {"repo_name": "repo-b", "spec_id": "spec-b"}]
+        return [
+            {"repo_name": "repo-a", "spec_id": "spec-a"},
+            {"repo_name": "repo-b", "spec_id": "spec-b"},
+        ]
 
     def failing_action(finding, agent, timeout, spawner, log):
         if finding["repo_name"] == "repo-a":
@@ -2770,21 +3276,34 @@ def test_sweep_remediations_isolates_per_finding_failure(monkeypatch, tmp_path):
         return [{"repo_name": "repo-d", "spec_id": "add-export"}]
 
     def openspec_archive_action(finding, agent, timeout, spawner, log):
-        return {"repo": finding["repo_name"], "spec_id": finding["spec_id"],
-                "pr_url": "https://example.invalid/pr/1"}
+        return {
+            "repo": finding["repo_name"],
+            "spec_id": finding["spec_id"],
+            "pr_url": "https://example.invalid/pr/1",
+        }
 
     logs = []
     fake_table = [
         StageRemediation("flaky", "flaky-label", failing_finder, failing_action),
         StageRemediation("ok", "ok-label", ok_finder, ok_action),
-        StageRemediation("openspec_archive", "archive-openspec-change",
-                          openspec_archive_finder, openspec_archive_action),
+        StageRemediation(
+            "openspec_archive",
+            "archive-openspec-change",
+            openspec_archive_finder,
+            openspec_archive_action,
+        ),
     ]
     monkeypatch.setattr(drain, "REMEDIATION_TABLE", fake_table)
 
     results = sweep_remediations(
-        Path("/fake/root"), None, ["claude"], tmp_path / "capacity.json", 60,
-        lambda c, t: SpawnOutcome(0), logs.append)
+        Path("/fake/root"),
+        None,
+        ["claude"],
+        tmp_path / "capacity.json",
+        60,
+        lambda c, t: SpawnOutcome(0),
+        logs.append,
+    )
 
     # repo-a's failure is caught and logged; repo-b (same row) still runs.
     assert results["flaky"] == [{"repo": "repo-b", "spec_id": "spec-b"}]
@@ -2793,7 +3312,12 @@ def test_sweep_remediations_isolates_per_finding_failure(monkeypatch, tmp_path):
     # new openspec_archive row.
     assert results["ok"] == [{"repo": "repo-c", "spec_id": "spec-c"}]
     assert results["openspec_archive"] == [
-        {"repo": "repo-d", "spec_id": "add-export", "pr_url": "https://example.invalid/pr/1"}]
+        {
+            "repo": "repo-d",
+            "spec_id": "add-export",
+            "pr_url": "https://example.invalid/pr/1",
+        }
+    ]
 
 
 def test_sweep_remediations_keys_filter_restricts_rows(monkeypatch, tmp_path):
@@ -2810,9 +3334,15 @@ def test_sweep_remediations_keys_filter_restricts_rows(monkeypatch, tmp_path):
     monkeypatch.setattr(drain, "REMEDIATION_TABLE", fake_table)
 
     results = sweep_remediations(
-        Path("/fake/root"), None, ["claude"], tmp_path / "capacity.json", 60,
-        lambda c, t: SpawnOutcome(0), lambda _l: None,
-        keys=["row-b"])
+        Path("/fake/root"),
+        None,
+        ["claude"],
+        tmp_path / "capacity.json",
+        60,
+        lambda c, t: SpawnOutcome(0),
+        lambda _l: None,
+        keys=["row-b"],
+    )
 
     assert set(results) == {"row-b"}
     assert called_finders == ["row-b"]  # row-a's finder never ran
@@ -2823,8 +3353,11 @@ def test_remediation_table_excludes_orchestrator_stuck():
     assert "orchestrator_stuck" not in keys
     assert "fanout_failed" not in keys
     assert keys == {
-        "quarantined_budget_exhausted", "verify_pending",
-        "stale_bookkeeping", "sync_pending", "openspec_archive",
+        "quarantined_budget_exhausted",
+        "verify_pending",
+        "stale_bookkeeping",
+        "sync_pending",
+        "openspec_archive",
         "stale_branches",
     }
 
@@ -2852,19 +3385,32 @@ def test_sweep_remediations_falls_back_when_primary_agent_gated(monkeypatch, tmp
 
     logs = []
     results = sweep_remediations(
-        Path("/fake/root"), None, ["claude", "codex"], capacity_cache, 60,
-        lambda c, t: SpawnOutcome(0), logs.append)
+        Path("/fake/root"),
+        None,
+        ["claude", "codex"],
+        capacity_cache,
+        60,
+        lambda c, t: SpawnOutcome(0),
+        logs.append,
+    )
 
     assert used_agents == ["codex"]
     assert results["row-a"] == [{"repo": "repo-a", "spec_id": "spec-a"}]
     assert any("agent switch: claude -> codex (capacity)" in line for line in logs)
 
 
-def test_sweep_remediations_skips_finding_when_every_candidate_gated(monkeypatch, tmp_path):
+def test_sweep_remediations_skips_finding_when_every_candidate_gated(
+    monkeypatch, tmp_path
+):
     capacity_cache = tmp_path / "capacity.json"
-    capacity_cache.write_text(json.dumps({
-        "claude": {"status": "gated"}, "codex": {"status": "gated"},
-    }))
+    capacity_cache.write_text(
+        json.dumps(
+            {
+                "claude": {"status": "gated"},
+                "codex": {"status": "gated"},
+            }
+        )
+    )
 
     def finder(repos_root, go_repo):
         return [{"repo_name": "repo-a", "spec_id": "spec-a"}]
@@ -2877,8 +3423,14 @@ def test_sweep_remediations_skips_finding_when_every_candidate_gated(monkeypatch
 
     logs = []
     results = sweep_remediations(
-        Path("/fake/root"), None, ["claude", "codex"], capacity_cache, 60,
-        lambda c, t: SpawnOutcome(0), logs.append)
+        Path("/fake/root"),
+        None,
+        ["claude", "codex"],
+        capacity_cache,
+        60,
+        lambda c, t: SpawnOutcome(0),
+        logs.append,
+    )
 
     assert results["row-a"] == []
     assert any("capacity-gated" in line for line in logs)
@@ -2893,8 +3445,10 @@ def test_sweep_remediations_re_reads_capacity_between_findings(monkeypatch, tmp_
     capacity_cache.write_text(json.dumps({"claude": {"status": "gated"}}))
 
     def finder(repos_root, go_repo):
-        return [{"repo_name": "repo-a", "spec_id": "spec-a"},
-                {"repo_name": "repo-b", "spec_id": "spec-b"}]
+        return [
+            {"repo_name": "repo-a", "spec_id": "spec-a"},
+            {"repo_name": "repo-b", "spec_id": "spec-b"},
+        ]
 
     used_agents = []
 
@@ -2908,8 +3462,14 @@ def test_sweep_remediations_re_reads_capacity_between_findings(monkeypatch, tmp_
     monkeypatch.setattr(drain, "REMEDIATION_TABLE", fake_table)
 
     sweep_remediations(
-        Path("/fake/root"), None, ["claude", "codex"], capacity_cache, 60,
-        lambda c, t: SpawnOutcome(0), lambda _l: None)
+        Path("/fake/root"),
+        None,
+        ["claude", "codex"],
+        capacity_cache,
+        60,
+        lambda c, t: SpawnOutcome(0),
+        lambda _l: None,
+    )
 
     assert used_agents == ["codex", "claude"]
 
@@ -2950,6 +3510,7 @@ def test_run_one_shot_kills_whole_process_group_on_timeout(tmp_path):
     # confirm the grandchild is gone -- both by PID and by it no longer
     # touching the marker file. Bounded, not a real-timeout-length wait.
     import time as _time
+
     deadline = _time.time() + 5
     grandchild_alive = True
     while _time.time() < deadline:
@@ -2961,14 +3522,17 @@ def test_run_one_shot_kills_whole_process_group_on_timeout(tmp_path):
         _time.sleep(0.1)
     assert not grandchild_alive, (
         "grandchild process outlived the parent's timeout -- process-group "
-        "kill did not reach it")
+        "kill did not reach it"
+    )
 
 
 # ---------------------------------------------------------------------------
 # Stale-bookkeeping finder
 
 
-def _write_stale_bookkeeping_spec(repo: Path, spec_id: str, task_id: str = "TASK-001") -> None:
+def _write_stale_bookkeeping_spec(
+    repo: Path, spec_id: str, task_id: str = "TASK-001"
+) -> None:
     """A spec with one pending impl task whose `files:` are already git-tracked
     on `repo`'s current branch -- the fixture shape dashboard.detect_stage
     requires to label a spec "stale-bookkeeping" (mirrors
@@ -2992,7 +3556,11 @@ def _write_stale_bookkeeping_spec(repo: Path, spec_id: str, task_id: str = "TASK
 
 
 def _init_git_repo(path: Path) -> None:
-    for cmd in (["init", "-q"], ["config", "user.email", "t@t"], ["config", "user.name", "t"]):
+    for cmd in (
+        ["init", "-q"],
+        ["config", "user.email", "t@t"],
+        ["config", "user.name", "t"],
+    ):
         subprocess.run(["git", "-C", str(path), *cmd], check=True)
 
 
@@ -3052,8 +3620,12 @@ def _init_repo_with_origin(tmp_path: Path, name: str) -> Path:
     (repo / "README.md").write_text("x\n")
     subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True)
     subprocess.run(["git", "-C", str(repo), "commit", "-qm", "init"], check=True)
-    subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", str(bare)], check=True)
-    subprocess.run(["git", "-C", str(repo), "push", "-q", "-u", "origin", "dev"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "remote", "add", "origin", str(bare)], check=True
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "push", "-q", "-u", "origin", "dev"], check=True
+    )
     return repo
 
 
@@ -3081,33 +3653,57 @@ def test_close_stale_bookkeeping_flips_status_and_opens_pr(tmp_path, monkeypatch
     subprocess.run(["git", "-C", str(repo), "commit", "-qm", "seed spec"], check=True)
     subprocess.run(["git", "-C", str(repo), "push", "-q", "origin", "dev"], check=True)
 
-    finding = {"repo": repo, "repo_name": "repo-a", "spec_id": "spec-a",
-               "stale_task_ids": ["TASK-001"]}
+    finding = {
+        "repo": repo,
+        "repo_name": "repo-a",
+        "spec_id": "spec-a",
+        "stale_task_ids": ["TASK-001"],
+    }
 
-    monkeypatch.setattr(drain.subprocess, "run",
-                         _fake_gh_subprocess_run("https://example.invalid/pr/9"))
+    monkeypatch.setattr(
+        drain.subprocess, "run", _fake_gh_subprocess_run("https://example.invalid/pr/9")
+    )
 
     result = close_stale_bookkeeping(
-        finding, "claude", 30, lambda c, t: SpawnOutcome(0), lambda _l: None)
+        finding, "claude", 30, lambda c, t: SpawnOutcome(0), lambda _l: None
+    )
 
-    assert result == {"repo": "repo-a", "spec_id": "spec-a",
-                       "task_ids": ["TASK-001"], "pr_url": "https://example.invalid/pr/9"}
+    assert result == {
+        "repo": "repo-a",
+        "spec_id": "spec-a",
+        "task_ids": ["TASK-001"],
+        "pr_url": "https://example.invalid/pr/9",
+    }
     # The flip lands on the fix branch (pushed, PR opened), not on `repo`'s
     # own checked-out `dev` -- that branch is never touched by the action.
     flipped = subprocess.run(
-        ["git", "-C", str(repo), "show", "fix/close-stale-spec-a:docs/specs/spec-a/tasks/TASK-001.md"],
-        capture_output=True, text=True, check=True).stdout
+        [
+            "git",
+            "-C",
+            str(repo),
+            "show",
+            "fix/close-stale-spec-a:docs/specs/spec-a/tasks/TASK-001.md",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
     assert "status: completed" in flipped
 
 
 def test_close_stale_bookkeeping_missing_task_file_raises(tmp_path):
     repo = _init_repo_with_origin(tmp_path, "repo-a")
-    finding = {"repo": repo, "repo_name": "repo-a", "spec_id": "spec-a",
-               "stale_task_ids": ["TASK-GHOST"]}
+    finding = {
+        "repo": repo,
+        "repo_name": "repo-a",
+        "spec_id": "spec-a",
+        "stale_task_ids": ["TASK-GHOST"],
+    }
 
     with pytest.raises(RuntimeError, match="no TASK-\\*.md found"):
         close_stale_bookkeeping(
-            finding, "claude", 30, lambda c, t: SpawnOutcome(0), lambda _l: None)
+            finding, "claude", 30, lambda c, t: SpawnOutcome(0), lambda _l: None
+        )
 
 
 def test_close_stale_bookkeeping_gh_pr_create_failure_raises(tmp_path, monkeypatch):
@@ -3117,8 +3713,12 @@ def test_close_stale_bookkeeping_gh_pr_create_failure_raises(tmp_path, monkeypat
     subprocess.run(["git", "-C", str(repo), "commit", "-qm", "seed spec"], check=True)
     subprocess.run(["git", "-C", str(repo), "push", "-q", "origin", "dev"], check=True)
 
-    finding = {"repo": repo, "repo_name": "repo-a", "spec_id": "spec-a",
-               "stale_task_ids": ["TASK-001"]}
+    finding = {
+        "repo": repo,
+        "repo_name": "repo-a",
+        "spec_id": "spec-a",
+        "stale_task_ids": ["TASK-001"],
+    }
 
     real_run = subprocess.run
 
@@ -3126,14 +3726,17 @@ def test_close_stale_bookkeeping_gh_pr_create_failure_raises(tmp_path, monkeypat
         if cmd[:2] == ["gh", "pr"] and cmd[2] == "list":
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         if cmd[:2] == ["gh", "pr"] and cmd[2] == "create":
-            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="label not found")
+            return subprocess.CompletedProcess(
+                cmd, 1, stdout="", stderr="label not found"
+            )
         return real_run(cmd, **kwargs)
 
     monkeypatch.setattr(drain.subprocess, "run", fake_run)
 
     with pytest.raises(RuntimeError, match="gh pr create failed"):
         close_stale_bookkeeping(
-            finding, "claude", 30, lambda c, t: SpawnOutcome(0), lambda _l: None)
+            finding, "claude", 30, lambda c, t: SpawnOutcome(0), lambda _l: None
+        )
 
 
 def test_nightly_drain_summary_contract_distinguishes_capacity_and_breaker():
@@ -3144,9 +3747,10 @@ def test_nightly_drain_summary_contract_distinguishes_capacity_and_breaker():
     assert stop_semantics(
         "capacity_gated: provider capacity gate persisted for claude"
     ) == {"kind": "capacity_gated", "operator_alert": False}
-    assert stop_semantics(
-        "circuit_breaker: 2 consecutive failed iterations"
-    ) == {"kind": "circuit_breaker", "operator_alert": True}
+    assert stop_semantics("circuit_breaker: 2 consecutive failed iterations") == {
+        "kind": "circuit_breaker",
+        "operator_alert": True,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -3171,8 +3775,9 @@ def test_drain_seeds_backlog_before_loop(tmp_path, monkeypatch):
     install_fake_queue(monkeypatch, fake)
     config = make_config(tmp_path, repos_root=repos_root)
 
-    summary = drain.drain(config, spawner=lambda c, t: SpawnOutcome(0),
-                          log=lambda _l: None)
+    summary = drain.drain(
+        config, spawner=lambda c, t: SpawnOutcome(0), log=lambda _l: None
+    )
 
     seeded = summary["seeded_backlog"]["seeded"]
     assert [s["seed_key"] for s in seeded] == ["repo-a:spec:010-alpha"]
@@ -3189,14 +3794,17 @@ def _make_ready_to_implement_repo(repos_root, name, spec_id):
     tasks_dir = spec_dir / "tasks"
     tasks_dir.mkdir()
     (tasks_dir / "TASK-001.md").write_text(
-        "---\nid: TASK-001\nstatus: pending\nkind: impl\n---\n")
+        "---\nid: TASK-001\nstatus: pending\nkind: impl\n---\n"
+    )
     worktrail_dir = repo / ".worktrail"
     worktrail_dir.mkdir(parents=True, exist_ok=True)
     (worktrail_dir / "policy.yaml").write_text("allow_seeded_implementation: true\n")
     return repo
 
 
-def test_drain_seeds_ready_to_implement_backlog_for_opted_in_repo(tmp_path, monkeypatch):
+def test_drain_seeds_ready_to_implement_backlog_for_opted_in_repo(
+    tmp_path, monkeypatch
+):
     # Regression guard for task 3.2's "no drain.py code changes needed" claim:
     # a Route D implementation brief for a ready-to-implement spec must reach
     # the run summary's seeded_backlog.seeded through the existing wiring.
@@ -3208,8 +3816,9 @@ def test_drain_seeds_ready_to_implement_backlog_for_opted_in_repo(tmp_path, monk
     install_fake_queue(monkeypatch, fake)
     config = make_config(tmp_path, repos_root=repos_root)
 
-    summary = drain.drain(config, spawner=lambda c, t: SpawnOutcome(0),
-                          log=lambda _l: None)
+    summary = drain.drain(
+        config, spawner=lambda c, t: SpawnOutcome(0), log=lambda _l: None
+    )
 
     seeded = summary["seeded_backlog"]["seeded"]
     assert [s["seed_key"] for s in seeded] == ["repo-a:impl:020-beta"]
@@ -3228,8 +3837,9 @@ def test_drain_no_seed_backlog_opt_out(tmp_path, monkeypatch):
     install_fake_queue(monkeypatch, fake)
     config = make_config(tmp_path, repos_root=repos_root, seed_backlog=False)
 
-    summary = drain.drain(config, spawner=lambda c, t: SpawnOutcome(0),
-                          log=lambda _l: None)
+    summary = drain.drain(
+        config, spawner=lambda c, t: SpawnOutcome(0), log=lambda _l: None
+    )
 
     assert summary["seeded_backlog"] == {}
     assert not (queue_base / "queue").is_dir()
@@ -3247,8 +3857,7 @@ def test_drain_seed_backlog_failure_never_aborts(tmp_path, monkeypatch):
 
     monkeypatch.setattr(drain.seed_backlog_mod, "seed_backlog", boom)
     logs = []
-    summary = drain.drain(config, spawner=lambda c, t: SpawnOutcome(0),
-                          log=logs.append)
+    summary = drain.drain(config, spawner=lambda c, t: SpawnOutcome(0), log=logs.append)
     assert summary["stopped"].startswith("queue_empty")
     assert any("seed-backlog error" in line for line in logs)
 
@@ -3262,8 +3871,9 @@ def test_drain_dry_run_never_seeds(tmp_path, monkeypatch):
     install_fake_queue(monkeypatch, fake)
     config = make_config(tmp_path, repos_root=repos_root, dry_run=True)
 
-    summary = drain.drain(config, spawner=lambda c, t: SpawnOutcome(0),
-                          log=lambda _l: None)
+    summary = drain.drain(
+        config, spawner=lambda c, t: SpawnOutcome(0), log=lambda _l: None
+    )
     assert summary["seeded_backlog"] == {}
     assert not (queue_base / "queue").is_dir()
 
@@ -3276,7 +3886,8 @@ def _file_open_decision(queue_base, name):
     d = queue_base / "decisions" / "open"
     d.mkdir(parents=True, exist_ok=True)
     (d / f"{name}.md").write_text(
-        "---\nid: " + name + "\nstatus: open\n---\n\n## Question\n\nQ?\n")
+        "---\nid: " + name + "\nstatus: open\n---\n\n## Question\n\nQ?\n"
+    )
 
 
 def test_drain_decision_filed_block_skips_circuit_breaker(tmp_path, monkeypatch):
@@ -3290,8 +3901,9 @@ def test_drain_decision_filed_block_skips_circuit_breaker(tmp_path, monkeypatch)
     def spawner(cmd, timeout):
         n["spawned"] += 1
         _file_open_decision(queue_base, f"20260813-12000{n['spawned']}-q")
-        write_run_record(config.runs_dir, f"go-{n['spawned']}",
-                         "blocked_product_decision")
+        write_run_record(
+            config.runs_dir, f"go-{n['spawned']}", "blocked_product_decision"
+        )
         return SpawnOutcome(0)
 
     logs = []
@@ -3316,8 +3928,9 @@ def test_drain_decisionless_block_still_trips_breaker(tmp_path, monkeypatch):
 
     def spawner(cmd, timeout):
         n["spawned"] += 1
-        write_run_record(config.runs_dir, f"go-{n['spawned']}",
-                         "blocked_product_decision")
+        write_run_record(
+            config.runs_dir, f"go-{n['spawned']}", "blocked_product_decision"
+        )
         return SpawnOutcome(0)
 
     summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
@@ -3331,15 +3944,20 @@ def test_drain_decisionless_block_still_trips_breaker(tmp_path, monkeypatch):
 
 
 def test_stop_semantics_flags_pending_user_decision_for_operator_alert():
-    assert stop_semantics(
-        "pending_user_decision: awaiting human answer(s): dec-x"
-    ) == {"kind": "pending_user_decision", "operator_alert": True}
+    assert stop_semantics("pending_user_decision: awaiting human answer(s): dec-x") == {
+        "kind": "pending_user_decision",
+        "operator_alert": True,
+    }
     assert stop_semantics("some_other_stop: not recognized") is None
 
 
 def test_classify_outcome_explicit_pending_state_is_first_class():
-    out = classify_outcome({"final_status": "pending_user_decision"},
-                           claimed_delta=1, exit_code=0, claimed_briefs=["b1"])
+    out = classify_outcome(
+        {"final_status": "pending_user_decision"},
+        claimed_delta=1,
+        exit_code=0,
+        claimed_briefs=["b1"],
+    )
     assert out.kind == "pending_user_decision"
     assert out.state == "pending_user_decision"
     assert out.brief_id == "b1"
@@ -3350,22 +3968,32 @@ def test_classify_outcome_unresolved_audit_entries_are_never_a_generic_failure()
     # recoverable pending_user_decision handoff, not failed_recoverable --
     # the generic-failure classification would spin the circuit breaker
     # against a question only a human can answer.
-    out = classify_outcome({"final_status": None}, claimed_delta=1, exit_code=0,
-                           claimed_briefs=["b1"],
-                           pending_decisions=["dec-alpha-000001"])
+    out = classify_outcome(
+        {"final_status": None},
+        claimed_delta=1,
+        exit_code=0,
+        claimed_briefs=["b1"],
+        pending_decisions=["dec-alpha-000001"],
+    )
     assert out.kind == "pending_user_decision"
     assert out.pending_decisions == ["dec-alpha-000001"]
 
 
 def test_classify_outcome_pending_outranks_blocked_and_timeout_after_pr():
-    blocked = classify_outcome({"final_status": "blocked_external_dependency"},
-                               claimed_delta=1, exit_code=1,
-                               pending_decisions=["dec-a"])
+    blocked = classify_outcome(
+        {"final_status": "blocked_external_dependency"},
+        claimed_delta=1,
+        exit_code=1,
+        pending_decisions=["dec-a"],
+    )
     assert blocked.kind == "pending_user_decision"
     timed_out = classify_outcome(
         {"final_status": None, "pull_request": "https://github.com/x/y/pull/9"},
-        claimed_delta=1, exit_code=124, claimed_briefs=["b1"],
-        pending_decisions=["dec-a"])
+        claimed_delta=1,
+        exit_code=124,
+        claimed_briefs=["b1"],
+        pending_decisions=["dec-a"],
+    )
     assert timed_out.kind == "pending_user_decision"
     assert timed_out.pr_url == "https://github.com/x/y/pull/9"
     assert timed_out.brief_id == "b1"
@@ -3374,47 +4002,57 @@ def test_classify_outcome_pending_outranks_blocked_and_timeout_after_pr():
 def test_classify_outcome_success_outranks_leftover_audit_entries():
     # A completed run must never be wedged by stale bookkeeping: an explicit
     # success state wins over an unconsumed audit entry.
-    out = classify_outcome({"final_status": "completed_and_merged"}, 1, 0,
-                           pending_decisions=["dec-stale"])
+    out = classify_outcome(
+        {"final_status": "completed_and_merged"}, 1, 0, pending_decisions=["dec-stale"]
+    )
     assert out.kind == "success"
 
 
 def test_unresolved_decision_ids_share_poller_semantics():
-    text = ("run_id: r\n"
-            "pending_decisions:\n"
-            "  - t [asked] dec-one\n"
-            "  - t1 [answered] dec-two\n"
-            "  - t2 [consumed] dec-three\n"
-            "  - t [asked] dec-four\n"
-            "  - t [superseded] dec-four\n")
+    text = (
+        "run_id: r\n"
+        "pending_decisions:\n"
+        "  - t [asked] dec-one\n"
+        "  - t1 [answered] dec-two\n"
+        "  - t2 [consumed] dec-three\n"
+        "  - t [asked] dec-four\n"
+        "  - t [superseded] dec-four\n"
+    )
     assert drain.unresolved_decision_ids(text) == ["dec-one", "dec-two"]
     assert unresolved_decision_ids("") == []
 
 
 def test_pending_decision_entries_parse_indented_list_items():
-    text = ('run_id: r\n'
-            'pending_decisions:\n'
-            '  - 2026-08-25T10:00:00+0000 [asked] dec-one\n'
-            '  - t [presented] dec-two\n'
-            'final_status: null\n')
+    text = (
+        "run_id: r\n"
+        "pending_decisions:\n"
+        "  - 2026-08-25T10:00:00+0000 [asked] dec-one\n"
+        "  - t [presented] dec-two\n"
+        "final_status: null\n"
+    )
     assert pending_decision_entries(text) == [
         "2026-08-25T10:00:00+0000 [asked] dec-one",
         "t [presented] dec-two",
     ]
 
 
-def test_drain_pending_user_decision_fails_closed_and_reports_ids(tmp_path, monkeypatch):
+def test_drain_pending_user_decision_fails_closed_and_reports_ids(
+    tmp_path, monkeypatch
+):
     fake = FakeQueue([1, 0])
     install_fake_queue(monkeypatch, fake)
     config = make_config(tmp_path)
 
     def spawner(cmd, timeout):
         write_run_record(
-            config.runs_dir, "go-pending", None,
+            config.runs_dir,
+            "go-pending",
+            None,
             decisions=[
                 "2026-08-25T10:00:00+0000 [asked] dec-e2e-000001",
                 "2026-08-25T10:01:00+0000 [presented] dec-e2e-000001",
-            ])
+            ],
+        )
         return SpawnOutcome(0)
 
     logs = []
@@ -3431,7 +4069,9 @@ def test_drain_pending_user_decision_fails_closed_and_reports_ids(tmp_path, monk
     assert any("--resume-decision" in line for line in logs)
 
 
-def test_drain_continues_past_pending_user_decision_to_next_ready_brief(tmp_path, monkeypatch):
+def test_drain_continues_past_pending_user_decision_to_next_ready_brief(
+    tmp_path, monkeypatch
+):
     # pre-iter1=2 ready; iter1's brief goes pending and drops out of ready
     # (post-iter1=pre-iter2=1); iter2 completes the remaining brief
     # (post-iter2=pre-iter3=0) and the run stops on queue_empty, not the
@@ -3445,11 +4085,15 @@ def test_drain_continues_past_pending_user_decision_to_next_ready_brief(tmp_path
         n["spawned"] += 1
         if n["spawned"] == 1:
             write_run_record(
-                config.runs_dir, "go-pending", None,
-                decisions=["t [asked] dec-x", "t [presented] dec-x"])
+                config.runs_dir,
+                "go-pending",
+                None,
+                decisions=["t [asked] dec-x", "t [presented] dec-x"],
+            )
         else:
-            write_run_record(config.runs_dir, "go-done", "completed_pr_open",
-                             pr="https://pr/1")
+            write_run_record(
+                config.runs_dir, "go-done", "completed_pr_open", pr="https://pr/1"
+            )
         return SpawnOutcome(0)
 
     summary = drain.drain(config, spawner=spawner, log=lambda *_a: None)
@@ -3457,10 +4101,14 @@ def test_drain_continues_past_pending_user_decision_to_next_ready_brief(tmp_path
     assert summary["stopped"].startswith("queue_empty")
     assert summary["pending_user_decisions"] == ["dec-x"]
     assert [i["kind"] for i in summary["iterations"]] == [
-        "pending_user_decision", "success"]
+        "pending_user_decision",
+        "success",
+    ]
 
 
-def test_drain_pending_user_decision_does_not_consume_max_items_budget(tmp_path, monkeypatch):
+def test_drain_pending_user_decision_does_not_consume_max_items_budget(
+    tmp_path, monkeypatch
+):
     # post-iter2 ready stays 1 (a brief remains queued) so the stop is
     # unambiguously max_items, not queue_empty racing it.
     fake = FakeQueue([2, 1, 1, 1, 1])
@@ -3472,11 +4120,15 @@ def test_drain_pending_user_decision_does_not_consume_max_items_budget(tmp_path,
         n["spawned"] += 1
         if n["spawned"] == 1:
             write_run_record(
-                config.runs_dir, "go-pending", None,
-                decisions=["t [asked] dec-x", "t [presented] dec-x"])
+                config.runs_dir,
+                "go-pending",
+                None,
+                decisions=["t [asked] dec-x", "t [presented] dec-x"],
+            )
         else:
-            write_run_record(config.runs_dir, "go-done", "completed_pr_open",
-                             pr="https://pr/1")
+            write_run_record(
+                config.runs_dir, "go-done", "completed_pr_open", pr="https://pr/1"
+            )
         return SpawnOutcome(0)
 
     summary = drain.drain(config, spawner=spawner, log=lambda *_a: None)
@@ -3486,7 +4138,9 @@ def test_drain_pending_user_decision_does_not_consume_max_items_budget(tmp_path,
     assert n["spawned"] == 2
     assert summary["stopped"].startswith("max_items")
     assert [i["kind"] for i in summary["iterations"]] == [
-        "pending_user_decision", "success"]
+        "pending_user_decision",
+        "success",
+    ]
 
 
 def test_drain_resolved_audit_entries_do_not_wedge_the_drain(tmp_path, monkeypatch):
@@ -3496,13 +4150,16 @@ def test_drain_resolved_audit_entries_do_not_wedge_the_drain(tmp_path, monkeypat
 
     def spawner(cmd, timeout):
         write_run_record(
-            config.runs_dir, "go-consumed", "completed_pr_open",
+            config.runs_dir,
+            "go-consumed",
+            "completed_pr_open",
             pr="https://pr/1",
             decisions=[
                 "t [asked] dec-done",
                 "t [answered] dec-done",
                 "t [consumed] dec-done",
-            ])
+            ],
+        )
         return SpawnOutcome(0)
 
     summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
@@ -3511,14 +4168,15 @@ def test_drain_resolved_audit_entries_do_not_wedge_the_drain(tmp_path, monkeypat
     assert [i["state"] for i in summary["iterations"]] == ["completed_pr_open"]
 
 
-def test_drain_explicit_pending_state_without_audit_ids_logs_and_moves_on(tmp_path, monkeypatch):
+def test_drain_explicit_pending_state_without_audit_ids_logs_and_moves_on(
+    tmp_path, monkeypatch
+):
     fake = FakeQueue([1, 0])
     install_fake_queue(monkeypatch, fake)
     config = make_config(tmp_path)
 
     def spawner(cmd, timeout):
-        write_run_record(config.runs_dir, "go-pending-bare",
-                         "pending_user_decision")
+        write_run_record(config.runs_dir, "go-pending-bare", "pending_user_decision")
         return SpawnOutcome(0)
 
     logs = []
@@ -3528,8 +4186,10 @@ def test_drain_explicit_pending_state_without_audit_ids_logs_and_moves_on(tmp_pa
     # pending_user_decision reason.
     assert summary["stopped"].startswith("queue_empty")
     assert summary["pending_user_decisions"] == []
-    assert any("pending user decision" in line and "(decision id not recorded)" in line
-               for line in logs)
+    assert any(
+        "pending user decision" in line and "(decision id not recorded)" in line
+        for line in logs
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -3587,9 +4247,11 @@ def test_main_agent_flag_wins_entirely_over_targets_order(tmp_path, monkeypatch)
     """Flags override config: an explicit --agent suppresses the targets-order
     derivation outright -- routing fallbacks are not merged in."""
     rc, config = _run_main(
-        tmp_path, monkeypatch,
+        tmp_path,
+        monkeypatch,
         argv_extra=["--agent", "claude"],
-        config_payload=_TARGETS_PAYLOAD)
+        config_payload=_TARGETS_PAYLOAD,
+    )
     assert rc == 0
     assert config.agent == "claude"
     assert config.fallback_agents == []
@@ -3599,9 +4261,11 @@ def test_main_fallback_flag_alone_also_suppresses_targets_order(tmp_path, monkey
     """A bare --fallback-agent (no --agent) is still an explicit chain choice:
     primary falls to the claude built-in, not to the targets-order derivation."""
     rc, config = _run_main(
-        tmp_path, monkeypatch,
+        tmp_path,
+        monkeypatch,
         argv_extra=["--fallback-agent", "opencode"],
-        config_payload=_TARGETS_PAYLOAD)
+        config_payload=_TARGETS_PAYLOAD,
+    )
     assert rc == 0
     assert config.agent == "claude"
     assert config.fallback_agents == ["opencode"]
@@ -3618,8 +4282,8 @@ def test_main_rejects_any_operator_config_agent_key(tmp_path, monkeypatch, capsy
     longer exists) and test_main_rejects_unsupported_config_agent (asserted
     per-value rejection; the whole key is rejected now, valid values included)."""
     rc, config = _run_main(
-        tmp_path, monkeypatch,
-        config_payload='{"drain": {"agent": "opencode"}}')
+        tmp_path, monkeypatch, config_payload='{"drain": {"agent": "opencode"}}'
+    )
     assert rc == 2
     assert config is None
     err = capsys.readouterr().err
@@ -3631,8 +4295,10 @@ def test_main_cli_agent_and_fallback_flags_still_work(tmp_path, monkeypatch):
     own candidate shape) are unaffected by the config key's retirement -- they
     never read routing.drain.agent in the first place."""
     rc, config = _run_main(
-        tmp_path, monkeypatch,
-        argv_extra=["--agent", "codex", "--fallback-agent", "claude"])
+        tmp_path,
+        monkeypatch,
+        argv_extra=["--agent", "codex", "--fallback-agent", "claude"],
+    )
     assert rc == 0
     assert config.agent == "codex"
     assert config.fallback_agents == ["claude"]
@@ -3640,7 +4306,8 @@ def test_main_cli_agent_and_fallback_flags_still_work(tmp_path, monkeypatch):
 
 def test_main_fails_loud_on_malformed_config(tmp_path, monkeypatch, capsys):
     rc, config = _run_main(
-        tmp_path, monkeypatch, config_payload='{"drain": "not-a-mapping"}')
+        tmp_path, monkeypatch, config_payload='{"drain": "not-a-mapping"}'
+    )
     assert rc == 2
     assert config is None
     assert "routing.drain must be a mapping" in capsys.readouterr().err
@@ -3652,17 +4319,19 @@ def test_main_fails_loud_on_malformed_config(tmp_path, monkeypatch, capsys):
 
 def test_main_max_workers_flag_overrides_config(tmp_path, monkeypatch):
     rc, config = _run_main(
-        tmp_path, monkeypatch,
+        tmp_path,
+        monkeypatch,
         argv_extra=["--max-workers", "4"],
-        config_payload='{"drain": {"max_workers": 3}}')
+        config_payload='{"drain": {"max_workers": 3}}',
+    )
     assert rc == 0
     assert config.max_workers == 4
 
 
 def test_main_max_workers_uses_config_when_flag_omitted(tmp_path, monkeypatch):
     rc, config = _run_main(
-        tmp_path, monkeypatch,
-        config_payload='{"drain": {"max_workers": 3}}')
+        tmp_path, monkeypatch, config_payload='{"drain": {"max_workers": 3}}'
+    )
     assert rc == 0
     assert config.max_workers == 3
 
@@ -3678,8 +4347,9 @@ def test_main_max_workers_builtin_default_when_neither_present(tmp_path, monkeyp
 
 
 def _git(repo: Path, *args: str) -> None:
-    subprocess.run(["git", *args], cwd=str(repo), check=True,
-                    capture_output=True, text=True)
+    subprocess.run(
+        ["git", *args], cwd=str(repo), check=True, capture_output=True, text=True
+    )
 
 
 def _init_branch_repo(root: Path, name: str) -> Path:
@@ -3719,7 +4389,7 @@ def _no_gh(fn, *args, **kwargs):
 def test_find_stale_branches_discovers_merged_branch_across_repos(tmp_path):
     repo_a = _init_branch_repo(tmp_path, "repo-a")
     _merged_branch(repo_a, "topic")
-    repo_b = _init_branch_repo(tmp_path, "repo-b")  # nothing merged
+    _init_branch_repo(tmp_path, "repo-b")  # nothing merged
 
     found = _no_gh(find_stale_branches, tmp_path)
 
@@ -3755,16 +4425,28 @@ def test_prune_stale_branch_deletes_branch_with_no_worktree():
     tmp_path = Path(tempfile.mkdtemp())
     repo = _init_branch_repo(tmp_path, "repo-a")
     _merged_branch(repo, "topic")
-    finding = {"repo": repo, "repo_name": "repo-a", "branch": "topic",
-               "worktree_path": None, "method": "ancestry"}
+    finding = {
+        "repo": repo,
+        "repo_name": "repo-a",
+        "branch": "topic",
+        "worktree_path": None,
+        "method": "ancestry",
+    }
 
     result = prune_stale_branch(finding, "claude", 30, None, lambda _l: None)
 
-    assert result == {"repo": "repo-a", "branch": "topic",
-                       "method": "ancestry", "pruned": True}
+    assert result == {
+        "repo": "repo-a",
+        "branch": "topic",
+        "method": "ancestry",
+        "pruned": True,
+    }
     remaining = subprocess.run(
         ["git", "branch", "--format=%(refname:short)"],
-        cwd=str(repo), capture_output=True, text=True, check=True,
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout.split()
     assert "topic" not in remaining
 
@@ -3775,8 +4457,13 @@ def test_prune_stale_branch_removes_worktree_first():
     _merged_branch(repo, "topic")
     wt = tmp_path / "repo-a-worktrees" / "topic"
     _git(repo, "worktree", "add", str(wt), "topic")
-    finding = {"repo": repo, "repo_name": "repo-a", "branch": "topic",
-               "worktree_path": str(wt), "method": "ancestry"}
+    finding = {
+        "repo": repo,
+        "repo_name": "repo-a",
+        "branch": "topic",
+        "worktree_path": str(wt),
+        "method": "ancestry",
+    }
 
     result = prune_stale_branch(finding, "claude", 30, None, lambda _l: None)
 
@@ -3784,7 +4471,10 @@ def test_prune_stale_branch_removes_worktree_first():
     assert not wt.exists()
     remaining = subprocess.run(
         ["git", "branch", "--format=%(refname:short)"],
-        cwd=str(repo), capture_output=True, text=True, check=True,
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout.split()
     assert "topic" not in remaining
 
@@ -3800,8 +4490,13 @@ def test_prune_stale_branch_raises_when_worktree_dirty():
     wt = tmp_path / "repo-a-worktrees" / "topic"
     _git(repo, "worktree", "add", str(wt), "topic")
     (wt / "uncommitted.txt").write_text("wip\n", encoding="utf-8")
-    finding = {"repo": repo, "repo_name": "repo-a", "branch": "topic",
-               "worktree_path": str(wt), "method": "ancestry"}
+    finding = {
+        "repo": repo,
+        "repo_name": "repo-a",
+        "branch": "topic",
+        "worktree_path": str(wt),
+        "method": "ancestry",
+    }
 
     with pytest.raises(RuntimeError):
         prune_stale_branch(finding, "claude", 30, None, lambda _l: None)
@@ -3809,7 +4504,9 @@ def test_prune_stale_branch_raises_when_worktree_dirty():
     assert wt.exists()
     remaining = subprocess.run(
         ["git", "branch", "--format=%(refname:short)"],
-        cwd=str(repo), capture_output=True, text=True, check=True,
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout.split()
     assert "topic" in remaining
-

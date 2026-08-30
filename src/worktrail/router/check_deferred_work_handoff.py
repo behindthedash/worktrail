@@ -17,10 +17,12 @@ Parsing reuses `run_record._load_lenient`, the same lenient reader
 malformed or unreadable run record is skipped, never raised, so a bad file
 never takes the whole check down.
 """
+
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Union
+from typing import Any
 
 from ..workqueue import work_queue as _wq
 from ..workqueue.work_queue import _focus_of as _wq_focus_of
@@ -46,7 +48,9 @@ def matches_deferral_phrase(text: str) -> bool:
     return any(phrase in lowered for phrase in DEFERRAL_PHRASES)
 
 
-def load_deferred_work_entries(run_record_paths: Iterable[Union[str, Path]]) -> List[Dict[str, str]]:
+def load_deferred_work_entries(
+    run_record_paths: Iterable[str | Path],
+) -> list[dict[str, str]]:
     """Read only the `deferred_work` list off each run record in `run_record_paths`.
 
     Returns a flat list of `{"text": str, "run_record": str}`, one per
@@ -56,7 +60,7 @@ def load_deferred_work_entries(run_record_paths: Iterable[Union[str, Path]]) -> 
     check is skipped, not raised — the same fail-open posture as every
     other run-record directory scan in this package.
     """
-    entries: List[Dict[str, str]] = []
+    entries: list[dict[str, str]] = []
     for raw_path in run_record_paths:
         path = Path(raw_path)
         try:
@@ -78,7 +82,7 @@ def load_deferred_work_entries(run_record_paths: Iterable[Union[str, Path]]) -> 
     return entries
 
 
-def _brief_focus_texts(directory: Path) -> List[str]:
+def _brief_focus_texts(directory: Path) -> list[str]:
     """Best-effort focus text for every `*.md` brief directly under `directory`.
 
     A missing or unreadable `directory` yields no texts. `_focus_of` degrades
@@ -91,7 +95,7 @@ def _brief_focus_texts(directory: Path) -> List[str]:
         paths = sorted(directory.glob("*.md"))
     except OSError:
         return []
-    texts: List[str] = []
+    texts: list[str] = []
     for path in paths:
         try:
             focus = _wq_focus_of(path)
@@ -115,7 +119,7 @@ def has_handoff_coverage(text: str) -> bool:
     coverage -- never treated as a match.
     """
     probes = extract_probes(text)
-    candidates: List[str] = [
+    candidates: list[str] = [
         *probes.get("paths", []),
         *probes.get("symbols", []),
         *probes.get("pull_requests", []),
@@ -123,7 +127,9 @@ def has_handoff_coverage(text: str) -> bool:
     if not candidates:
         return False
 
-    focus_texts = _brief_focus_texts(_wq.queue_dir()) + _brief_focus_texts(_wq.picked_dir())
+    focus_texts = _brief_focus_texts(_wq.queue_dir()) + _brief_focus_texts(
+        _wq.picked_dir()
+    )
     for focus in focus_texts:
         lowered_focus = focus.lower()
         if any(str(probe).lower() in lowered_focus for probe in candidates):
@@ -131,14 +137,14 @@ def has_handoff_coverage(text: str) -> bool:
     return False
 
 
-def find_flagged(run_record_paths: Iterable[Union[str, Path]]) -> List[Dict[str, str]]:
+def find_flagged(run_record_paths: Iterable[str | Path]) -> list[dict[str, str]]:
     """Deferred-work entries that match a deferral phrase and lack handoff coverage.
 
     Runs `load_deferred_work_entries` (fail-open per-path already), keeps only
     phrase-matching entries, and drops any already covered by an existing
     `queue/`/`picked/` brief per `has_handoff_coverage`.
     """
-    flagged: List[Dict[str, str]] = []
+    flagged: list[dict[str, str]] = []
     for entry in load_deferred_work_entries(run_record_paths):
         text = entry["text"]
         if not matches_deferral_phrase(text):
@@ -149,14 +155,18 @@ def find_flagged(run_record_paths: Iterable[Union[str, Path]]) -> List[Dict[str,
     return flagged
 
 
-def main(argv: List[str] | None = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     import argparse
     import json
 
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
-        "--run-record", dest="run_record", action="append", default=[],
-        metavar="PATH", help="run-record YAML path; may be repeated",
+        "--run-record",
+        dest="run_record",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="run-record YAML path; may be repeated",
     )
     p.add_argument("--json", action="store_true")
     args = p.parse_args(argv)

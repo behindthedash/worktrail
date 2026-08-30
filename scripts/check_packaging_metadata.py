@@ -96,7 +96,9 @@ def main(argv: list[str] | None = None) -> int:
         for error in errors:
             print(f"PACKAGING METADATA: FAIL — {error}", file=sys.stderr)
         return 1
-    print("PACKAGING METADATA: PASS — checkout, installed scripts, and Codex plugin version agree")
+    print(
+        "PACKAGING METADATA: PASS — checkout, installed scripts, and Codex plugin version agree"
+    )
     return 0
 
 

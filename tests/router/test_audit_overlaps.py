@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Unit tests for audit_overlaps.py — stdlib unittest, no pytest needed."""
+
 import json
 import tempfile
 import unittest
 from pathlib import Path
 
-from worktrail.router.audit_overlaps import _tokenise, _jaccard, _score_label, audit
+from worktrail.router.audit_overlaps import _jaccard, _score_label, _tokenise, audit
 
 
 def _make_spec(root: Path, spec_id: str, summary: str) -> None:
@@ -15,7 +16,6 @@ def _make_spec(root: Path, spec_id: str, summary: str) -> None:
 
 
 class TestTokenise(unittest.TestCase):
-
     def test_lowercases_and_splits(self):
         tokens = _tokenise("Donors Search Nonprofits")
         self.assertIn("donors", tokens)
@@ -41,7 +41,6 @@ class TestTokenise(unittest.TestCase):
 
 
 class TestJaccard(unittest.TestCase):
-
     def test_identical_sets(self):
         s = {"search", "donor", "nonprofit"}
         self.assertAlmostEqual(_jaccard(s, s), 1.0)
@@ -61,7 +60,6 @@ class TestJaccard(unittest.TestCase):
 
 
 class TestScoreLabel(unittest.TestCase):
-
     def test_high(self):
         self.assertEqual(_score_label(0.4), "high")
         self.assertEqual(_score_label(0.9), "high")
@@ -76,7 +74,6 @@ class TestScoreLabel(unittest.TestCase):
 
 
 class TestAudit(unittest.TestCase):
-
     def test_no_specs(self):
         with tempfile.TemporaryDirectory() as tmp:
             result = audit(Path(tmp))
@@ -90,10 +87,16 @@ class TestAudit(unittest.TestCase):
     def test_overlapping_pair_detected(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            _make_spec(root, "001-donor-search",
-                       "Donors search nonprofits by cause location rating before donating.")
-            _make_spec(root, "002-nonprofit-search",
-                       "Donors search nonprofits by cause category and location.")
+            _make_spec(
+                root,
+                "001-donor-search",
+                "Donors search nonprofits by cause location rating before donating.",
+            )
+            _make_spec(
+                root,
+                "002-nonprofit-search",
+                "Donors search nonprofits by cause category and location.",
+            )
             result = audit(root, min_score=0.1)
             self.assertEqual(len(result["pairs"]), 1)
             pair = result["pairs"][0]
@@ -105,24 +108,42 @@ class TestAudit(unittest.TestCase):
     def test_non_overlapping_pair_excluded(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            _make_spec(root, "001-auth",
-                       "Administrators manage login passwords sessions expiry.")
-            _make_spec(root, "002-billing",
-                       "Stripe payment invoices subscriptions checkout credit cards.")
+            _make_spec(
+                root,
+                "001-auth",
+                "Administrators manage login passwords sessions expiry.",
+            )
+            _make_spec(
+                root,
+                "002-billing",
+                "Stripe payment invoices subscriptions checkout credit cards.",
+            )
             result = audit(root, min_score=0.15)
             self.assertEqual(len(result["pairs"]), 0)
 
     def test_pairs_ranked_by_score(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            _make_spec(root, "001-search",
-                       "Donors search nonprofits cause location rating filter browse.")
-            _make_spec(root, "002-filter",
-                       "Donors search nonprofits cause location rating browse.")
-            _make_spec(root, "003-payments",
-                       "Stripe payment invoices subscriptions checkout credit cards.")
-            _make_spec(root, "004-checkout",
-                       "Payment checkout invoices billing subscriptions Stripe cards.")
+            _make_spec(
+                root,
+                "001-search",
+                "Donors search nonprofits cause location rating filter browse.",
+            )
+            _make_spec(
+                root,
+                "002-filter",
+                "Donors search nonprofits cause location rating browse.",
+            )
+            _make_spec(
+                root,
+                "003-payments",
+                "Stripe payment invoices subscriptions checkout credit cards.",
+            )
+            _make_spec(
+                root,
+                "004-checkout",
+                "Payment checkout invoices billing subscriptions Stripe cards.",
+            )
             result = audit(root, min_score=0.1)
             scores = [p["token_score"] for p in result["pairs"]]
             self.assertEqual(scores, sorted(scores, reverse=True))
@@ -144,10 +165,14 @@ class TestAudit(unittest.TestCase):
     def test_output_fields_present(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            _make_spec(root, "001-auth",
-                       "Login sessions passwords expiry management tokens.")
-            _make_spec(root, "002-login",
-                       "Login authentication passwords sessions tokens expiry.")
+            _make_spec(
+                root, "001-auth", "Login sessions passwords expiry management tokens."
+            )
+            _make_spec(
+                root,
+                "002-login",
+                "Login authentication passwords sessions tokens expiry.",
+            )
             result = audit(root, min_score=0.1)
             self.assertIn("pairs", result)
             self.assertIn("unscored", result)
@@ -172,9 +197,17 @@ class TestAudit(unittest.TestCase):
     def test_three_specs_pairwise(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            _make_spec(root, "001-a", "Donation payment checkout credit cards invoices.")
-            _make_spec(root, "002-b", "Payment donation checkout credit invoices billing.")
-            _make_spec(root, "003-c", "Donation payment checkout credit invoices billing cards.")
+            _make_spec(
+                root, "001-a", "Donation payment checkout credit cards invoices."
+            )
+            _make_spec(
+                root, "002-b", "Payment donation checkout credit invoices billing."
+            )
+            _make_spec(
+                root,
+                "003-c",
+                "Donation payment checkout credit invoices billing cards.",
+            )
             result = audit(root, min_score=0.1)
             # 3 specs → up to 3 pairs (001-002, 001-003, 002-003)
             self.assertLessEqual(len(result["pairs"]), 3)

@@ -18,12 +18,13 @@ Usage::
 counterpart (use as a CI guard); ``--apply`` pushes the committed JSON over
 the live ruleset.
 """
+
 import argparse
 import json
 import pathlib
 import subprocess
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import requests
 
@@ -31,7 +32,9 @@ RULESETS_DIR = pathlib.Path(".github/rulesets")
 API_BASE = "https://api.github.com"
 
 
-def gh_api(path: str, token: str, method: str = "GET", payload: Optional[dict] = None) -> Any:
+def gh_api(
+    path: str, token: str, method: str = "GET", payload: dict | None = None
+) -> Any:
     url = f"{API_BASE}{path}"
     headers = {
         "Accept": "application/vnd.github+json",
@@ -47,18 +50,20 @@ def gh_api(path: str, token: str, method: str = "GET", payload: Optional[dict] =
     return resp.json() if resp.text else {}
 
 
-def resolve_token(explicit: Optional[str]) -> str:
+def resolve_token(explicit: str | None) -> str:
     if explicit:
         return explicit
     import os
 
     if os.environ.get("GITHUB_TOKEN"):
         return os.environ["GITHUB_TOKEN"]
-    out = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True, check=True)
+    out = subprocess.run(
+        ["gh", "auth", "token"], capture_output=True, text=True, check=True
+    )
     return out.stdout.strip()
 
 
-def resolve_repo(explicit: Optional[str]) -> str:
+def resolve_repo(explicit: str | None) -> str:
     if explicit:
         return explicit
     import os
@@ -66,7 +71,10 @@ def resolve_repo(explicit: Optional[str]) -> str:
     if os.environ.get("GITHUB_REPOSITORY"):
         return os.environ["GITHUB_REPOSITORY"]
     out = subprocess.run(
-        ["git", "remote", "get-url", "origin"], capture_output=True, text=True, check=True
+        ["git", "remote", "get-url", "origin"],
+        capture_output=True,
+        text=True,
+        check=True,
     )
     url = out.stdout.strip()
     # git@github.com:owner/repo.git or https://github.com/owner/repo.git
@@ -74,7 +82,7 @@ def resolve_repo(explicit: Optional[str]) -> str:
     return tail
 
 
-def canon_conditions(cond: Dict[str, Any]) -> Dict[str, Any]:
+def canon_conditions(cond: dict[str, Any]) -> dict[str, Any]:
     ref = cond.get("ref_name", {})
     return {
         "ref_name": {
@@ -84,7 +92,7 @@ def canon_conditions(cond: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def canon_bypass_actors(actors: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def canon_bypass_actors(actors: list[dict[str, Any]]) -> list[dict[str, Any]]:
     normalized = [
         {
             "actor_id": a.get("actor_id"),
@@ -96,7 +104,7 @@ def canon_bypass_actors(actors: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return sorted(normalized, key=lambda a: (a["actor_type"] or "", a["actor_id"] or 0))
 
 
-def canon_rule_params(rule_type: str, params: Dict[str, Any]) -> Dict[str, Any]:
+def canon_rule_params(rule_type: str, params: dict[str, Any]) -> dict[str, Any]:
     if rule_type == "required_status_checks":
         return {
             "strict_required_status_checks_policy": params.get(
@@ -116,7 +124,9 @@ def canon_rule_params(rule_type: str, params: Dict[str, Any]) -> Dict[str, Any]:
                 "dismiss_stale_reviews_on_push", False
             ),
             "require_code_owner_review": params.get("require_code_owner_review", False),
-            "require_last_push_approval": params.get("require_last_push_approval", False),
+            "require_last_push_approval": params.get(
+                "require_last_push_approval", False
+            ),
             "required_review_thread_resolution": params.get(
                 "required_review_thread_resolution", False
             ),
@@ -125,11 +135,13 @@ def canon_rule_params(rule_type: str, params: Dict[str, Any]) -> Dict[str, Any]:
     return params or {}
 
 
-def canon_rules(rules: List[Dict[str, Any]]) -> Dict[str, Any]:
-    return {r["type"]: canon_rule_params(r["type"], r.get("parameters", {})) for r in rules}
+def canon_rules(rules: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        r["type"]: canon_rule_params(r["type"], r.get("parameters", {})) for r in rules
+    }
 
 
-def canonicalize(ruleset: Dict[str, Any]) -> Dict[str, Any]:
+def canonicalize(ruleset: dict[str, Any]) -> dict[str, Any]:
     """Reduce a ruleset (local file or API response) to the writable fields
     that matter for drift comparison, in an order-independent shape."""
     return {
@@ -142,14 +154,16 @@ def canonicalize(ruleset: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def find_live_ruleset(name: str, live_rulesets: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def find_live_ruleset(
+    name: str, live_rulesets: list[dict[str, Any]]
+) -> dict[str, Any] | None:
     for rs in live_rulesets:
         if rs.get("name") == name:
             return rs
     return None
 
 
-def load_local_files(rulesets_dir: pathlib.Path) -> List[pathlib.Path]:
+def load_local_files(rulesets_dir: pathlib.Path) -> list[pathlib.Path]:
     return sorted(rulesets_dir.glob("*.json"))
 
 
@@ -160,11 +174,23 @@ def main(argv=None) -> int:
         "--check", action="store_true", help="exit non-zero if any ruleset has drifted"
     )
     mode.add_argument(
-        "--apply", action="store_true", help="push committed rulesets over the live ones"
+        "--apply",
+        action="store_true",
+        help="push committed rulesets over the live ones",
     )
-    ap.add_argument("--repo", default=None, help="owner/repo (default: detect from env/git remote)")
-    ap.add_argument("--token", default=None, help="GitHub token (default: $GITHUB_TOKEN or `gh auth token`)")
-    ap.add_argument("--dir", default=str(RULESETS_DIR), help="directory of committed ruleset JSON files")
+    ap.add_argument(
+        "--repo", default=None, help="owner/repo (default: detect from env/git remote)"
+    )
+    ap.add_argument(
+        "--token",
+        default=None,
+        help="GitHub token (default: $GITHUB_TOKEN or `gh auth token`)",
+    )
+    ap.add_argument(
+        "--dir",
+        default=str(RULESETS_DIR),
+        help="directory of committed ruleset JSON files",
+    )
     args = ap.parse_args(argv)
 
     rulesets_dir = pathlib.Path(args.dir)
@@ -178,15 +204,17 @@ def main(argv=None) -> int:
 
     live_rulesets = gh_api(f"/repos/{repo}/rulesets", token)
 
-    drifted: List[str] = []
-    missing: List[str] = []
+    drifted: list[str] = []
+    missing: list[str] = []
     for path in files:
         local = json.loads(path.read_text())
         name = local.get("name") or path.stem
         live = find_live_ruleset(name, live_rulesets)
         if live is None:
             missing.append(name)
-            print(f"MISSING LIVE: '{name}' has no live ruleset on {repo}", file=sys.stderr)
+            print(
+                f"MISSING LIVE: '{name}' has no live ruleset on {repo}", file=sys.stderr
+            )
             continue
 
         live_full = gh_api(f"/repos/{repo}/rulesets/{live['id']}", token)
@@ -197,7 +225,12 @@ def main(argv=None) -> int:
             drifted.append(name)
             if args.apply:
                 body = {k: v for k, v in local.items() if k not in ("id", "_id")}
-                gh_api(f"/repos/{repo}/rulesets/{live['id']}", token, method="PUT", payload=body)
+                gh_api(
+                    f"/repos/{repo}/rulesets/{live['id']}",
+                    token,
+                    method="PUT",
+                    payload=body,
+                )
                 print(f"synced: {name}")
             else:
                 local_json = json.dumps(local_canon, indent=2, sort_keys=True)
@@ -212,9 +245,11 @@ def main(argv=None) -> int:
         if drifted or missing:
             names = ", ".join(drifted + [f"{n} (missing live)" for n in missing])
             print(f"DRIFT: {names}", file=sys.stderr)
-            print("Run the same command with --apply to realign, or apply the "
-                  "ruleset by hand if this is the first time it's being created.",
-                  file=sys.stderr)
+            print(
+                "Run the same command with --apply to realign, or apply the "
+                "ruleset by hand if this is the first time it's being created.",
+                file=sys.stderr,
+            )
             return 1
         print(f"in sync: all {len(files)} ruleset file(s) match live")
 
@@ -223,4 +258,3 @@ def main(argv=None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-

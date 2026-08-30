@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Unit tests for overlap_check.py — stdlib unittest, no pytest needed."""
+
 import json
 import tempfile
 import unittest
@@ -11,9 +12,9 @@ from worktrail.router.overlap_check import (
     _feature_summary_from_proposal,
     _feature_summary_from_spec,
     _is_openspec_root,
+    _spec_title,
     _summary_from_problem_statement,
     _user_request_excerpt,
-    _spec_title,
     extract_spec_summary,
     scan,
     task_candidates,
@@ -26,7 +27,6 @@ def _write(path: Path, content: str) -> None:
 
 
 class TestFeatureSummaryExtraction(unittest.TestCase):
-
     def test_reads_feature_summary_field(self):
         text = "**Feature Summary**: Allows donors to search nonprofits by cause.\n"
         self.assertEqual(
@@ -60,10 +60,7 @@ class TestFeatureSummaryExtraction(unittest.TestCase):
         self.assertIn("Donors struggle", result)
 
     def test_problem_statement_returns_first_sentence(self):
-        text = (
-            "### Problem Statement\n\n"
-            "First sentence. Second sentence.\n"
-        )
+        text = "### Problem Statement\n\nFirst sentence. Second sentence.\n"
         result = _summary_from_problem_statement(text)
         self.assertEqual(result, "First sentence.")
 
@@ -74,12 +71,13 @@ class TestFeatureSummaryExtraction(unittest.TestCase):
 
 
 class TestUserRequestExcerpt(unittest.TestCase):
-
     def test_reads_user_request(self):
         with tempfile.TemporaryDirectory() as tmp:
             spec_dir = Path(tmp) / "001-test"
-            _write(spec_dir / "user-request.md",
-                   "# User Request\n\n**Original Input**: Add donor search.\n\nKey requirements here.")
+            _write(
+                spec_dir / "user-request.md",
+                "# User Request\n\n**Original Input**: Add donor search.\n\nKey requirements here.",
+            )
             result = _user_request_excerpt(spec_dir)
             self.assertIsNotNone(result)
             assert result is not None
@@ -101,10 +99,11 @@ class TestUserRequestExcerpt(unittest.TestCase):
 
 
 class TestSpecTitle(unittest.TestCase):
-
     def test_title_from_filename(self):
         f = Path("2025-01-15--donor-search-filter.md")
-        self.assertEqual(_spec_title(f, "003-donor-search-filter"), "Donor Search Filter")
+        self.assertEqual(
+            _spec_title(f, "003-donor-search-filter"), "Donor Search Filter"
+        )
 
     def test_title_from_spec_id_fallback(self):
         self.assertEqual(_spec_title(None, "003-donor-search"), "Donor Search")
@@ -114,9 +113,9 @@ class TestSpecTitle(unittest.TestCase):
 
 
 class TestExtractSpecSummary(unittest.TestCase):
-
-    def _make_spec(self, tmp: str, spec_id: str, spec_content: str,
-                   user_request: str = "") -> Path:
+    def _make_spec(
+        self, tmp: str, spec_id: str, spec_content: str, user_request: str = ""
+    ) -> Path:
         spec_dir = Path(tmp) / spec_id
         _write(spec_dir / "2025-01-01--feature.md", spec_content)
         if user_request:
@@ -126,21 +125,24 @@ class TestExtractSpecSummary(unittest.TestCase):
     def test_returns_feature_summary_when_present(self):
         with tempfile.TemporaryDirectory() as tmp:
             spec_dir = self._make_spec(
-                tmp, "001-donor-search",
+                tmp,
+                "001-donor-search",
                 "**Feature Summary**: Donors can search nonprofits by cause.\n"
                 "## Business Context\n",
             )
             result = extract_spec_summary(spec_dir)
             self.assertIsNotNone(result)
             assert result is not None
-            self.assertEqual(result["feature_summary"],
-                             "Donors can search nonprofits by cause.")
+            self.assertEqual(
+                result["feature_summary"], "Donors can search nonprofits by cause."
+            )
             self.assertEqual(result["spec_id"], "001-donor-search")
 
     def test_falls_back_to_problem_statement(self):
         with tempfile.TemporaryDirectory() as tmp:
             spec_dir = self._make_spec(
-                tmp, "002-payments",
+                tmp,
+                "002-payments",
                 "## Business Context\n\n### Problem Statement\n\n"
                 "Users cannot pay online. Manual invoices cause delays.\n\n"
                 "### Target Users\n",
@@ -153,7 +155,8 @@ class TestExtractSpecSummary(unittest.TestCase):
     def test_falls_back_to_user_request(self):
         with tempfile.TemporaryDirectory() as tmp:
             spec_dir = self._make_spec(
-                tmp, "003-profile",
+                tmp,
+                "003-profile",
                 "## Business Context\n\n### Problem Statement\n\n"
                 "[What problem does this feature solve?]\n",
                 user_request="Add user profile editing.",
@@ -193,7 +196,8 @@ class TestExtractSpecSummary(unittest.TestCase):
     def test_includes_stage_field(self):
         with tempfile.TemporaryDirectory() as tmp:
             spec_dir = self._make_spec(
-                tmp, "001-test",
+                tmp,
+                "001-test",
                 "**Feature Summary**: Test feature.\n",
             )
             result = extract_spec_summary(spec_dir)
@@ -203,7 +207,6 @@ class TestExtractSpecSummary(unittest.TestCase):
 
 
 class TestIsOpenspecRoot(unittest.TestCase):
-
     def test_changes_only(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -242,7 +245,6 @@ class TestIsOpenspecRoot(unittest.TestCase):
 
 
 class TestFeatureSummaryFromProposal(unittest.TestCase):
-
     def test_capabilities_present_is_used(self):
         text = (
             "## Why\n\nBecause donors need this.\n\n"
@@ -281,7 +283,6 @@ class TestFeatureSummaryFromProposal(unittest.TestCase):
 
 
 class TestFeatureSummaryFromOpenspecSpec(unittest.TestCase):
-
     def test_purpose_present_is_used(self):
         text = (
             "## Purpose\n\nSearch nonprofits by cause.\n\n"
@@ -312,12 +313,10 @@ class TestFeatureSummaryFromOpenspecSpec(unittest.TestCase):
 
 
 class TestExtractOpenspecSpec(unittest.TestCase):
-
     def test_returns_full_dict_when_purpose_present(self):
         with tempfile.TemporaryDirectory() as tmp:
             spec_dir = Path(tmp) / "donor-search"
-            _write(spec_dir / "spec.md",
-                   "## Purpose\n\nSearch nonprofits by cause.\n")
+            _write(spec_dir / "spec.md", "## Purpose\n\nSearch nonprofits by cause.\n")
             result = _extract_openspec_spec(spec_dir)
             self.assertIsNotNone(result)
             assert result is not None
@@ -326,8 +325,7 @@ class TestExtractOpenspecSpec(unittest.TestCase):
             # _slug_to_title assumes an `NNN-slug` id and drops the first
             # hyphen-delimited token; OpenSpec dir names carry no such prefix.
             self.assertEqual(result["title"], "Search")
-            self.assertEqual(result["feature_summary"],
-                             "Search nonprofits by cause.")
+            self.assertEqual(result["feature_summary"], "Search nonprofits by cause.")
             self.assertIsNone(result["user_request_excerpt"])
 
     def test_feature_summary_null_when_purpose_absent(self):
@@ -348,14 +346,19 @@ class TestExtractOpenspecSpec(unittest.TestCase):
     def test_key_set_matches_devkit_entry(self):
         with tempfile.TemporaryDirectory() as tmp:
             spec_dir = Path(tmp) / "donor-search"
-            _write(spec_dir / "spec.md",
-                   "## Purpose\n\nSearch nonprofits by cause.\n")
+            _write(spec_dir / "spec.md", "## Purpose\n\nSearch nonprofits by cause.\n")
             result = _extract_openspec_spec(spec_dir)
             self.assertIsNotNone(result)
             assert result is not None
             self.assertEqual(
                 set(result.keys()),
-                {"spec_id", "stage", "title", "feature_summary", "user_request_excerpt"},
+                {
+                    "spec_id",
+                    "stage",
+                    "title",
+                    "feature_summary",
+                    "user_request_excerpt",
+                },
             )
 
     def test_unreadable_spec_file_degrades_not_crashes(self):
@@ -368,7 +371,6 @@ class TestExtractOpenspecSpec(unittest.TestCase):
 
 
 class TestScan(unittest.TestCase):
-
     def test_scan_empty_dir(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(scan(Path(tmp)), [])
@@ -382,7 +384,7 @@ class TestScan(unittest.TestCase):
             for i, name in enumerate(["001-auth", "002-payments", "003-profile"]):
                 d = root / name
                 d.mkdir()
-                (d / f"2025-01-0{i+1}--spec.md").write_text(
+                (d / f"2025-01-0{i + 1}--spec.md").write_text(
                     f"**Feature Summary**: Summary for {name}.\n"
                 )
             results = scan(root)
@@ -400,7 +402,9 @@ class TestScan(unittest.TestCase):
             # a real spec
             spec = root / "001-auth"
             spec.mkdir()
-            (spec / "2025-01-01--auth.md").write_text("**Feature Summary**: Auth feature.\n")
+            (spec / "2025-01-01--auth.md").write_text(
+                "**Feature Summary**: Auth feature.\n"
+            )
             results = scan(root)
             self.assertEqual(len(results), 1)
             self.assertEqual(results[0]["spec_id"], "001-auth")
@@ -419,46 +423,61 @@ class TestScan(unittest.TestCase):
             payload = json.loads(json.dumps({"specs": results}))
             self.assertEqual(len(payload["specs"]), 1)
             keys = payload["specs"][0].keys()
-            for k in ("spec_id", "stage", "title", "feature_summary", "user_request_excerpt"):
+            for k in (
+                "spec_id",
+                "stage",
+                "title",
+                "feature_summary",
+                "user_request_excerpt",
+            ):
                 self.assertIn(k, keys)
 
 
 class TestScanOpenSpec(unittest.TestCase):
-
     def test_changes_only(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            _write(root / "changes" / "add-donor-search" / "proposal.md",
-                   "## Why\n\nDonors need this.\n\n"
-                   "## Capabilities\n\nSearch nonprofits by cause.\n")
+            _write(
+                root / "changes" / "add-donor-search" / "proposal.md",
+                "## Why\n\nDonors need this.\n\n"
+                "## Capabilities\n\nSearch nonprofits by cause.\n",
+            )
             results = scan(root)
             self.assertEqual(len(results), 1)
             self.assertEqual(results[0]["spec_id"], "add-donor-search")
             self.assertEqual(results[0]["stage"], "active")
-            self.assertEqual(results[0]["feature_summary"],
-                             "Search nonprofits by cause.")
+            self.assertEqual(
+                results[0]["feature_summary"], "Search nonprofits by cause."
+            )
             self.assertIsNone(results[0]["user_request_excerpt"])
 
     def test_specs_only(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            _write(root / "specs" / "donor-search" / "spec.md",
-                   "## Purpose\n\nSearch nonprofits by cause.\n")
+            _write(
+                root / "specs" / "donor-search" / "spec.md",
+                "## Purpose\n\nSearch nonprofits by cause.\n",
+            )
             results = scan(root)
             self.assertEqual(len(results), 1)
             self.assertEqual(results[0]["spec_id"], "donor-search")
             self.assertEqual(results[0]["stage"], "complete")
-            self.assertEqual(results[0]["feature_summary"],
-                             "Search nonprofits by cause.")
+            self.assertEqual(
+                results[0]["feature_summary"], "Search nonprofits by cause."
+            )
             self.assertIsNone(results[0]["user_request_excerpt"])
 
     def test_both_present(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            _write(root / "changes" / "add-donor-search" / "proposal.md",
-                   "## Capabilities\n\nSearch nonprofits by cause.\n")
-            _write(root / "specs" / "donor-search" / "spec.md",
-                   "## Purpose\n\nSearch nonprofits by cause.\n")
+            _write(
+                root / "changes" / "add-donor-search" / "proposal.md",
+                "## Capabilities\n\nSearch nonprofits by cause.\n",
+            )
+            _write(
+                root / "specs" / "donor-search" / "spec.md",
+                "## Purpose\n\nSearch nonprofits by cause.\n",
+            )
             results = scan(root)
             self.assertEqual(len(results), 2)
             by_id = {r["spec_id"]: r for r in results}
@@ -469,19 +488,24 @@ class TestScanOpenSpec(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             devkit_root = Path(tmp) / "devkit"
             devkit_spec = devkit_root / "001-auth"
-            _write(devkit_spec / "2025-01-01--auth.md",
-                   "**Feature Summary**: Auth feature.\n")
+            _write(
+                devkit_spec / "2025-01-01--auth.md",
+                "**Feature Summary**: Auth feature.\n",
+            )
             devkit_results = scan(devkit_root)
 
             openspec_root = Path(tmp) / "openspec"
-            _write(openspec_root / "changes" / "add-auth" / "proposal.md",
-                   "## Capabilities\n\nAuth feature.\n")
+            _write(
+                openspec_root / "changes" / "add-auth" / "proposal.md",
+                "## Capabilities\n\nAuth feature.\n",
+            )
             openspec_results = scan(openspec_root)
 
             self.assertEqual(len(devkit_results), 1)
             self.assertEqual(len(openspec_results), 1)
-            self.assertEqual(set(devkit_results[0].keys()),
-                             set(openspec_results[0].keys()))
+            self.assertEqual(
+                set(devkit_results[0].keys()), set(openspec_results[0].keys())
+            )
 
 
 class TestScanDevkitRegression(unittest.TestCase):
@@ -535,17 +559,18 @@ class TestScanDevkitRegression(unittest.TestCase):
 
 
 class TestTaskCandidates(unittest.TestCase):
-
     def test_target_change_with_unchecked_tasks(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            _write(root / "changes" / "add-donor-search" / "tasks.md",
-                   "## 1. Setup\n\n"
-                   "- [x] 1.1 Done already.\n"
-                   "  files: a.py\n"
-                   "- [ ] 1.2 Still open, with wrapped continuation text.\n"
-                   "  files: b.py\n"
-                   "- [ ] 2.1 Also open.\n")
+            _write(
+                root / "changes" / "add-donor-search" / "tasks.md",
+                "## 1. Setup\n\n"
+                "- [x] 1.1 Done already.\n"
+                "  files: a.py\n"
+                "- [ ] 1.2 Still open, with wrapped continuation text.\n"
+                "  files: b.py\n"
+                "- [ ] 2.1 Also open.\n",
+            )
             results = task_candidates(root, target="add-donor-search")
             self.assertEqual(len(results), 2)
             ids = [r["task_id"] for r in results]
@@ -559,20 +584,24 @@ class TestTaskCandidates(unittest.TestCase):
     def test_target_change_fully_checked_returns_empty_no_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            _write(root / "changes" / "add-donor-search" / "tasks.md",
-                   "## 1. Setup\n\n"
-                   "- [x] 1.1 Done.\n"
-                   "- [X] 1.2 Also done.\n")
+            _write(
+                root / "changes" / "add-donor-search" / "tasks.md",
+                "## 1. Setup\n\n- [x] 1.1 Done.\n- [X] 1.2 Also done.\n",
+            )
             results = task_candidates(root, target="add-donor-search")
             self.assertEqual(results, [])
 
     def test_no_target_supplied_unchanged_behavior(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            _write(root / "changes" / "add-donor-search" / "proposal.md",
-                   "## Capabilities\n\nSearch nonprofits by cause.\n")
-            _write(root / "changes" / "add-donor-search" / "tasks.md",
-                   "- [ ] 1.1 Some open task.\n")
+            _write(
+                root / "changes" / "add-donor-search" / "proposal.md",
+                "## Capabilities\n\nSearch nonprofits by cause.\n",
+            )
+            _write(
+                root / "changes" / "add-donor-search" / "tasks.md",
+                "- [ ] 1.1 Some open task.\n",
+            )
             self.assertEqual(task_candidates(root, target=None), scan(root))
             results = task_candidates(root)
             self.assertEqual(len(results), 1)
@@ -581,8 +610,10 @@ class TestTaskCandidates(unittest.TestCase):
     def test_devkit_shaped_target_not_populated(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            _write(root / "001-donor-search" / "2025-01-01--feature.md",
-                   "**Feature Summary**: Donors can search nonprofits by cause.\n")
+            _write(
+                root / "001-donor-search" / "2025-01-01--feature.md",
+                "**Feature Summary**: Donors can search nonprofits by cause.\n",
+            )
             results = task_candidates(root, target="001-donor-search")
             self.assertEqual(results, scan(root))
             self.assertEqual(len(results), 1)
@@ -591,8 +622,10 @@ class TestTaskCandidates(unittest.TestCase):
     def test_target_with_no_readable_tasks_file_falls_back_to_scan(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            _write(root / "changes" / "add-donor-search" / "proposal.md",
-                   "## Capabilities\n\nSearch nonprofits by cause.\n")
+            _write(
+                root / "changes" / "add-donor-search" / "proposal.md",
+                "## Capabilities\n\nSearch nonprofits by cause.\n",
+            )
             results = task_candidates(root, target="nonexistent-change")
             self.assertEqual(results, scan(root))
 

@@ -21,13 +21,19 @@ from . import cluster_telemetry
 
 
 def main(argv=None) -> int:
-    p = argparse.ArgumentParser(description="Summarize cluster-detection precision telemetry")
+    p = argparse.ArgumentParser(
+        description="Summarize cluster-detection precision telemetry"
+    )
     p.add_argument(
         "--log-path",
         default=None,
         help="override the telemetry log path (default: ~/.worktrail/cluster-log.jsonl or $WORKTRAIL_CLUSTER_LOG)",
     )
-    p.add_argument("--json", action="store_true", help="emit JSON instead of a human-readable report")
+    p.add_argument(
+        "--json",
+        action="store_true",
+        help="emit JSON instead of a human-readable report",
+    )
     args = p.parse_args(argv)
 
     log_path = Path(args.log_path).expanduser() if args.log_path else None

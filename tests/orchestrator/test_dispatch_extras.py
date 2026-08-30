@@ -11,12 +11,12 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from worktrail.workqueue import decisions as decisions_mod
 from worktrail.orchestrator import dispatch
 from worktrail.orchestrator.dispatch import (
     DecisionDispatchError,
     validate_resolved_decision_input,
 )
+from worktrail.workqueue import decisions as decisions_mod
 
 
 def _ctx(**kw):
@@ -34,7 +34,12 @@ def _ctx(**kw):
 
 
 def _group(**kw):
-    base = {"name": "base", "tasks": ["TASK-001", "TASK-002"], "reqs": ["REQ-001"], "depends_on": []}
+    base = {
+        "name": "base",
+        "tasks": ["TASK-001", "TASK-002"],
+        "reqs": ["REQ-001"],
+        "depends_on": [],
+    }
     base.update(kw)
     return base
 
@@ -62,7 +67,9 @@ class BuildGroupPromptTests(unittest.TestCase):
         self.assertIn("bad-role", str(cm.exception))
 
     def test_resolve_prompt_contains_group_name(self):
-        prompt = dispatch.build_group_prompt(dispatch.ROLE_RESOLVE, _group(name="feature-2"), _ctx())
+        prompt = dispatch.build_group_prompt(
+            dispatch.ROLE_RESOLVE, _group(name="feature-2"), _ctx()
+        )
         self.assertIn("feature-2", prompt)
         self.assertIn("CONFLICTING", prompt)
 
@@ -72,7 +79,10 @@ class BuildGroupPromptTests(unittest.TestCase):
         self.assertIn("git push", prompt)
 
     def test_ci_fix_prompt_contains_failing_checks(self):
-        ctx = _ctx(failing_checks="lint, typecheck", failure_log="Error: type mismatch at line 42")
+        ctx = _ctx(
+            failing_checks="lint, typecheck",
+            failure_log="Error: type mismatch at line 42",
+        )
         prompt = dispatch.build_group_prompt(dispatch.ROLE_CI_FIX, _group(), ctx)
         self.assertIn("lint, typecheck", prompt)
         self.assertIn("type mismatch at line 42", prompt)
@@ -93,7 +103,11 @@ class BuildGroupPromptTests(unittest.TestCase):
             self.assertIn("Hard rules", prompt)
 
     def test_group_prompts_explain_gitnexus_worktree_boundary(self):
-        for role in (dispatch.ROLE_RESOLVE, dispatch.ROLE_ASSEMBLY_RESOLVE, dispatch.ROLE_CI_FIX):
+        for role in (
+            dispatch.ROLE_RESOLVE,
+            dispatch.ROLE_ASSEMBLY_RESOLVE,
+            dispatch.ROLE_CI_FIX,
+        ):
             prompt = dispatch.build_group_prompt(role, _group(), _ctx())
             self.assertIn("generated worktree normally has no GitNexus index", prompt)
             self.assertIn("the worktree wins", prompt)
@@ -120,7 +134,11 @@ class BuildGroupPromptTests(unittest.TestCase):
         the 1.4/implement worker did. The shell-idiom rule above does not name
         that affordance, so all three group roles must carry the explicit one.
         """
-        for role in (dispatch.ROLE_RESOLVE, dispatch.ROLE_ASSEMBLY_RESOLVE, dispatch.ROLE_CI_FIX):
+        for role in (
+            dispatch.ROLE_RESOLVE,
+            dispatch.ROLE_ASSEMBLY_RESOLVE,
+            dispatch.ROLE_CI_FIX,
+        ):
             prompt = dispatch.build_group_prompt(role, _group(), _ctx())
             self.assertIn("run_in_background", prompt, f"role={role}")
             self.assertIn("single headless turn", prompt, f"role={role}")
@@ -137,7 +155,11 @@ class BuildGroupPromptTests(unittest.TestCase):
         orchestrator's job (verify.py auto_merge()); workers must never do it or
         touch shared CI config themselves.
         """
-        for role in (dispatch.ROLE_RESOLVE, dispatch.ROLE_ASSEMBLY_RESOLVE, dispatch.ROLE_CI_FIX):
+        for role in (
+            dispatch.ROLE_RESOLVE,
+            dispatch.ROLE_ASSEMBLY_RESOLVE,
+            dispatch.ROLE_CI_FIX,
+        ):
             ctx = _ctx(conflicting_branch="task/TASK-002")
             prompt = dispatch.build_group_prompt(role, _group(), ctx)
             self.assertIn("gh pr merge", prompt)
@@ -150,7 +172,9 @@ class BuildStackConflictPromptTests(unittest.TestCase):
         spec_id = kw.pop("spec_id", "004-test")
         conflicting_branch = kw.pop("conflicting_branch", "task/TASK-002")
         worktree_path = kw.pop("worktree_path", "/tmp/wt/004-test/TASK-003")
-        return dispatch.build_stack_conflict_prompt(spec_id, task, conflicting_branch, worktree_path)
+        return dispatch.build_stack_conflict_prompt(
+            spec_id, task, conflicting_branch, worktree_path
+        )
 
     def test_renders_task_id(self):
         prompt = self._prompt(task={"id": "TASK-003", "files": []})
@@ -199,13 +223,20 @@ class BuildStackConflictPromptTests(unittest.TestCase):
 
 class ParseReportBackTests(unittest.TestCase):
     def _ok(self, **kw):
-        base = {"task": "T-1", "step": "implement", "status": "success", "head_sha": "abc"}
+        base = {
+            "task": "T-1",
+            "step": "implement",
+            "status": "success",
+            "head_sha": "abc",
+        }
         base.update(kw)
         import json
+
         return "```json\n" + json.dumps(base) + "\n```"
 
     def test_fallback_no_fenced_block(self):
         import json
+
         payload = {"task": "T-1", "step": "implement", "status": "success"}
         text = "some preamble " + json.dumps(payload) + " some tail"
         r = dispatch.parse_report_back(text)
@@ -223,6 +254,7 @@ class ParseReportBackTests(unittest.TestCase):
 
     def test_missing_required_fields_raises(self):
         import json
+
         text = "```json\n" + json.dumps({"task": "T-1"}) + "\n```"
         with self.assertRaises(ValueError) as cm:
             dispatch.parse_report_back(text)
@@ -230,6 +262,7 @@ class ParseReportBackTests(unittest.TestCase):
 
     def test_bad_status_raises(self):
         import json
+
         payload = {"task": "T-1", "step": "implement", "status": "unknown"}
         text = "```json\n" + json.dumps(payload) + "\n```"
         with self.assertRaises(ValueError) as cm:
@@ -244,6 +277,7 @@ class ParseReportBackTests(unittest.TestCase):
         and return the worker report successfully.
         """
         import json
+
         report = {"task": "TASK-004", "step": "implement", "status": "success"}
         # Simulate the metadata suffix appended by claude -p with no separator.
         # rfind("{") picks position 0 (worker's { is the only { in the text here);
@@ -259,6 +293,7 @@ class DispatchCLITests(unittest.TestCase):
     def test_demo_exits_zero(self):
         import io
         from contextlib import redirect_stdout
+
         buf = io.StringIO()
         with redirect_stdout(buf):
             rc = dispatch.main(["demo"])
@@ -275,18 +310,37 @@ class TransitionTests(unittest.TestCase):
         self.assertIn("review_status", str(cm.exception))
 
     def test_review_invalid_review_status_raises(self):
-        rep = {"task": "T", "step": "review", "status": "success", "review_status": "MAYBE"}
+        rep = {
+            "task": "T",
+            "step": "review",
+            "status": "success",
+            "review_status": "MAYBE",
+        }
         with self.assertRaises(ValueError):
             dispatch.transition(dispatch.ROLE_REVIEW, rep, 0)
 
     def test_escalated_after_max_retries(self):
-        rep = {"task": "T", "step": "review", "status": "success", "review_status": "FAILED"}
-        status, retry = dispatch.transition(dispatch.ROLE_REVIEW, rep, retry_count=2, max_retries=3)
+        rep = {
+            "task": "T",
+            "step": "review",
+            "status": "success",
+            "review_status": "FAILED",
+        }
+        status, _retry = dispatch.transition(
+            dispatch.ROLE_REVIEW, rep, retry_count=2, max_retries=3
+        )
         self.assertEqual(status, "escalated")
 
     def test_fixing_before_max_retries(self):
-        rep = {"task": "T", "step": "review", "status": "success", "review_status": "FAILED"}
-        status, retry = dispatch.transition(dispatch.ROLE_REVIEW, rep, retry_count=1, max_retries=3)
+        rep = {
+            "task": "T",
+            "step": "review",
+            "status": "success",
+            "review_status": "FAILED",
+        }
+        status, retry = dispatch.transition(
+            dispatch.ROLE_REVIEW, rep, retry_count=1, max_retries=3
+        )
         self.assertEqual(status, "fixing")
         self.assertEqual(retry, 2)
 
@@ -302,11 +356,13 @@ def _gate_envelope(**overrides):
         subject="brief-x",
     )
     created = dt.datetime.fromisoformat(envelope["created_at"])
-    envelope.update({
-        "status": "answered",
-        "answered_at": (created + dt.timedelta(seconds=10)).isoformat(),
-        "answer": "flag now",
-    })
+    envelope.update(
+        {
+            "status": "answered",
+            "answered_at": (created + dt.timedelta(seconds=10)).isoformat(),
+            "answer": "flag now",
+        }
+    )
     envelope.update(overrides)
     return envelope
 
@@ -316,10 +372,11 @@ class DecisionGateFailClosedDegradationTests(unittest.TestCase):
     instead of letting an unvalidated envelope through."""
 
     def test_unavailable_primitives_refuse_fail_closed(self):
-        with mock.patch.object(dispatch, "_decision_helpers",
-                               return_value=(None, None)):
-            with self.assertRaises(DecisionDispatchError) as cm:
-                validate_resolved_decision_input(_gate_envelope())
+        with (
+            mock.patch.object(dispatch, "_decision_helpers", return_value=(None, None)),
+            self.assertRaises(DecisionDispatchError) as cm,
+        ):
+            validate_resolved_decision_input(_gate_envelope())
         self.assertIn("unavailable", str(cm.exception))
         self.assertIn("fail-closed", str(cm.exception))
 
@@ -359,7 +416,9 @@ class DecisionGateBoundaryInputTests(unittest.TestCase):
 
     def test_accepted_result_round_trips_the_envelope_parser(self):
         accepted = validate_resolved_decision_input(_gate_envelope())
-        self.assertEqual(decisions_mod.parse_pending_decision_envelope(accepted), accepted)
+        self.assertEqual(
+            decisions_mod.parse_pending_decision_envelope(accepted), accepted
+        )
 
     def test_gate_is_deterministic_same_inputs_same_result(self):
         envelope = _gate_envelope()

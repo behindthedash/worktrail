@@ -21,7 +21,6 @@ import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 
 from ..shared.brief_frontmatter import read_frontmatter, split_frontmatter
 from ..shared.homedir import worktrail_home
@@ -87,14 +86,14 @@ why inconclusive for a fail-open keep>", "confidence": "high|medium|low"}}
 """
 
 
-def group_queue_by_repo() -> Dict[str, List[Path]]:
+def group_queue_by_repo() -> dict[str, list[Path]]:
     """Group every brief in `queue_dir()` by its frontmatter `repo:` value.
 
     A brief with no `repo` field, or a null/empty one, collapses into the
     single `"__none__"` group so callers always have exactly one bucket for
     repo-less briefs instead of needing to special-case `None`.
     """
-    groups: Dict[str, List[Path]] = {}
+    groups: dict[str, list[Path]] = {}
     d = queue_dir()
     if not d.is_dir():
         return groups
@@ -121,7 +120,7 @@ def is_recently_triaged(path: Path, within_days: int) -> bool:
         return False
     _, body = split_frontmatter(content)
 
-    dates: List[datetime.date] = []
+    dates: list[datetime.date] = []
     for raw in _TRIAGE_HEADING_RE.findall(body):
         try:
             dates.append(datetime.date.fromisoformat(raw))
@@ -131,11 +130,11 @@ def is_recently_triaged(path: Path, within_days: int) -> bool:
         return False
 
     most_recent = max(dates)
-    age_days = (datetime.date.today() - most_recent).days
+    age_days = (datetime.date.today() - most_recent).days  # noqa: DTZ011
     return age_days <= within_days
 
 
-def inventory(within_days: int) -> Tuple[Dict[str, List[Path]], List[Path]]:
+def inventory(within_days: int) -> tuple[dict[str, list[Path]], list[Path]]:
     """Compose `group_queue_by_repo()` + `is_recently_triaged()` into an evaluation set.
 
     Briefs whose most recent `## Triage` section falls within `within_days` fail the
@@ -143,10 +142,10 @@ def inventory(within_days: int) -> Tuple[Dict[str, List[Path]], List[Path]]:
     them) but collected into `skipped` for report visibility. A group left empty by
     filtering is dropped entirely rather than kept as an empty bucket.
     """
-    skipped: List[Path] = []
-    groups: Dict[str, List[Path]] = {}
+    skipped: list[Path] = []
+    groups: dict[str, list[Path]] = {}
     for key, paths in group_queue_by_repo().items():
-        kept: List[Path] = []
+        kept: list[Path] = []
         for path in paths:
             if is_recently_triaged(path, within_days):
                 skipped.append(path)
@@ -180,7 +179,7 @@ def _brief_created(path: Path) -> str:
     return str(created) if created else "unknown"
 
 
-def _memory_index_path(cwd: "str | Path") -> Path:
+def _memory_index_path(cwd: str | Path) -> Path:
     """Path to Claude Code's per-project memory index for `cwd`.
 
     Matches the on-disk `~/.claude/projects/<slug>/memory/MEMORY.md` convention,
@@ -193,7 +192,7 @@ def _memory_index_path(cwd: "str | Path") -> Path:
     return Path.home() / ".claude" / "projects" / slug / "memory" / "MEMORY.md"
 
 
-def _check_repo_archived(repo: str, cwd: "str | Path") -> Optional[bool]:
+def _check_repo_archived(repo: str, cwd: str | Path) -> bool | None:
     """Run `gh repo view --json isArchived,name -- <repo>`, confirming archival status.
 
     Returns `True` only on a clean, well-formed confirmation that the repo is
@@ -205,6 +204,7 @@ def _check_repo_archived(repo: str, cwd: "str | Path") -> Optional[bool]:
     try:
         result = subprocess.run(
             ["gh", "repo", "view", "--json", "isArchived,name", "--", repo],
+            check=False,
             capture_output=True,
             text=True,
             cwd=str(cwd),
@@ -225,11 +225,11 @@ def _check_repo_archived(repo: str, cwd: "str | Path") -> Optional[bool]:
 
 def evaluate_group(
     repo: str,
-    briefs: List[Path],
+    briefs: list[Path],
     *,
     agent: str = "claude",
-    cwd: "str | Path",
-) -> List[dict]:
+    cwd: str | Path,
+) -> list[dict]:
     """Spawn one evaluator agent over `repo`'s brief group, per the pilot's grouping.
 
     Builds `EVALUATOR_PROMPT_TEMPLATE` for this group (one `{id, focus, created}`
@@ -295,12 +295,12 @@ class Verdict:
 
     brief_id: str
     verdict: str
-    duplicate_of: Optional[str]
+    duplicate_of: str | None
     evidence: str
-    confidence: Optional[str] = None
+    confidence: str | None = None
 
 
-def _extract_json_objects(text: str) -> List[str]:
+def _extract_json_objects(text: str) -> list[str]:
     """Return every balanced `{...}` substring of `text`, in order of appearance.
 
     Evaluator output is free-form text (reasoning, markdown fences, etc.) with one
@@ -309,7 +309,7 @@ def _extract_json_objects(text: str) -> List[str]:
     quote-awareness so a literal `{`/`}` inside a string doesn't unbalance the
     count) finds each candidate without assuming anything about what surrounds it.
     """
-    objects: List[str] = []
+    objects: list[str] = []
     i, n = 0, len(text)
     while i < n:
         if text[i] != "{":
@@ -347,7 +347,7 @@ def _extract_json_objects(text: str) -> List[str]:
     return objects
 
 
-def parse_verdicts(raw_text: str, expected_brief_ids: List[str]) -> List[Verdict]:
+def parse_verdicts(raw_text: str, expected_brief_ids: list[str]) -> list[Verdict]:
     """Parse `evaluate_group()`'s raw evaluator text into one `Verdict` per expected brief.
 
     Implements the spec's "Evidence-required verdict per brief" requirement: a verdict
@@ -358,7 +358,9 @@ def parse_verdicts(raw_text: str, expected_brief_ids: List[str]) -> List[Verdict
     the full `raw_text`) retained as evidence -- every id in `expected_brief_ids`
     always appears exactly once in the result, in that order, never silently dropped.
     """
-    candidates_by_id: Dict[str, List[Tuple[str, dict]]] = {bid: [] for bid in expected_brief_ids}
+    candidates_by_id: dict[str, list[tuple[str, dict]]] = {
+        bid: [] for bid in expected_brief_ids
+    }
     for snippet in _extract_json_objects(raw_text):
         try:
             obj = json.loads(snippet)
@@ -370,20 +372,24 @@ def parse_verdicts(raw_text: str, expected_brief_ids: List[str]) -> List[Verdict
         if isinstance(bid, str) and bid in candidates_by_id:
             candidates_by_id[bid].append((snippet, obj))
 
-    verdicts: List[Verdict] = []
+    verdicts: list[Verdict] = []
     for bid in expected_brief_ids:
-        chosen: Optional[Verdict] = None
-        fallback_evidence: Optional[str] = None
+        chosen: Verdict | None = None
+        fallback_evidence: str | None = None
         for snippet, obj in candidates_by_id[bid]:
             verdict_type = obj.get("verdict")
             evidence = obj.get("evidence")
             dup_raw = obj.get("duplicate_of")
-            duplicate_of = dup_raw if isinstance(dup_raw, str) and dup_raw.strip() else None
+            duplicate_of = (
+                dup_raw if isinstance(dup_raw, str) and dup_raw.strip() else None
+            )
             confidence = obj.get("confidence")
 
             has_evidence = isinstance(evidence, str) and evidence.strip() != ""
             has_verdict = verdict_type in VALID_VERDICT_TYPES
-            has_duplicate_target = verdict_type != "duplicate-of" or duplicate_of is not None
+            has_duplicate_target = (
+                verdict_type != "duplicate-of" or duplicate_of is not None
+            )
 
             if has_verdict and has_evidence and has_duplicate_target:
                 chosen = Verdict(
@@ -405,14 +411,16 @@ def parse_verdicts(raw_text: str, expected_brief_ids: List[str]) -> List[Verdict
                     brief_id=bid,
                     verdict="keep",
                     duplicate_of=None,
-                    evidence=fallback_evidence if fallback_evidence is not None else raw_text,
+                    evidence=fallback_evidence
+                    if fallback_evidence is not None
+                    else raw_text,
                     confidence=None,
                 )
             )
     return verdicts
 
 
-def resolve_duplicate_targets(verdicts: List[Verdict]) -> List[Verdict]:
+def resolve_duplicate_targets(verdicts: list[Verdict]) -> list[Verdict]:
     """Downgrade dangling `duplicate-of` verdicts to a no-op `keep`.
 
     Implements the spec's "Duplicate-of verdicts resolve safely" requirement: a
@@ -426,14 +434,16 @@ def resolve_duplicate_targets(verdicts: List[Verdict]) -> List[Verdict]:
     and confidence otherwise untouched, rather than acted on.
     """
     by_id = {v.brief_id: v for v in verdicts}
-    resolved: List[Verdict] = []
+    resolved: list[Verdict] = []
     for v in verdicts:
         target = by_id.get(v.duplicate_of) if v.verdict == "duplicate-of" else None
         if target is not None and target.verdict != "keep":
             logger.warning(
                 "dangling duplicate-of: '%s' points to '%s', verdicted '%s' "
                 "(not keep/absent) in this batch -- downgrading to a no-op keep",
-                v.brief_id, v.duplicate_of, target.verdict,
+                v.brief_id,
+                v.duplicate_of,
+                target.verdict,
             )
             resolved.append(
                 Verdict(
@@ -449,7 +459,7 @@ def resolve_duplicate_targets(verdicts: List[Verdict]) -> List[Verdict]:
     return resolved
 
 
-def _resolve_brief_path(identifier: str) -> Optional[Path]:
+def _resolve_brief_path(identifier: str) -> Path | None:
     """Locate `identifier`'s brief file, trying `queue_dir()` before `picked_dir()`.
 
     Only `_apply_needs_update()` needs this: `needs-update` never claims the
@@ -490,7 +500,8 @@ def _apply_close(v: Verdict) -> dict:
             **base,
             "status": "error",
             "path": claim_res.get("path"),
-            "error": f"claim: {claim_res['status']}" + (f" ({detail})" if detail else ""),
+            "error": f"claim: {claim_res['status']}"
+            + (f" ({detail})" if detail else ""),
         }
     done_res = done(v.brief_id, note=v.evidence)
     if done_res["status"] != "done":
@@ -524,7 +535,12 @@ def _apply_needs_update(v: Verdict, run_date: str) -> dict:
     }
     path = _resolve_brief_path(v.brief_id)
     if path is None:
-        return {**base, "status": "error", "path": None, "error": "brief not found in queue/ or picked/"}
+        return {
+            **base,
+            "status": "error",
+            "path": None,
+            "error": "brief not found in queue/ or picked/",
+        }
     try:
         content = path.read_text(encoding="utf-8")
         path.write_text(
@@ -536,7 +552,7 @@ def _apply_needs_update(v: Verdict, run_date: str) -> dict:
     return {**base, "status": "executed", "path": str(path), "error": None}
 
 
-def apply_verdicts(verdicts: List[Verdict], *, confirm: bool) -> List[dict]:
+def apply_verdicts(verdicts: list[Verdict], *, confirm: bool) -> list[dict]:
     """Execute (or, when `confirm` is false, only log) each non-`keep` verdict.
 
     Callers are expected to have already run this batch through
@@ -553,8 +569,8 @@ def apply_verdicts(verdicts: List[Verdict], *, confirm: bool) -> List[dict]:
     never dropping any -- `apply`'s `--json`/human output (4.3) renders this
     list directly.
     """
-    run_date = datetime.date.today().isoformat()
-    log: List[dict] = []
+    run_date = datetime.date.today().isoformat()  # noqa: DTZ011
+    log: list[dict] = []
     for v in verdicts:
         if v.verdict == "keep":
             log.append(
@@ -572,7 +588,11 @@ def apply_verdicts(verdicts: List[Verdict], *, confirm: bool) -> List[dict]:
             )
             continue
 
-        action = "claim+done" if v.verdict in ("stale-close", "duplicate-of") else "append-triage-note"
+        action = (
+            "claim+done"
+            if v.verdict in ("stale-close", "duplicate-of")
+            else "append-triage-note"
+        )
 
         if not confirm:
             log.append(
@@ -597,7 +617,7 @@ def apply_verdicts(verdicts: List[Verdict], *, confirm: bool) -> List[dict]:
     return log
 
 
-def write_verdict_file(verdicts: List[Verdict], out_dir: "str | Path") -> Path:
+def write_verdict_file(verdicts: list[Verdict], out_dir: str | Path) -> Path:
     """Serialize `verdicts` to `<out_dir>/verdict.json`, the sole input the `apply` step may act on.
 
     Per spec's "Apply step never closes a brief without an approved verdict" requirement,
@@ -610,11 +630,15 @@ def write_verdict_file(verdicts: List[Verdict], out_dir: "str | Path") -> Path:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / "verdict.json"
-    path.write_text(json.dumps([asdict(v) for v in verdicts], indent=2) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps([asdict(v) for v in verdicts], indent=2) + "\n", encoding="utf-8"
+    )
     return path
 
 
-def write_report(verdicts: List[Verdict], skipped: List[Path], out_dir: "str | Path") -> Path:
+def write_report(
+    verdicts: list[Verdict], skipped: list[Path], out_dir: str | Path
+) -> Path:
     """Render a human-readable Markdown summary of the run to `<out_dir>/report.md`.
 
     Per spec's "Verdict file and human-readable report" requirement: briefs evaluated,
@@ -627,11 +651,11 @@ def write_report(verdicts: List[Verdict], skipped: List[Path], out_dir: "str | P
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / "report.md"
 
-    counts: Dict[str, int] = {}
+    counts: dict[str, int] = {}
     for v in verdicts:
         counts[v.verdict] = counts.get(v.verdict, 0) + 1
 
-    lines: List[str] = [
+    lines: list[str] = [
         "# Queue triage report",
         "",
         f"Briefs evaluated: {len(verdicts)}",
@@ -712,7 +736,7 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
 
     out_dir = Path(args.out_dir) if args.out_dir else _default_out_dir()
 
-    verdicts: List[Verdict] = []
+    verdicts: list[Verdict] = []
     for repo, briefs in groups.items():
         cwd = repo if repo != NO_REPO_KEY else _worktrail_repo_root()
         for result in evaluate_group(repo, briefs, agent=args.agent, cwd=cwd):
@@ -721,21 +745,23 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
     verdict_path = write_verdict_file(verdicts, out_dir)
     report_path = write_report(verdicts, skipped, out_dir)
 
-    counts: Dict[str, int] = {}
+    counts: dict[str, int] = {}
     for v in verdicts:
         counts[v.verdict] = counts.get(v.verdict, 0) + 1
 
     if args.as_json:
-        print(json.dumps(
-            {
-                "groups_evaluated": len(groups),
-                "briefs_skipped": len(skipped),
-                "verdict_counts": counts,
-                "verdict_file": str(verdict_path),
-                "report_file": str(report_path),
-            },
-            indent=2,
-        ))
+        print(
+            json.dumps(
+                {
+                    "groups_evaluated": len(groups),
+                    "briefs_skipped": len(skipped),
+                    "verdict_counts": counts,
+                    "verdict_file": str(verdict_path),
+                    "report_file": str(report_path),
+                },
+                indent=2,
+            )
+        )
     else:
         counts_str = ", ".join(
             f"{vtype}={counts.get(vtype, 0)}" for vtype in sorted(VALID_VERDICT_TYPES)
@@ -783,11 +809,11 @@ def cmd_apply(args: argparse.Namespace) -> int:
     return 1 if any(e["status"] == "error" for e in action_log) else 0
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Repo-scoped dedup/staleness triage of the work queue. "
-                     "Recommended cadence: monthly, or pre-drain weekly -- not "
-                     "nightly (~1M tokens per full run over a non-trivial queue)."
+        "Recommended cadence: monthly, or pre-drain weekly -- not "
+        "nightly (~1M tokens per full run over a non-trivial queue)."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -798,24 +824,32 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="evaluate every repo group and write a verdict file + report",
     )
     evaluate_parser.add_argument(
-        "--skip-if-triaged-within-days", type=int, default=25,
+        "--skip-if-triaged-within-days",
+        type=int,
+        default=25,
         dest="skip_if_triaged_within_days",
         help="dedup window: briefs with a recent '## Triage' section are skipped (default 25)",
     )
     evaluate_parser.add_argument(
-        "--agent", default="claude", choices=sorted(SUPPORTED_AGENTS),
+        "--agent",
+        default="claude",
+        choices=sorted(SUPPORTED_AGENTS),
         help="evaluator agent to spawn per repo group (default claude)",
     )
     evaluate_parser.add_argument(
-        "--out-dir", default=None,
+        "--out-dir",
+        default=None,
         help="where to write verdict.json + report.md (default ~/.worktrail/triage/<run-id>/)",
     )
     evaluate_parser.add_argument(
-        "--queue-dir", default=None,
+        "--queue-dir",
+        default=None,
         help="WORK_QUEUE_DIR override for this run",
     )
     evaluate_parser.add_argument(
-        "--json", action="store_true", dest="as_json",
+        "--json",
+        action="store_true",
+        dest="as_json",
         help="print the run summary as JSON on exit",
     )
 
@@ -824,15 +858,20 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="apply a verdict file's verdicts (or preview them without --confirm)",
     )
     apply_parser.add_argument(
-        "--verdict-file", required=True, dest="verdict_file",
+        "--verdict-file",
+        required=True,
+        dest="verdict_file",
         help="path to an evaluate-produced verdict.json",
     )
     apply_parser.add_argument(
-        "--confirm", action="store_true",
+        "--confirm",
+        action="store_true",
         help="execute the actions; without this, only log what would happen",
     )
     apply_parser.add_argument(
-        "--json", action="store_true", dest="as_json",
+        "--json",
+        action="store_true",
+        dest="as_json",
         help="print the action log as JSON on exit",
     )
 

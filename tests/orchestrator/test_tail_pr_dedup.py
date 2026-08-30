@@ -10,6 +10,7 @@ a leaf's own cumulative branch.
 
 Run: python3 test_tail_pr_dedup.py
 """
+
 from __future__ import annotations
 
 import sys
@@ -17,10 +18,13 @@ import unittest
 import unittest.mock
 from pathlib import Path
 
-sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.abspath(__file__)))
+sys.path.insert(
+    0, __import__("os").path.dirname(__import__("os").path.abspath(__file__))
+)
 
-from worktrail.orchestrator import integrate  # noqa: E402
+from typing import ClassVar
 
+from worktrail.orchestrator import integrate
 
 # The exact DAG from the incident: 1.1<-1.2<-1.3<-1.4<-1.5<-2.1<-2.2<-2.3<-2.4,
 # plus 3.1 depending only on 1.5 (a second independent leaf).
@@ -51,7 +55,9 @@ class TailDependencyClosureTest(unittest.TestCase):
         )
 
     def test_closure_of_root_is_empty(self):
-        self.assertEqual(integrate._tail_dependency_closure("1.1", INCIDENT_BY_ID), set())
+        self.assertEqual(
+            integrate._tail_dependency_closure("1.1", INCIDENT_BY_ID), set()
+        )
 
 
 class TailSupersededByMapTest(unittest.TestCase):
@@ -73,7 +79,9 @@ class TailSupersededByMapTest(unittest.TestCase):
             self.assertIn(descendant, finding_ids)
 
     def test_single_finding_has_no_supersession(self):
-        superseded_by = integrate._tail_superseded_by_map([_finding("2.4")], INCIDENT_BY_ID)
+        superseded_by = integrate._tail_superseded_by_map(
+            [_finding("2.4")], INCIDENT_BY_ID
+        )
         self.assertEqual(superseded_by, {})
 
     def test_two_independent_findings_supersede_nothing(self):
@@ -102,18 +110,27 @@ class ReconcileDedupIntegrationTest(unittest.TestCase):
 
         def fake_integrate_one(g, *_args, **_kwargs):
             called_with.append(g["tasks"][0])
-            return None
 
-        with unittest.mock.patch.object(
-            integrate, "integrate_one", side_effect=fake_integrate_one
-        ), unittest.mock.patch.object(
-            integrate, "_read_group_journal_record", return_value={}
-        ), unittest.mock.patch.object(
-            integrate, "_close_superseded_tail_pr"
-        ) as close_mock:
+        with (
+            unittest.mock.patch.object(
+                integrate, "integrate_one", side_effect=fake_integrate_one
+            ),
+            unittest.mock.patch.object(
+                integrate, "_read_group_journal_record", return_value={}
+            ),
+            unittest.mock.patch.object(
+                integrate, "_close_superseded_tail_pr"
+            ) as close_mock,
+        ):
             result = integrate.reconcile_unreconciled_tail_evidence(
-                findings, Path("/fake/repo"), "spec-1", INCIDENT_TASKS,
-                "origin", "run-1", "main", None,
+                findings,
+                Path("/fake/repo"),
+                "spec-1",
+                INCIDENT_TASKS,
+                "origin",
+                "run-1",
+                "main",
+                None,
             )
 
         self.assertEqual(sorted(called_with), ["2.4", "3.1"])
@@ -131,14 +148,22 @@ class ReconcileDedupIntegrationTest(unittest.TestCase):
         findings = [_finding(t["id"]) for t in INCIDENT_TASKS]
         original = [dict(f) for f in findings]
 
-        with unittest.mock.patch.object(
-            integrate, "integrate_one", return_value=None
-        ), unittest.mock.patch.object(
-            integrate, "_read_group_journal_record", return_value={}
-        ), unittest.mock.patch.object(integrate, "_close_superseded_tail_pr"):
+        with (
+            unittest.mock.patch.object(integrate, "integrate_one", return_value=None),
+            unittest.mock.patch.object(
+                integrate, "_read_group_journal_record", return_value={}
+            ),
+            unittest.mock.patch.object(integrate, "_close_superseded_tail_pr"),
+        ):
             integrate.reconcile_unreconciled_tail_evidence(
-                findings, Path("/fake/repo"), "spec-1", INCIDENT_TASKS,
-                "origin", "run-1", "main", None,
+                findings,
+                Path("/fake/repo"),
+                "spec-1",
+                INCIDENT_TASKS,
+                "origin",
+                "run-1",
+                "main",
+                None,
             )
 
         self.assertEqual(findings, original)
@@ -147,39 +172,74 @@ class ReconcileDedupIntegrationTest(unittest.TestCase):
 class ReconcileVerifySeamTest(unittest.TestCase):
     """`reconcile_unreconciled_tail_evidence`'s post-`integrate_one` verify step."""
 
-    SINGLE_TASK = [{"id": "1.1", "deps": []}]
+    SINGLE_TASK: ClassVar = [{"id": "1.1", "deps": []}]
 
     def test_open_state_runs_verify_one_and_reflects_merged_outcome(self):
         findings = [_finding("1.1")]
         journal_reads = [
-            {"state": "OPEN", "head_branch": "run-1/tail-1.1", "pr_url": "https://pr/1"},
-            {"state": "OPEN", "head_branch": "run-1/tail-1.1", "pr_url": "https://pr/1"},
-            {"state": "MERGED", "head_branch": "run-1/tail-1.1", "pr_url": "https://pr/1"},
+            {
+                "state": "OPEN",
+                "head_branch": "run-1/tail-1.1",
+                "pr_url": "https://pr/1",
+            },
+            {
+                "state": "OPEN",
+                "head_branch": "run-1/tail-1.1",
+                "pr_url": "https://pr/1",
+            },
+            {
+                "state": "MERGED",
+                "head_branch": "run-1/tail-1.1",
+                "pr_url": "https://pr/1",
+            },
         ]
         verify_calls = []
 
         class FakeVerifier:
-            def verify_one(self, group, group_branch, delivered, merged, quarantined, lock,
-                            **kwargs):
+            def verify_one(
+                self,
+                group,
+                group_branch,
+                delivered,
+                merged,
+                quarantined,
+                lock,
+                **kwargs,
+            ):
                 verify_calls.append((group["name"], group_branch))
                 merged.append(group["name"])
 
         write_calls = []
 
-        def fake_write(journal_path, name, pr_url, head_branch, state,
-                        quarantine_reason="", quarantine_detail=""):
+        def fake_write(
+            journal_path,
+            name,
+            pr_url,
+            head_branch,
+            state,
+            quarantine_reason="",
+            quarantine_detail="",
+        ):
             write_calls.append((name, state))
 
-        with unittest.mock.patch.object(
-            integrate, "integrate_one", return_value=None
-        ), unittest.mock.patch.object(
-            integrate, "_read_group_journal_record", side_effect=journal_reads
-        ), unittest.mock.patch.object(
-            integrate, "_write_group_journal", side_effect=fake_write
+        with (
+            unittest.mock.patch.object(integrate, "integrate_one", return_value=None),
+            unittest.mock.patch.object(
+                integrate, "_read_group_journal_record", side_effect=journal_reads
+            ),
+            unittest.mock.patch.object(
+                integrate, "_write_group_journal", side_effect=fake_write
+            ),
         ):
             result = integrate.reconcile_unreconciled_tail_evidence(
-                findings, Path("/fake/repo"), "spec-1", self.SINGLE_TASK,
-                "origin", "run-1", "main", None,
+                findings,
+                Path("/fake/repo"),
+                "spec-1",
+                self.SINGLE_TASK,
+                "origin",
+                "run-1",
+                "main",
+                None,
                 make_verifier=lambda: FakeVerifier(),
             )
 
@@ -192,21 +252,32 @@ class ReconcileVerifySeamTest(unittest.TestCase):
         findings = [_finding("1.1")]
         journal_reads = [
             {"state": None},
-            {"state": "OPEN", "head_branch": "run-1/tail-1.1", "pr_url": "https://pr/1"},
+            {
+                "state": "OPEN",
+                "head_branch": "run-1/tail-1.1",
+                "pr_url": "https://pr/1",
+            },
         ]
 
         class ExplodingVerifier:
             def verify_one(self, *args, **kwargs):
                 raise RuntimeError("boom")
 
-        with unittest.mock.patch.object(
-            integrate, "integrate_one", return_value=None
-        ), unittest.mock.patch.object(
-            integrate, "_read_group_journal_record", side_effect=journal_reads
+        with (
+            unittest.mock.patch.object(integrate, "integrate_one", return_value=None),
+            unittest.mock.patch.object(
+                integrate, "_read_group_journal_record", side_effect=journal_reads
+            ),
         ):
             result = integrate.reconcile_unreconciled_tail_evidence(
-                findings, Path("/fake/repo"), "spec-1", self.SINGLE_TASK,
-                "origin", "run-1", "main", None,
+                findings,
+                Path("/fake/repo"),
+                "spec-1",
+                self.SINGLE_TASK,
+                "origin",
+                "run-1",
+                "main",
+                None,
                 make_verifier=lambda: ExplodingVerifier(),
             )
 
@@ -216,10 +287,19 @@ class ReconcileVerifySeamTest(unittest.TestCase):
 
 class CloseSupersededTailPrTest(unittest.TestCase):
     def test_noop_when_journal_has_no_open_record(self):
-        with unittest.mock.patch.object(
-            integrate, "_read_group_journal_record", return_value={"state": "QUARANTINED"}
-        ), unittest.mock.patch("worktrail.orchestrator.integrate.subprocess.run") as run_mock:
-            integrate._close_superseded_tail_pr(Path("/fake/repo"), "origin", "tail-1.1", None)
+        with (
+            unittest.mock.patch.object(
+                integrate,
+                "_read_group_journal_record",
+                return_value={"state": "QUARANTINED"},
+            ),
+            unittest.mock.patch(
+                "worktrail.orchestrator.integrate.subprocess.run"
+            ) as run_mock,
+        ):
+            integrate._close_superseded_tail_pr(
+                Path("/fake/repo"), "origin", "tail-1.1", None
+            )
         run_mock.assert_not_called()
 
     def test_closes_pr_and_cancels_nonterminal_runs_when_open(self):
@@ -240,13 +320,20 @@ class CloseSupersededTailPrTest(unittest.TestCase):
             result.stderr = ""
             return result
 
-        with unittest.mock.patch.object(
-            integrate, "_read_group_journal_record", return_value=journal_record
-        ), unittest.mock.patch.object(
-            integrate, "_git",
-            return_value=unittest.mock.Mock(stdout="https://github.com/acme/repo.git\n"),
-        ), unittest.mock.patch(
-            "worktrail.orchestrator.integrate.subprocess.run", side_effect=fake_run
+        with (
+            unittest.mock.patch.object(
+                integrate, "_read_group_journal_record", return_value=journal_record
+            ),
+            unittest.mock.patch.object(
+                integrate,
+                "_git",
+                return_value=unittest.mock.Mock(
+                    stdout="https://github.com/acme/repo.git\n"
+                ),
+            ),
+            unittest.mock.patch(
+                "worktrail.orchestrator.integrate.subprocess.run", side_effect=fake_run
+            ),
         ):
             integrate._close_superseded_tail_pr(
                 Path("/fake/repo"), "origin", "tail-1.1", "/fake/journal.json"

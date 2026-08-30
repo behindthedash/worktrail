@@ -5,6 +5,7 @@ Real throwaway files on disk for the brief + run-record scan (the logic under
 test *is* the file scan); the `gh` open-PR lookup is monkeypatched since it's
 the one live-I/O boundary, mirroring test_classify.py's TestCitedPrStates.
 """
+
 from __future__ import annotations
 
 import tempfile
@@ -24,8 +25,9 @@ def _write_brief(tmpdir: Path, brief_id: str, repo: str) -> Path:
     return path
 
 
-def _write_run_record(runs_dir: Path, repo: str, run_id: str, brief_id: str,
-                       final_status, worktree) -> Path:
+def _write_run_record(
+    runs_dir: Path, repo: str, run_id: str, brief_id: str, final_status, worktree
+) -> Path:
     repo_dir = runs_dir / Path(repo).name
     repo_dir.mkdir(parents=True, exist_ok=True)
     path = repo_dir / f"{run_id}.yaml"
@@ -35,7 +37,7 @@ def _write_run_record(runs_dir: Path, repo: str, run_id: str, brief_id: str,
         f"run_id: {run_id}\n"
         f"repository: {repo}\n"
         f"worktree: {worktree_line}\n"
-        f"request_summary: \"references {brief_id} in its request\"\n"
+        f'request_summary: "references {brief_id} in its request"\n'
         f"final_status: {final_status_line}\n",
         encoding="utf-8",
     )
@@ -62,14 +64,17 @@ class TestNoRepoFrontmatter(unittest.TestCase):
         with tempfile.TemporaryDirectory() as t:
             tmp = Path(t)
             brief = tmp / "b.md"
-            brief.write_text("---\nid: b\nrepo: null\n---\n\n## Focus\n\ntest\n",
-                              encoding="utf-8")
+            brief.write_text(
+                "---\nid: b\nrepo: null\n---\n\n## Focus\n\ntest\n", encoding="utf-8"
+            )
             res = crs.check(brief, do_gh=False)
             self.assertFalse(res["checked"])
             self.assertFalse(res["resumable"])
             self.assertIn("no repo:", res["warning"])
 
-    def test_missing_repo_with_inflight_run_record_is_not_reported_as_non_resumable(self):
+    def test_missing_repo_with_inflight_run_record_is_not_reported_as_non_resumable(
+        self,
+    ):
         # Even when other briefs' run records exist on disk, a repo-absent
         # brief must come back unknown (checked=False), never a confident
         # "not resumable" -- the check has no repo to scan and must say so,
@@ -80,13 +85,19 @@ class TestNoRepoFrontmatter(unittest.TestCase):
             other_repo = str(tmp / "myrepo")
             worktree = tmp / "myrepo-worktrees" / "some-branch"
             worktree.mkdir(parents=True)
-            _write_run_record(runs_dir, other_repo, "go-1",
-                               "20260812-999999-real-resume",
-                               final_status=None, worktree=str(worktree))
+            _write_run_record(
+                runs_dir,
+                other_repo,
+                "go-1",
+                "20260812-999999-real-resume",
+                final_status=None,
+                worktree=str(worktree),
+            )
 
             brief = tmp / "b.md"
-            brief.write_text("---\nid: b\nrepo: null\n---\n\n## Focus\n\ntest\n",
-                              encoding="utf-8")
+            brief.write_text(
+                "---\nid: b\nrepo: null\n---\n\n## Focus\n\ntest\n", encoding="utf-8"
+            )
             res = crs.check(brief, runs_dir=runs_dir, do_gh=False)
             self.assertFalse(res["checked"])
             self.assertFalse(res["resumable"])
@@ -108,10 +119,18 @@ class TestRepoOverrideFallback(unittest.TestCase):
             worktree.mkdir(parents=True)
             brief_id = "20260815-211359-meta-brief"
             brief = tmp / "b.md"
-            brief.write_text(f"---\nid: {brief_id}\nrepo: null\n---\n\n## Focus\n\ntest\n",
-                              encoding="utf-8")
-            _write_run_record(runs_dir, repo, "go-1", brief_id,
-                               final_status=None, worktree=str(worktree))
+            brief.write_text(
+                f"---\nid: {brief_id}\nrepo: null\n---\n\n## Focus\n\ntest\n",
+                encoding="utf-8",
+            )
+            _write_run_record(
+                runs_dir,
+                repo,
+                "go-1",
+                brief_id,
+                final_status=None,
+                worktree=str(worktree),
+            )
 
             res = crs.check(brief, runs_dir=runs_dir, do_gh=False, repo_override=repo)
             self.assertTrue(res["checked"])
@@ -128,10 +147,18 @@ class TestRepoOverrideFallback(unittest.TestCase):
             worktree.mkdir(parents=True)
             brief_id = "20260815-211359-frontmatter-wins"
             brief = _write_brief(tmp, brief_id, frontmatter_repo)
-            _write_run_record(runs_dir, frontmatter_repo, "go-1", brief_id,
-                               final_status=None, worktree=str(worktree))
+            _write_run_record(
+                runs_dir,
+                frontmatter_repo,
+                "go-1",
+                brief_id,
+                final_status=None,
+                worktree=str(worktree),
+            )
 
-            res = crs.check(brief, runs_dir=runs_dir, do_gh=False, repo_override=override_repo)
+            res = crs.check(
+                brief, runs_dir=runs_dir, do_gh=False, repo_override=override_repo
+            )
             self.assertTrue(res["checked"])
             self.assertTrue(res["resumable"])
             self.assertEqual(res["evidence"]["worktree"], str(worktree))
@@ -142,8 +169,9 @@ class TestRepoOverrideFallback(unittest.TestCase):
         with tempfile.TemporaryDirectory() as t:
             tmp = Path(t)
             brief = tmp / "b.md"
-            brief.write_text("---\nid: b\nrepo: null\n---\n\n## Focus\n\ntest\n",
-                              encoding="utf-8")
+            brief.write_text(
+                "---\nid: b\nrepo: null\n---\n\n## Focus\n\ntest\n", encoding="utf-8"
+            )
             res = crs.check(brief, do_gh=False, repo_override=None)
             self.assertFalse(res["checked"])
             self.assertFalse(res["resumable"])
@@ -170,8 +198,14 @@ class TestRunRecordScan(unittest.TestCase):
             worktree.mkdir(parents=True)
             brief_id = "20260812-999999-real-resume"
             brief = _write_brief(tmp, brief_id, repo)
-            _write_run_record(runs_dir, repo, "go-1", brief_id,
-                               final_status=None, worktree=str(worktree))
+            _write_run_record(
+                runs_dir,
+                repo,
+                "go-1",
+                brief_id,
+                final_status=None,
+                worktree=str(worktree),
+            )
 
             res = crs.check(brief, runs_dir=runs_dir, do_gh=False)
             self.assertTrue(res["checked"])
@@ -189,8 +223,14 @@ class TestRunRecordScan(unittest.TestCase):
             gone_worktree = tmp / "myrepo-worktrees" / "deleted-branch"
             brief_id = "20260812-888888-stale-worktree"
             brief = _write_brief(tmp, brief_id, repo)
-            _write_run_record(runs_dir, repo, "go-1", brief_id,
-                               final_status=None, worktree=str(gone_worktree))
+            _write_run_record(
+                runs_dir,
+                repo,
+                "go-1",
+                brief_id,
+                final_status=None,
+                worktree=str(gone_worktree),
+            )
 
             res = crs.check(brief, runs_dir=runs_dir, do_gh=False)
             self.assertTrue(res["checked"])
@@ -210,8 +250,14 @@ class TestRunRecordScan(unittest.TestCase):
             worktree.mkdir(parents=True)
             brief_id = "20260812-777777-already-done"
             brief = _write_brief(tmp, brief_id, repo)
-            _write_run_record(runs_dir, repo, "go-1", brief_id,
-                               final_status="completed_and_merged", worktree=str(worktree))
+            _write_run_record(
+                runs_dir,
+                repo,
+                "go-1",
+                brief_id,
+                final_status="completed_and_merged",
+                worktree=str(worktree),
+            )
 
             res = crs.check(brief, runs_dir=runs_dir, do_gh=False)
             self.assertTrue(res["checked"])
@@ -225,8 +271,14 @@ class TestRunRecordScan(unittest.TestCase):
             runs_dir = tmp / "runs"
             brief_id = "20260812-163747-classify-handoff-s-route-hint"
             brief = _write_brief(tmp, brief_id, repo)
-            _write_run_record(runs_dir, repo, "go-1", "some-other-brief-entirely",
-                               final_status=None, worktree=str(tmp / "wt"))
+            _write_run_record(
+                runs_dir,
+                repo,
+                "go-1",
+                "some-other-brief-entirely",
+                final_status=None,
+                worktree=str(tmp / "wt"),
+            )
 
             res = crs.check(brief, runs_dir=runs_dir, do_gh=False)
             self.assertTrue(res["checked"])
@@ -239,10 +291,15 @@ class TestOpenPrLookup(unittest.TestCase):
         with tempfile.TemporaryDirectory() as t:
             tmp = Path(t)
             repo = str(tmp / "myrepo")
-            brief = _write_brief(tmp, "20260812-163747-classify-handoff-s-route-hint", repo)
+            brief = _write_brief(
+                tmp, "20260812-163747-classify-handoff-s-route-hint", repo
+            )
 
-            with patch.object(crs, "_find_open_pr",
-                               return_value={"number": 42, "url": "https://example/42"}):
+            with patch.object(
+                crs,
+                "_find_open_pr",
+                return_value={"number": 42, "url": "https://example/42"},
+            ):
                 res = crs.check(brief, runs_dir=tmp / "no-runs", do_gh=True)
             self.assertTrue(res["checked"])
             self.assertTrue(res["resumable"])
@@ -252,7 +309,9 @@ class TestOpenPrLookup(unittest.TestCase):
         with tempfile.TemporaryDirectory() as t:
             tmp = Path(t)
             repo = str(tmp / "myrepo")
-            brief = _write_brief(tmp, "20260812-163747-classify-handoff-s-route-hint", repo)
+            brief = _write_brief(
+                tmp, "20260812-163747-classify-handoff-s-route-hint", repo
+            )
 
             with patch.object(crs, "_find_open_pr", return_value=None):
                 res = crs.check(brief, runs_dir=tmp / "no-runs", do_gh=True)
@@ -264,7 +323,9 @@ class TestOpenPrLookup(unittest.TestCase):
         with tempfile.TemporaryDirectory() as t:
             tmp = Path(t)
             repo = str(tmp / "myrepo")
-            brief = _write_brief(tmp, "20260812-163747-classify-handoff-s-route-hint", repo)
+            brief = _write_brief(
+                tmp, "20260812-163747-classify-handoff-s-route-hint", repo
+            )
 
             with patch("shutil.which", return_value=None):
                 res = crs.check(brief, runs_dir=tmp / "no-runs", do_gh=True)
@@ -275,7 +336,9 @@ class TestOpenPrLookup(unittest.TestCase):
         with tempfile.TemporaryDirectory() as t:
             tmp = Path(t)
             repo = str(tmp / "myrepo")
-            brief = _write_brief(tmp, "20260812-163747-classify-handoff-s-route-hint", repo)
+            brief = _write_brief(
+                tmp, "20260812-163747-classify-handoff-s-route-hint", repo
+            )
 
             with patch.object(crs, "_find_open_pr") as mock_find:
                 res = crs.check(brief, runs_dir=tmp / "no-runs", do_gh=False)
@@ -292,7 +355,9 @@ class TestIncidentReproduction(unittest.TestCase):
         with tempfile.TemporaryDirectory() as t:
             tmp = Path(t)
             repo = str(tmp / "worktrail")
-            brief = _write_brief(tmp, "20260812-163747-classify-handoff-s-route-hint", repo)
+            brief = _write_brief(
+                tmp, "20260812-163747-classify-handoff-s-route-hint", repo
+            )
 
             with patch.object(crs, "_find_open_pr", return_value=None):
                 res = crs.check(brief, runs_dir=tmp / "no-runs", do_gh=True)
@@ -318,10 +383,14 @@ class TestCli(unittest.TestCase):
 
             buf = io.StringIO()
             with redirect_stdout(buf):
-                rc = crs.main(["--brief", str(brief), "--dir", str(runs_dir), "--no-gh", "--json"])
+                rc = crs.main(
+                    ["--brief", str(brief), "--dir", str(runs_dir), "--no-gh", "--json"]
+                )
             self.assertEqual(rc, 0)
-            self.assertEqual(json.loads(buf.getvalue()),
-                              crs.check(brief, runs_dir=runs_dir, do_gh=False))
+            self.assertEqual(
+                json.loads(buf.getvalue()),
+                crs.check(brief, runs_dir=runs_dir, do_gh=False),
+            )
 
     def test_no_gh_flag_is_wired(self):
         with tempfile.TemporaryDirectory() as t:
@@ -330,8 +399,16 @@ class TestCli(unittest.TestCase):
             brief = _write_brief(tmp, "b", repo)
 
             with patch.object(crs, "_find_open_pr") as mock_find:
-                rc = crs.main(["--brief", str(brief), "--dir", str(tmp / "runs"),
-                                "--no-gh", "--json"])
+                rc = crs.main(
+                    [
+                        "--brief",
+                        str(brief),
+                        "--dir",
+                        str(tmp / "runs"),
+                        "--no-gh",
+                        "--json",
+                    ]
+                )
             self.assertEqual(rc, 0)
             mock_find.assert_not_called()
 
@@ -348,15 +425,33 @@ class TestCli(unittest.TestCase):
             worktree.mkdir(parents=True)
             brief_id = "b"
             brief = tmp / "b.md"
-            brief.write_text(f"---\nid: {brief_id}\nrepo: null\n---\n\n## Focus\n\ntest\n",
-                              encoding="utf-8")
-            _write_run_record(runs_dir, repo, "go-1", brief_id,
-                               final_status=None, worktree=str(worktree))
+            brief.write_text(
+                f"---\nid: {brief_id}\nrepo: null\n---\n\n## Focus\n\ntest\n",
+                encoding="utf-8",
+            )
+            _write_run_record(
+                runs_dir,
+                repo,
+                "go-1",
+                brief_id,
+                final_status=None,
+                worktree=str(worktree),
+            )
 
             buf = io.StringIO()
             with redirect_stdout(buf):
-                rc = crs.main(["--brief", str(brief), "--dir", str(runs_dir),
-                                "--no-gh", "--repo", repo, "--json"])
+                rc = crs.main(
+                    [
+                        "--brief",
+                        str(brief),
+                        "--dir",
+                        str(runs_dir),
+                        "--no-gh",
+                        "--repo",
+                        repo,
+                        "--json",
+                    ]
+                )
             self.assertEqual(rc, 0)
             res = json.loads(buf.getvalue())
             self.assertTrue(res["checked"])

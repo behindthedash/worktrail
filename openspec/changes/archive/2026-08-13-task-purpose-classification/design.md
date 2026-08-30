@@ -140,13 +140,13 @@ attempt before the existing one, only for `implement`/`fix`/`cleanup` roles
 already excludes tier_map entirely for those roles):
 
 ```python
-tier = _resolve_tier(task, purpose_tier_map)   # see below
+tier = _resolve_tier(task, purpose_tier_map)  # see below
 domain = task.get("domain")
 if tier_map and tier:
     agent = default_agent or "claude"
-    match = tier_map.get((f"{tier}-{agent}", domain))   # NEW: agent-aware
+    match = tier_map.get((f"{tier}-{agent}", domain))  # NEW: agent-aware
     if match is None:
-        match = tier_map.get((tier, domain))            # existing behavior
+        match = tier_map.get((tier, domain))  # existing behavior
     ...
 ```
 

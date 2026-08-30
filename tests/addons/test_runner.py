@@ -41,27 +41,36 @@ class RunAddonsTests(unittest.TestCase):
         repo = root / "repo"
         repo.mkdir()
         subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
-        subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@t"], check=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "config", "user.email", "t@t"], check=True
+        )
         subprocess.run(["git", "-C", str(repo), "config", "user.name", "T"], check=True)
         (repo / "README.md").write_text("init\n")
-        subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True
+        )
         subprocess.run(
             ["git", "-C", str(repo), "commit", "-q", "-m", "init"],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
         return repo
 
     def _head_sha(self, repo: Path) -> str:
         result = subprocess.run(
             ["git", "-C", str(repo), "rev-parse", "HEAD"],
-            capture_output=True, text=True, check=True,
+            capture_output=True,
+            text=True,
+            check=True,
         )
         return result.stdout.strip()
 
     def _last_commit_message(self, repo: Path) -> str:
         result = subprocess.run(
             ["git", "-C", str(repo), "log", "-1", "--format=%s"],
-            capture_output=True, text=True, check=True,
+            capture_output=True,
+            text=True,
+            check=True,
         )
         return result.stdout.strip()
 
@@ -73,7 +82,9 @@ class RunAddonsTests(unittest.TestCase):
             def _run(ctx):
                 (ctx.worktree / "generated.txt").write_text("synced output\n")
                 return AddOnResult(
-                    changed=True, detail="synced 1 file", paths=[ctx.worktree / "generated.txt"]
+                    changed=True,
+                    detail="synced 1 file",
+                    paths=[ctx.worktree / "generated.txt"],
                 )
 
             addon = _FakeAddOn("aspens", _run)
@@ -83,7 +94,9 @@ class RunAddonsTests(unittest.TestCase):
                 logs = run_addons(repo, repo, policy)
 
             self.assertNotEqual(before, self._head_sha(repo))
-            self.assertEqual(self._last_commit_message(repo), "chore(aspens): synced 1 file")
+            self.assertEqual(
+                self._last_commit_message(repo), "chore(aspens): synced 1 file"
+            )
             self.assertEqual(len(logs), 1)
             log = logs[0]
             self.assertEqual(log.name, "aspens")
@@ -124,9 +137,11 @@ class RunAddonsTests(unittest.TestCase):
             # No `required` key -- defaults to non-fatal per design D4.
             policy = {"add_ons": {"aspens": {}}}
 
-            with patch("worktrail.addons.runner.addon_for", return_value=addon):
-                with patch("builtins.print") as mock_print:
-                    logs = run_addons(repo, repo, policy)
+            with (
+                patch("worktrail.addons.runner.addon_for", return_value=addon),
+                patch("builtins.print") as mock_print,
+            ):
+                logs = run_addons(repo, repo, policy)
 
             self.assertEqual(before, self._head_sha(repo))
             self.assertEqual(len(logs), 1)
@@ -151,9 +166,11 @@ class RunAddonsTests(unittest.TestCase):
             addon = _FakeAddOn("aspens", _run)
             policy = {"add_ons": {"aspens": {"required": True}}}
 
-            with patch("worktrail.addons.runner.addon_for", return_value=addon):
-                with self.assertRaises(AddOnFailure) as cm:
-                    run_addons(repo, repo, policy)
+            with (
+                patch("worktrail.addons.runner.addon_for", return_value=addon),
+                self.assertRaises(AddOnFailure) as cm,
+            ):
+                run_addons(repo, repo, policy)
 
             self.assertEqual(cm.exception.name, "aspens")
             self.assertIn("boom", cm.exception.detail)

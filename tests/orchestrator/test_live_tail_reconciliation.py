@@ -12,6 +12,7 @@ than re-deriving repo/fan-out setup.
 
 Run: python3 test_live_tail_reconciliation.py
 """
+
 from __future__ import annotations
 
 import sys
@@ -20,17 +21,23 @@ import unittest
 import unittest.mock
 from pathlib import Path
 
-sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.abspath(__file__)))
+sys.path.insert(
+    0, __import__("os").path.dirname(__import__("os").path.abspath(__file__))
+)
 
-from worktrail.orchestrator import integrate  # noqa: E402
-
-from test_pipeline import (  # noqa: E402
+from test_pipeline import (
     FakeSpawn as PipelineFakeSpawn,
+)
+from test_pipeline import (
     FakeVerifier,
     _init_repo,
     _make_integrate_one,
+)
+from test_pipeline import (
     _run as _run_pipeline_scheduler,
 )
+
+from worktrail.orchestrator import integrate
 
 
 def _finding(task_id: str = "TASK-999") -> dict:
@@ -59,13 +66,21 @@ class PipelineSchedulerReconciliationTest(unittest.TestCase):
             repo = _init_repo(Path(tmp))
             integrate_one, _ = _make_integrate_one()
 
-            with unittest.mock.patch.object(
-                integrate, "detect_unreconciled_evidence", return_value=[_finding()]
-            ), unittest.mock.patch.object(
-                integrate, "reconcile_unreconciled_tail_evidence", side_effect=fake_reconcile
-            ) as reconcile_mock, unittest.mock.patch.object(
-                integrate, "_record_unreconciled_tail_evidence", side_effect=fake_record
-            ) as record_mock:
+            with (
+                unittest.mock.patch.object(
+                    integrate, "detect_unreconciled_evidence", return_value=[_finding()]
+                ),
+                unittest.mock.patch.object(
+                    integrate,
+                    "reconcile_unreconciled_tail_evidence",
+                    side_effect=fake_reconcile,
+                ) as reconcile_mock,
+                unittest.mock.patch.object(
+                    integrate,
+                    "_record_unreconciled_tail_evidence",
+                    side_effect=fake_record,
+                ) as record_mock,
+            ):
                 _run_pipeline_scheduler(
                     repo, tmp, PipelineFakeSpawn(), integrate_one, FakeVerifier()
                 )
@@ -73,7 +88,8 @@ class PipelineSchedulerReconciliationTest(unittest.TestCase):
             reconcile_mock.assert_called_once()
             self.assertEqual(reconcile_mock.call_args.args[0], [_finding()])
             self.assertIn(
-                "make_verifier", reconcile_mock.call_args.kwargs,
+                "make_verifier",
+                reconcile_mock.call_args.kwargs,
                 "the scheduler must wire its verifier factory through to "
                 "reconcile_unreconciled_tail_evidence so tail-task PRs get verified",
             )
@@ -83,7 +99,8 @@ class PipelineSchedulerReconciliationTest(unittest.TestCase):
             )
             record_mock.assert_called_once()
             self.assertEqual(
-                call_order, ["reconcile", "record"],
+                call_order,
+                ["reconcile", "record"],
                 "reconciliation must run before the finding is recorded to the journal",
             )
 
@@ -92,13 +109,17 @@ class PipelineSchedulerReconciliationTest(unittest.TestCase):
             repo = _init_repo(Path(tmp))
             integrate_one, _ = _make_integrate_one()
 
-            with unittest.mock.patch.object(
-                integrate, "detect_unreconciled_evidence", return_value=[]
-            ), unittest.mock.patch.object(
-                integrate, "reconcile_unreconciled_tail_evidence"
-            ) as reconcile_mock, unittest.mock.patch.object(
-                integrate, "_record_unreconciled_tail_evidence"
-            ) as record_mock:
+            with (
+                unittest.mock.patch.object(
+                    integrate, "detect_unreconciled_evidence", return_value=[]
+                ),
+                unittest.mock.patch.object(
+                    integrate, "reconcile_unreconciled_tail_evidence"
+                ) as reconcile_mock,
+                unittest.mock.patch.object(
+                    integrate, "_record_unreconciled_tail_evidence"
+                ) as record_mock,
+            ):
                 _run_pipeline_scheduler(
                     repo, tmp, PipelineFakeSpawn(), integrate_one, FakeVerifier()
                 )
@@ -125,10 +146,12 @@ class ReconcileTailEvidenceVerifyOneTest(unittest.TestCase):
 
             def fake_integrate_one(g, *_args, **_kwargs):
                 integrate._write_group_journal(
-                    journal_path, g["name"], "https://github.com/acme/repo/pull/1",
-                    "tail-task-1.1", "OPEN",
+                    journal_path,
+                    g["name"],
+                    "https://github.com/acme/repo/pull/1",
+                    "tail-task-1.1",
+                    "OPEN",
                 )
-                return None
 
             fake_verifier = unittest.mock.Mock()
 
@@ -139,8 +162,14 @@ class ReconcileTailEvidenceVerifyOneTest(unittest.TestCase):
                 integrate, "integrate_one", side_effect=fake_integrate_one
             ):
                 result = integrate.reconcile_unreconciled_tail_evidence(
-                    [finding], Path("/fake/repo"), "spec-1", [{"id": "TASK-1.1", "deps": []}],
-                    "origin", "run-1", "main", journal_path,
+                    [finding],
+                    Path("/fake/repo"),
+                    "spec-1",
+                    [{"id": "TASK-1.1", "deps": []}],
+                    "origin",
+                    "run-1",
+                    "main",
+                    journal_path,
                     make_verifier=fake_make_verifier,
                 )
 
@@ -158,10 +187,12 @@ class ReconcileTailEvidenceVerifyOneTest(unittest.TestCase):
 
             def fake_integrate_one(g, *_args, **_kwargs):
                 integrate._write_group_journal(
-                    journal_path, g["name"], "https://github.com/acme/repo/pull/2",
-                    "tail-task-1.2", "MERGED",
+                    journal_path,
+                    g["name"],
+                    "https://github.com/acme/repo/pull/2",
+                    "tail-task-1.2",
+                    "MERGED",
                 )
-                return None
 
             fake_verifier = unittest.mock.Mock()
 
@@ -172,8 +203,14 @@ class ReconcileTailEvidenceVerifyOneTest(unittest.TestCase):
                 integrate, "integrate_one", side_effect=fake_integrate_one
             ):
                 result = integrate.reconcile_unreconciled_tail_evidence(
-                    [finding], Path("/fake/repo"), "spec-1", [{"id": "TASK-1.2", "deps": []}],
-                    "origin", "run-1", "main", journal_path,
+                    [finding],
+                    Path("/fake/repo"),
+                    "spec-1",
+                    [{"id": "TASK-1.2", "deps": []}],
+                    "origin",
+                    "run-1",
+                    "main",
+                    journal_path,
                     make_verifier=fake_make_verifier,
                 )
 
@@ -189,10 +226,13 @@ class ReconcileTailEvidenceVerifyOneTest(unittest.TestCase):
 
             def fake_integrate_one(g, *_args, **_kwargs):
                 integrate._write_group_journal(
-                    journal_path, g["name"], "",
-                    "tail-task-1.3", "QUARANTINED", "integration-error",
+                    journal_path,
+                    g["name"],
+                    "",
+                    "tail-task-1.3",
+                    "QUARANTINED",
+                    "integration-error",
                 )
-                return None
 
             fake_verifier = unittest.mock.Mock()
 
@@ -203,8 +243,14 @@ class ReconcileTailEvidenceVerifyOneTest(unittest.TestCase):
                 integrate, "integrate_one", side_effect=fake_integrate_one
             ):
                 result = integrate.reconcile_unreconciled_tail_evidence(
-                    [finding], Path("/fake/repo"), "spec-1", [{"id": "TASK-1.3", "deps": []}],
-                    "origin", "run-1", "main", journal_path,
+                    [finding],
+                    Path("/fake/repo"),
+                    "spec-1",
+                    [{"id": "TASK-1.3", "deps": []}],
+                    "origin",
+                    "run-1",
+                    "main",
+                    journal_path,
                     make_verifier=fake_make_verifier,
                 )
 
@@ -221,10 +267,12 @@ class ReconcileTailEvidenceVerifyOneTest(unittest.TestCase):
 
             def fake_integrate_one(g, *_args, **_kwargs):
                 integrate._write_group_journal(
-                    journal_path, g["name"], "https://github.com/acme/repo/pull/3",
-                    g["name"], "OPEN",
+                    journal_path,
+                    g["name"],
+                    "https://github.com/acme/repo/pull/3",
+                    g["name"],
+                    "OPEN",
                 )
-                return None
 
             fake_verifier = unittest.mock.Mock()
 
@@ -241,12 +289,17 @@ class ReconcileTailEvidenceVerifyOneTest(unittest.TestCase):
                 integrate, "integrate_one", side_effect=fake_integrate_one
             ):
                 result = integrate.reconcile_unreconciled_tail_evidence(
-                    [finding_a, finding_b], Path("/fake/repo"), "spec-1",
+                    [finding_a, finding_b],
+                    Path("/fake/repo"),
+                    "spec-1",
                     [
                         {"id": "TASK-1.4", "deps": []},
                         {"id": "TASK-1.5", "deps": []},
                     ],
-                    "origin", "run-1", "main", journal_path,
+                    "origin",
+                    "run-1",
+                    "main",
+                    journal_path,
                     make_verifier=fake_make_verifier,
                 )
 

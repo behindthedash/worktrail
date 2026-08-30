@@ -23,9 +23,11 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from worktrail.orchestrator import dispatch  # noqa: E402
-from worktrail.orchestrator import live  # noqa: E402
-from worktrail.orchestrator import spawnlib  # noqa: E402
+from worktrail.orchestrator import (
+    dispatch,
+    live,
+    spawnlib,
+)
 
 
 def _init_repo(root: Path) -> Path:
@@ -45,9 +47,13 @@ def _init_repo(root: Path) -> Path:
     )
     (repo / "docs" / "specs" / "001-x" / "tasks" / "TASK-001.md").write_text(fm)
     (repo / "README.md").write_text("x\n")
-    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True)
     subprocess.run(
-        ["git", "-C", str(repo), "commit", "-q", "-m", "init"], check=True, capture_output=True
+        ["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-q", "-m", "init"],
+        check=True,
+        capture_output=True,
     )
     return repo
 
@@ -58,15 +64,27 @@ def _commit_file(wt: Path, name: str, content: str) -> str:
     f.write_text(content)
     subprocess.run(["git", "-C", str(wt), "add", "-A"], check=True, capture_output=True)
     subprocess.run(
-        ["git", "-C", str(wt), "commit", "-q", "-m", name], check=True, capture_output=True
+        ["git", "-C", str(wt), "commit", "-q", "-m", name],
+        check=True,
+        capture_output=True,
     )
     return subprocess.run(
-        ["git", "-C", str(wt), "rev-parse", "HEAD"], capture_output=True, text=True
+        ["git", "-C", str(wt), "rev-parse", "HEAD"],
+        check=False,
+        capture_output=True,
+        text=True,
     ).stdout.strip()
 
 
-def _report(task_id: str, role: str, sha: str, *, review_status=None,
-            context_quality="sufficient", missing_context=None) -> spawnlib.SpawnResult:
+def _report(
+    task_id: str,
+    role: str,
+    sha: str,
+    *,
+    review_status=None,
+    context_quality="sufficient",
+    missing_context=None,
+) -> spawnlib.SpawnResult:
     rs = f'"{review_status}"' if review_status else "null"
     mc = json.dumps(missing_context or [])
     return spawnlib.SpawnResult(
@@ -95,7 +113,10 @@ class _BaseRecordingSpawn:
         if role == dispatch.ROLE_FIX:
             self.fix_extra_reads_seen = list(task.get("_extra_reads") or [])
         sha = subprocess.run(
-            ["git", "-C", str(wt), "rev-parse", "HEAD"], capture_output=True, text=True
+            ["git", "-C", str(wt), "rev-parse", "HEAD"],
+            check=False,
+            capture_output=True,
+            text=True,
         ).stdout.strip()
         if role in ("implement", "fix"):
             sha = _commit_file(wt, "foo.py", f"{role}\n")
@@ -111,7 +132,9 @@ class InsufficientReviewSpawn(_BaseRecordingSpawn):
     def _report_for(self, task_id, role, sha):
         if role == "review" and self._review_count() == 1:
             return _report(
-                task_id, role, sha,
+                task_id,
+                role,
+                sha,
                 review_status="FAILED",
                 context_quality="insufficient",
                 missing_context=["src/helper.py", "tests/test_helper.py"],
@@ -127,7 +150,9 @@ class SufficientReviewSpawn(_BaseRecordingSpawn):
     def _report_for(self, task_id, role, sha):
         if role == "review" and self._review_count() == 1:
             return _report(
-                task_id, role, sha,
+                task_id,
+                role,
+                sha,
                 review_status="FAILED",
                 context_quality="sufficient",
                 missing_context=["src/helper.py"],
@@ -143,7 +168,9 @@ class TooMuchReviewSpawn(_BaseRecordingSpawn):
     def _report_for(self, task_id, role, sha):
         if role == "review" and self._review_count() == 1:
             return _report(
-                task_id, role, sha,
+                task_id,
+                role,
+                sha,
                 review_status="FAILED",
                 context_quality="too_much",
                 missing_context=["src/helper.py"],
@@ -154,17 +181,18 @@ class TooMuchReviewSpawn(_BaseRecordingSpawn):
 
 
 class TestContextWidening(unittest.TestCase):
-
     def test_scope_escalation_journal_resumes_at_widened_fix(self):
         task = {"id": "TASK-001", "status": "pending", "files": ["src/foo.py"]}
         journal = {
-            "entries": [{
-                "task": "TASK-001",
-                "role": "fix",
-                "report": {"status": "failed"},
-                "scope_escalated": True,
-                "scope_added_files": ["src/helper.py"],
-            }]
+            "entries": [
+                {
+                    "task": "TASK-001",
+                    "role": "fix",
+                    "report": {"status": "failed"},
+                    "scope_escalated": True,
+                    "scope_added_files": ["src/helper.py"],
+                }
+            ]
         }
 
         live.reconcile_from_journal([task], journal)
@@ -195,7 +223,11 @@ class TestContextWidening(unittest.TestCase):
             (wt / "src").mkdir()
             (wt / "src" / "helper.py").write_text("x\n")
             task = {"id": "TASK-001", "status": "fixing", "files": ["src/foo.py"]}
-            other = {"id": "TASK-002", "status": "implementing", "files": ["src/helper.py"]}
+            other = {
+                "id": "TASK-002",
+                "status": "implementing",
+                "files": ["src/helper.py"],
+            }
             report = {"status": "failed", "missing_context": ["src/helper.py"]}
             self.assertEqual(
                 live._scope_escalation_files(
@@ -222,16 +254,23 @@ class TestContextWidening(unittest.TestCase):
     def test_insufficient_review_widens_fix_reads(self):
         """context_quality=insufficient → missing_context staged for next fix dispatch."""
         spawn = self._run(InsufficientReviewSpawn)
-        self.assertIn("src/helper.py", spawn.fix_extra_reads_seen,
-                      "src/helper.py must be staged as extra read for fix after insufficient review")
-        self.assertIn("tests/test_helper.py", spawn.fix_extra_reads_seen,
-                      "tests/test_helper.py must be staged as extra read for fix after insufficient review")
+        self.assertIn(
+            "src/helper.py",
+            spawn.fix_extra_reads_seen,
+            "src/helper.py must be staged as extra read for fix after insufficient review",
+        )
+        self.assertIn(
+            "tests/test_helper.py",
+            spawn.fix_extra_reads_seen,
+            "tests/test_helper.py must be staged as extra read for fix after insufficient review",
+        )
 
     def test_sufficient_review_does_not_widen(self):
         """context_quality=sufficient must NOT widen fix reads, even if missing_context is set."""
         spawn = self._run(SufficientReviewSpawn)
         self.assertEqual(
-            spawn.fix_extra_reads_seen, [],
+            spawn.fix_extra_reads_seen,
+            [],
             "sufficient context_quality must not stage extra reads for fix",
         )
 
@@ -239,7 +278,8 @@ class TestContextWidening(unittest.TestCase):
         """context_quality=too_much must NOT widen fix reads."""
         spawn = self._run(TooMuchReviewSpawn)
         self.assertEqual(
-            spawn.fix_extra_reads_seen, [],
+            spawn.fix_extra_reads_seen,
+            [],
             "too_much context_quality must not stage extra reads for fix",
         )
 

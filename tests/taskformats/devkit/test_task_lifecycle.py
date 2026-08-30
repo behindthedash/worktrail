@@ -2,22 +2,20 @@
 """Tests for task_lifecycle.py — covers status detection, validation, and lifecycle transitions."""
 
 import os
-import sys
 import subprocess
+import sys
 import tempfile
-import pytest
 
 from worktrail.taskformats.devkit.schema import (
-    TaskStatus,
-    FIELD_SCHEMA,
     COMPLETION_AUDIT_SECTIONS,
-    detect_status_from_body,
-    _all_dod_complete,
+    FIELD_SCHEMA,
+    TaskStatus,
     _all_checkboxes_checked,
+    _all_dod_complete,
     _extract_sections,
+    detect_status_from_body,
     is_task_file,
     read_task_file,
-    write_task_file,
     update_status,
     validate_task,
 )
@@ -30,15 +28,18 @@ CLI_ARGV = [sys.executable, "-m", "worktrail.taskformats.devkit.cli"]
 
 # --- Helpers ---
 
+
 def _make_task(frontmatter: dict, body: str) -> str:
     """Write a temporary task file and return its path."""
     import yaml
-    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False, encoding="utf-8")
-    tmp.write("---\n")
-    tmp.write(yaml.dump(frontmatter, sort_keys=False))
-    tmp.write("---\n")
-    tmp.write(body)
-    tmp.close()
+
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".md", delete=False, encoding="utf-8"
+    ) as tmp:
+        tmp.write("---\n")
+        tmp.write(yaml.dump(frontmatter, sort_keys=False))
+        tmp.write("---\n")
+        tmp.write(body)
     return tmp.name
 
 
@@ -50,6 +51,7 @@ def _cleanup(path: str):
 
 
 # --- P2: superseded is a valid status ---
+
 
 class TestSupersededStatus:
     """superseded must be accepted by the schema and preserved by update_status."""
@@ -67,7 +69,9 @@ class TestSupersededStatus:
             "spec": "spec-001",
             "status": "superseded",
         }
-        body = "## Acceptance Criteria\n- [ ] AC1\n\n## Definition of Done\n- [ ] DoD1\n"
+        body = (
+            "## Acceptance Criteria\n- [ ] AC1\n\n## Definition of Done\n- [ ] DoD1\n"
+        )
         path = _make_task(fm, body)
         try:
             assert validate_task(path) is True
@@ -81,7 +85,9 @@ class TestSupersededStatus:
             "spec": "spec-001",
             "status": "superseded",
         }
-        body = "## Acceptance Criteria\n- [x] AC1\n\n## Definition of Done\n- [x] DoD1\n"
+        body = (
+            "## Acceptance Criteria\n- [x] AC1\n\n## Definition of Done\n- [x] DoD1\n"
+        )
         path = _make_task(fm, body)
         try:
             update_status(path)
@@ -93,59 +99,40 @@ class TestSupersededStatus:
 
 # --- P3: implemented -> reviewed -> completed transitions ---
 
+
 class TestStatusPromotion:
     """detect_status_from_body must promote implemented -> reviewed when DoD is complete."""
 
     def test_implemented_promoted_to_reviewed_when_dod_complete(self):
         body = (
-            "## Acceptance Criteria\n"
-            "- [x] AC1\n"
-            "\n"
-            "## Definition of Done\n"
-            "- [x] DoD1\n"
+            "## Acceptance Criteria\n- [x] AC1\n\n## Definition of Done\n- [x] DoD1\n"
         )
         result = detect_status_from_body(body, old_status="implemented")
         assert result == TaskStatus.REVIEWED
 
     def test_implemented_stays_when_dod_incomplete(self):
         body = (
-            "## Acceptance Criteria\n"
-            "- [x] AC1\n"
-            "\n"
-            "## Definition of Done\n"
-            "- [ ] DoD1\n"
+            "## Acceptance Criteria\n- [x] AC1\n\n## Definition of Done\n- [ ] DoD1\n"
         )
         result = detect_status_from_body(body, old_status="implemented")
         assert result == TaskStatus.IMPLEMENTED
 
     def test_reviewed_preserved(self):
         body = (
-            "## Acceptance Criteria\n"
-            "- [x] AC1\n"
-            "\n"
-            "## Definition of Done\n"
-            "- [x] DoD1\n"
+            "## Acceptance Criteria\n- [x] AC1\n\n## Definition of Done\n- [x] DoD1\n"
         )
         result = detect_status_from_body(body, old_status="reviewed")
         assert result == TaskStatus.REVIEWED
 
     def test_all_checked_new_task_gets_implemented(self):
         body = (
-            "## Acceptance Criteria\n"
-            "- [x] AC1\n"
-            "\n"
-            "## Definition of Done\n"
-            "- [x] DoD1\n"
+            "## Acceptance Criteria\n- [x] AC1\n\n## Definition of Done\n- [x] DoD1\n"
         )
         result = detect_status_from_body(body, old_status="pending")
         assert result == TaskStatus.IMPLEMENTED
 
     def test_partial_gets_in_progress(self):
-        body = (
-            "## Acceptance Criteria\n"
-            "- [x] AC1\n"
-            "- [ ] AC2\n"
-        )
+        body = "## Acceptance Criteria\n- [x] AC1\n- [ ] AC2\n"
         result = detect_status_from_body(body, old_status="pending")
         assert result == TaskStatus.IN_PROGRESS
 
@@ -178,22 +165,31 @@ class TestAllCheckboxesChecked:
     """Unit tests for _all_checkboxes_checked helper."""
 
     def test_all_checked(self):
-        body = "## Acceptance Criteria\n- [x] AC1\n\n## Definition of Done\n- [x] DoD1\n"
+        body = (
+            "## Acceptance Criteria\n- [x] AC1\n\n## Definition of Done\n- [x] DoD1\n"
+        )
         assert _all_checkboxes_checked(body) is True
 
     def test_some_unchecked(self):
-        body = "## Acceptance Criteria\n- [x] AC1\n\n## Definition of Done\n- [ ] DoD1\n"
+        body = (
+            "## Acceptance Criteria\n- [x] AC1\n\n## Definition of Done\n- [ ] DoD1\n"
+        )
         assert _all_checkboxes_checked(body) is False
 
     def test_none_checked(self):
-        body = "## Acceptance Criteria\n- [ ] AC1\n\n## Definition of Done\n- [ ] DoD1\n"
+        body = (
+            "## Acceptance Criteria\n- [ ] AC1\n\n## Definition of Done\n- [ ] DoD1\n"
+        )
         assert _all_checkboxes_checked(body) is False
 
     def test_no_checkboxes(self):
         assert _all_checkboxes_checked("No checkboxes here") is False
 
     def test_completion_audit_sections_constant_shape(self):
-        assert COMPLETION_AUDIT_SECTIONS == ("Acceptance Criteria", "Definition of Done (DoD)")
+        assert COMPLETION_AUDIT_SECTIONS == (
+            "Acceptance Criteria",
+            "Definition of Done (DoD)",
+        )
 
     def test_scoped_ac_only_ignores_unchecked_dor(self):
         body = (
@@ -214,7 +210,9 @@ class TestAllCheckboxesChecked:
             "- [x] DoD1\n"
             "- [ ] DoD2\n"
         )
-        assert _all_checkboxes_checked(body, sections=COMPLETION_AUDIT_SECTIONS) is False
+        assert (
+            _all_checkboxes_checked(body, sections=COMPLETION_AUDIT_SECTIONS) is False
+        )
 
     def test_scoped_completion_audit_true_ignoring_other_unchecked_sections(self):
         body = (
@@ -242,7 +240,9 @@ class TestAllCheckboxesChecked:
 
     def test_scoped_falls_back_to_whole_body_and_still_detects_drift(self):
         body = "# Task\n\n- [x] step one\n- [ ] step two\n"
-        assert _all_checkboxes_checked(body, sections=COMPLETION_AUDIT_SECTIONS) is False
+        assert (
+            _all_checkboxes_checked(body, sections=COMPLETION_AUDIT_SECTIONS) is False
+        )
 
     def test_scoped_zero_checkboxes_anywhere_is_not_drift(self):
         # mailbox-service TASK-002/003/004 shape: the checklist lives in
@@ -292,7 +292,9 @@ class TestCompletedWithUncheckedBoxesWarns:
         }
 
     def test_completed_with_all_boxes_unchecked_emits_warning(self, capsys):
-        body = "## Acceptance Criteria\n- [ ] AC1\n\n## Definition of Done\n- [ ] DoD1\n"
+        body = (
+            "## Acceptance Criteria\n- [ ] AC1\n\n## Definition of Done\n- [ ] DoD1\n"
+        )
         path = _make_task(self._fm(), body)
         try:
             update_status(path)
@@ -303,7 +305,9 @@ class TestCompletedWithUncheckedBoxesWarns:
             _cleanup(path)
 
     def test_completed_with_all_boxes_unchecked_status_not_downgraded(self):
-        body = "## Acceptance Criteria\n- [ ] AC1\n\n## Definition of Done\n- [ ] DoD1\n"
+        body = (
+            "## Acceptance Criteria\n- [ ] AC1\n\n## Definition of Done\n- [ ] DoD1\n"
+        )
         path = _make_task(self._fm(), body)
         try:
             update_status(path)
@@ -313,7 +317,9 @@ class TestCompletedWithUncheckedBoxesWarns:
             _cleanup(path)
 
     def test_completed_with_all_boxes_checked_emits_no_warning(self, capsys):
-        body = "## Acceptance Criteria\n- [x] AC1\n\n## Definition of Done\n- [x] DoD1\n"
+        body = (
+            "## Acceptance Criteria\n- [x] AC1\n\n## Definition of Done\n- [x] DoD1\n"
+        )
         path = _make_task(self._fm(), body)
         try:
             update_status(path)
@@ -322,7 +328,9 @@ class TestCompletedWithUncheckedBoxesWarns:
         finally:
             _cleanup(path)
 
-    def test_completed_ac_and_dod_ticked_but_dor_unticked_emits_no_warning(self, capsys):
+    def test_completed_ac_and_dod_ticked_but_dor_unticked_emits_no_warning(
+        self, capsys
+    ):
         body = (
             "## Definition of Ready (DoR)\n"
             "- [ ] DoR1\n"
@@ -369,11 +377,7 @@ class TestUpdateStatusDates:
             "status": "implemented",
         }
         body = (
-            "## Acceptance Criteria\n"
-            "- [x] AC1\n"
-            "\n"
-            "## Definition of Done\n"
-            "- [x] DoD1\n"
+            "## Acceptance Criteria\n- [x] AC1\n\n## Definition of Done\n- [x] DoD1\n"
         )
         path = _make_task(fm, body)
         try:
@@ -387,13 +391,17 @@ class TestUpdateStatusDates:
 
 # --- P1-related: ensure test_session_tracker is gone ---
 
+
 class TestOrphanedTestRemoved:
     """Verify the orphaned test file for session-tracker.py has been removed."""
 
     def test_session_tracker_test_not_present(self):
         scripts_test_dir = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-            "scripts", "tests",
+            os.path.dirname(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            ),
+            "scripts",
+            "tests",
         )
         test_file = os.path.join(scripts_test_dir, "test_session_tracker.py")
         assert not os.path.exists(test_file), (
@@ -403,13 +411,13 @@ class TestOrphanedTestRemoved:
 
 # --- AC1: out-of-scope files exit clean ---
 
+
 class TestOutOfScopeFileExitsClean:
     """AC1: task_lifecycle.py must exit 0 with no output for non-task files."""
 
     def _run(self, action: str, path: str):
         return subprocess.run(
-            CLI_ARGV + [ action, path],
-            capture_output=True, text=True
+            CLI_ARGV + [action, path], check=False, capture_output=True, text=True
         )
 
     def test_validate_non_task_py_file_exits_zero(self, tmp_path):
@@ -436,21 +444,20 @@ class TestOutOfScopeFileExitsClean:
     def test_no_file_arg_exits_zero(self):
         """Missing CLAUDE_CHANGED_FILE (collapsed to absent arg) exits 0."""
         result = subprocess.run(
-            CLI_ARGV + [ "validate"],
-            capture_output=True, text=True
+            CLI_ARGV + ["validate"], check=False, capture_output=True, text=True
         )
         assert result.returncode == 0
 
     def test_empty_filepath_exits_zero(self):
         """Empty string filepath exits 0."""
         result = subprocess.run(
-            CLI_ARGV + [ "validate", ""],
-            capture_output=True, text=True
+            CLI_ARGV + ["validate", ""], check=False, capture_output=True, text=True
         )
         assert result.returncode == 0
 
 
 # --- AC3: invalid in-scope task files fail with stderr ---
+
 
 class TestInvalidTaskFileFailsWithStderr:
     """AC3: invalid in-scope TASK-*.md must exit 1 and write errors to stderr."""
@@ -460,8 +467,7 @@ class TestInvalidTaskFileFailsWithStderr:
         f = tmp_path / "TASK-999.md"
         f.write_text("---\ntitle: Broken task\n---\n# No required fields\n")
         result = subprocess.run(
-            CLI_ARGV + [ "validate", str(f)],
-            capture_output=True, text=True
+            CLI_ARGV + ["validate", str(f)], check=False, capture_output=True, text=True
         )
         assert result.returncode != 0
 
@@ -469,8 +475,7 @@ class TestInvalidTaskFileFailsWithStderr:
         f = tmp_path / "TASK-999.md"
         f.write_text("---\ntitle: Broken task\n---\n# No required fields\n")
         result = subprocess.run(
-            CLI_ARGV + [ "validate", str(f)],
-            capture_output=True, text=True
+            CLI_ARGV + ["validate", str(f)], check=False, capture_output=True, text=True
         )
         assert "Validation failed" in result.stderr
         # At least one specific error message must be present
@@ -480,8 +485,7 @@ class TestInvalidTaskFileFailsWithStderr:
         f = tmp_path / "TASK-999.md"
         f.write_text("---\ntitle: Broken task\n---\n# No required fields\n")
         result = subprocess.run(
-            CLI_ARGV + [ "validate", str(f)],
-            capture_output=True, text=True
+            CLI_ARGV + ["validate", str(f)], check=False, capture_output=True, text=True
         )
         # Validation failure output must NOT appear on stdout
         assert "Validation failed" not in result.stdout
@@ -635,6 +639,7 @@ class TestTimeoutFieldSchema:
 
 # --- TASK-CHG-001: widen is_task_file()/hooks.json pattern to TASK-CHG-NNN.md ---
 
+
 class TestIsTaskFileRegex:
     """Direct unit coverage for is_task_file() — TASK-NNN.md and TASK-CHG-NNN.md shapes."""
 
@@ -664,8 +669,7 @@ class TestChangeSpecTaskFileValidation:
         f = tmp_path / "TASK-CHG-999.md"
         f.write_text("---\ntitle: Broken change task\n---\n# No required fields\n")
         result = subprocess.run(
-            CLI_ARGV + [ "validate", str(f)],
-            capture_output=True, text=True
+            CLI_ARGV + ["validate", str(f)], check=False, capture_output=True, text=True
         )
         assert result.returncode != 0
 
@@ -673,8 +677,7 @@ class TestChangeSpecTaskFileValidation:
         f = tmp_path / "TASK-CHG-999.md"
         f.write_text("---\ntitle: Broken change task\n---\n# No required fields\n")
         result = subprocess.run(
-            CLI_ARGV + [ "validate", str(f)],
-            capture_output=True, text=True
+            CLI_ARGV + ["validate", str(f)], check=False, capture_output=True, text=True
         )
         assert "Validation failed" in result.stderr
         assert "Validation failed" not in result.stdout

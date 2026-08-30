@@ -22,11 +22,11 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 from unittest import mock
 
-from worktrail.workqueue import work_queue as q
 from worktrail.workqueue import backfill_focus_style as bf
+from worktrail.workqueue import work_queue as q
 
 
 def _write_raw(dirpath: Path, filename: str, content: str) -> Path:
@@ -42,9 +42,9 @@ DOUBLE_QUOTED_FOLDED_BRIEF = (
     "---\n"
     "id: 20260101-000001-a\n"
     "created: 2026-01-01T00:00:01-07:00\n"
-    "focus: \"Fix the \\u201Csmart quotes\\u201D rendering bug so briefs with curly punctuation\\\n"
+    'focus: "Fix the \\u201Csmart quotes\\u201D rendering bug so briefs with curly punctuation\\\n'
     "  \\ display correctly everywhere across every single client that renders them without\\\n"
-    "  \\ breaking.\"\n"
+    '  \\ breaking."\n'
     "status: queued\n"
     "---\n\n"
     "## Discovery context\n\nsome notes\n"
@@ -204,8 +204,8 @@ LITERAL_TRAILING_WS_FOCUS_LINES = "focus: |-\n  fix the bug\n  \n"
 # didn't set allow_unicode=True renders any non-ASCII focus text as an
 # escaped, folded double-quoted scalar.
 DOUBLE_QUOTED_FOLDED_FOCUS_LINES = (
-    "focus: \"Fix the \\u201Cbroken\\u201D link so every navigation menu item routes users\\\n"
-    "  \\ to the correct destination page without any errors at all whatsoever today.\"\n"
+    'focus: "Fix the \\u201Cbroken\\u201D link so every navigation menu item routes users\\\n'
+    '  \\ to the correct destination page without any errors at all whatsoever today."\n'
 )
 DOUBLE_QUOTED_FOLDED_FOCUS_VALUE = (
     "Fix the “broken” link so every navigation menu item routes users "
@@ -213,11 +213,13 @@ DOUBLE_QUOTED_FOLDED_FOCUS_VALUE = (
 )
 
 
-def _make_brief(brief_id: str, focus_lines: str, *, created_canonical: bool = True) -> str:
+def _make_brief(
+    brief_id: str, focus_lines: str, *, created_canonical: bool = True
+) -> str:
     created = (
-        f"created: '2026-01-01T00:00:00-07:00'\n"
+        "created: '2026-01-01T00:00:00-07:00'\n"
         if created_canonical
-        else f"created: 2026-01-01T00:00:00-07:00\n"
+        else "created: 2026-01-01T00:00:00-07:00\n"
     )
     return (
         "---\n"
@@ -267,9 +269,7 @@ class SpanSpliceExecuteTestCase(unittest.TestCase):
 
         # focus: is now canonical -- re-preview finds nothing left to do.
         post_preview = bf.build_preview(self.tmp_path)
-        self.assertNotIn(
-            brief_id, {p["id"] for p in post_preview["proposals"]}
-        )
+        self.assertNotIn(brief_id, {p["id"] for p in post_preview["proposals"]})
 
         # The re-parsed focus value is byte-identical to the original.
         m = q._FM_RE.match(new_content)
@@ -302,18 +302,14 @@ class SpanSpliceExecuteTestCase(unittest.TestCase):
                 out.append(line)
             return out
 
-        self.assertEqual(
-            _non_focus_lines(original_lines), _non_focus_lines(new_lines)
-        )
+        self.assertEqual(_non_focus_lines(original_lines), _non_focus_lines(new_lines))
 
     def test_splices_plain_scalar_focus(self):
         content = _make_brief("20260201-000001-a", PLAIN_SCALAR_FOCUS_LINES)
         self._assert_spliced_correctly("20260201-000001-a", content, FOCUS_VALUE)
 
     def test_splices_plain_scalar_focus_with_bare_hash(self):
-        content = _make_brief(
-            "20260201-000007-g", PLAIN_SCALAR_WITH_HASH_FOCUS_LINES
-        )
+        content = _make_brief("20260201-000007-g", PLAIN_SCALAR_WITH_HASH_FOCUS_LINES)
         self._assert_spliced_correctly(
             "20260201-000007-g", content, PLAIN_SCALAR_WITH_HASH_FOCUS_VALUE
         )
@@ -323,27 +319,21 @@ class SpanSpliceExecuteTestCase(unittest.TestCase):
         self._assert_spliced_correctly("20260201-000002-b", content, FOCUS_VALUE)
 
     def test_splices_double_quoted_folded_focus(self):
-        content = _make_brief(
-            "20260201-000003-c", DOUBLE_QUOTED_FOLDED_FOCUS_LINES
-        )
+        content = _make_brief("20260201-000003-c", DOUBLE_QUOTED_FOLDED_FOCUS_LINES)
         self._assert_spliced_correctly(
             "20260201-000003-c", content, DOUBLE_QUOTED_FOLDED_FOCUS_VALUE
         )
 
     def test_splices_folded_focus(self):
         content = _make_brief("20260201-000004-d", FOLDED_FOCUS_LINES)
-        self._assert_spliced_correctly(
-            "20260201-000004-d", content, FOLDED_FOCUS_VALUE
-        )
+        self._assert_spliced_correctly("20260201-000004-d", content, FOLDED_FOCUS_VALUE)
 
     def test_splices_literal_style_differing_only_in_trailing_whitespace(self):
         # Already `|-` on disk -- differs from canonical only by a trailing
         # whitespace-only blank line inside the block, which the strip (`-`)
         # chomping indicator discards from the parsed value but which
         # `build_preview`'s newline-only rstrip comparison still flags.
-        content = _make_brief(
-            "20260201-000005-e", LITERAL_TRAILING_WS_FOCUS_LINES
-        )
+        content = _make_brief("20260201-000005-e", LITERAL_TRAILING_WS_FOCUS_LINES)
         self._assert_spliced_correctly("20260201-000005-e", content, FOCUS_VALUE)
 
     def test_leaves_non_canonical_created_untouched(self):
@@ -387,7 +377,7 @@ class ExecuteApplyTestCase(unittest.TestCase):
         os.environ.pop("WORK_QUEUE_DIR", None)
         self._tmp.cleanup()
 
-    def _preview_for(self, path: Path) -> Dict[str, Any]:
+    def _preview_for(self, path: Path) -> dict[str, Any]:
         result = bf.build_preview(self.tmp_path)
         proposal = next(p for p in result["proposals"] if p["path"] == str(path))
         return {"proposals": [proposal], "skipped": []}
@@ -424,7 +414,9 @@ class ExecuteApplyTestCase(unittest.TestCase):
 
         self.assertEqual(second["stamped"], [])
         self.assertEqual(len(second["skipped"]), 1)
-        self.assertIn("focus: span changed since preview", second["skipped"][0]["reason"])
+        self.assertIn(
+            "focus: span changed since preview", second["skipped"][0]["reason"]
+        )
         self.assertEqual(path.read_text(encoding="utf-8"), rewritten)
 
     def test_confirm_skips_focus_changed_since_preview(self):
@@ -436,14 +428,18 @@ class ExecuteApplyTestCase(unittest.TestCase):
 
         # Someone else rewrites the focus: value after preview was taken,
         # before execute --confirm runs.
-        mutated = content.replace("focus: fix the bug", "focus: something else entirely")
+        mutated = content.replace(
+            "focus: fix the bug", "focus: something else entirely"
+        )
         path.write_text(mutated, encoding="utf-8")
 
         result = bf.execute_apply(preview, self.tmp_path, confirm=True)
 
         self.assertEqual(result["stamped"], [])
         self.assertEqual(len(result["skipped"]), 1)
-        self.assertIn("focus: span changed since preview", result["skipped"][0]["reason"])
+        self.assertIn(
+            "focus: span changed since preview", result["skipped"][0]["reason"]
+        )
         self.assertEqual(path.read_text(encoding="utf-8"), mutated)
 
     def test_confirm_skips_file_removed_since_preview(self):
@@ -467,7 +463,9 @@ class ExecuteApplyTestCase(unittest.TestCase):
         path.write_text(content, encoding="utf-8")
         preview = self._preview_for(path)
 
-        with mock.patch.object(bf, "validate_brief", return_value=(False, "forced failure")):
+        with mock.patch.object(
+            bf, "validate_brief", return_value=(False, "forced failure")
+        ):
             result = bf.execute_apply(preview, self.tmp_path, confirm=True)
 
         self.assertEqual(result["stamped"], [])

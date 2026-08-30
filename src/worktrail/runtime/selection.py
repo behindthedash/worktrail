@@ -7,9 +7,10 @@ usable by the CLI, drain, and tests without importing provider adapters.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -59,28 +60,46 @@ class NoExecutionTarget(SelectionError):
     def __init__(self, attempted: Sequence[tuple]):
         self.attempted = tuple(attempted)
         if not self.attempted:
-            super().__init__("no supported execution target has capacity (attempted: none)")
+            super().__init__(
+                "no supported execution target has capacity (attempted: none)"
+            )
             return
         if len(self.attempted[0]) == 4:
             parts = []
             for target, harness, model, evidence in self.attempted:
                 detail = f"{target} ({harness}:{model})"
-                gate_class = _value(evidence, "failure_class") if isinstance(evidence, Mapping) else None
-                retry_at = _value(evidence, "retry_after") if isinstance(evidence, Mapping) else None
+                gate_class = (
+                    _value(evidence, "failure_class")
+                    if isinstance(evidence, Mapping)
+                    else None
+                )
+                retry_at = (
+                    _value(evidence, "retry_after")
+                    if isinstance(evidence, Mapping)
+                    else None
+                )
                 if gate_class:
                     detail += f" [{gate_class}"
                     if retry_at:
                         detail += f", retry at {retry_at}"
                     detail += "]"
                 parts.append(detail)
-            super().__init__(f"no execution cell has capacity (attempted: {'; '.join(parts)})")
+            super().__init__(
+                f"no execution cell has capacity (attempted: {'; '.join(parts)})"
+            )
         else:
             labels = ", ".join(f"{p}:{m}" for p, m, _ in self.attempted) or "none"
-            super().__init__(f"no supported execution target has capacity (attempted: {labels})")
+            super().__init__(
+                f"no supported execution target has capacity (attempted: {labels})"
+            )
 
 
 def _value(item: Any, name: str, default: Any = None) -> Any:
-    return item.get(name, default) if isinstance(item, Mapping) else getattr(item, name, default)
+    return (
+        item.get(name, default)
+        if isinstance(item, Mapping)
+        else getattr(item, name, default)
+    )
 
 
 def _strings(value: Any) -> tuple[str, ...]:
@@ -121,62 +140,81 @@ def catalog_candidates(catalog: Any) -> tuple[Candidate, ...]:
         if key in seen:
             continue
         seen.add(key)
-        result.append(Candidate(
-            *key,
-            enabled=bool(_value(raw, "enabled", _value(raw, "configured", True))),
-            purposes=_strings(_value(raw, "purposes")),
-            tiers=_strings(_value(raw, "tiers")),
-            observed_available=_value(
-                raw,
-                "observed_available",
-                _value(_value(raw, "observed", {}), "available"),
-            ),
-        ))
+        result.append(
+            Candidate(
+                *key,
+                enabled=bool(_value(raw, "enabled", _value(raw, "configured", True))),
+                purposes=_strings(_value(raw, "purposes")),
+                tiers=_strings(_value(raw, "tiers")),
+                observed_available=_value(
+                    raw,
+                    "observed_available",
+                    _value(_value(raw, "observed", {}), "available"),
+                ),
+            )
+        )
     return tuple(result)
 
 
-def _target(value: Any) -> tuple[Optional[str], Optional[str]]:
+def _target(value: Any) -> tuple[str | None, str | None]:
     if isinstance(value, str):
         return tuple(value.split(":", 1)) if ":" in value else (value, None)
-    return (_value(value, "provider", _value(value, "agent_cli")), _value(value, "model"))
+    return (
+        _value(value, "provider", _value(value, "agent_cli")),
+        _value(value, "model"),
+    )
 
 
 def _policy_values(
-    policy: Mapping[str, Any], purpose: Optional[str], tier: Optional[str]
+    policy: Mapping[str, Any], purpose: str | None, tier: str | None
 ) -> list[tuple[Any, str]]:
     effective_tier = tier
     if effective_tier is None and purpose:
-        effective_tier = (policy.get("purpose_tiers") or policy.get("purposes") or {}).get(purpose)
+        effective_tier = (
+            policy.get("purpose_tiers") or policy.get("purposes") or {}
+        ).get(purpose)
     values: list[Any] = []
     if purpose:
         direct = (policy.get("purpose_targets") or {}).get(purpose)
         if direct:
-            values.extend((item, "purpose/tier policy") for item in
-                          (direct if isinstance(direct, list) else [direct]))
+            values.extend(
+                (item, "purpose/tier policy")
+                for item in (direct if isinstance(direct, list) else [direct])
+            )
     if effective_tier:
         tier_value = (policy.get("tiers") or {}).get(effective_tier)
         if isinstance(tier_value, Mapping):
-            tier_value = tier_value.get("candidates") or tier_value.get("targets") or tier_value
+            tier_value = (
+                tier_value.get("candidates") or tier_value.get("targets") or tier_value
+            )
         if tier_value:
-            values.extend((item, "purpose/tier policy") for item in
-                          (tier_value if isinstance(tier_value, list) else [tier_value]))
+            values.extend(
+                (item, "purpose/tier policy")
+                for item in (
+                    tier_value if isinstance(tier_value, list) else [tier_value]
+                )
+            )
     for key in ("defaults", "fallbacks", "fallback_chain"):
         value = policy.get(key)
         if value:
-            values.extend((item, "configured default/fallback") for item in
-                          (value if isinstance(value, list) else [value]))
+            values.extend(
+                (item, "configured default/fallback")
+                for item in (value if isinstance(value, list) else [value])
+            )
     return values
 
 
-def _capacity(capacity: Any, provider: str, model: str, now: Optional[datetime]) -> tuple[bool, Any]:
+def _capacity(
+    capacity: Any, provider: str, model: str, now: datetime | None
+) -> tuple[bool, Any]:
     if capacity is None:
         return True, None
-    check = capacity if callable(capacity) else getattr(capacity, "check")
+    check = capacity if callable(capacity) else capacity.check
     try:
         result = check(provider, model, now=now)
     except TypeError:
         result = check(provider, model)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         # agent_capacity.check communicates an active gate by raising. Do not
         # couple this pure module to that exception class.
         return False, getattr(exc, "state", str(exc))
@@ -193,15 +231,15 @@ def _capacity(capacity: Any, provider: str, model: str, now: Optional[datetime])
 def select_execution_target(
     catalog: Any,
     *,
-    explicit_provider: Optional[str] = None,
-    explicit_model: Optional[str] = None,
+    explicit_provider: str | None = None,
+    explicit_model: str | None = None,
     invocation_context: Any = None,
     subcall: bool = False,
-    purpose: Optional[str] = None,
-    tier: Optional[str] = None,
-    policy: Optional[Mapping[str, Any]] = None,
+    purpose: str | None = None,
+    tier: str | None = None,
+    policy: Mapping[str, Any] | None = None,
     capacity: Any = None,
-    now: Optional[datetime] = None,
+    now: datetime | None = None,
 ) -> ExecutionTarget:
     """Resolve a target by precedence, compatibility, catalog order and capacity.
 
@@ -218,28 +256,44 @@ def select_execution_target(
         raise InvalidCandidate(f"unsupported explicit provider: {explicit_provider}")
     if explicit_model and explicit_model not in models:
         raise InvalidCandidate(f"unsupported explicit model: {explicit_model}")
-    if explicit_provider and explicit_model and (explicit_provider, explicit_model) not in by_key:
-        raise InvalidCandidate(f"unsupported explicit target: {explicit_provider}:{explicit_model}")
+    if (
+        explicit_provider
+        and explicit_model
+        and (explicit_provider, explicit_model) not in by_key
+    ):
+        raise InvalidCandidate(
+            f"unsupported explicit target: {explicit_provider}:{explicit_model}"
+        )
 
-    seeds: list[tuple[Optional[str], Optional[str], str]] = []
+    seeds: list[tuple[str | None, str | None, str]] = []
     if explicit_provider or explicit_model:
         seeds.append((explicit_provider, explicit_model, "explicit override"))
     if subcall and invocation_context is not None:
-        inherited_provider = _value(invocation_context, "provider", _value(invocation_context, "agent_cli"))
+        inherited_provider = _value(
+            invocation_context, "provider", _value(invocation_context, "agent_cli")
+        )
         inherited_model = _value(invocation_context, "model")
         if inherited_provider:
-            seeds.append((inherited_provider, inherited_model, "inherited invocation context"))
+            seeds.append(
+                (inherited_provider, inherited_model, "inherited invocation context")
+            )
     for value, reason in _policy_values(policy or {}, purpose, tier):
         provider, model = _target(value)
         seeds.append((provider, model, reason))
-    seeds.extend((item.provider, item.model, "configured default/fallback") for item in candidates)
+    seeds.extend(
+        (item.provider, item.model, "configured default/fallback")
+        for item in candidates
+    )
 
     ordered: list[tuple[Candidate, str]] = []
     seen: set[tuple[str, str]] = set()
     for provider, model, reason in seeds:
-        matching = [item for item in candidates
-                    if (provider is None or item.provider == provider)
-                    and (model is None or item.model == model)]
+        matching = [
+            item
+            for item in candidates
+            if (provider is None or item.provider == provider)
+            and (model is None or item.model == model)
+        ]
         # A model-only seed intentionally chooses whichever provider declares
         # that model first. A provider seed expands to alternate models before
         # the next provider seed.
@@ -277,7 +331,7 @@ class Cell:
     target: str
     harness: str
     model: str
-    effort: Optional[str]
+    effort: str | None
     pool: str
     auth: Any = None
 
@@ -286,10 +340,10 @@ def select_cell(
     routing: Mapping[str, Any],
     tier: str,
     *,
-    prefer: Optional[str] = None,
-    exclude_harness: Optional[str] = None,
+    prefer: str | None = None,
+    exclude_harness: str | None = None,
     capacity: Any = None,
-    now: Optional[datetime] = None,
+    now: datetime | None = None,
 ) -> Cell:
     """Walk a `routing.tiers` row across its declared `routing.targets` in
     preference order, returning the first cell with capacity (design D3).
@@ -331,8 +385,12 @@ def select_cell(
         candidates.append((name, target, cell))
 
     if exclude_harness:
-        other = [item for item in candidates if item[1].get("harness") != exclude_harness]
-        excluded = [item for item in candidates if item[1].get("harness") == exclude_harness]
+        other = [
+            item for item in candidates if item[1].get("harness") != exclude_harness
+        ]
+        excluded = [
+            item for item in candidates if item[1].get("harness") == exclude_harness
+        ]
         candidates = other + excluded
 
     attempted: list[tuple[str, str, str, Any]] = []

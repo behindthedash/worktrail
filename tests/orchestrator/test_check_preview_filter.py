@@ -39,7 +39,9 @@ def extract_pr_plan_task_ids(output: str) -> set:
                 # Extract task IDs from "[group-name] TASK-001, TASK-002" format
                 parts = line.split("] ")
                 if len(parts) > 1:
-                    task_str = parts[1].split("   ")[0]  # Extract before "stacks-on" or "reqs"
+                    task_str = parts[1].split("   ")[
+                        0
+                    ]  # Extract before "stacks-on" or "reqs"
                     for tid in task_str.split(", "):
                         tid = tid.strip()
                         if tid.startswith("TASK-"):
@@ -96,9 +98,9 @@ def test_ac001_completed_not_in_plan():
     plan_task_ids = extract_pr_plan_task_ids(output)
 
     # TASK-001 has status "completed"
-    assert (
-        "TASK-001" not in plan_task_ids
-    ), f"AC-001 FAILED: completed task TASK-001 found in plan: {plan_task_ids}"
+    assert "TASK-001" not in plan_task_ids, (
+        f"AC-001 FAILED: completed task TASK-001 found in plan: {plan_task_ids}"
+    )
 
     print("✓ AC-001 PASSED: completed task not in PR-group plan")
 
@@ -114,10 +116,16 @@ def test_ac002_completed_not_in_ticks_or_tail():
     all_processed = tick_task_ids | tail_task_ids
 
     # TASK-001 has status "completed", TASK-003 has status "done"
-    assert "TASK-001" not in tick_task_ids, f"AC-002 FAILED: completed task TASK-001 in ticks"
-    assert "TASK-003" not in tick_task_ids, f"AC-002 FAILED: done task TASK-003 in ticks"
-    assert "TASK-001" not in all_processed, f"AC-002 FAILED: completed task TASK-001 processed"
-    assert "TASK-003" not in all_processed, f"AC-002 FAILED: done task TASK-003 processed"
+    assert "TASK-001" not in tick_task_ids, (
+        "AC-002 FAILED: completed task TASK-001 in ticks"
+    )
+    assert "TASK-003" not in tick_task_ids, "AC-002 FAILED: done task TASK-003 in ticks"
+    assert "TASK-001" not in all_processed, (
+        "AC-002 FAILED: completed task TASK-001 processed"
+    )
+    assert "TASK-003" not in all_processed, (
+        "AC-002 FAILED: done task TASK-003 processed"
+    )
 
     print("✓ AC-002 PASSED: completed/done tasks not in ticks or tail")
 
@@ -132,7 +140,9 @@ def test_ac003_done_count_uses_coordinator_done():
 
     # Fixture has 8 tasks: 1 "completed", 1 "done", 6 "pending"
     # Expected done count: 1 (completed) + 1 (done) + 6 (completed during ticks) = 8
-    assert done == 8 and total == 8, f"AC-003 FAILED: done count {done}/{total}, expected 8/8"
+    assert done == 8 and total == 8, (
+        f"AC-003 FAILED: done count {done}/{total}, expected 8/8"
+    )
 
     print(f"✓ AC-003 PASSED: done count {done}/{total} includes coordinator.DONE tasks")
 
@@ -161,9 +171,9 @@ def test_integration_no_base_group_if_only_completed():
 
     # Verify TASK-001 (pre-completed root) doesn't create a base group
     plan_text = output.split("tail (serialized):")[0]
-    assert (
-        "[base" not in plan_text
-    ), "Integration test FAILED: pre-completed root created a base group"
+    assert "[base" not in plan_text, (
+        "Integration test FAILED: pre-completed root created a base group"
+    )
 
     print("✓ Integration test PASSED: pre-completed roots don't create base group")
 

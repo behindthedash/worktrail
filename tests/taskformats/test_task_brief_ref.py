@@ -40,7 +40,12 @@ class TestAdapters:
 class TestPromptRendering:
     def test_devkit_rendering_is_unchanged(self):
         path, note, _ = dispatch._task_brief(
-            {"task_brief": {"path_fmt": "docs/specs/x/tasks/{task_id}.md", "anchor_fmt": ""}},
+            {
+                "task_brief": {
+                    "path_fmt": "docs/specs/x/tasks/{task_id}.md",
+                    "anchor_fmt": "",
+                }
+            },
             "TASK-001",
         )
         assert path == "docs/specs/x/tasks/TASK-001.md"
@@ -48,7 +53,12 @@ class TestPromptRendering:
 
     def test_openspec_rendering_names_the_item_and_warns_off_the_rest(self):
         path, note, _ = dispatch._task_brief(
-            {"task_brief": {"path_fmt": "openspec/changes/x/tasks.md", "anchor_fmt": "{task_id}"}},
+            {
+                "task_brief": {
+                    "path_fmt": "openspec/changes/x/tasks.md",
+                    "anchor_fmt": "{task_id}",
+                }
+            },
             "1.1",
         )
         assert path == "openspec/changes/x/tasks.md"
@@ -56,14 +66,18 @@ class TestPromptRendering:
 
     def test_a_ctx_predating_the_seam_still_renders_devkit(self):
         """Cassettes and callers written before this seam pass no `task_brief`."""
-        path, note, _ = dispatch._task_brief({"spec_folder": "docs/specs/x/"}, "TASK-002")
+        path, note, _ = dispatch._task_brief(
+            {"spec_folder": "docs/specs/x/"}, "TASK-002"
+        )
         assert path == "docs/specs/x/tasks/TASK-002.md"
         assert note == ""
 
 
 class TestLiveWiring:
     def _ctx_for(self, rel):
-        return live.LiveSpawn._task_brief_ctx(types.SimpleNamespace(spec_folder_rel=rel))
+        return live.LiveSpawn._task_brief_ctx(
+            types.SimpleNamespace(spec_folder_rel=rel)
+        )
 
     def test_templates_resolve_per_format(self):
         assert self._ctx_for("docs/specs/080-x") == {
@@ -112,7 +126,10 @@ class TestEndToEndPrompt:
     def test_the_title_reaches_the_worker(self):
         """In OpenSpec the one-line task IS the brief, so a worker that cannot
         find its item would otherwise know only its id."""
-        for rel, tid in (("openspec/changes/080-x", "1.1"), ("docs/specs/080-x", "TASK-001")):
+        for rel, tid in (
+            ("openspec/changes/080-x", "1.1"),
+            ("docs/specs/080-x", "TASK-001"),
+        ):
             assert "Task title: Blast-radius path detection" in self._prompt(rel, tid)
 
     def test_every_role_addresses_the_brief_correctly(self):

@@ -105,7 +105,9 @@ class CollectTaskReferencesTests(unittest.TestCase):
     def test_union_of_reqs_ac_mapping_imp_requirements(self) -> None:
         self._write_task(
             "TASK-001.md",
-            _task_file(reqs=["REQ-001"], ac_mapping=["AC-002"], imp_requirements=["REQ-003"]),
+            _task_file(
+                reqs=["REQ-001"], ac_mapping=["AC-002"], imp_requirements=["REQ-003"]
+            ),
         )
         self.assertEqual(
             collect_task_references(self.spec_dir), {"REQ-001", "AC-002", "REQ-003"}
@@ -129,7 +131,7 @@ class GitRepoTestCase(unittest.TestCase):
 
     def _init_repo(self, initial_branch: str = "main") -> str:
         d = tempfile.mkdtemp(prefix="req-coverage-")
-        self.addCleanup(lambda: subprocess.run(["rm", "-rf", d]))
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", d], check=False))
         self._git(d, "init", "-q", "-b", initial_branch)
         self._git(d, "config", "user.email", "test@example.com")
         self._git(d, "config", "user.name", "Test")
@@ -161,7 +163,9 @@ class RatchetTests(GitRepoTestCase):
         )
         self._commit(repo, "add spec declaring REQ-100")
 
-        failures = check_spec_coverage(Path(repo), "docs/specs/100-fixture/spec.md", "main")
+        failures = check_spec_coverage(
+            Path(repo), "docs/specs/100-fixture/spec.md", "main"
+        )
         self.assertEqual(len(failures), 1)
         self.assertIn("REQ-100", failures[0])
 
@@ -183,7 +187,9 @@ class RatchetTests(GitRepoTestCase):
         )
         self._commit(repo, "touch spec for an unrelated reason")
 
-        failures = check_spec_coverage(Path(repo), "docs/specs/200-fixture/spec.md", "main")
+        failures = check_spec_coverage(
+            Path(repo), "docs/specs/200-fixture/spec.md", "main"
+        )
         self.assertEqual(failures, [])
 
     def test_requirement_added_together_with_its_coverage_passes(self) -> None:
@@ -209,7 +215,9 @@ class RatchetTests(GitRepoTestCase):
         )
         self._commit(repo, "add REQ-301 with its covering task")
 
-        failures = check_spec_coverage(Path(repo), "docs/specs/300-fixture/spec.md", "main")
+        failures = check_spec_coverage(
+            Path(repo), "docs/specs/300-fixture/spec.md", "main"
+        )
         self.assertEqual(failures, [])
 
     def test_brand_new_spec_enforces_every_identifier(self) -> None:
@@ -223,7 +231,9 @@ class RatchetTests(GitRepoTestCase):
         )
         self._commit(repo, "add brand-new spec")
 
-        failures = check_spec_coverage(Path(repo), "docs/specs/400-fixture/spec.md", "main")
+        failures = check_spec_coverage(
+            Path(repo), "docs/specs/400-fixture/spec.md", "main"
+        )
         self.assertEqual(len(failures), 2)
         joined = "\n".join(failures)
         self.assertIn("REQ-400", joined)
@@ -245,7 +255,9 @@ class RatchetTests(GitRepoTestCase):
         )
         self._commit(repo, "cover only the plain identifier")
 
-        failures = check_spec_coverage(Path(repo), "docs/specs/500-fixture/spec.md", "main")
+        failures = check_spec_coverage(
+            Path(repo), "docs/specs/500-fixture/spec.md", "main"
+        )
         self.assertEqual(len(failures), 1)
         self.assertIn("REQ-NR001", failures[0])
 
@@ -287,8 +299,16 @@ class BaseRefUnresolvableTests(GitRepoTestCase):
         self._commit(repo, "add spec")
 
         result = subprocess.run(
-            [sys.executable, "-m", "worktrail.router.check_req_coverage", "--repo", repo],
-            capture_output=True, text=True,
+            [
+                sys.executable,
+                "-m",
+                "worktrail.router.check_req_coverage",
+                "--repo",
+                repo,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("SKIP", result.stdout)
@@ -384,28 +404,30 @@ class AutomationHealthDigestFixtureTests(GitRepoTestCase):
         repo = self._init_repo()
         spec_dir = "docs/specs/084-automation-health-digest"
         self._write(
-            repo, f"{spec_dir}/2026-07-18--automation-health-digest.md",
+            repo,
+            f"{spec_dir}/2026-07-18--automation-health-digest.md",
             AUTOMATION_HEALTH_DIGEST_SPEC,
         )
         self._write(
-            repo, f"{spec_dir}/tasks/TASK-001.md",
+            repo,
+            f"{spec_dir}/tasks/TASK-001.md",
             _task_file(reqs=[f"REQ-{n:03d}" for n in range(1, 15)] + ["REQ-NR001"]),
         )
         self._write(
-            repo, f"{spec_dir}/tasks/TASK-002.md",
+            repo,
+            f"{spec_dir}/tasks/TASK-002.md",
             _task_file(reqs=[f"REQ-{n:03d}" for n in range(15, 23)] + ["REQ-NR002"]),
         )
         self._write(
-            repo, f"{spec_dir}/tasks/TASK-003.md",
+            repo,
+            f"{spec_dir}/tasks/TASK-003.md",
             _task_file(reqs=["REQ-029", "REQ-030"]),
         )
         self._commit(repo, "084-automation-health-digest corpus fixture")
 
         failures = audit_all_specs(Path(repo))
         uncovered = {f.split("identifier ")[1] for f in failures}
-        self.assertEqual(
-            uncovered, {f"REQ-{n:03d}" for n in range(23, 29)}
-        )
+        self.assertEqual(uncovered, {f"REQ-{n:03d}" for n in range(23, 29)})
 
 
 if __name__ == "__main__":

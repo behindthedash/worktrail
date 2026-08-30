@@ -23,10 +23,12 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from worktrail.orchestrator import live  # noqa: E402
+from worktrail.orchestrator import live
 
 
-def _make_task(task_id, status="pending", kind="impl", files=None, body=None, extra_fm=None):
+def _make_task(
+    task_id, status="pending", kind="impl", files=None, body=None, extra_fm=None
+):
     """Build a minimal task dict. `body` overrides the default bodiless stub
     with real markdown (e.g. "Files to Create"/"Files to Modify" sections).
     `extra_fm` is a dict of additional raw frontmatter key: value lines."""
@@ -103,7 +105,11 @@ class TestPrecheckWarn(unittest.TestCase):
         """Single pending impl task with all files present."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_root = Path(tmp)
-            tasks = [_make_task("TASK-001", status="pending", kind="impl", files=["src/lib.py"])]
+            tasks = [
+                _make_task(
+                    "TASK-001", status="pending", kind="impl", files=["src/lib.py"]
+                )
+            ]
             _make_spec_dir(tmp_root, tasks, create_files={"src/lib.py"})
 
             captured = io.StringIO()
@@ -134,7 +140,11 @@ class TestPrecheckWarn(unittest.TestCase):
     def test_fanout_failed_status_blocks_relaunch(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_root = Path(tmp)
-            tasks = [_make_task("TASK-001", status="pending", kind="impl", files=["src/lib.py"])]
+            tasks = [
+                _make_task(
+                    "TASK-001", status="pending", kind="impl", files=["src/lib.py"]
+                )
+            ]
             _make_spec_dir(tmp_root, tasks, create_files=set())
             _write_status_file(
                 tmp_root,
@@ -164,7 +174,11 @@ class TestPrecheckSilent(unittest.TestCase):
         """Pending impl task with no files present."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_root = Path(tmp)
-            tasks = [_make_task("TASK-001", status="pending", kind="impl", files=["src/lib.py"])]
+            tasks = [
+                _make_task(
+                    "TASK-001", status="pending", kind="impl", files=["src/lib.py"]
+                )
+            ]
             _make_spec_dir(tmp_root, tasks, create_files=set())
 
             captured = io.StringIO()
@@ -238,7 +252,9 @@ class TestPrecheckKindFilter(unittest.TestCase):
         """e2e task with all files present should be skipped silently."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_root = Path(tmp)
-            tasks = [_make_task("TASK-001", status="pending", kind="e2e", files=["test.py"])]
+            tasks = [
+                _make_task("TASK-001", status="pending", kind="e2e", files=["test.py"])
+            ]
             _make_spec_dir(tmp_root, tasks, create_files={"test.py"})
 
             captured = io.StringIO()
@@ -253,7 +269,11 @@ class TestPrecheckKindFilter(unittest.TestCase):
         """cleanup task with all files present should be skipped silently."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_root = Path(tmp)
-            tasks = [_make_task("TASK-001", status="pending", kind="cleanup", files=["cleanup.py"])]
+            tasks = [
+                _make_task(
+                    "TASK-001", status="pending", kind="cleanup", files=["cleanup.py"]
+                )
+            ]
             _make_spec_dir(tmp_root, tasks, create_files={"cleanup.py"})
 
             captured = io.StringIO()
@@ -268,7 +288,9 @@ class TestPrecheckKindFilter(unittest.TestCase):
         """docs task with all files present should be skipped silently."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_root = Path(tmp)
-            tasks = [_make_task("TASK-001", status="pending", kind="docs", files=["docs.md"])]
+            tasks = [
+                _make_task("TASK-001", status="pending", kind="docs", files=["docs.md"])
+            ]
             _make_spec_dir(tmp_root, tasks, create_files={"docs.md"})
 
             captured = io.StringIO()
@@ -335,7 +357,9 @@ class TestPrecheckEmptyFiles(unittest.TestCase):
 
             output = captured.getvalue()
             self.assertEqual(result, 0)
-            self.assertEqual(output.strip(), "", "Empty files task should be skipped silently")
+            self.assertEqual(
+                output.strip(), "", "Empty files task should be skipped silently"
+            )
 
     def test_no_files_field_skipped(self):
         """Task without files field should be skipped."""
@@ -351,7 +375,9 @@ class TestPrecheckEmptyFiles(unittest.TestCase):
 
             output = captured.getvalue()
             self.assertEqual(result, 0)
-            self.assertEqual(output.strip(), "", "Task without files field should be skipped")
+            self.assertEqual(
+                output.strip(), "", "Task without files field should be skipped"
+            )
 
 
 class TestPrecheckMixed(unittest.TestCase):
@@ -363,8 +389,12 @@ class TestPrecheckMixed(unittest.TestCase):
             tmp_root = Path(tmp)
             tasks = [
                 _make_task("TASK-001", status="pending", kind="impl", files=["a.py"]),
-                _make_task("TASK-002", status="pending", kind="impl", files=["b.py", "c.py"]),
-                _make_task("TASK-003", status="pending", kind="impl", files=["d.py", "e.py"]),
+                _make_task(
+                    "TASK-002", status="pending", kind="impl", files=["b.py", "c.py"]
+                ),
+                _make_task(
+                    "TASK-003", status="pending", kind="impl", files=["d.py", "e.py"]
+                ),
             ]
             # All files present for TASK-001 (WARN), partial for TASK-002 (INFO), none for TASK-003 (silent)
             _make_spec_dir(tmp_root, tasks, create_files={"a.py", "b.py"})
@@ -403,8 +433,12 @@ class TestPrecheckMixed(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_root = Path(tmp)
             tasks = [
-                _make_task("TASK-001", status="pending", kind="impl", files=["a.py", "b.py"]),
-                _make_task("TASK-002", status="pending", kind="impl", files=["c.py", "d.py"]),
+                _make_task(
+                    "TASK-001", status="pending", kind="impl", files=["a.py", "b.py"]
+                ),
+                _make_task(
+                    "TASK-002", status="pending", kind="impl", files=["c.py", "d.py"]
+                ),
             ]
             _make_spec_dir(tmp_root, tasks, create_files={"a.py", "c.py"})
 
@@ -431,7 +465,9 @@ class TestPrecheckModifyPipeline(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_root = Path(tmp)
             files = ["src/a.py", "src/b.py"]
-            tasks = [_make_task("TASK-CHG-001", status="pending", kind="impl", files=files)]
+            tasks = [
+                _make_task("TASK-CHG-001", status="pending", kind="impl", files=files)
+            ]
             _make_spec_dir(tmp_root, tasks, create_files=set(files))
 
             captured = io.StringIO()
@@ -439,7 +475,9 @@ class TestPrecheckModifyPipeline(unittest.TestCase):
                 result = live.precheck(tmp_root, "specs/001-test")
 
             output = captured.getvalue()
-            self.assertEqual(result, 0, "All pre-existing files should be silent, not WARN")
+            self.assertEqual(
+                result, 0, "All pre-existing files should be silent, not WARN"
+            )
             self.assertEqual(output.strip(), "")
 
     def test_missing_file_warns(self):
@@ -448,7 +486,9 @@ class TestPrecheckModifyPipeline(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_root = Path(tmp)
             files = ["src/a.py", "src/b.py", "src/c.py"]
-            tasks = [_make_task("TASK-CHG-001", status="pending", kind="impl", files=files)]
+            tasks = [
+                _make_task("TASK-CHG-001", status="pending", kind="impl", files=files)
+            ]
             _make_spec_dir(tmp_root, tasks, create_files={"src/a.py", "src/b.py"})
 
             captured = io.StringIO()
@@ -466,7 +506,11 @@ class TestPrecheckModifyPipeline(unittest.TestCase):
         WARN."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_root = Path(tmp)
-            tasks = [_make_task("TASK-CHG-001", status="pending", kind="impl", files=["src/a.py"])]
+            tasks = [
+                _make_task(
+                    "TASK-CHG-001", status="pending", kind="impl", files=["src/a.py"]
+                )
+            ]
             _make_spec_dir(tmp_root, tasks, create_files=set())
 
             captured = io.StringIO()
@@ -485,7 +529,9 @@ class TestPrecheckModifyPipeline(unittest.TestCase):
             tmp_root = Path(tmp)
             tasks = [
                 _make_task("TASK-001", status="pending", kind="impl", files=["a.py"]),
-                _make_task("TASK-CHG-001", status="pending", kind="impl", files=["b.py"]),
+                _make_task(
+                    "TASK-CHG-001", status="pending", kind="impl", files=["b.py"]
+                ),
             ]
             # a.py exists -> new-pipeline WARN (all present, unexpected).
             # b.py exists -> modify-pipeline silent (all present, expected).
@@ -585,7 +631,11 @@ class TestPrecheckModifyOnlyBodyDetection(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_root = Path(tmp)
             files = ["src/new_module.py"]
-            tasks = [_make_task("TASK-002", status="pending", kind="impl", files=files, body=body)]
+            tasks = [
+                _make_task(
+                    "TASK-002", status="pending", kind="impl", files=files, body=body
+                )
+            ]
             _make_spec_dir(tmp_root, tasks, create_files=set(files))
 
             captured = io.StringIO()
@@ -649,7 +699,11 @@ class TestPrecheckFrontmatterTypoWarning(unittest.TestCase):
         existence checks, which skip e2e/cleanup/docs)."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_root = Path(tmp)
-            tasks = [_make_task("TASK-001", status="pending", kind="e2e", extra_fm={"kinf": "e2e"})]
+            tasks = [
+                _make_task(
+                    "TASK-001", status="pending", kind="e2e", extra_fm={"kinf": "e2e"}
+                )
+            ]
             _make_spec_dir(tmp_root, tasks, create_files=set())
 
             captured = io.StringIO()
@@ -662,7 +716,9 @@ class TestPrecheckFrontmatterTypoWarning(unittest.TestCase):
     def test_clean_frontmatter_no_warning(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_root = Path(tmp)
-            tasks = [_make_task("TASK-001", status="pending", kind="impl", files=["a.py"])]
+            tasks = [
+                _make_task("TASK-001", status="pending", kind="impl", files=["a.py"])
+            ]
             _make_spec_dir(tmp_root, tasks, create_files=set())
 
             captured = io.StringIO()
@@ -851,7 +907,9 @@ class TestPrecheckExternalDeps(unittest.TestCase):
             tmp_root = Path(tmp)
             tasks = [
                 _make_task("TASK-001", status="pending", kind="impl", files=["a.py"]),
-                _make_task("TASK-002", status="pending", kind="impl", files=["b.py", "c.py"]),
+                _make_task(
+                    "TASK-002", status="pending", kind="impl", files=["b.py", "c.py"]
+                ),
             ]
             _make_spec_dir(tmp_root, tasks, create_files={"a.py", "b.py"})
 

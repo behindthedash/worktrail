@@ -16,7 +16,6 @@ Run: python3 test_integrate_addons.py
 from __future__ import annotations
 
 import subprocess
-import sys
 import tempfile
 import unittest
 from collections import namedtuple
@@ -42,7 +41,9 @@ def _init_bare_and_clone(tmp: Path):
     subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
 
     local = tmp / "local"
-    subprocess.run(["git", "clone", "-q", str(origin), str(local)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "clone", "-q", str(origin), str(local)], check=True, capture_output=True
+    )
     _run(local, "config", "user.email", "t@t")
     _run(local, "config", "user.name", "T")
     (local / "README.md").write_text("init\n")
@@ -109,7 +110,9 @@ class _WritingAddOn:
 
     def run(self, ctx):
         (Path(ctx.worktree) / "GENERATED.md").write_text("synced output\n")
-        return AddOnResult(changed=True, detail="synced output", paths=[Path("GENERATED.md")])
+        return AddOnResult(
+            changed=True, detail="synced output", paths=[Path("GENERATED.md")]
+        )
 
 
 class _FailingAddOn:
@@ -147,9 +150,13 @@ class _IntegrateAddonsTestBase(unittest.TestCase):
         self.group_branch: dict = {}
         self.quarantined: dict = {}
 
-        self._drift_patch = patch.object(integrate, "_run_drift_gate", return_value=(True, "ok"))
+        self._drift_patch = patch.object(
+            integrate, "_run_drift_gate", return_value=(True, "ok")
+        )
         self._drift_patch.start()
-        self._gh_patch = patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=_fake_gh)
+        self._gh_patch = patch(
+            "worktrail.orchestrator.integrate.subprocess.run", side_effect=_fake_gh
+        )
         self._gh_patch.start()
 
     def tearDown(self):
@@ -159,8 +166,17 @@ class _IntegrateAddonsTestBase(unittest.TestCase):
 
     def _integrate(self, policy):
         return integrate.integrate_one(
-            self.g, self.repo, self.spec_id, self.tasks, "origin", "run1", "main",
-            None, self.status, self.group_branch, self.quarantined,
+            self.g,
+            self.repo,
+            self.spec_id,
+            self.tasks,
+            "origin",
+            "run1",
+            "main",
+            None,
+            self.status,
+            self.group_branch,
+            self.quarantined,
             policy=policy,
         )
 
@@ -178,7 +194,9 @@ class UnconfiguredRepoNoAddonCommit(_IntegrateAddonsTestBase):
         self.assertIsNotNone(result, "an unconfigured repo must still produce a PR")
         self.assertNotIn("base", self.quarantined)
         subjects = self._pushed_branch_log("run1/base")
-        self.assertNotIn("chore(", subjects, "no add-on ran, so no chore(...) commit is expected")
+        self.assertNotIn(
+            "chore(", subjects, "no add-on ran, so no chore(...) commit is expected"
+        )
 
     def test_empty_add_ons_policy_produces_no_addon_commit(self):
         result = self._integrate(policy={"add_ons": {}})
@@ -203,12 +221,15 @@ class ConfiguredAddonCommittedBeforePush(_IntegrateAddonsTestBase):
         with patch("worktrail.addons.runner.addon_for", return_value=_WritingAddOn()):
             result = self._integrate(policy={"add_ons": {"docsync": {}}})
 
-        self.assertIsNotNone(result, "a successful non-required add-on must not block the PR")
+        self.assertIsNotNone(
+            result, "a successful non-required add-on must not block the PR"
+        )
         self.assertNotIn("base", self.quarantined)
 
         subjects = self._pushed_branch_log("run1/base")
         self.assertIn(
-            "chore(docsync): synced output", subjects,
+            "chore(docsync): synced output",
+            subjects,
             "add-on output must be committed and land on the pushed branch, i.e. "
             "before the push -- a commit made only after push would never appear here",
         )
@@ -217,7 +238,9 @@ class ConfiguredAddonCommittedBeforePush(_IntegrateAddonsTestBase):
 class RequiredAddonFailureQuarantinesGroup(_IntegrateAddonsTestBase):
     def test_required_failure_quarantines_and_blocks_push(self):
         with patch("worktrail.addons.runner.addon_for", return_value=_FailingAddOn()):
-            result = self._integrate(policy={"add_ons": {"docsync": {"required": True}}})
+            result = self._integrate(
+                policy={"add_ons": {"docsync": {"required": True}}}
+            )
 
         self.assertIsNone(result, "a required add-on failure must not produce a PR")
         self.assertIn("base", self.quarantined)
@@ -227,15 +250,21 @@ class RequiredAddonFailureQuarantinesGroup(_IntegrateAddonsTestBase):
         # The group branch must never have reached the remote.
         ls_remote = subprocess.run(
             ["git", "ls-remote", str(self.origin), "run1/base"],
-            capture_output=True, text=True, check=True,
+            capture_output=True,
+            text=True,
+            check=True,
         )
-        self.assertEqual(ls_remote.stdout.strip(), "", "quarantined group must not be pushed")
+        self.assertEqual(
+            ls_remote.stdout.strip(), "", "quarantined group must not be pushed"
+        )
 
     def test_non_required_failure_does_not_quarantine(self):
         with patch("worktrail.addons.runner.addon_for", return_value=_FailingAddOn()):
             result = self._integrate(policy={"add_ons": {"docsync": {}}})
 
-        self.assertIsNotNone(result, "a non-required add-on failure must not block the PR")
+        self.assertIsNotNone(
+            result, "a non-required add-on failure must not block the PR"
+        )
         self.assertNotIn("base", self.quarantined)
 
 

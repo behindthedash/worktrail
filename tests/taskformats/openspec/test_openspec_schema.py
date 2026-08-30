@@ -155,9 +155,7 @@ def test_set_task_checked_on_declared_task_changes_only_checkbox_byte(tmp_path: 
     assert changed is True
 
     new_text = tasks_md.read_text()
-    expected = text.replace(
-        "- [ ] 1.1 Add the widget", "- [x] 1.1 Add the widget", 1
-    )
+    expected = text.replace("- [ ] 1.1 Add the widget", "- [x] 1.1 Add the widget", 1)
     assert new_text == expected
 
     parsed = parse_tasks_md(new_text)

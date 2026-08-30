@@ -34,6 +34,7 @@ markers to `LABEL_FAMILY_MARKERS`. This test does not catch a brand-new correcti
 action family described in prose for the first time before its vocabulary is added
 here -- see the design note's "What this does not catch" section.
 """
+
 import json
 import tempfile
 import unittest
@@ -75,7 +76,8 @@ def _proves_ci_watch_loop_stamps_no_automerge_on_blocking():
         raise AssertionError(
             "check_review_threads.check() no longer references "
             "ensure_pr_no_automerge_label -- ci-watch-loop.md's claim that "
-            "'the tool itself' stamps go:no-automerge is now prose-only")
+            "'the tool itself' stamps go:no-automerge is now prose-only"
+        )
 
 
 def _proves_pre_pr_gate_computes_automerge_labels():
@@ -89,7 +91,8 @@ def _proves_pre_pr_gate_computes_automerge_labels():
     if missing:
         raise AssertionError(
             f"pre_pr_gate.resolve_pr_labels() no longer references {sorted(missing)} "
-            "-- routes.md's Auto-Merge Eligibility template claim is now prose-only")
+            "-- routes.md's Auto-Merge Eligibility template claim is now prose-only"
+        )
 
 
 def _proves_run_record_finish_applies_risk_label_unconditionally():
@@ -103,27 +106,53 @@ def _proves_run_record_finish_applies_risk_label_unconditionally():
     with tempfile.TemporaryDirectory() as tmp:
         out = StringIO()
         with patch("sys.stdout", out):
-            rc = run_record_main([
-                "start", "--repo", "/tmp/fake-repo", "--request", "t",
-                "--route", "F", "--risk", "low", "--dir", tmp,
-            ])
+            rc = run_record_main(
+                [
+                    "start",
+                    "--repo",
+                    "/tmp/fake-repo",
+                    "--request",
+                    "t",
+                    "--route",
+                    "F",
+                    "--risk",
+                    "low",
+                    "--dir",
+                    tmp,
+                ]
+            )
         if rc != 0:
             raise AssertionError("run_record.py start failed")
         run_path = json.loads(out.getvalue())["path"]
-        run_record_main([
-            "scope-review", run_path, "--item", "implementation",
-            "--status", "complete", "--evidence", "tests pass",
-        ])
+        run_record_main(
+            [
+                "scope-review",
+                run_path,
+                "--item",
+                "implementation",
+                "--status",
+                "complete",
+                "--evidence",
+                "tests pass",
+            ]
+        )
         with patch("worktrail.router.pr_labels.ensure_pr_risk_label") as mock_ensure:
-            run_record_main([
-                "finish", run_path, "--status", "completed_pr_open",
-                "--pr", "https://github.com/example/repo/pull/1",
-            ])
+            run_record_main(
+                [
+                    "finish",
+                    run_path,
+                    "--status",
+                    "completed_pr_open",
+                    "--pr",
+                    "https://github.com/example/repo/pull/1",
+                ]
+            )
         if not mock_ensure.called:
             raise AssertionError(
                 "run_record.py finish did not call ensure_pr_risk_label for a "
                 "run carrying a pull_request field -- sdd-workflow SKILL.md's "
-                "'code-enforced inside finish itself' claim is now prose-only")
+                "'code-enforced inside finish itself' claim is now prose-only"
+            )
 
 
 def _proves_reconcile_repo_self_heals_both_labels():
@@ -135,12 +164,17 @@ def _proves_reconcile_repo_self_heals_both_labels():
     functions -- structural proof, not a live sweep run (which would need a
     real repo with open PRs and a run-record index)."""
     names = reconcile_pr_labels_mod.reconcile_repo.__code__.co_names
-    required = {"automerge_eligible", "ensure_pr_risk_label", "ensure_pr_no_automerge_label"}
+    required = {
+        "automerge_eligible",
+        "ensure_pr_risk_label",
+        "ensure_pr_no_automerge_label",
+    }
     missing = required - set(names)
     if missing:
         raise AssertionError(
             f"reconcile_pr_labels.reconcile_repo() no longer references {sorted(missing)} "
-            "-- worktrail-go SKILL.md's self-heal claim is now prose-only")
+            "-- worktrail-go SKILL.md's self-heal claim is now prose-only"
+        )
 
 
 def _proves_generated_automerge_workflow_gates_on_risk_labels():
@@ -154,11 +188,13 @@ def _proves_generated_automerge_workflow_gates_on_risk_labels():
     if "go:risk-(low|medium)" not in text:
         raise AssertionError(
             "build_automerge_workflow() no longer gates on go:risk-low/medium -- "
-            "worktrail-repo-init SKILL.md's inert-until-labeled claim is now prose-only")
+            "worktrail-repo-init SKILL.md's inert-until-labeled claim is now prose-only"
+        )
     if "go:no-automerge" not in text:
         raise AssertionError(
             "build_automerge_workflow() no longer checks go:no-automerge -- "
-            "worktrail-repo-init SKILL.md's disarm claim is now prose-only")
+            "worktrail-repo-init SKILL.md's disarm claim is now prose-only"
+        )
 
 
 # skills/-relative path -> callable proving the file's go:risk-*/go:no-automerge
@@ -176,13 +212,14 @@ KNOWN_FILES = set(FILE_CONSUMERS)
 
 
 class TestSkillProseEnforcementCoverage(unittest.TestCase):
-
     def test_every_label_correction_mention_has_a_registered_consumer(self):
         found = extract_label_correction_mentions()
         self.assertTrue(
-            found, "extraction found no skills/**/*.md mentions of the "
-                   "go:risk-*/go:no-automerge label family -- either the "
-                   "vocabulary or the docs moved/renamed")
+            found,
+            "extraction found no skills/**/*.md mentions of the "
+            "go:risk-*/go:no-automerge label family -- either the "
+            "vocabulary or the docs moved/renamed",
+        )
         unreviewed = found - KNOWN_FILES
         self.assertFalse(
             unreviewed,
@@ -192,12 +229,14 @@ class TestSkillProseEnforcementCoverage(unittest.TestCase):
             "file describes is actually code-enforced (see "
             "docs/specs/research/skill-prose-enforcement-coverage-design.md), "
             "then add a proof function here (see "
-            "test_gate_enforcement_coverage.py for the established pattern)")
+            "test_gate_enforcement_coverage.py for the established pattern)",
+        )
         stale = KNOWN_FILES - found
         self.assertFalse(
             stale,
             f"FILE_CONSUMERS registers {sorted(stale)}, which no longer "
-            "mentions the label-correction family -- remove the stale entry")
+            "mentions the label-correction family -- remove the stale entry",
+        )
 
     def test_registered_consumers_actually_enforce(self):
         for path, proof in FILE_CONSUMERS.items():

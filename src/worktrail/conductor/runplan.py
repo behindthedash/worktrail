@@ -50,9 +50,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any
 
 from worktrail.orchestrator.coordinator import TAIL_KINDS, compute_levels
 
@@ -91,15 +92,15 @@ class TaskPlan:
     in place by a consumer and then written back under the same fingerprint."""
 
     id: str
-    files: Tuple[str, ...] = ()
-    deps: Tuple[str, ...] = ()
+    files: tuple[str, ...] = ()
+    deps: tuple[str, ...] = ()
     kind: str = ""
     complexity: str = ""
     review: str = ""
     purpose: str = ""
 
     @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "TaskPlan":
+    def from_dict(cls, d: dict[str, Any]) -> TaskPlan:
         return cls(
             id=str(d["id"]),
             files=tuple(_norm_str_list(d.get("files"))),
@@ -110,7 +111,7 @@ class TaskPlan:
             purpose=str(d.get("purpose") or ""),
         )
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "files": list(self.files),
@@ -127,14 +128,14 @@ class RunPlan:
     spec_id: str
     fingerprint: str
     source: str
-    tasks: Tuple[TaskPlan, ...] = ()
-    notes: Tuple[str, ...] = ()
+    tasks: tuple[TaskPlan, ...] = ()
+    notes: tuple[str, ...] = ()
     plan_version: int = PLAN_VERSION
 
-    def by_id(self) -> Dict[str, TaskPlan]:
+    def by_id(self) -> dict[str, TaskPlan]:
         return {tp.id: tp for tp in self.tasks}
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "spec_id": self.spec_id,
             "fingerprint": self.fingerprint,
@@ -145,7 +146,7 @@ class RunPlan:
         }
 
     @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "RunPlan":
+    def from_dict(cls, d: dict[str, Any]) -> RunPlan:
         return cls(
             spec_id=str(d.get("spec_id", "")),
             fingerprint=str(d.get("fingerprint", "")),
@@ -156,7 +157,7 @@ class RunPlan:
         )
 
 
-def _norm_str_list(v: Any) -> List[str]:
+def _norm_str_list(v: Any) -> list[str]:
     if not v:
         return []
     if isinstance(v, str):
@@ -167,7 +168,7 @@ def _norm_str_list(v: Any) -> List[str]:
 # --------------------------------------------------------------------------- #
 # Fingerprinting
 # --------------------------------------------------------------------------- #
-def fingerprint(spec_dir: "str | Path", tasks: Sequence[Dict[str, Any]]) -> str:
+def fingerprint(spec_dir: str | Path, tasks: Sequence[dict[str, Any]]) -> str:
     """Content hash of everything a compile pass would read, minus run status.
 
     Status is deliberately excluded. It changes on every completed task, and a
@@ -216,7 +217,7 @@ def fingerprint(spec_dir: "str | Path", tasks: Sequence[Dict[str, Any]]) -> str:
     return h.hexdigest()
 
 
-def cache_path(cache_dir: "str | Path", spec_id: str, fp: str) -> Path:
+def cache_path(cache_dir: str | Path, spec_id: str, fp: str) -> Path:
     """One file per (change, content version). Old versions are left in place:
     they are small, and keeping them means flipping a change back to a previous
     state re-hits the cache instead of paying for another compile."""
@@ -224,7 +225,7 @@ def cache_path(cache_dir: "str | Path", spec_id: str, fp: str) -> Path:
     return Path(cache_dir) / f"{safe}-{fp[:12]}.json"
 
 
-def load_cached(cache_dir: "str | Path", spec_id: str, fp: str) -> Optional[RunPlan]:
+def load_cached(cache_dir: str | Path, spec_id: str, fp: str) -> RunPlan | None:
     """Return the cached plan for this exact content version, or None.
 
     A plan whose recorded fingerprint or `plan_version` disagrees with what we
@@ -242,7 +243,7 @@ def load_cached(cache_dir: "str | Path", spec_id: str, fp: str) -> Optional[RunP
     return plan
 
 
-def store(cache_dir: "str | Path", plan: RunPlan) -> Path:
+def store(cache_dir: str | Path, plan: RunPlan) -> Path:
     p = cache_path(cache_dir, plan.spec_id, plan.fingerprint)
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(".json.tmp")
@@ -255,8 +256,8 @@ def store(cache_dir: "str | Path", plan: RunPlan) -> Path:
 # Application
 # --------------------------------------------------------------------------- #
 def apply_to_tasks(
-    tasks: Sequence[Dict[str, Any]], plan: Optional[RunPlan]
-) -> Tuple[List[Dict[str, Any]], List[str]]:
+    tasks: Sequence[dict[str, Any]], plan: RunPlan | None
+) -> tuple[list[dict[str, Any]], list[str]]:
     """Merge *plan* onto freshly-loaded *tasks*, enforcing the module invariant.
 
     Returns `(tasks, notes)`. `tasks` are copies -- the caller's list is never
@@ -274,7 +275,7 @@ def apply_to_tasks(
     if plan is None:
         return out, []
 
-    notes: List[str] = list(plan.notes)
+    notes: list[str] = list(plan.notes)
     ids = {t["id"] for t in out}
     planned = plan.by_id()
 
@@ -290,7 +291,7 @@ def apply_to_tasks(
 
     files = {tid: set(tp.files) for tid, tp in planned.items()}
 
-    merged: List[Dict[str, Any]] = []
+    merged: list[dict[str, Any]] = []
     for t in out:
         tp = planned[t["id"]]
         baseline_deps = set(_norm_str_list(t.get("deps")))
@@ -332,7 +333,7 @@ def apply_to_tasks(
     # repair-augmented graph too instead of needing a second check of its own.
     merged_by_id = {m["id"]: m for m in merged}
     merged_order = {m["id"]: i for i, m in enumerate(merged)}
-    repairs: List[str] = []
+    repairs: list[str] = []
     for file, a, b in unordered_file_collisions(merged):
         later, earlier = (a, b) if merged_order[a] > merged_order[b] else (b, a)
         later_task = merged_by_id[later]
@@ -374,7 +375,9 @@ def apply_to_tasks(
     return merged, notes
 
 
-def unordered_file_collisions(tasks: Sequence[Dict[str, Any]]) -> List[Tuple[str, str, str]]:
+def unordered_file_collisions(
+    tasks: Sequence[dict[str, Any]],
+) -> list[tuple[str, str, str]]:
     """Merged tasks that declare the same file with no dependency order between them.
 
     Meant to run once, right after `apply_to_tasks()`, on the merged task list --
@@ -400,7 +403,7 @@ def unordered_file_collisions(tasks: Sequence[Dict[str, Any]]) -> List[Tuple[str
     by_id = {t["id"]: t for t in tasks if t.get("kind") not in TAIL_KINDS}
     ids = set(by_id)
 
-    ancestors: Dict[str, set] = {}
+    ancestors: dict[str, set] = {}
 
     def _ancestors_of(tid: str, path: frozenset) -> set:
         if tid in ancestors:
@@ -418,12 +421,12 @@ def unordered_file_collisions(tasks: Sequence[Dict[str, Any]]) -> List[Tuple[str
     for tid in ids:
         _ancestors_of(tid, frozenset())
 
-    writers: Dict[str, List[str]] = {}
+    writers: dict[str, list[str]] = {}
     for tid, t in by_id.items():
         for f in _norm_str_list(t.get("files")):
             writers.setdefault(f, []).append(tid)
 
-    violations: List[Tuple[str, str, str]] = []
+    violations: list[tuple[str, str, str]] = []
     for f in sorted(writers):
         tids = sorted(set(writers[f]))
         for i, a in enumerate(tids):

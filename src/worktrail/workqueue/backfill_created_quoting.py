@@ -33,13 +33,13 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
-from . import work_queue as wq
 from ..shared.brief_frontmatter import validate_brief
+from . import work_queue as wq
 
 
-def _scan_created_line(content: str) -> Optional[Tuple[str, bool]]:
+def _scan_created_line(content: str) -> tuple[str, bool] | None:
     """Return `(raw_value, already_quoted)` for the frontmatter's `created:`
     line, or None when there is no frontmatter block or no `created:` line."""
     m = wq._FM_RE.match(content)
@@ -54,9 +54,9 @@ def _scan_created_line(content: str) -> Optional[Tuple[str, bool]]:
     return None
 
 
-def build_preview(queue_base: Path) -> Dict[str, Any]:
-    proposals: List[Dict[str, Any]] = []
-    skipped: List[Dict[str, Any]] = []
+def build_preview(queue_base: Path) -> dict[str, Any]:
+    proposals: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
     for subdir in ("queue", "picked"):
         directory = queue_base / subdir
         if not directory.is_dir():
@@ -74,15 +74,17 @@ def build_preview(queue_base: Path) -> Dict[str, Any]:
             raw_value, already_quoted = scan
             if already_quoted:
                 continue  # already canonical -- nothing to backfill
-            proposals.append({
-                "id": path.stem,
-                "path": str(path),
-                "created_raw": raw_value,
-            })
+            proposals.append(
+                {
+                    "id": path.stem,
+                    "path": str(path),
+                    "created_raw": raw_value,
+                }
+            )
     return {"proposals": proposals, "skipped": skipped}
 
 
-def _resolve_preview_payload(raw: str) -> Dict[str, Any]:
+def _resolve_preview_payload(raw: str) -> dict[str, Any]:
     """Parse `--preview`, accepting either `preview`'s full payload or a bare
     `{"proposals": [...]}` dict -- same shape-tolerance rationale as
     consolidate_cluster.py's `_resolve_draft_payload`."""
@@ -91,7 +93,7 @@ def _resolve_preview_payload(raw: str) -> Dict[str, Any]:
     except json.JSONDecodeError as exc:
         raise ValueError(f"--preview is not valid JSON: {exc}") from exc
     if not isinstance(parsed, dict) or not isinstance(parsed.get("proposals"), list):
-        raise ValueError("--preview must be a JSON object with a 'proposals' list")
+        raise ValueError("--preview must be a JSON object with a 'proposals' list")  # noqa: TRY004 -- ValueError is this function's uniform malformed-input contract; callers catch ValueError specifically
     return parsed
 
 
@@ -112,26 +114,40 @@ def _requote(content: str, raw_value: str) -> str:
     return content[: m.start(1)] + new_block + content[m.end(1) :]
 
 
-def execute_apply(preview: Dict[str, Any], queue_base: Path, confirm: bool) -> Dict[str, Any]:
-    stamped: List[str] = []
-    skipped: List[Dict[str, Any]] = []
+def execute_apply(
+    preview: dict[str, Any], queue_base: Path, confirm: bool
+) -> dict[str, Any]:
+    stamped: list[str] = []
+    skipped: list[dict[str, Any]] = []
 
     if not confirm:
         return {
             "stamped": stamped,
-            "skipped": [{"id": p["id"], "reason": "declined"} for p in preview["proposals"]],
+            "skipped": [
+                {"id": p["id"], "reason": "declined"} for p in preview["proposals"]
+            ],
         }
 
     for item in preview["proposals"]:
         path = Path(item["path"])
         if not path.is_file():
-            skipped.append({"id": item["id"], "reason": "file no longer present (claimed/moved/removed since preview)"})
+            skipped.append(
+                {
+                    "id": item["id"],
+                    "reason": "file no longer present (claimed/moved/removed since preview)",
+                }
+            )
             continue
 
         content = path.read_text(encoding="utf-8")
         scan = _scan_created_line(content)
         if scan is None or scan[1]:
-            skipped.append({"id": item["id"], "reason": "created: line missing or already quoted since preview"})
+            skipped.append(
+                {
+                    "id": item["id"],
+                    "reason": "created: line missing or already quoted since preview",
+                }
+            )
             continue
 
         new_content = _requote(content, scan[0])
@@ -140,7 +156,12 @@ def execute_apply(preview: Dict[str, Any], queue_base: Path, confirm: bool) -> D
         ok, verr = validate_brief(path)
         if not ok:
             path.write_text(content, encoding="utf-8")  # roll back
-            skipped.append({"id": item["id"], "reason": f"post-write validation failed, rolled back: {verr}"})
+            skipped.append(
+                {
+                    "id": item["id"],
+                    "reason": f"post-write validation failed, rolled back: {verr}",
+                }
+            )
             continue
 
         stamped.append(item["id"])
@@ -148,24 +169,40 @@ def execute_apply(preview: Dict[str, Any], queue_base: Path, confirm: bool) -> D
     return {"stamped": stamped, "skipped": skipped}
 
 
-def main(argv: Optional[List[str]] = None) -> int:
-    p = argparse.ArgumentParser(description="backfill created: timestamp quoting on existing handoff briefs")
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(
+        description="backfill created: timestamp quoting on existing handoff briefs"
+    )
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--queue-dir", default=None, help="override the queue base dir containing queue/ and picked/ (default: WORK_QUEUE_DIR)")
+    common.add_argument(
+        "--queue-dir",
+        default=None,
+        help="override the queue base dir containing queue/ and picked/ (default: WORK_QUEUE_DIR)",
+    )
     subs = p.add_subparsers(dest="cmd")
     subs.required = True
 
-    subs.add_parser("preview", parents=[common], help="scan queue/ + picked/ for unquoted created: lines; write nothing")
+    subs.add_parser(
+        "preview",
+        parents=[common],
+        help="scan queue/ + picked/ for unquoted created: lines; write nothing",
+    )
 
-    execute_p = subs.add_parser("execute", parents=[common], help="requote created: from a preview")
+    execute_p = subs.add_parser(
+        "execute", parents=[common], help="requote created: from a preview"
+    )
     execute_p.add_argument(
         "--preview",
         help="preview's JSON stdout; omit to read it from stdin instead "
         "(a full-corpus preview routinely exceeds the shell argv size limit)",
     )
     confirm_grp = execute_p.add_mutually_exclusive_group(required=True)
-    confirm_grp.add_argument("--confirm", action="store_true", help="write the requoted lines")
-    confirm_grp.add_argument("--decline", action="store_true", help="perform zero writes")
+    confirm_grp.add_argument(
+        "--confirm", action="store_true", help="write the requoted lines"
+    )
+    confirm_grp.add_argument(
+        "--decline", action="store_true", help="perform zero writes"
+    )
 
     args = p.parse_args(argv)
     queue_base = Path(args.queue_dir) if args.queue_dir else wq.base_dir()
@@ -176,7 +213,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
 
     try:
-        preview = _resolve_preview_payload(args.preview if args.preview is not None else sys.stdin.read())
+        preview = _resolve_preview_payload(
+            args.preview if args.preview is not None else sys.stdin.read()
+        )
     except ValueError as exc:
         print(json.dumps({"error": str(exc)}), file=sys.stderr)
         return 2

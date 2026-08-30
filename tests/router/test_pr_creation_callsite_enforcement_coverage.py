@@ -44,6 +44,7 @@ already covered by the `worktrail-preflight` PreToolUse hook + pass-marker
 system (`test_preflight.py`, `test_automerge_preflight.py`) -- this test only
 covers call sites Worktrail's own Python code constructs.
 """
+
 import ast
 import inspect
 import subprocess
@@ -52,8 +53,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from worktrail.drain import drain
-from worktrail.orchestrator import integrate
-from worktrail.orchestrator import live
+from worktrail.orchestrator import integrate, live
 
 SRC_ROOT = Path(integrate.__file__).resolve().parent.parent  # src/worktrail
 
@@ -68,7 +68,8 @@ def extract_gh_pr_create_callsites() -> set:
             if not isinstance(node, (ast.List, ast.Tuple)):
                 continue
             literals = [
-                elt.value for elt in node.elts[:3]
+                elt.value
+                for elt in node.elts[:3]
                 if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
             ]
             if literals == ["gh", "pr", "create"]:
@@ -88,16 +89,19 @@ def _proves_integrate_py_uses_enforced_labels():
     integrate.py:906) reflects exactly those labels."""
     with patch.object(integrate, "_refresh_pr_labels", return_value=["go:risk-canary"]):
         fresh = integrate._refresh_pr_labels(
-            Path("/fake/repo"), ["go:risk-medium"], "main")
+            Path("/fake/repo"), ["go:risk-medium"], "main"
+        )
     if fresh != ["go:risk-canary"]:
         raise AssertionError(
             "_refresh_pr_labels was not called for the label source -- "
             "integrate.py's gh pr create call site may have stopped routing "
-            "through the enforced label-resolution path")
+            "through the enforced label-resolution path"
+        )
     if integrate._pr_label_args(fresh) != ["--label", "go:risk-canary"]:
         raise AssertionError(
             "_pr_label_args did not turn the refreshed labels into the exact "
-            "--label flags spliced into the gh pr create cmd list")
+            "--label flags spliced into the gh pr create cmd list"
+        )
 
 
 def _proves_live_py_full_is_sandbox_only_dev_tooling():
@@ -120,21 +124,25 @@ def _proves_live_py_full_is_sandbox_only_dev_tooling():
             f"live.full()'s default sandbox={default_sandbox!r} no longer "
             "looks like a dedicated sandbox repo -- re-audit whether its "
             "gh pr create call site still deserves a label-enforcement "
-            "exemption")
+            "exemption"
+        )
     for mod in (
         __import__("worktrail.orchestrator.dispatch", fromlist=["dispatch"]),
         __import__("worktrail.orchestrator.coordinator", fromlist=["coordinator"]),
     ):
         tree = ast.parse(inspect.getsource(mod))
         for node in ast.walk(tree):
-            if (isinstance(node, ast.Call)
-                    and isinstance(node.func, ast.Attribute)
-                    and node.func.attr == "full"):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "full"
+            ):
                 raise AssertionError(
                     f"{mod.__name__} calls live.full() from the production "
                     "orchestration path -- its unlabeled gh pr create call "
                     "site is no longer sandbox-only and needs the enforced "
-                    "label path")
+                    "label path"
+                )
 
 
 def _proves_drain_py_uses_enforced_labels():
@@ -154,19 +162,33 @@ def _proves_drain_py_uses_enforced_labels():
     def fake_run(cmd, **kwargs):
         captured["cmd"] = cmd
         return subprocess.CompletedProcess(
-            cmd, 0, stdout="https://example.invalid/pr/1", stderr="")
+            cmd, 0, stdout="https://example.invalid/pr/1", stderr=""
+        )
 
-    with patch.object(drain, "_refresh_pr_labels", return_value=["go:risk-canary"]), \
-            patch.object(drain.subprocess, "run", side_effect=fake_run):
+    with (
+        patch.object(drain, "_refresh_pr_labels", return_value=["go:risk-canary"]),
+        patch.object(drain.subprocess, "run", side_effect=fake_run),
+    ):
         drain._open_stale_bookkeeping_pr(
-            Path("/fake/repo"), Path("/fake/wt"), "repo-a", "spec-a",
-            ["TASK-001"], "main", "fix/close-stale-spec-a", 30)
-    if "cmd" not in captured or "--label" not in captured["cmd"] \
-            or "go:risk-canary" not in captured["cmd"]:
+            Path("/fake/repo"),
+            Path("/fake/wt"),
+            "repo-a",
+            "spec-a",
+            ["TASK-001"],
+            "main",
+            "fix/close-stale-spec-a",
+            30,
+        )
+    if (
+        "cmd" not in captured
+        or "--label" not in captured["cmd"]
+        or "go:risk-canary" not in captured["cmd"]
+    ):
         raise AssertionError(
             "drain.py's gh pr create call did not carry the refreshed label -- "
             "its stale-bookkeeping PR may have stopped routing through the "
-            "enforced label-resolution path")
+            "enforced label-resolution path"
+        )
 
 
 # relative-to-src/worktrail path -> callable proving its gh pr create call
@@ -183,12 +205,13 @@ KNOWN_CALLSITES = set(CALLSITE_CONSUMERS)
 
 
 class TestPrCreationCallsiteEnforcementCoverage(unittest.TestCase):
-
     def test_every_callsite_is_reviewed(self):
         found = extract_gh_pr_create_callsites()
         self.assertTrue(
-            found, "extraction found no gh pr create call sites -- "
-                   "integrate.py's cmd list may have moved/renamed")
+            found,
+            "extraction found no gh pr create call sites -- "
+            "integrate.py's cmd list may have moved/renamed",
+        )
         unreviewed = found - KNOWN_CALLSITES
         self.assertFalse(
             unreviewed,
@@ -196,12 +219,14 @@ class TestPrCreationCallsiteEnforcementCoverage(unittest.TestCase):
             "registered proof in CALLSITE_CONSUMERS -- wire the call through "
             "_refresh_pr_labels()/pre_pr_gate.py before shipping, then add a "
             "proof function here (see test_gate_enforcement_coverage.py for "
-            "the established pattern)")
+            "the established pattern)",
+        )
         stale = KNOWN_CALLSITES - found
         self.assertFalse(
             stale,
             f"CALLSITE_CONSUMERS registers {sorted(stale)}, which no longer "
-            "constructs a gh pr create call -- remove the stale entry")
+            "constructs a gh pr create call -- remove the stale entry",
+        )
 
     def test_registered_consumers_actually_enforce(self):
         for callsite, proof in CALLSITE_CONSUMERS.items():

@@ -66,12 +66,12 @@ import os
 import re
 import subprocess
 import sys
-import time
 import tempfile
+import time
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, NamedTuple, Optional, Sequence
+from typing import Any, NamedTuple
 
-from . import agent_capacity
 from ..router import routing_cli
 from ..router.policy import (
     ROUTING_FILE_ENV,
@@ -83,13 +83,14 @@ from ..router.policy import (
 from ..router.skill_dispatch import prepare_codex_child_environment
 from ..runtime.selection import Cell, NoExecutionTarget, select_cell
 from ..shared.homedir import env_setting, worktrail_home
+from . import agent_capacity
 
 
 class SpawnResult(NamedTuple):
     text: str
-    usage: Dict
-    tools_used: List[str] = []
-    skills_used: List[str] = []
+    usage: dict
+    tools_used: list[str] = []  # noqa: RUF012 -- NamedTuple field default, not a class attribute
+    skills_used: list[str] = []  # noqa: RUF012
     # Cumulative seconds the spawn spent sleeping on session-limit waits. The
     # caller subtracts this from the run's wall-clock elapsed time so a rate-limit
     # pause never consumes the --run-budget (without it a 4h reset window would
@@ -141,8 +142,8 @@ _SESSION_LIMIT_NOTICE_MAX_CHARS = 600
 
 
 def parse_session_limit_reset(
-    text: Optional[str], now: Optional[datetime.datetime] = None
-) -> Optional[datetime.datetime]:
+    text: str | None, now: datetime.datetime | None = None
+) -> datetime.datetime | None:
     """If `text` reports a Claude session-limit hit, return the next local datetime
     the limit resets (parsed from a 'resets ... H:MMam/pm' clock time, rolled to
     tomorrow when that time has already passed today). Returns None when no
@@ -156,15 +157,17 @@ def parse_session_limit_reset(
     m = _SESSION_LIMIT_RE.search(text or "")
     if not m:
         return None
-    now = now or datetime.datetime.now()
-    clock = datetime.datetime.strptime(m.group(1).replace(" ", "").lower(), "%I:%M%p").time()
+    now = now or datetime.datetime.now()  # noqa: DTZ005
+    clock = datetime.datetime.strptime(  # noqa: DTZ007
+        m.group(1).replace(" ", "").lower(), "%I:%M%p"
+    ).time()
     reset = now.replace(hour=clock.hour, minute=clock.minute, second=0, microsecond=0)
     if reset <= now:
         reset += datetime.timedelta(days=1)
     return reset
 
 
-def _parse_stream_json(raw: str) -> tuple[str, Dict, List[str], List[str], str]:
+def _parse_stream_json(raw: str) -> tuple[str, dict, list[str], list[str], str]:
     """Extract (result_text, usage_dict, tools_used, skills_used, session_id) from a
     --output-format stream-json (JSONL) response.
 
@@ -222,12 +225,12 @@ def _parse_stream_json(raw: str) -> tuple[str, Dict, List[str], List[str], str]:
       function only extracts text/usage/tools/session_id and does not classify errors.
     """
     result_text = raw
-    usage: Dict = {}
+    usage: dict = {}
     tools_seen: set = set()
     skills_seen: set = set()
     session_id: str = ""
     opencode_usage_seen = False
-    opencode_denials: List[Dict] = []
+    opencode_denials: list[dict] = []
     opencode_totals = {
         "input_tokens": 0,
         "cache_creation_input_tokens": 0,
@@ -317,8 +320,12 @@ def _parse_stream_json(raw: str) -> tuple[str, Dict, List[str], List[str], str]:
                 cache = tokens.get("cache") or {}
                 opencode_totals["input_tokens"] += int(tokens.get("input", 0) or 0)
                 opencode_totals["output_tokens"] += int(tokens.get("output", 0) or 0)
-                opencode_totals["cache_creation_input_tokens"] += int(cache.get("write", 0) or 0)
-                opencode_totals["cache_read_input_tokens"] += int(cache.get("read", 0) or 0)
+                opencode_totals["cache_creation_input_tokens"] += int(
+                    cache.get("write", 0) or 0
+                )
+                opencode_totals["cache_read_input_tokens"] += int(
+                    cache.get("read", 0) or 0
+                )
                 opencode_totals["total_cost_usd"] += float(part.get("cost", 0.0) or 0.0)
 
     if (opencode_usage_seen or opencode_denials) and not usage:
@@ -339,7 +346,7 @@ def _parse_stream_json(raw: str) -> tuple[str, Dict, List[str], List[str], str]:
     return result_text, usage, sorted(tools_seen), sorted(skills_seen), session_id
 
 
-def _opencode_error_event(stdout: Optional[str]) -> Optional[Dict]:
+def _opencode_error_event(stdout: str | None) -> dict | None:
     """Return opencode's top-level error dict (`{"name": ..., "data": {...}}`) when
     `stdout` (a `opencode run --format json` JSONL response) contains a
     `{"type":"error","error":{...}}` event, else None.
@@ -367,7 +374,7 @@ def _opencode_error_event(stdout: Optional[str]) -> Optional[Dict]:
     return None
 
 
-def is_infra_failure(returncode: int, stdout: Optional[str]) -> bool:
+def is_infra_failure(returncode: int, stdout: str | None) -> bool:
     """A spawn that exited non-zero, produced no output, or (opencode) reported a
     top-level error event -- a transient blip, not a task verdict. (A real task
     failure is exit 0 + a `status:failed` report.)"""
@@ -376,7 +383,7 @@ def is_infra_failure(returncode: int, stdout: Optional[str]) -> bool:
     return _opencode_error_event(stdout) is not None
 
 
-def _opencode_unknown_error_failure_class(cell: "Cell", raw: Optional[str]) -> Optional[str]:
+def _opencode_unknown_error_failure_class(cell: Cell, raw: str | None) -> str | None:
     """When *cell*'s exhausted-retries raw output carries a top-level opencode
     `UnknownError` (see `_opencode_error_event`), distinguish a retired/renamed
     model id from a transient provider-side error by checking whether
@@ -399,8 +406,8 @@ SUPPORTED_AGENTS = {"claude", "codex", "opencode"}
 
 
 def _with_default_setting_sources(
-    agent: str, extra_args: Optional[Sequence[str]]
-) -> List[str]:
+    agent: str, extra_args: Sequence[str] | None
+) -> list[str]:
     """Default `--setting-sources project,local` onto every `claude` spawn.
 
     Excludes the operator's USER-level ~/.claude/settings.json (and its Stop
@@ -425,10 +432,10 @@ def build_cmd(
     prompt: str,
     cell: Cell,
     *,
-    extra_args: Optional[Sequence[str]] = None,
-    resume_session_id: Optional[str] = None,
-    output_last_message: Optional[str] = None,
-) -> List[str]:
+    extra_args: Sequence[str] | None = None,
+    resume_session_id: str | None = None,
+    output_last_message: str | None = None,
+) -> list[str]:
     """Build the launcher argv for *cell* (design D3/D6): `cell.harness` picks the
     CLI, `cell.model`/`cell.effort` are translated per-harness exactly as before,
     and `cell.pool` decides claude's auth lane -- `--bare` is appended only for
@@ -481,7 +488,7 @@ def build_cmd(
     return cmd
 
 
-def build_child_env(cell: Cell, base_env: Mapping[str, str]) -> Dict[str, str]:
+def build_child_env(cell: Cell, base_env: Mapping[str, str]) -> dict[str, str]:
     """The auth lane *cell*'s harness/pool draws from (design D6), layered onto
     a copy of *base_env*.
 
@@ -554,17 +561,17 @@ def build_child_env(cell: Cell, base_env: Mapping[str, str]) -> Dict[str, str]:
 # denied, i.e. broad home access.
 
 
-def opencode_state_root(cwd: "str | Path") -> Path:
+def opencode_state_root(cwd: str | Path) -> Path:
     """Per-worktree opencode scratch, deleted with the worktree on teardown."""
     return Path(cwd) / ".worktrail" / "opencode"
 
 
-def opencode_data_dir(cwd: "str | Path") -> Path:
+def opencode_data_dir(cwd: str | Path) -> Path:
     """The isolated opencode data dir (opencode.db, log/, repos/) for *cwd*."""
     return opencode_state_root(cwd) / "xdg" / "opencode"
 
 
-def _parent_opencode_data_dir(env: Dict[str, str]) -> Path:
+def _parent_opencode_data_dir(env: dict[str, str]) -> Path:
     """The invoking user's real opencode data dir (credential source)."""
     xdg = env.get("XDG_DATA_HOME")
     base = Path(xdg).expanduser() if xdg else Path.home() / ".local" / "share"
@@ -578,14 +585,22 @@ def _parent_opencode_data_dir(env: Dict[str, str]) -> Path:
 _REAL_SUBPROCESS_RUN = subprocess.run
 
 
-def _git_common_dir(cwd: "str | Path") -> Optional[str]:
+def _git_common_dir(cwd: str | Path) -> str | None:
     """Absolute git common dir for *cwd* (the shared .git a linked worktree's
     objects live in), or None when cwd is not a git checkout."""
     try:
         proc = _REAL_SUBPROCESS_RUN(
-            ["git", "-C", str(cwd), "rev-parse", "--path-format=absolute",
-             "--git-common-dir"],
-            capture_output=True, text=True, timeout=15,
+            [
+                "git",
+                "-C",
+                str(cwd),
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-common-dir",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -594,9 +609,7 @@ def _git_common_dir(cwd: "str | Path") -> Optional[str]:
     return proc.stdout.strip() or None
 
 
-def _opencode_permission_config(
-    cwd: "str | Path", existing_content: Optional[str]
-) -> Dict:
+def _opencode_permission_config(cwd: str | Path, existing_content: str | None) -> dict:
     """Inline opencode config granting a headless worker non-interactive use of
     its tools inside the authorized roots: the worktree itself plus its git
     common dir. File access anywhere else still falls through to opencode's
@@ -609,27 +622,34 @@ def _opencode_permission_config(
     inherited an interactive-oriented "ask" would silently lose every tool
     call).
     """
-    roots: List[str] = []
+    roots: list[str] = []
     for candidate in (str(cwd), str(Path(cwd).resolve())):
         if candidate not in roots:
             roots.append(candidate)
     common = _git_common_dir(cwd)
     if common and common not in roots:
         roots.append(common)
-    external: Dict[str, str] = {}
+    external: dict[str, str] = {}
     for root in roots:
         external[root] = "allow"
         external[root.rstrip("/") + "/**"] = "allow"
-    permission: Dict = {
+    permission: dict = {
         # Parity with claude's --permission-mode bypassPermissions and codex's
         # -s danger-full-access: tool USE is granted, while file access outside
         # the roots above is still auto-rejected via external_directory.
-        "read": "allow", "edit": "allow", "glob": "allow", "grep": "allow",
-        "bash": "allow", "webfetch": "allow", "websearch": "allow",
-        "task": "allow", "skill": "allow", "lsp": "allow",
+        "read": "allow",
+        "edit": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "bash": "allow",
+        "webfetch": "allow",
+        "websearch": "allow",
+        "task": "allow",
+        "skill": "allow",
+        "lsp": "allow",
         "external_directory": external,
     }
-    config: Dict = {}
+    config: dict = {}
     if existing_content:
         try:
             parsed = json.loads(existing_content)
@@ -661,8 +681,8 @@ def _opencode_permission_config(
 
 
 def prepare_opencode_child_environment(
-    cwd: "str | Path", base_env: Optional[Dict[str, str]] = None
-) -> "tuple[Dict[str, str], Path]":
+    cwd: str | Path, base_env: dict[str, str] | None = None
+) -> tuple[dict[str, str], Path]:
     """Prepare an isolated, provider-preserving, prompt-free environment for a
     headless opencode worker running in *cwd*.
 
@@ -671,7 +691,7 @@ def prepare_opencode_child_environment(
     grants; `data_dir` is where this worker's opencode.db and log/ land
     (inspectable after a failure, deleted with the worktree on teardown).
     """
-    env: Dict[str, str] = dict(base_env if base_env is not None else os.environ)
+    env: dict[str, str] = dict(base_env if base_env is not None else os.environ)
     data_dir = opencode_data_dir(cwd)
     data_dir.mkdir(parents=True, exist_ok=True)
     # Self-ignoring scratch: a worker running `git add -A` must never commit
@@ -701,9 +721,9 @@ def prepare_opencode_child_environment(
 def _preflight_primary_target(
     routing: Mapping[str, Any],
     tier: str,
-    prefer: Optional[str],
-    exclude_harness: Optional[str],
-) -> Optional[str]:
+    prefer: str | None,
+    exclude_harness: str | None,
+) -> str | None:
     """The target `select_cell()` would try FIRST for this (tier, prefer,
     exclude_harness), ignoring capacity (mirrors `select_cell`'s steps 1-3:
     order + prefer promotion, drop unconfigured/opted-out targets, soft
@@ -719,7 +739,7 @@ def _preflight_primary_target(
         order.remove(prefer)
         order.insert(0, prefer)
 
-    candidates: List[str] = []
+    candidates: list[str] = []
     for name in order:
         target = targets.get(name)
         if not isinstance(target, Mapping):
@@ -732,14 +752,16 @@ def _preflight_primary_target(
 
     if exclude_harness:
         other = [n for n in candidates if targets[n].get("harness") != exclude_harness]
-        excluded = [n for n in candidates if targets[n].get("harness") == exclude_harness]
+        excluded = [
+            n for n in candidates if targets[n].get("harness") == exclude_harness
+        ]
         candidates = other + excluded
 
     return candidates[0] if candidates else None
 
 
 @contextlib.contextmanager
-def explicit_cell_override(target: str, model: str, *, effort: Optional[str] = None):
+def explicit_cell_override(target: str, model: str, *, effort: str | None = None):
     """Temporarily point `WORKTRAIL_ROUTING_FILE` at a throwaway routing file
     declaring exactly one target/tier ("explicit") that reuses `target`'s
     already-declared harness/pool but serves `model`/`effort` instead of its
@@ -792,17 +814,17 @@ def explicit_cell_override(target: str, model: str, *, effort: Optional[str] = N
 
 def spawn_agent(
     prompt: str,
-    cwd: "str | Path",
+    cwd: str | Path,
     *,
     tier: str,
-    prefer: Optional[str] = None,
-    exclude_harness: Optional[str] = None,
+    prefer: str | None = None,
+    exclude_harness: str | None = None,
     timeout: int = 3600,
     retries: int = SPAWN_RETRIES_DEFAULT,
     session_limit_waits: int = SESSION_LIMIT_WAITS_DEFAULT,
-    extra_args: Optional[Sequence[str]] = None,
-    resume_session_id: Optional[str] = None,
-    dispatch_id: Optional[str] = None,
+    extra_args: Sequence[str] | None = None,
+    resume_session_id: str | None = None,
+    dispatch_id: str | None = None,
     log: Callable[[str], None] = lambda *_: None,
     sleep: Callable[[float], None] = time.sleep,
 ) -> SpawnResult:
@@ -853,7 +875,10 @@ def spawn_agent(
 
     def _select() -> Cell:
         return select_cell(
-            routing, tier, prefer=prefer, exclude_harness=exclude_harness,
+            routing,
+            tier,
+            prefer=prefer,
+            exclude_harness=exclude_harness,
             capacity=agent_capacity,
         )
 
@@ -885,13 +910,13 @@ def spawn_agent(
         output_last_message=output_file,
     )
 
-    def _prepare_child_env(current_cell: Cell) -> "tuple[Dict[str, str], Optional[Path]]":
+    def _prepare_child_env(current_cell: Cell) -> tuple[dict[str, str], Path | None]:
         """Cell-specific child environment. Rebuilt on every session-limit hop
         so a codex-prepared env (CODEX_HOME) never leaks into an opencode hop
         and vice versa, and so the auth lane always matches the served cell's
         pool (`build_child_env`, design D6)."""
-        env: Dict[str, str] = {**os.environ, "CC_HEADLESS": "1"}
-        oc_data_dir: Optional[Path] = None
+        env: dict[str, str] = {**os.environ, "CC_HEADLESS": "1"}
+        oc_data_dir: Path | None = None
         if current_cell.harness == "codex":
             # Auth lane follows the cell's pool (design D6): an `api` cell
             # spawns in its own declared, pre-provisioned CODEX_HOME with the
@@ -899,10 +924,12 @@ def spawn_agent(
             # the one live-verified per-spawn auth selector for codex
             # (routing-target-selector task 3.6: `-c preferred_auth_method`
             # and OPENAI_API_KEY are both inert against a persisted login).
-            codex_home_override: Optional[str] = None
+            codex_home_override: str | None = None
             inherit_auth = True
             if current_cell.pool == "api":
-                auth = current_cell.auth if isinstance(current_cell.auth, Mapping) else {}
+                auth = (
+                    current_cell.auth if isinstance(current_cell.auth, Mapping) else {}
+                )
                 codex_home_override = auth.get("codex_home")
                 if not codex_home_override:
                     raise OperatorConfigError(
@@ -930,8 +957,10 @@ def spawn_agent(
                 log(f"    using declared codex api home: {codex_home}")
         elif current_cell.harness == "opencode":
             env, oc_data_dir = prepare_opencode_child_environment(cwd, env)
-            log(f"    opencode state isolated at {oc_data_dir} "
-                "(db + log; removed with the worktree)")
+            log(
+                f"    opencode state isolated at {oc_data_dir} "
+                "(db + log; removed with the worktree)"
+            )
         # Keep the environment marker on the prepared environment too.
         if "WORKTRAIL_SKILL_DISPATCH_DEPTH" in os.environ:
             env["WORKTRAIL_SKILL_DISPATCH_DEPTH"] = os.environ[
@@ -986,11 +1015,17 @@ def spawn_agent(
                 )
         cleanup_output_file()
         return SpawnResult(
-            text=text, usage=usage, tools_used=tools_used, skills_used=skills_used,
-            paused_s=paused_s_total, session_id=sid,
-            served_target=cell.target, served_model=cell.model,
+            text=text,
+            usage=usage,
+            tools_used=tools_used,
+            skills_used=skills_used,
+            paused_s=paused_s_total,
+            session_id=sid,
+            served_target=cell.target,
+            served_model=cell.model,
             served_harness=cell.harness,
         )
+
     attempts = max(1, retries + 1)
     waits_left = max(0, session_limit_waits)
     last_raw = ""
@@ -1001,6 +1036,7 @@ def spawn_agent(
         try:
             proc = subprocess.run(  # TimeoutExpired propagates by design
                 cmd,
+                check=False,
                 cwd=str(cwd),
                 capture_output=True,
                 text=True,
@@ -1045,7 +1081,8 @@ def spawn_agent(
                 output_file = None
                 if cell.harness == "codex":
                     fd, output_file = tempfile.mkstemp(
-                        prefix="orch-codex-last-", suffix=".txt")
+                        prefix="orch-codex-last-", suffix=".txt"
+                    )
                     os.close(fd)
                 cmd = build_cmd(
                     prompt,
@@ -1058,13 +1095,17 @@ def spawn_agent(
                     output_last_message=output_file,
                 )
                 child_env, opencode_dir = _prepare_child_env(cell)
-                log(f"    session limit hit on {served.target}; switching to "
-                    f"{cell.target} ({cell.harness}:{cell.model})")
+                log(
+                    f"    session limit hit on {served.target}; switching to "
+                    f"{cell.target} ({cell.harness}:{cell.model})"
+                )
                 attempt -= 1
                 continue
             if waits_left > 0:
                 waits_left -= 1
-                wait_s = max(0.0, (reset_at - datetime.datetime.now()).total_seconds()) + 5.0
+                wait_s = (
+                    max(0.0, (reset_at - datetime.datetime.now()).total_seconds()) + 5.0  # noqa: DTZ005
+                )
                 log(
                     f"    session limit hit; sleeping {wait_s:.0f}s until "
                     f"{reset_at:%H:%M} then retrying ({waits_left} wait(s) left)"
@@ -1073,8 +1114,10 @@ def spawn_agent(
                 paused_s_total += wait_s
                 attempt -= 1  # a session-limit wait does not consume an infra attempt
                 continue
-            log(f"    session limit hit on {served.target}; no alternate cell and "
-                "wait budget exhausted, giving up to caller")
+            log(
+                f"    session limit hit on {served.target}; no alternate cell and "
+                "wait budget exhausted, giving up to caller"
+            )
             return finish(last_raw)
 
         if cell.harness == "codex" and output_file:
@@ -1104,7 +1147,9 @@ def spawn_agent(
         if not is_infra_failure(proc.returncode, last_raw):
             return finish(last_raw)
         if proc.returncode != 0:
-            sys.stderr.write(f"[{cell.harness} worker exit {proc.returncode}] {(proc.stderr or '')[-400:]}\n")
+            sys.stderr.write(
+                f"[{cell.harness} worker exit {proc.returncode}] {(proc.stderr or '')[-400:]}\n"
+            )
         if attempt >= attempts:
             # This cell's retry budget is exhausted. The `agent_capacity.record`
             # gate just recorded above excludes it from re-selection, so hop to
@@ -1116,14 +1161,18 @@ def spawn_agent(
             try:
                 next_cell = _select()
             except NoExecutionTarget:
-                log(f"    spawn still failing after {attempts} attempt(s) on "
-                    f"{cell.target}; no alternate cell left in the row, giving up to caller")
+                log(
+                    f"    spawn still failing after {attempts} attempt(s) on "
+                    f"{cell.target}; no alternate cell left in the row, giving up to caller"
+                )
                 return finish(last_raw)
             failed_cell = cell
             cell = next_cell
             output_file = None
             if cell.harness == "codex":
-                fd, output_file = tempfile.mkstemp(prefix="orch-codex-last-", suffix=".txt")
+                fd, output_file = tempfile.mkstemp(
+                    prefix="orch-codex-last-", suffix=".txt"
+                )
                 os.close(fd)
             cmd = build_cmd(
                 prompt,
@@ -1136,29 +1185,33 @@ def spawn_agent(
                 output_last_message=output_file,
             )
             child_env, opencode_dir = _prepare_child_env(cell)
-            log(f"    spawn still failing after {attempts} attempt(s) on "
-                f"{failed_cell.target}; hopping to {cell.target} ({cell.harness}:{cell.model})")
+            log(
+                f"    spawn still failing after {attempts} attempt(s) on "
+                f"{failed_cell.target}; hopping to {cell.target} ({cell.harness}:{cell.model})"
+            )
             attempt = 0
             continue
         backoff = min(30.0, 5.0 * attempt)
-        log(f"    spawn infra failure (attempt {attempt}/{attempts}); retrying in {backoff:.0f}s")
+        log(
+            f"    spawn infra failure (attempt {attempt}/{attempts}); retrying in {backoff:.0f}s"
+        )
         sleep(backoff)
     return finish(last_raw)
 
 
 def spawn_claude_p(
     prompt: str,
-    cwd: "str | Path",
+    cwd: str | Path,
     *,
     tier: str,
-    prefer: Optional[str] = None,
-    exclude_harness: Optional[str] = None,
+    prefer: str | None = None,
+    exclude_harness: str | None = None,
     timeout: int = 3600,
     retries: int = SPAWN_RETRIES_DEFAULT,
     session_limit_waits: int = SESSION_LIMIT_WAITS_DEFAULT,
-    extra_args: Optional[Sequence[str]] = None,
-    resume_session_id: Optional[str] = None,
-    dispatch_id: Optional[str] = None,
+    extra_args: Sequence[str] | None = None,
+    resume_session_id: str | None = None,
+    dispatch_id: str | None = None,
     log: Callable[[str], None] = lambda *_: None,
     sleep: Callable[[float], None] = time.sleep,
 ) -> SpawnResult:

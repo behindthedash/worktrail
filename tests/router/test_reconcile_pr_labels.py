@@ -37,13 +37,15 @@ def _write_run_record(path: Path, **fields) -> None:
 
 _NO_POLICY = {
     "automerge": {"enabled": True, "max_risk": "medium", "target_branches": []},
-    "protected_paths": [], "require_human_routes": [],
+    "protected_paths": [],
+    "require_human_routes": [],
     "_meta": {"external_automerge": {"detected": False}},
 }
 
 
 # ---------------------------------------------------------------------------
 # discover_managed_repos
+
 
 def test_discover_managed_repos_requires_go_policy_yaml(tmp_path):
     managed = tmp_path / "managed"
@@ -61,21 +63,35 @@ def test_discover_managed_repos_requires_go_policy_yaml(tmp_path):
 # ---------------------------------------------------------------------------
 # load_run_index
 
+
 def test_load_run_index_maps_pr_url_to_risk_gates_route(tmp_path):
     repo_dir = tmp_path / "worktrail"
     repo_dir.mkdir()
-    _write_run_record(repo_dir / "run1.yaml",
-                       pull_request="https://github.com/o/r/pull/1", risk_level="high",
-                       gates=["never_automerge"], selected_route="F")
-    _write_run_record(repo_dir / "run2.yaml",
-                       pull_request="https://github.com/o/r/pull/2", risk_level="medium")
+    _write_run_record(
+        repo_dir / "run1.yaml",
+        pull_request="https://github.com/o/r/pull/1",
+        risk_level="high",
+        gates=["never_automerge"],
+        selected_route="F",
+    )
+    _write_run_record(
+        repo_dir / "run2.yaml",
+        pull_request="https://github.com/o/r/pull/2",
+        risk_level="medium",
+    )
 
     index = rpl.load_run_index(tmp_path)
     assert index == {
         "https://github.com/o/r/pull/1": {
-            "risk_level": "high", "gates": ["never_automerge"], "route": "F"},
+            "risk_level": "high",
+            "gates": ["never_automerge"],
+            "route": "F",
+        },
         "https://github.com/o/r/pull/2": {
-            "risk_level": "medium", "gates": None, "route": None},
+            "risk_level": "medium",
+            "gates": None,
+            "route": None,
+        },
     }
 
 
@@ -85,8 +101,11 @@ def test_load_run_index_gates_none_when_field_absent(tmp_path):
     field is not evidence of zero gates)."""
     repo_dir = tmp_path / "worktrail"
     repo_dir.mkdir()
-    _write_run_record(repo_dir / "legacy.yaml",
-                       pull_request="https://github.com/o/r/pull/1", risk_level="low")
+    _write_run_record(
+        repo_dir / "legacy.yaml",
+        pull_request="https://github.com/o/r/pull/1",
+        risk_level="low",
+    )
 
     index = rpl.load_run_index(tmp_path)
     assert index["https://github.com/o/r/pull/1"]["gates"] is None
@@ -95,9 +114,12 @@ def test_load_run_index_gates_none_when_field_absent(tmp_path):
 def test_load_run_index_gates_empty_list_when_persisted_empty(tmp_path):
     repo_dir = tmp_path / "worktrail"
     repo_dir.mkdir()
-    _write_run_record(repo_dir / "run1.yaml",
-                       pull_request="https://github.com/o/r/pull/1", risk_level="low",
-                       gates=[])
+    _write_run_record(
+        repo_dir / "run1.yaml",
+        pull_request="https://github.com/o/r/pull/1",
+        risk_level="low",
+        gates=[],
+    )
 
     index = rpl.load_run_index(tmp_path)
     assert index["https://github.com/o/r/pull/1"]["gates"] == []
@@ -107,8 +129,11 @@ def test_load_run_index_skips_records_missing_pr_or_risk(tmp_path):
     repo_dir = tmp_path / "worktrail"
     repo_dir.mkdir()
     _write_run_record(repo_dir / "no_pr.yaml", pull_request=None, risk_level="high")
-    _write_run_record(repo_dir / "no_risk.yaml",
-                       pull_request="https://github.com/o/r/pull/9", risk_level=None)
+    _write_run_record(
+        repo_dir / "no_risk.yaml",
+        pull_request="https://github.com/o/r/pull/9",
+        risk_level=None,
+    )
 
     assert rpl.load_run_index(tmp_path) == {}
 
@@ -134,7 +159,11 @@ def test_load_run_index_handles_list_form_pull_request(tmp_path):
 
     index = rpl.load_run_index(tmp_path)
     assert index == {
-        "https://github.com/o/r/pull/1": {"risk_level": "high", "gates": None, "route": None},
+        "https://github.com/o/r/pull/1": {
+            "risk_level": "high",
+            "gates": None,
+            "route": None,
+        },
     }
 
 
@@ -153,20 +182,40 @@ def test_load_run_index_handles_repo_labeled_list_entries(tmp_path):
 
     index = rpl.load_run_index(tmp_path)
     assert index == {
-        "https://github.com/o/datalena/pull/1": {"risk_level": "low", "gates": None, "route": None},
-        "https://github.com/o/ggb/pull/2": {"risk_level": "low", "gates": None, "route": None},
+        "https://github.com/o/datalena/pull/1": {
+            "risk_level": "low",
+            "gates": None,
+            "route": None,
+        },
+        "https://github.com/o/ggb/pull/2": {
+            "risk_level": "low",
+            "gates": None,
+            "route": None,
+        },
     }
 
 
 # ---------------------------------------------------------------------------
 # reconcile_repo — go:risk-* correction (pre-existing behavior)
 
-def test_reconcile_repo_applies_risk_label_from_matching_run_record(monkeypatch, tmp_path):
-    def fake_run(cmd, capture_output, text, cwd, timeout):
+
+def test_reconcile_repo_applies_risk_label_from_matching_run_record(
+    monkeypatch, tmp_path
+):
+    def fake_run(cmd, capture_output, text, cwd, timeout, check=False):
         if cmd[:3] == ["gh", "pr", "list"]:
-            return _FakeCompleted(0, json.dumps([
-                {"url": "https://github.com/o/r/pull/1", "labels": [], "baseRefName": "main"},
-            ]))
+            return _FakeCompleted(
+                0,
+                json.dumps(
+                    [
+                        {
+                            "url": "https://github.com/o/r/pull/1",
+                            "labels": [],
+                            "baseRefName": "main",
+                        },
+                    ]
+                ),
+            )
         if cmd[:3] == ["gh", "pr", "view"]:
             return _FakeCompleted(0, json.dumps({"labels": []}))
         if cmd[:2] == ["gh", "api"]:
@@ -177,42 +226,81 @@ def test_reconcile_repo_applies_risk_label_from_matching_run_record(monkeypatch,
 
     result = rpl.reconcile_repo(
         tmp_path / "worktrail",
-        {"https://github.com/o/r/pull/1": {"risk_level": "low", "gates": None, "route": None}},
+        {
+            "https://github.com/o/r/pull/1": {
+                "risk_level": "low",
+                "gates": None,
+                "route": None,
+            }
+        },
         dry_run=False,
     )
-    assert result["applied"] == [{"pr": "https://github.com/o/r/pull/1", "label": "go:risk-low"}]
+    assert result["applied"] == [
+        {"pr": "https://github.com/o/r/pull/1", "label": "go:risk-low"}
+    ]
     assert result["unreconciled"] == []
     assert result["checked"] == 1
 
 
 def test_reconcile_repo_skips_prs_already_fully_labeled(monkeypatch, tmp_path):
-    def fake_run(cmd, capture_output, text, cwd, timeout):
+    def fake_run(cmd, capture_output, text, cwd, timeout, check=False):
         if cmd[:3] == ["gh", "pr", "list"]:
-            return _FakeCompleted(0, json.dumps([
-                {"url": "https://github.com/o/r/pull/1",
-                 "labels": [{"name": "go:risk-high"}], "baseRefName": "main"},
-            ]))
+            return _FakeCompleted(
+                0,
+                json.dumps(
+                    [
+                        {
+                            "url": "https://github.com/o/r/pull/1",
+                            "labels": [{"name": "go:risk-high"}],
+                            "baseRefName": "main",
+                        },
+                    ]
+                ),
+            )
         raise AssertionError(f"must not correct an already-labeled PR: {cmd}")
 
     monkeypatch.setattr(rpl.subprocess, "run", fake_run)
 
     result = rpl.reconcile_repo(
         tmp_path / "worktrail",
-        {"https://github.com/o/r/pull/1": {"risk_level": "low", "gates": None, "route": None}},
-        dry_run=False)
+        {
+            "https://github.com/o/r/pull/1": {
+                "risk_level": "low",
+                "gates": None,
+                "route": None,
+            }
+        },
+        dry_run=False,
+    )
     assert result == {
-        "repo": "worktrail", "path": str(tmp_path / "worktrail"),
-        "applied": [], "unreconciled": [], "checked": 0,
+        "repo": "worktrail",
+        "path": str(tmp_path / "worktrail"),
+        "applied": [],
+        "unreconciled": [],
+        "checked": 0,
     }
 
 
-def test_reconcile_repo_reports_unreconciled_when_no_matching_run_record(monkeypatch, tmp_path):
-    def fake_run(cmd, capture_output, text, cwd, timeout):
+def test_reconcile_repo_reports_unreconciled_when_no_matching_run_record(
+    monkeypatch, tmp_path
+):
+    def fake_run(cmd, capture_output, text, cwd, timeout, check=False):
         if cmd[:3] == ["gh", "pr", "list"]:
-            return _FakeCompleted(0, json.dumps([
-                {"url": "https://github.com/o/r/pull/99", "labels": [], "baseRefName": "main"},
-            ]))
-        raise AssertionError(f"must not call gh again with no matching run record: {cmd}")
+            return _FakeCompleted(
+                0,
+                json.dumps(
+                    [
+                        {
+                            "url": "https://github.com/o/r/pull/99",
+                            "labels": [],
+                            "baseRefName": "main",
+                        },
+                    ]
+                ),
+            )
+        raise AssertionError(
+            f"must not call gh again with no matching run record: {cmd}"
+        )
 
     monkeypatch.setattr(rpl.subprocess, "run", fake_run)
 
@@ -223,27 +311,46 @@ def test_reconcile_repo_reports_unreconciled_when_no_matching_run_record(monkeyp
 
 
 def test_reconcile_repo_dry_run_never_edits(monkeypatch, tmp_path):
-    def fake_run(cmd, capture_output, text, cwd, timeout):
+    def fake_run(cmd, capture_output, text, cwd, timeout, check=False):
         if cmd[:3] == ["gh", "pr", "list"]:
-            return _FakeCompleted(0, json.dumps([
-                {"url": "https://github.com/o/r/pull/1", "labels": [], "baseRefName": "main"},
-            ]))
+            return _FakeCompleted(
+                0,
+                json.dumps(
+                    [
+                        {
+                            "url": "https://github.com/o/r/pull/1",
+                            "labels": [],
+                            "baseRefName": "main",
+                        },
+                    ]
+                ),
+            )
         raise AssertionError(f"dry-run must not call gh pr view/edit: {cmd}")
 
     monkeypatch.setattr(rpl.subprocess, "run", fake_run)
 
     result = rpl.reconcile_repo(
         tmp_path / "worktrail",
-        {"https://github.com/o/r/pull/1": {"risk_level": "medium", "gates": None, "route": None}},
+        {
+            "https://github.com/o/r/pull/1": {
+                "risk_level": "medium",
+                "gates": None,
+                "route": None,
+            }
+        },
         dry_run=True,
     )
     assert result["applied"] == [
-        {"pr": "https://github.com/o/r/pull/1", "label": "go:risk-medium", "dry_run": True},
+        {
+            "pr": "https://github.com/o/r/pull/1",
+            "label": "go:risk-medium",
+            "dry_run": True,
+        },
     ]
 
 
 def test_reconcile_repo_reports_error_when_gh_pr_list_fails(monkeypatch, tmp_path):
-    def fake_run(cmd, capture_output, text, cwd, timeout):
+    def fake_run(cmd, capture_output, text, cwd, timeout, check=False):
         return _FakeCompleted(1, "")
 
     monkeypatch.setattr(rpl.subprocess, "run", fake_run)
@@ -257,13 +364,22 @@ def test_reconcile_repo_reports_error_when_gh_pr_list_fails(monkeypatch, tmp_pat
 # ---------------------------------------------------------------------------
 # reconcile_repo — go:no-automerge correction (new)
 
+
 def test_reconcile_repo_adds_no_automerge_when_ineligible(monkeypatch, tmp_path):
-    def fake_run(cmd, capture_output, text, cwd, timeout):
+    def fake_run(cmd, capture_output, text, cwd, timeout, check=False):
         if cmd[:3] == ["gh", "pr", "list"]:
-            return _FakeCompleted(0, json.dumps([
-                {"url": "https://github.com/o/r/pull/1",
-                 "labels": [{"name": "go:risk-high"}], "baseRefName": "main"},
-            ]))
+            return _FakeCompleted(
+                0,
+                json.dumps(
+                    [
+                        {
+                            "url": "https://github.com/o/r/pull/1",
+                            "labels": [{"name": "go:risk-high"}],
+                            "baseRefName": "main",
+                        },
+                    ]
+                ),
+            )
         if cmd[:3] == ["gh", "pr", "view"]:
             return _FakeCompleted(0, json.dumps({"labels": [{"name": "go:risk-high"}]}))
         if cmd[:2] == ["gh", "api"]:
@@ -275,8 +391,13 @@ def test_reconcile_repo_adds_no_automerge_when_ineligible(monkeypatch, tmp_path)
 
     result = rpl.reconcile_repo(
         tmp_path / "worktrail",
-        {"https://github.com/o/r/pull/1": {
-            "risk_level": "high", "gates": ["never_automerge"], "route": "F"}},
+        {
+            "https://github.com/o/r/pull/1": {
+                "risk_level": "high",
+                "gates": ["never_automerge"],
+                "route": "F",
+            }
+        },
         dry_run=False,
     )
     assert result["applied"] == [
@@ -287,11 +408,20 @@ def test_reconcile_repo_adds_no_automerge_when_ineligible(monkeypatch, tmp_path)
 
 
 def test_reconcile_repo_applies_both_labels_when_both_missing(monkeypatch, tmp_path):
-    def fake_run(cmd, capture_output, text, cwd, timeout):
+    def fake_run(cmd, capture_output, text, cwd, timeout, check=False):
         if cmd[:3] == ["gh", "pr", "list"]:
-            return _FakeCompleted(0, json.dumps([
-                {"url": "https://github.com/o/r/pull/1", "labels": [], "baseRefName": "main"},
-            ]))
+            return _FakeCompleted(
+                0,
+                json.dumps(
+                    [
+                        {
+                            "url": "https://github.com/o/r/pull/1",
+                            "labels": [],
+                            "baseRefName": "main",
+                        },
+                    ]
+                ),
+            )
         if cmd[:3] == ["gh", "pr", "view"]:
             return _FakeCompleted(0, json.dumps({"labels": []}))
         if cmd[:2] == ["gh", "api"]:
@@ -303,8 +433,13 @@ def test_reconcile_repo_applies_both_labels_when_both_missing(monkeypatch, tmp_p
 
     result = rpl.reconcile_repo(
         tmp_path / "worktrail",
-        {"https://github.com/o/r/pull/1": {
-            "risk_level": "high", "gates": ["never_automerge"], "route": "F"}},
+        {
+            "https://github.com/o/r/pull/1": {
+                "risk_level": "high",
+                "gates": ["never_automerge"],
+                "route": "F",
+            }
+        },
         dry_run=False,
     )
     assert result["applied"] == [
@@ -313,18 +448,31 @@ def test_reconcile_repo_applies_both_labels_when_both_missing(monkeypatch, tmp_p
     ]
 
 
-def test_reconcile_repo_skips_no_automerge_recompute_when_gates_absent(monkeypatch, tmp_path):
+def test_reconcile_repo_skips_no_automerge_recompute_when_gates_absent(
+    monkeypatch, tmp_path
+):
     """A run record that predates `--gates` (gates=None) must never drive a
     go:no-automerge correction -- there is no way to know what the true
     gates were, and guessing "no gates" could wrongly mark an ineligible PR
     eligible."""
-    def fake_run(cmd, capture_output, text, cwd, timeout):
+
+    def fake_run(cmd, capture_output, text, cwd, timeout, check=False):
         if cmd[:3] == ["gh", "pr", "list"]:
-            return _FakeCompleted(0, json.dumps([
-                {"url": "https://github.com/o/r/pull/1",
-                 "labels": [{"name": "go:risk-high"}], "baseRefName": "main"},
-            ]))
-        raise AssertionError(f"must not touch an already-risk-labeled PR with no gates data: {cmd}")
+            return _FakeCompleted(
+                0,
+                json.dumps(
+                    [
+                        {
+                            "url": "https://github.com/o/r/pull/1",
+                            "labels": [{"name": "go:risk-high"}],
+                            "baseRefName": "main",
+                        },
+                    ]
+                ),
+            )
+        raise AssertionError(
+            f"must not touch an already-risk-labeled PR with no gates data: {cmd}"
+        )
 
     monkeypatch.setattr(rpl.subprocess, "run", fake_run)
 
@@ -335,25 +483,45 @@ def test_reconcile_repo_skips_no_automerge_recompute_when_gates_absent(monkeypat
 
     result = rpl.reconcile_repo(
         tmp_path / "worktrail",
-        {"https://github.com/o/r/pull/1": {"risk_level": "high", "gates": None, "route": "F"}},
+        {
+            "https://github.com/o/r/pull/1": {
+                "risk_level": "high",
+                "gates": None,
+                "route": "F",
+            }
+        },
         dry_run=False,
     )
     assert result == {
-        "repo": "worktrail", "path": str(tmp_path / "worktrail"),
-        "applied": [], "unreconciled": [], "checked": 0,
+        "repo": "worktrail",
+        "path": str(tmp_path / "worktrail"),
+        "applied": [],
+        "unreconciled": [],
+        "checked": 0,
     }
 
 
 def test_reconcile_repo_never_removes_existing_no_automerge(monkeypatch, tmp_path):
     """A PR already carrying go:no-automerge is left untouched, even if it
     would recompute as eligible -- this corrector is additive-only."""
-    def fake_run(cmd, capture_output, text, cwd, timeout):
+
+    def fake_run(cmd, capture_output, text, cwd, timeout, check=False):
         if cmd[:3] == ["gh", "pr", "list"]:
-            return _FakeCompleted(0, json.dumps([
-                {"url": "https://github.com/o/r/pull/1",
-                 "labels": [{"name": "go:risk-low"}, {"name": "go:no-automerge"}],
-                 "baseRefName": "main"},
-            ]))
+            return _FakeCompleted(
+                0,
+                json.dumps(
+                    [
+                        {
+                            "url": "https://github.com/o/r/pull/1",
+                            "labels": [
+                                {"name": "go:risk-low"},
+                                {"name": "go:no-automerge"},
+                            ],
+                            "baseRefName": "main",
+                        },
+                    ]
+                ),
+            )
         raise AssertionError(f"must not call gh again: {cmd}")
 
     monkeypatch.setattr(rpl.subprocess, "run", fake_run)
@@ -361,22 +529,39 @@ def test_reconcile_repo_never_removes_existing_no_automerge(monkeypatch, tmp_pat
 
     result = rpl.reconcile_repo(
         tmp_path / "worktrail",
-        {"https://github.com/o/r/pull/1": {"risk_level": "low", "gates": [], "route": "F"}},
+        {
+            "https://github.com/o/r/pull/1": {
+                "risk_level": "low",
+                "gates": [],
+                "route": "F",
+            }
+        },
         dry_run=False,
     )
     assert result == {
-        "repo": "worktrail", "path": str(tmp_path / "worktrail"),
-        "applied": [], "unreconciled": [], "checked": 0,
+        "repo": "worktrail",
+        "path": str(tmp_path / "worktrail"),
+        "applied": [],
+        "unreconciled": [],
+        "checked": 0,
     }
 
 
 def test_reconcile_repo_no_automerge_dry_run_never_edits(monkeypatch, tmp_path):
-    def fake_run(cmd, capture_output, text, cwd, timeout):
+    def fake_run(cmd, capture_output, text, cwd, timeout, check=False):
         if cmd[:3] == ["gh", "pr", "list"]:
-            return _FakeCompleted(0, json.dumps([
-                {"url": "https://github.com/o/r/pull/1",
-                 "labels": [{"name": "go:risk-high"}], "baseRefName": "main"},
-            ]))
+            return _FakeCompleted(
+                0,
+                json.dumps(
+                    [
+                        {
+                            "url": "https://github.com/o/r/pull/1",
+                            "labels": [{"name": "go:risk-high"}],
+                            "baseRefName": "main",
+                        },
+                    ]
+                ),
+            )
         raise AssertionError(f"dry-run must not call gh pr view/edit: {cmd}")
 
     monkeypatch.setattr(rpl.subprocess, "run", fake_run)
@@ -384,45 +569,85 @@ def test_reconcile_repo_no_automerge_dry_run_never_edits(monkeypatch, tmp_path):
 
     result = rpl.reconcile_repo(
         tmp_path / "worktrail",
-        {"https://github.com/o/r/pull/1": {
-            "risk_level": "high", "gates": ["never_automerge"], "route": "F"}},
+        {
+            "https://github.com/o/r/pull/1": {
+                "risk_level": "high",
+                "gates": ["never_automerge"],
+                "route": "F",
+            }
+        },
         dry_run=True,
     )
     assert result["applied"] == [
-        {"pr": "https://github.com/o/r/pull/1", "label": "go:no-automerge", "dry_run": True},
+        {
+            "pr": "https://github.com/o/r/pull/1",
+            "label": "go:no-automerge",
+            "dry_run": True,
+        },
     ]
 
 
-def test_reconcile_repo_no_op_when_eligible_and_no_automerge_absent(monkeypatch, tmp_path):
-    def fake_run(cmd, capture_output, text, cwd, timeout):
+def test_reconcile_repo_no_op_when_eligible_and_no_automerge_absent(
+    monkeypatch, tmp_path
+):
+    def fake_run(cmd, capture_output, text, cwd, timeout, check=False):
         if cmd[:3] == ["gh", "pr", "list"]:
-            return _FakeCompleted(0, json.dumps([
-                {"url": "https://github.com/o/r/pull/1",
-                 "labels": [{"name": "go:risk-low"}], "baseRefName": "main"},
-            ]))
-        raise AssertionError(f"eligible PR with risk label already present must not call gh again: {cmd}")
+            return _FakeCompleted(
+                0,
+                json.dumps(
+                    [
+                        {
+                            "url": "https://github.com/o/r/pull/1",
+                            "labels": [{"name": "go:risk-low"}],
+                            "baseRefName": "main",
+                        },
+                    ]
+                ),
+            )
+        raise AssertionError(
+            f"eligible PR with risk label already present must not call gh again: {cmd}"
+        )
 
     monkeypatch.setattr(rpl.subprocess, "run", fake_run)
     monkeypatch.setattr(rpl, "load_policy", lambda repo: _NO_POLICY)
 
     result = rpl.reconcile_repo(
         tmp_path / "worktrail",
-        {"https://github.com/o/r/pull/1": {"risk_level": "low", "gates": [], "route": "F"}},
+        {
+            "https://github.com/o/r/pull/1": {
+                "risk_level": "low",
+                "gates": [],
+                "route": "F",
+            }
+        },
         dry_run=False,
     )
     assert result == {
-        "repo": "worktrail", "path": str(tmp_path / "worktrail"),
-        "applied": [], "unreconciled": [], "checked": 0,
+        "repo": "worktrail",
+        "path": str(tmp_path / "worktrail"),
+        "applied": [],
+        "unreconciled": [],
+        "checked": 0,
     }
 
 
-def test_reconcile_repo_reports_unreconciled_when_no_automerge_edit_fails(monkeypatch, tmp_path):
-    def fake_run(cmd, capture_output, text, cwd, timeout):
+def test_reconcile_repo_reports_unreconciled_when_no_automerge_edit_fails(
+    monkeypatch, tmp_path
+):
+    def fake_run(cmd, capture_output, text, cwd, timeout, check=False):
         if cmd[:3] == ["gh", "pr", "list"]:
-            return _FakeCompleted(0, json.dumps([
-                {"url": "https://github.com/o/r/pull/1",
-                 "labels": [{"name": "go:risk-high"}], "baseRefName": "main"},
-            ]))
+            return _FakeCompleted(
+                0,
+                json.dumps(
+                    [
+                        {
+                            "url": "https://github.com/o/r/pull/1",
+                            "labels": [{"name": "go:risk-high"}],
+                            "baseRefName": "main",
+                        },
+                    ]
+                ),
+            )
         if cmd[:3] == ["gh", "pr", "view"]:
             return _FakeCompleted(0, json.dumps({"labels": [{"name": "go:risk-high"}]}))
         if cmd[:2] == ["gh", "api"]:
@@ -434,8 +659,13 @@ def test_reconcile_repo_reports_unreconciled_when_no_automerge_edit_fails(monkey
 
     result = rpl.reconcile_repo(
         tmp_path / "worktrail",
-        {"https://github.com/o/r/pull/1": {
-            "risk_level": "high", "gates": ["never_automerge"], "route": "F"}},
+        {
+            "https://github.com/o/r/pull/1": {
+                "risk_level": "high",
+                "gates": ["never_automerge"],
+                "route": "F",
+            }
+        },
         dry_run=False,
     )
     assert result["applied"] == []
@@ -444,6 +674,7 @@ def test_reconcile_repo_reports_unreconciled_when_no_automerge_edit_fails(monkey
 
 # ---------------------------------------------------------------------------
 # main
+
 
 def test_main_requires_repo_or_repos_root():
     out = StringIO()
@@ -459,7 +690,7 @@ def test_main_requires_repo_or_repos_root():
 def test_main_single_repo_json_output(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(rpl, "load_run_index", lambda runs_dir: {})
 
-    def fake_run(cmd, capture_output, text, cwd, timeout):
+    def fake_run(cmd, capture_output, text, cwd, timeout, check=False):
         if cmd[:3] == ["gh", "pr", "list"]:
             return _FakeCompleted(0, json.dumps([]))
         raise AssertionError(f"unexpected command: {cmd}")
@@ -469,10 +700,19 @@ def test_main_single_repo_json_output(monkeypatch, tmp_path, capsys):
     rc = rpl.main(["--repo", str(tmp_path / "worktrail"), "--json"])
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload == {"results": [{
-        "repo": "worktrail", "path": str(tmp_path / "worktrail"),
-        "applied": [], "unreconciled": [], "checked": 0,
-    }], "applied": 0, "unreconciled": 0}
+    assert payload == {
+        "results": [
+            {
+                "repo": "worktrail",
+                "path": str(tmp_path / "worktrail"),
+                "applied": [],
+                "unreconciled": [],
+                "checked": 0,
+            }
+        ],
+        "applied": 0,
+        "unreconciled": 0,
+    }
 
 
 def test_main_repos_root_only_sweeps_managed_repos(monkeypatch, tmp_path, capsys):
@@ -488,7 +728,7 @@ def test_main_repos_root_only_sweeps_managed_repos(monkeypatch, tmp_path, capsys
     monkeypatch.setattr(rpl, "load_run_index", lambda runs_dir: {})
     calls = []
 
-    def fake_run(cmd, capture_output, text, cwd, timeout):
+    def fake_run(cmd, capture_output, text, cwd, timeout, check=False):
         calls.append(cwd)
         if cmd[:3] == ["gh", "pr", "list"]:
             return _FakeCompleted(0, json.dumps([]))

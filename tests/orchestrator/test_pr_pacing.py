@@ -24,9 +24,17 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from worktrail.orchestrator import integrate  # noqa: E402
-from worktrail.orchestrator import live  # noqa: E402
-from test_pipeline import FakeSpawn, FakeVerifier, _init_repo, _make_integrate_one  # noqa: E402
+from test_pipeline import (
+    FakeSpawn,
+    FakeVerifier,
+    _init_repo,
+    _make_integrate_one,
+)
+
+from worktrail.orchestrator import (
+    integrate,
+    live,
+)
 
 Proc = namedtuple("Proc", "returncode stdout stderr")
 
@@ -104,7 +112,7 @@ class PipelinePacingTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             repo = _init_repo(Path(tmp))
-            integrate_one, events = _make_integrate_one()
+            integrate_one, _events = _make_integrate_one()
             with patch.object(integrate, "_wait_for_pr_checks", side_effect=fake_wait):
                 summary = live._pipeline_scheduler(
                     repo=repo,

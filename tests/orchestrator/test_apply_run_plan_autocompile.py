@@ -19,13 +19,17 @@ import subprocess
 import sys
 from pathlib import Path
 
-sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.abspath(__file__)))
+sys.path.insert(
+    0, __import__("os").path.dirname(__import__("os").path.abspath(__file__))
+)
 
-from worktrail.orchestrator import live  # noqa: E402
+from worktrail.orchestrator import live
 
 
 def _git(repo, *args):
-    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True)
+    subprocess.run(
+        ["git", "-C", str(repo), *args], check=True, capture_output=True, text=True
+    )
 
 
 def _init_repo(path: Path) -> Path:
@@ -55,7 +59,9 @@ def _reply(**per_task) -> str:
     return "```json\n" + json.dumps({"tasks": rows}) + "\n```\n"
 
 
-def test_openspec_change_auto_compiles_without_a_manual_worktrail_compile_step(tmp_path):
+def test_openspec_change_auto_compiles_without_a_manual_worktrail_compile_step(
+    tmp_path,
+):
     repo = _init_repo(tmp_path)
     change = repo / "openspec" / "changes" / "add-thing"
     change.mkdir(parents=True)
@@ -68,17 +74,23 @@ def test_openspec_change_auto_compiles_without_a_manual_worktrail_compile_step(t
 
     spec_rel = str(change.relative_to(repo))
     spec_id, tasks = resolve.load_spec(str(change))
-    assert all(not t.get("files") for t in tasks), "OpenSpec tasks start with no file scope"
+    assert all(not t.get("files") for t in tasks), (
+        "OpenSpec tasks start with no file scope"
+    )
 
     spawn = RecordingSpawn(
-        _reply(**{
-            "1.1": {"files": ["src/parser.py"], "deps": []},
-            "1.2": {"files": ["src/api.py"], "deps": ["1.1"]},
-        })
+        _reply(
+            **{
+                "1.1": {"files": ["src/parser.py"], "deps": []},
+                "1.2": {"files": ["src/api.py"], "deps": ["1.1"]},
+            }
+        )
     )
 
     merged = live.apply_run_plan(repo, spec_rel, spec_id, tasks, spawn=spawn)
-    assert spawn.calls == 1, "a fresh OpenSpec change with no cached plan must auto-compile"
+    assert spawn.calls == 1, (
+        "a fresh OpenSpec change with no cached plan must auto-compile"
+    )
     by_id = {t["id"]: t for t in merged}
     assert by_id["1.1"]["files"] == ["src/parser.py"]
     assert by_id["1.2"]["files"] == ["src/api.py"]
@@ -113,17 +125,23 @@ def test_pinned_run_reuses_cached_plan_without_calling_spawn(tmp_path):
     spec_id, tasks = resolve.load_spec(str(change))
 
     spawn = RecordingSpawn(
-        _reply(**{
-            "1.1": {"files": ["src/parser.py"], "deps": []},
-            "1.2": {"files": ["src/api.py"], "deps": ["1.1"]},
-        })
+        _reply(
+            **{
+                "1.1": {"files": ["src/parser.py"], "deps": []},
+                "1.2": {"files": ["src/api.py"], "deps": ["1.1"]},
+            }
+        )
     )
     live.apply_run_plan(repo, spec_rel, spec_id, tasks, spawn=spawn)
     assert spawn.calls == 1, "the first call establishes the pin via a real compile"
 
     _, tasks_again = resolve.load_spec(str(change))
-    second_spawn = RecordingSpawn(_reply(**{"1.1": {"files": []}, "1.2": {"files": []}}))
-    merged = live.apply_run_plan(repo, spec_rel, spec_id, tasks_again, spawn=second_spawn)
+    second_spawn = RecordingSpawn(
+        _reply(**{"1.1": {"files": []}, "1.2": {"files": []}})
+    )
+    merged = live.apply_run_plan(
+        repo, spec_rel, spec_id, tasks_again, spawn=second_spawn
+    )
     assert second_spawn.calls == 0, "a pinned run must never reach the compile seam"
     by_id = {t["id"]: t for t in merged}
     assert by_id["1.1"]["files"] == ["src/parser.py"]
@@ -147,10 +165,12 @@ def test_pinned_run_reuses_plan_even_if_change_content_since_changed(tmp_path):
     spec_id, tasks = resolve.load_spec(str(change))
 
     spawn = RecordingSpawn(
-        _reply(**{
-            "1.1": {"files": ["src/parser.py"], "deps": []},
-            "1.2": {"files": ["src/api.py"], "deps": ["1.1"]},
-        })
+        _reply(
+            **{
+                "1.1": {"files": ["src/parser.py"], "deps": []},
+                "1.2": {"files": ["src/api.py"], "deps": ["1.1"]},
+            }
+        )
     )
     live.apply_run_plan(repo, spec_rel, spec_id, tasks, spawn=spawn)
     assert spawn.calls == 1
@@ -159,7 +179,9 @@ def test_pinned_run_reuses_plan_even_if_change_content_since_changed(tmp_path):
     # set (ids) is unchanged -- the pin must still resolve without compiling.
     (change / "proposal.md").write_text("## Why\nBecause, revised.\n")
     _, tasks_again = resolve.load_spec(str(change))
-    merged = live.apply_run_plan(repo, spec_rel, spec_id, tasks_again, spawn=RaisingSpawn())
+    merged = live.apply_run_plan(
+        repo, spec_rel, spec_id, tasks_again, spawn=RaisingSpawn()
+    )
     by_id = {t["id"]: t for t in merged}
     assert by_id["1.1"]["files"] == ["src/parser.py"]
     assert by_id["1.2"]["files"] == ["src/api.py"]
@@ -180,10 +202,12 @@ def test_run_with_no_pin_compiles_and_records_matching_fingerprint(tmp_path):
     spec_id, tasks = resolve.load_spec(str(change))
 
     spawn = RecordingSpawn(
-        _reply(**{
-            "1.1": {"files": ["src/parser.py"], "deps": []},
-            "1.2": {"files": ["src/api.py"], "deps": ["1.1"]},
-        })
+        _reply(
+            **{
+                "1.1": {"files": ["src/parser.py"], "deps": []},
+                "1.2": {"files": ["src/api.py"], "deps": ["1.1"]},
+            }
+        )
     )
     merged = live.apply_run_plan(repo, spec_rel, spec_id, tasks, spawn=spawn)
     assert spawn.calls == 1
@@ -206,17 +230,19 @@ def test_unresolvable_pin_raises_and_never_compiles(tmp_path):
         "## 1. Core\n\n- [ ] 1.1 Add the parser\n- [ ] 1.2 Wire the endpoint\n"
     )
 
-    from worktrail.taskformats import resolve
     from worktrail.conductor import compile as conductor_compile
+    from worktrail.taskformats import resolve
 
     spec_rel = str(change.relative_to(repo))
     spec_id, tasks = resolve.load_spec(str(change))
 
     spawn = RecordingSpawn(
-        _reply(**{
-            "1.1": {"files": ["src/parser.py"], "deps": []},
-            "1.2": {"files": ["src/api.py"], "deps": ["1.1"]},
-        })
+        _reply(
+            **{
+                "1.1": {"files": ["src/parser.py"], "deps": []},
+                "1.2": {"files": ["src/api.py"], "deps": ["1.1"]},
+            }
+        )
     )
     live.apply_run_plan(repo, spec_rel, spec_id, tasks, spawn=spawn)
     assert spawn.calls == 1
@@ -264,10 +290,12 @@ def test_pinned_plan_with_task_set_drift_raises_instead_of_falling_back(tmp_path
     spec_id, tasks = resolve.load_spec(str(change))
 
     spawn = RecordingSpawn(
-        _reply(**{
-            "1.1": {"files": ["src/parser.py"], "deps": []},
-            "1.2": {"files": ["src/api.py"], "deps": ["1.1"]},
-        })
+        _reply(
+            **{
+                "1.1": {"files": ["src/parser.py"], "deps": []},
+                "1.2": {"files": ["src/api.py"], "deps": ["1.1"]},
+            }
+        )
     )
     live.apply_run_plan(repo, spec_rel, spec_id, tasks, spawn=spawn)
     assert spawn.calls == 1, "the first call establishes the pin via a real compile"
@@ -284,7 +312,9 @@ def test_pinned_plan_with_task_set_drift_raises_instead_of_falling_back(tmp_path
     _, tasks_drifted = resolve.load_spec(str(change))
 
     try:
-        live.apply_run_plan(repo, spec_rel, spec_id, tasks_drifted, spawn=RaisingSpawn())
+        live.apply_run_plan(
+            repo, spec_rel, spec_id, tasks_drifted, spawn=RaisingSpawn()
+        )
         assert False, "expected a RuntimeError for a pinned plan with task-set drift"
     except RuntimeError as exc:
         msg = str(exc)
@@ -313,13 +343,17 @@ def test_unreadable_journal_is_treated_as_no_pin(tmp_path):
     journal_path.write_text("{ this is not json")
 
     spawn = RecordingSpawn(
-        _reply(**{
-            "1.1": {"files": ["src/parser.py"], "deps": []},
-            "1.2": {"files": ["src/api.py"], "deps": ["1.1"]},
-        })
+        _reply(
+            **{
+                "1.1": {"files": ["src/parser.py"], "deps": []},
+                "1.2": {"files": ["src/api.py"], "deps": ["1.1"]},
+            }
+        )
     )
     merged = live.apply_run_plan(repo, spec_rel, spec_id, tasks, spawn=spawn)
-    assert spawn.calls == 1, "a malformed journal must be treated as no pin, not an error"
+    assert spawn.calls == 1, (
+        "a malformed journal must be treated as no pin, not an error"
+    )
     by_id = {t["id"]: t for t in merged}
     assert by_id["1.1"]["files"] == ["src/parser.py"]
 

@@ -20,14 +20,14 @@ import argparse
 import json
 import os
 import re
+import signal
 import stat
 import subprocess
-import signal
 import sys
 import tempfile
+from collections.abc import Sequence
 from pathlib import Path
 from unittest import mock
-from typing import Sequence
 
 from ..orchestrator import agent_capacity
 from ..runtime.selection import Cell, NoExecutionTarget, select_cell
@@ -63,9 +63,11 @@ def _namespaced_invocation_skill(agent: str, skill: str) -> str:
     Only the bundled `opsx:*` commands need this -- accept an
     already-namespaced value as a no-op so callers may pass either form.
     """
-    if (agent in {"claude", "opencode"}
-            and skill.startswith(_OPSX_COMMAND_PREFIX)
-            and not skill.startswith(_OPSX_NAMESPACE)):
+    if (
+        agent in {"claude", "opencode"}
+        and skill.startswith(_OPSX_COMMAND_PREFIX)
+        and not skill.startswith(_OPSX_NAMESPACE)
+    ):
         return f"{_OPSX_NAMESPACE}{skill}"
     return skill
 
@@ -89,7 +91,11 @@ def _decision_helpers():
         )
     except Exception:  # noqa: BLE001 - boundary is additive, never fatal on import
         return None, None, None
-    return load_decision_envelope, validate_decision_answer, parse_pending_decision_envelope
+    return (
+        load_decision_envelope,
+        validate_decision_answer,
+        parse_pending_decision_envelope,
+    )
 
 
 def append_decision_token(args: str, decision_id: str) -> str:
@@ -247,25 +253,36 @@ def select_dispatch_cell(
         try:
             agent_capacity.check(target, model, path=capacity_path, now=now)
         except agent_capacity.ProviderUnavailable as exc:
-            skipped.append({
-                "target": target,
-                "model": model,
-                "failure_class": exc.state.get("failure_class"),
-                "retry_after": exc.state.get("retry_after"),
-            })
+            skipped.append(
+                {
+                    "target": target,
+                    "model": model,
+                    "failure_class": exc.state.get("failure_class"),
+                    "retry_after": exc.state.get("retry_after"),
+                }
+            )
             raise
 
     try:
-        return select_cell(routing, resolved_tier, prefer=resolved_prefer, capacity=_capacity)
+        return select_cell(
+            routing, resolved_tier, prefer=resolved_prefer, capacity=_capacity
+        )
     finally:
         if skipped:
             _record_skipped_cells(run_path, skipped)
 
 
-def build_command(agent: str, skill: str, args: str = "", *, model: str | None = None,
-                  cwd: str | None = None, write: bool = False,
-                  add_dirs: Sequence[str] = (),
-                  extra_args: Sequence[str] = ()) -> list[str]:
+def build_command(
+    agent: str,
+    skill: str,
+    args: str = "",
+    *,
+    model: str | None = None,
+    cwd: str | None = None,
+    write: bool = False,
+    add_dirs: Sequence[str] = (),
+    extra_args: Sequence[str] = (),
+) -> list[str]:
     """Return an argv list that preserves the requested provider identity.
 
     `cwd` targets a directory (typically a task worktree) without relocating the
@@ -385,17 +402,27 @@ def _read_private_regular_file(path: Path) -> bytes:
     try:
         descriptor = os.open(path, flags)
     except OSError as exc:
-        raise OSError(f"required Codex authentication file is unavailable: {path.name}") from exc
+        raise OSError(
+            f"required Codex authentication file is unavailable: {path.name}"
+        ) from exc
     try:
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode):
-            raise OSError(f"Codex authentication source must be a regular file: {path.name}")
+            raise OSError(
+                f"Codex authentication source must be a regular file: {path.name}"
+            )
         if metadata.st_uid != os.geteuid():
-            raise OSError(f"Codex authentication source is not owned by the current user: {path.name}")
+            raise OSError(
+                f"Codex authentication source is not owned by the current user: {path.name}"
+            )
         if stat.S_IMODE(metadata.st_mode) & 0o077:
-            raise OSError(f"Codex authentication source permissions must be 0600: {path.name}")
+            raise OSError(
+                f"Codex authentication source permissions must be 0600: {path.name}"
+            )
         if metadata.st_size > _MAX_CODEX_AUTH_BYTES:
-            raise OSError(f"Codex authentication source is unexpectedly large: {path.name}")
+            raise OSError(
+                f"Codex authentication source is unexpectedly large: {path.name}"
+            )
         chunks: list[bytes] = []
         remaining = _MAX_CODEX_AUTH_BYTES + 1
         while remaining:
@@ -406,7 +433,9 @@ def _read_private_regular_file(path: Path) -> bytes:
             remaining -= len(chunk)
         data = b"".join(chunks)
         if len(data) > _MAX_CODEX_AUTH_BYTES:
-            raise OSError(f"Codex authentication source is unexpectedly large: {path.name}")
+            raise OSError(
+                f"Codex authentication source is unexpectedly large: {path.name}"
+            )
         return data
     finally:
         os.close(descriptor)
@@ -475,14 +504,20 @@ def _codex_skill_roots() -> list[Path]:
     # skill documentation is linked; auth/config files are never copied.
     parent_home = os.environ.get("CODEX_HOME")
     if parent_home:
-        roots.extend(sorted(
-            (Path(parent_home).expanduser() / "plugins/cache/worktrail/worktrail").glob("*/skills"),
+        roots.extend(
+            sorted(
+                (
+                    Path(parent_home).expanduser() / "plugins/cache/worktrail/worktrail"
+                ).glob("*/skills"),
+                reverse=True,
+            )
+        )
+    roots.extend(
+        sorted(
+            (Path.home() / ".codex/plugins/cache/worktrail/worktrail").glob("*/skills"),
             reverse=True,
-        ))
-    roots.extend(sorted(
-        (Path.home() / ".codex/plugins/cache/worktrail/worktrail").glob("*/skills"),
-        reverse=True,
-    ))
+        )
+    )
     return roots
 
 
@@ -495,8 +530,9 @@ def bootstrap_codex_skills(codex_home: str, skill: str) -> bool:
     source worktrees are replaceable.  Real files and directories are
     preserved, so this remains safe for a user-maintained child home.
     """
-    source_root = next((root for root in _codex_skill_roots()
-                        if (root / skill).is_dir()), None)
+    source_root = next(
+        (root for root in _codex_skill_roots() if (root / skill).is_dir()), None
+    )
     if source_root is None:
         return False
     destination_root = Path(codex_home).expanduser() / "skills"
@@ -557,14 +593,16 @@ def codex_home_write_remediation(path: str) -> str | None:
             f"(nearest existing directory '{probe or path}' denies write access).\n"
             "Set WORKTRAIL_CODEX_HOME to a persistent writable directory (for "
             "example ~/.worktrail/codex-home) or pass --codex-home <path>."
-    )
+        )
     return None
 
 
-def _run_command_with_sigterm_forwarding(command: list[str], run_kwargs: dict[str, object]) -> int:
+def _run_command_with_sigterm_forwarding(
+    command: list[str], run_kwargs: dict[str, object]
+) -> int:
     """Run a provider child, forwarding wrapper SIGTERM and reaping it."""
     if isinstance(subprocess.run, mock.Mock):
-        return subprocess.run(command, **run_kwargs).returncode
+        return subprocess.run(command, **run_kwargs).returncode  # noqa: PLW1510 -- run_kwargs already carries check
     child_kwargs = {key: value for key, value in run_kwargs.items() if key != "check"}
     interrupted = False
     child: subprocess.Popen[str] | None = None
@@ -615,23 +653,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--routing",
         help="JSON object from resolve_routing() (targets/tiers/roles/"
-             "default_tier); when set, the dispatch cell is resolved via "
-             "select_cell() instead of --agent/--model, which are ignored",
+        "default_tier); when set, the dispatch cell is resolved via "
+        "select_cell() instead of --agent/--model, which are ignored",
     )
     parser.add_argument(
         "--tier",
         help="explicit tier row to resolve with --routing, overriding "
-             "roles['front-door'].tier/default_tier",
+        "roles['front-door'].tier/default_tier",
     )
     parser.add_argument(
         "--prefer",
         help="target to move to the front of the resolved tier row with "
-             "--routing, overriding roles['front-door'].prefer",
+        "--routing, overriding roles['front-door'].prefer",
     )
     parser.add_argument(
         "--cwd",
         help="run the skill against this directory (e.g. a task worktree) "
-             "without relocating the calling session",
+        "without relocating the calling session",
     )
     parser.add_argument(
         "--write",
@@ -659,25 +697,25 @@ def main(argv: list[str] | None = None) -> int:
         metavar="DECISION_ID",
         default=None,
         help="attended presentation: print this decision's provider-neutral "
-             "envelope JSON (any status, including open) and exit without "
-             "spawning a child; exit 2 when the id does not resolve exactly",
+        "envelope JSON (any status, including open) and exit without "
+        "spawning a child; exit 2 when the id does not resolve exactly",
     )
     parser.add_argument(
         "--resume-decision",
         metavar="DECISION_ID",
         default=None,
         help="exact decision-ID resume: launch the child only when this exact "
-             "record is answered and live, threading `decision:<id>` into the "
-             "invocation; an open/superseded/unknown id fails closed with exit "
-             "2 and nothing spawned (a known-but-unresumable record's envelope "
-             "is printed on stdout for propagation)",
+        "record is answered and live, threading `decision:<id>` into the "
+        "invocation; an open/superseded/unknown id fails closed with exit "
+        "2 and nothing spawned (a known-but-unresumable record's envelope "
+        "is printed on stdout for propagation)",
     )
     parser.add_argument(
         "--run",
         help="run record whose pending_decisions audit trail receives the "
-             "[presented] hop (with --present-decision), and whose "
-             "skipped_cells audit trail receives any capacity-gated cell "
-             "select_cell() walked past (with --routing)",
+        "[presented] hop (with --present-decision), and whose "
+        "skipped_cells audit trail receives any capacity-gated cell "
+        "select_cell() walked past (with --routing)",
     )
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
@@ -719,9 +757,7 @@ def main(argv: list[str] | None = None) -> int:
             _load, validate, _parse = _decision_helpers()
             reasons = validate(envelope)["reasons"]
             if reasons:
-                error = (
-                    "decision is not resumable: " + "; ".join(reasons)
-                )
+                error = "decision is not resumable: " + "; ".join(reasons)
         if error:
             if envelope is not None:
                 # Propagate the structured pending result unchanged so an
@@ -741,7 +777,10 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         try:
             cell = select_dispatch_cell(
-                routing, tier=parsed.tier, prefer=parsed.prefer, run_path=parsed.run,
+                routing,
+                tier=parsed.tier,
+                prefer=parsed.prefer,
+                run_path=parsed.run,
             )
         except NoExecutionTarget as exc:
             print(f"blocked_no_capacity: {exc}", file=sys.stderr)
@@ -749,8 +788,13 @@ def main(argv: list[str] | None = None) -> int:
         parsed.agent = cell.harness
         parsed.model = cell.model
     command = build_command(
-        parsed.agent, parsed.skill, resume_args, model=parsed.model,
-        cwd=parsed.cwd, write=parsed.write, add_dirs=parsed.add_dir,
+        parsed.agent,
+        parsed.skill,
+        resume_args,
+        model=parsed.model,
+        cwd=parsed.cwd,
+        write=parsed.write,
+        add_dirs=parsed.add_dir,
     )
     if parsed.dry_run:
         print(json.dumps(command) if parsed.json else " ".join(command))
@@ -787,7 +831,9 @@ def main(argv: list[str] | None = None) -> int:
         if parsed.skill in _INTERNAL_SKILLS:
             child_env[_DISPATCH_DEPTH_ENV] = str(dispatch_depth + 1)
         if automatic_home:
-            print(f"Using automatic Worktrail Codex home: {codex_home}", file=sys.stderr)
+            print(
+                f"Using automatic Worktrail Codex home: {codex_home}", file=sys.stderr
+            )
     run_kwargs = {"check": False}
     if parsed.skill in _INTERNAL_SKILLS or parsed.agent == "codex":
         run_kwargs["env"] = child_env

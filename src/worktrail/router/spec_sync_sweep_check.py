@@ -26,12 +26,12 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 from .check_spec_sync import check_spec
 
 
-def check_repo_drift(repo: Path) -> Dict[str, Any]:
+def check_repo_drift(repo: Path) -> dict[str, Any]:
     """Run check_spec() across every numbered spec dir under repo/docs/specs/.
 
     Returns a Repo Drift Finding: {"repo": str(repo), "findings": [...],
@@ -41,11 +41,13 @@ def check_repo_drift(repo: Path) -> Dict[str, Any]:
     exception never propagates out of this function.
     """
     try:
-        findings: List[Dict[str, str]] = []
+        findings: list[dict[str, str]] = []
         specs_root = repo / "docs" / "specs"
         if specs_root.is_dir():
             spec_dirs = sorted(
-                d for d in specs_root.iterdir() if d.is_dir() and re.match(r"^\d+-", d.name)
+                d
+                for d in specs_root.iterdir()
+                if d.is_dir() and re.match(r"^\d+-", d.name)
             )
             for spec_dir in spec_dirs:
                 for reason in check_spec(spec_dir, repo=repo):

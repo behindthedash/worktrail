@@ -31,8 +31,10 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from worktrail.orchestrator import live  # noqa: E402
-from worktrail.orchestrator import spawnlib  # noqa: E402
+from worktrail.orchestrator import (
+    live,
+    spawnlib,
+)
 
 
 def _init_repo(root: Path, tasks_frontmatter: dict) -> Path:
@@ -44,9 +46,13 @@ def _init_repo(root: Path, tasks_frontmatter: dict) -> Path:
     for tid, fm in tasks_frontmatter.items():
         (repo / "docs" / "specs" / "001-x" / "tasks" / f"{tid}.md").write_text(fm)
     (repo / "README.md").write_text("x\n")
-    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True)
     subprocess.run(
-        ["git", "-C", str(repo), "commit", "-q", "-m", "init"], check=True, capture_output=True
+        ["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-q", "-m", "init"],
+        check=True,
+        capture_output=True,
     )
     return repo
 
@@ -78,14 +84,19 @@ class FakeSpawn:
             f = Path(wt) / "src" / f"{task['id'].lower()}.txt"
             f.parent.mkdir(parents=True, exist_ok=True)
             f.write_text(f"{task['id']} {role}\n")
-            subprocess.run(["git", "-C", str(wt), "add", "-A"], check=True, capture_output=True)
+            subprocess.run(
+                ["git", "-C", str(wt), "add", "-A"], check=True, capture_output=True
+            )
             subprocess.run(
                 ["git", "-C", str(wt), "commit", "-q", "-m", f"{role} {task['id']}"],
                 check=True,
                 capture_output=True,
             )
         sha = subprocess.run(
-            ["git", "-C", str(wt), "rev-parse", "HEAD"], capture_output=True, text=True
+            ["git", "-C", str(wt), "rev-parse", "HEAD"],
+            check=False,
+            capture_output=True,
+            text=True,
         ).stdout.strip()
         rs = '"PASSED"' if role == "review" else "null"
         return spawnlib.SpawnResult(
@@ -121,7 +132,12 @@ class TailDispatchRespectsOnly(unittest.TestCase):
             # gate check -- must show TASK-002 as a pending tail task.
             gate_tasks = [
                 {"id": "TASK-001", "status": "completed", "kind": "impl", "deps": []},
-                {"id": "TASK-002", "status": "pending", "kind": "e2e", "deps": ["TASK-001"]},
+                {
+                    "id": "TASK-002",
+                    "status": "pending",
+                    "kind": "e2e",
+                    "deps": ["TASK-001"],
+                },
             ]
 
             result = live._dispatch_pending_tail(
@@ -146,16 +162,20 @@ class TailDispatchRespectsOnly(unittest.TestCase):
                 only=["TASK-002"],
             )
 
-            self.assertIsNotNone(result, "tail dispatch was a no-op; test setup is wrong")
+            self.assertIsNotNone(
+                result, "tail dispatch was a no-op; test setup is wrong"
+            )
             dispatched_ids = {tid for _role, tid in fake.calls}
             self.assertEqual(
-                dispatched_ids, {"TASK-002"},
+                dispatched_ids,
+                {"TASK-002"},
                 f"tail dispatch re-drove task(s) outside --only: {dispatched_ids}",
             )
 
             by_id = {t["id"]: t for t in result["tasks"]}
             self.assertEqual(
-                by_id["TASK-001"]["status"], "completed",
+                by_id["TASK-001"]["status"],
+                "completed",
                 "TASK-001 (outside --only) was reset instead of pre-marked completed",
             )
             self.assertIn(by_id["TASK-002"]["status"], ("done", "reviewing"))
@@ -176,8 +196,11 @@ class TailDispatchRespectsOnly(unittest.TestCase):
                 {
                     "TASK-001": _fm("TASK-001", "src/task-001.txt", status="completed"),
                     "TASK-002": _fm(
-                        "TASK-002", "src/task-002.txt", deps="TASK-001",
-                        kind="cleanup", status="completed",
+                        "TASK-002",
+                        "src/task-002.txt",
+                        deps="TASK-001",
+                        kind="cleanup",
+                        status="completed",
                     ),
                 },
             )
@@ -193,7 +216,12 @@ class TailDispatchRespectsOnly(unittest.TestCase):
             # already ticked before the run started, independent of --only).
             gate_tasks = [
                 {"id": "TASK-001", "status": "completed", "kind": "impl", "deps": []},
-                {"id": "TASK-002", "status": "pending", "kind": "cleanup", "deps": ["TASK-001"]},
+                {
+                    "id": "TASK-002",
+                    "status": "pending",
+                    "kind": "cleanup",
+                    "deps": ["TASK-001"],
+                },
             ]
 
             result = live._dispatch_pending_tail(
@@ -218,7 +246,9 @@ class TailDispatchRespectsOnly(unittest.TestCase):
                 only=None,
             )
 
-            self.assertEqual(fake.calls, [], "an already-completed tail task must not spawn a worker")
+            self.assertEqual(
+                fake.calls, [], "an already-completed tail task must not spawn a worker"
+            )
             if result is not None:
                 by_id = {t["id"]: t for t in result["tasks"]}
                 self.assertEqual(by_id["TASK-002"]["status"], "completed")

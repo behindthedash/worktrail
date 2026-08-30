@@ -12,8 +12,9 @@ import argparse
 import json
 import re
 import sys
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Set
+from typing import Any
 
 from ..shared.brief_frontmatter import read_frontmatter, split_frontmatter
 
@@ -35,7 +36,7 @@ def _sections_text(path: Path) -> str:
     return body
 
 
-def _tokens(text: str) -> Set[str]:
+def _tokens(text: str) -> set[str]:
     stop = {
         "the",
         "and",
@@ -55,7 +56,7 @@ def _tokens(text: str) -> Set[str]:
     return {t.lower() for t in _WORD_RE.findall(text) if t.lower() not in stop}
 
 
-def _paths(text: str) -> Set[str]:
+def _paths(text: str) -> set[str]:
     return {p.lower() for p in _PATH_RE.findall(text)}
 
 
@@ -88,23 +89,27 @@ def _brief_blob(brief: Path) -> str:
     return "\n".join(fields + [_sections_text(brief)])
 
 
-def _candidate_specs(brief: Path, specs_root: Path, target_spec: Optional[str]) -> List[Dict[str, Any]]:
+def _candidate_specs(
+    brief: Path, specs_root: Path, target_spec: str | None
+) -> list[dict[str, Any]]:
     if not specs_root.is_dir():
         return []
 
     brief_text = _brief_blob(brief)
     brief_tokens = _tokens(brief_text)
     brief_paths = _paths(brief_text)
-    candidates: List[Dict[str, Any]] = []
+    candidates: list[dict[str, Any]] = []
 
     for spec_dir in sorted(p for p in specs_root.iterdir() if p.is_dir()):
         spec_text = _spec_blob(spec_dir)
         token_overlap = sorted(brief_tokens & _tokens(spec_text))
         path_overlap = sorted(brief_paths & _paths(spec_text))
         score = len(token_overlap) + (3 * len(path_overlap))
-        signals: List[str] = []
+        signals: list[str] = []
 
-        if target_spec and (spec_dir.name == target_spec or spec_dir.name.endswith(target_spec)):
+        if target_spec and (
+            spec_dir.name == target_spec or spec_dir.name.endswith(target_spec)
+        ):
             score += 10
             signals.append("target-spec")
         if token_overlap:
@@ -127,7 +132,7 @@ def _candidate_specs(brief: Path, specs_root: Path, target_spec: Optional[str]) 
     return sorted(candidates, key=lambda c: (-int(c["score"]), str(c["spec_id"])))[:5]
 
 
-def classify_handoff(brief: Path, specs_root: Path) -> Dict[str, Any]:
+def classify_handoff(brief: Path, specs_root: Path) -> dict[str, Any]:
     fm = read_frontmatter(brief)
     raw_kind = str(fm.get("change-kind") or "").strip().lower()
     change_kind = raw_kind if raw_kind in _CHANGE_KIND_TO_ROUTE else None
@@ -137,7 +142,7 @@ def classify_handoff(brief: Path, specs_root: Path) -> Dict[str, Any]:
         recommended_route = None
 
     candidates = _candidate_specs(brief, specs_root, target_spec)
-    signals: List[str] = []
+    signals: list[str] = []
     if change_kind:
         signals.append(f"change-kind:{change_kind}")
     if target_spec:
@@ -152,7 +157,9 @@ def classify_handoff(brief: Path, specs_root: Path) -> Dict[str, Any]:
         text = _brief_blob(brief).lower()
         if re.search(r"\b(bug|defect|fix|wrong|broken|regression)\b", text):
             hint = "F"
-        elif re.search(r"\b(change|modify|replace|upgrade|migrate|switch|delta)\b", text):
+        elif re.search(
+            r"\b(change|modify|replace|upgrade|migrate|switch|delta)\b", text
+        ):
             hint = "G"
 
     return {
@@ -165,8 +172,10 @@ def classify_handoff(brief: Path, specs_root: Path) -> Dict[str, Any]:
     }
 
 
-def main(argv: Optional[Iterable[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="classify a handoff brief against docs/specs")
+def main(argv: Iterable[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="classify a handoff brief against docs/specs"
+    )
     parser.add_argument("brief", help="claimed handoff brief path")
     parser.add_argument("--specs-root", required=True, help="path to docs/specs")
     parser.add_argument("--json", action="store_true", help="emit JSON")
@@ -178,7 +187,9 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     else:
         print(f"hint: {result['hint']}")
         for candidate in result["candidate_specs"]:
-            print(f"{candidate['spec_id']}: score={candidate['score']} {candidate['title']}")
+            print(
+                f"{candidate['spec_id']}: score={candidate['score']} {candidate['title']}"
+            )
     return 0
 
 

@@ -10,8 +10,8 @@ clean, and still fails loud on conflicts or when no worktree is available.
 """
 
 import subprocess
-import unittest
 import tempfile
+import unittest
 from pathlib import Path
 
 from worktrail.orchestrator import live
@@ -85,12 +85,12 @@ class RetainedBranchAutoMergeTests(unittest.TestCase):
         # Merge was aborted: no MERGE_HEAD, branch head unchanged, work intact.
         merge_head = subprocess.run(
             ["git", "-C", str(self.wt), "rev-parse", "-q", "--verify", "MERGE_HEAD"],
-            capture_output=True, text=True,
+            check=False,
+            capture_output=True,
+            text=True,
         )
         self.assertNotEqual(merge_head.returncode, 0)
-        self.assertEqual(
-            _git(self.wt, "rev-parse", "HEAD").stdout.strip(), head_before
-        )
+        self.assertEqual(_git(self.wt, "rev-parse", "HEAD").stdout.strip(), head_before)
         self.assertEqual((self.wt / "shared.txt").read_text(), "task version\n")
 
     def test_stale_branch_without_worktree_raises_unchanged(self):

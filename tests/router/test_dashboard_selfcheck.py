@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Tests for dashboard_selfcheck.py. Run: python3 -m pytest test_dashboard_selfcheck.py -q"""
+
 import json
 import tempfile
 import unittest
@@ -55,7 +56,9 @@ class TestCheckRepo(unittest.TestCase):
         result = check_repo(self.tmp)
         self.assertEqual(result["findings"], [])
 
-    def test_recognized_name_candidate_among_no_signal_candidates_yields_no_finding(self):
+    def test_recognized_name_candidate_among_no_signal_candidates_yields_no_finding(
+        self,
+    ):
         # spec.md (rank 0) is picked over the tied rank-3 no-signal candidates.
         _spec_dir(
             self.tmp,

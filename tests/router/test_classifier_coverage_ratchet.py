@@ -39,7 +39,9 @@ from tempfile import TemporaryDirectory
 
 from worktrail.router import classifier_coverage as cc
 
-FIXTURE_PATH = Path(__file__).resolve().parent.parent / "fixtures" / "classifier_corpus.json"
+FIXTURE_PATH = (
+    Path(__file__).resolve().parent.parent / "fixtures" / "classifier_corpus.json"
+)
 
 # Pinned to tests/fixtures/classifier_corpus.json (235 items) as of 2026-08-21.
 # classify() is pure and regex-only, and the fixture and replay inputs below

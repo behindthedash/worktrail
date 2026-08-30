@@ -5,6 +5,7 @@
 CLI dependency in tests), mirroring `tests/drain/test_drain.py`'s
 `archive_openspec_change` mocking style.
 """
+
 from __future__ import annotations
 
 import subprocess
@@ -38,7 +39,9 @@ def _patch_openspec_archive(returncode: int, stdout: str = "ok", stderr: str = "
 
     def fake_run(cmd, **kwargs):
         if cmd[:2] == ["openspec", "archive"]:
-            return subprocess.CompletedProcess(cmd, returncode, stdout=stdout, stderr=stderr)
+            return subprocess.CompletedProcess(
+                cmd, returncode, stdout=stdout, stderr=stderr
+            )
         return real_run(cmd, **kwargs)
 
     return unittest.mock.patch.object(cso.subprocess, "run", side_effect=fake_run)

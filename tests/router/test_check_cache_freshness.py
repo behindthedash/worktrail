@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Unit tests for the plugin-cache freshness guard (stdlib unittest)."""
+
 from __future__ import annotations
 
 import tempfile
@@ -29,29 +30,47 @@ class TestResolvedSha(unittest.TestCase):
             "/home/u/.claude/plugins/cache/developer-kit/developer-kit-project-management/"
             "b821b3ce039c/skills/devkit-pm-go"
         )
-        with patch.object(ccf, "_git_head_short", side_effect=AssertionError("should not call git")):
+        with patch.object(
+            ccf, "_git_head_short", side_effect=AssertionError("should not call git")
+        ):
             self.assertEqual(ccf.resolved_sha(p), "b821b3ce039c")
 
     def test_git_checkout_path_falls_back_to_head(self):
         with tempfile.TemporaryDirectory() as t:
             root = Path(t)
             marketplace = root / "marketplaces" / "developer-kit"
-            skill = marketplace / "plugins" / "developer-kit-project-management" / "skills" / "go"
+            skill = (
+                marketplace
+                / "plugins"
+                / "developer-kit-project-management"
+                / "skills"
+                / "go"
+            )
             skill.mkdir(parents=True)
             _mkgit(marketplace)
-            with patch.object(ccf, "_git_head_short", side_effect=_fake_git_head({marketplace: "abc123def456"})):
+            with patch.object(
+                ccf,
+                "_git_head_short",
+                side_effect=_fake_git_head({marketplace: "abc123def456"}),
+            ):
                 self.assertEqual(ccf.resolved_sha(skill), "abc123def456")
 
     def test_unrecognized_path_returns_none(self):
         with tempfile.TemporaryDirectory() as t:
-            self.assertIsNone(ccf.resolved_sha(Path(t) / "not-a-repo" / "skills" / "go"))
+            self.assertIsNone(
+                ccf.resolved_sha(Path(t) / "not-a-repo" / "skills" / "go")
+            )
 
 
 class TestCheck(unittest.TestCase):
     def test_no_canonical_checkout_is_fresh(self):
         with tempfile.TemporaryDirectory() as t:
             missing = Path(t) / "does-not-exist"
-            res = ccf.check("/anything/skills/devkit-pm-go", "developer-kit-project-management", str(missing))
+            res = ccf.check(
+                "/anything/skills/devkit-pm-go",
+                "developer-kit-project-management",
+                str(missing),
+            )
             self.assertTrue(res["fresh"])
             self.assertIsNone(res["warning"])
 
@@ -60,11 +79,22 @@ class TestCheck(unittest.TestCase):
             canonical = Path(t) / "developer-kit"
             _mkgit(canonical)
             resolved = (
-                Path(t) / "cache" / "developer-kit" / "developer-kit-project-management"
-                / "b821b3ce039c" / "skills" / "go"
+                Path(t)
+                / "cache"
+                / "developer-kit"
+                / "developer-kit-project-management"
+                / "b821b3ce039c"
+                / "skills"
+                / "go"
             )
-            with patch.object(ccf, "_git_head_short", side_effect=_fake_git_head({canonical: "b821b3ce039c"})):
-                res = ccf.check(str(resolved), "developer-kit-project-management", str(canonical))
+            with patch.object(
+                ccf,
+                "_git_head_short",
+                side_effect=_fake_git_head({canonical: "b821b3ce039c"}),
+            ):
+                res = ccf.check(
+                    str(resolved), "developer-kit-project-management", str(canonical)
+                )
             self.assertTrue(res["fresh"])
             self.assertEqual(res["resolved_sha"], "b821b3ce039c")
             self.assertEqual(res["canonical_sha"], "b821b3ce039c")
@@ -74,15 +104,30 @@ class TestCheck(unittest.TestCase):
             canonical = Path(t) / "developer-kit"
             _mkgit(canonical)
             fresh_skill_dir = (
-                canonical / "plugins" / "developer-kit-project-management" / "skills" / "go"
+                canonical
+                / "plugins"
+                / "developer-kit-project-management"
+                / "skills"
+                / "go"
             )
             fresh_skill_dir.mkdir(parents=True)
             resolved = (
-                Path(t) / "cache" / "developer-kit" / "developer-kit-project-management"
-                / "c063e17f4378" / "skills" / "go"
+                Path(t)
+                / "cache"
+                / "developer-kit"
+                / "developer-kit-project-management"
+                / "c063e17f4378"
+                / "skills"
+                / "go"
             )
-            with patch.object(ccf, "_git_head_short", side_effect=_fake_git_head({canonical: "2f463d5204d5"})):
-                res = ccf.check(str(resolved), "developer-kit-project-management", str(canonical))
+            with patch.object(
+                ccf,
+                "_git_head_short",
+                side_effect=_fake_git_head({canonical: "2f463d5204d5"}),
+            ):
+                res = ccf.check(
+                    str(resolved), "developer-kit-project-management", str(canonical)
+                )
             self.assertFalse(res["fresh"])
             self.assertEqual(res["resolved_sha"], "c063e17f4378")
             self.assertEqual(res["canonical_sha"], "2f463d5204d5")
@@ -94,11 +139,22 @@ class TestCheck(unittest.TestCase):
             canonical = Path(t) / "developer-kit"
             _mkgit(canonical)  # no plugins/ subtree at all
             resolved = (
-                Path(t) / "cache" / "developer-kit" / "developer-kit-project-management"
-                / "c063e17f4378" / "skills" / "go"
+                Path(t)
+                / "cache"
+                / "developer-kit"
+                / "developer-kit-project-management"
+                / "c063e17f4378"
+                / "skills"
+                / "go"
             )
-            with patch.object(ccf, "_git_head_short", side_effect=_fake_git_head({canonical: "2f463d5204d5"})):
-                res = ccf.check(str(resolved), "developer-kit-project-management", str(canonical))
+            with patch.object(
+                ccf,
+                "_git_head_short",
+                side_effect=_fake_git_head({canonical: "2f463d5204d5"}),
+            ):
+                res = ccf.check(
+                    str(resolved), "developer-kit-project-management", str(canonical)
+                )
             self.assertFalse(res["fresh"])
             self.assertIsNone(res["prefer_path"])
 
@@ -108,8 +164,16 @@ class TestCheck(unittest.TestCase):
         with tempfile.TemporaryDirectory() as t:
             canonical = Path(t) / "developer-kit"
             _mkgit(canonical)
-            with patch.object(ccf, "_git_head_short", side_effect=_fake_git_head({canonical: "2f463d5204d5"})):
-                res = ccf.check(str(Path(t) / "weird" / "path"), "developer-kit-project-management", str(canonical))
+            with patch.object(
+                ccf,
+                "_git_head_short",
+                side_effect=_fake_git_head({canonical: "2f463d5204d5"}),
+            ):
+                res = ccf.check(
+                    str(Path(t) / "weird" / "path"),
+                    "developer-kit-project-management",
+                    str(canonical),
+                )
             self.assertTrue(res["fresh"])
             self.assertIsNone(res["resolved_sha"])
 
@@ -126,16 +190,24 @@ class TestCli(unittest.TestCase):
             with redirect_stdout(buf):
                 rc = ccf.main(
                     [
-                        "--resolved", "/anything/skills/devkit-pm-go",
-                        "--plugin", "developer-kit-project-management",
-                        "--canonical", str(missing),
+                        "--resolved",
+                        "/anything/skills/devkit-pm-go",
+                        "--plugin",
+                        "developer-kit-project-management",
+                        "--canonical",
+                        str(missing),
                         "--json",
                     ]
                 )
             self.assertEqual(rc, 0)
-            self.assertEqual(json.loads(buf.getvalue()), ccf.check(
-                "/anything/skills/devkit-pm-go", "developer-kit-project-management", str(missing)
-            ))
+            self.assertEqual(
+                json.loads(buf.getvalue()),
+                ccf.check(
+                    "/anything/skills/devkit-pm-go",
+                    "developer-kit-project-management",
+                    str(missing),
+                ),
+            )
 
 
 if __name__ == "__main__":

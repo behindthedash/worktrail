@@ -17,7 +17,11 @@ def test_installed_module_runs_via_dash_m():
     bare-file execution."""
     argv = build_work_queue_argv(WORK_QUEUE_PY, ["list", "--json"])
     assert argv == [
-        sys.executable, "-m", "worktrail.workqueue.work_queue", "list", "--json",
+        sys.executable,
+        "-m",
+        "worktrail.workqueue.work_queue",
+        "list",
+        "--json",
     ]
 
 
@@ -29,11 +33,14 @@ def test_override_path_runs_as_plain_script():
     assert argv == [sys.executable, "/tmp/fake_work_queue.py", "claim", "b1", "--json"]
 
 
-@pytest.mark.parametrize("args", [
-    ["list", "--json"],
-    ["claim", "b1", "--json"],
-    ["done", "b1", "--planning-only", "--json"],
-])
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["list", "--json"],
+        ["claim", "b1", "--json"],
+        ["done", "b1", "--planning-only", "--json"],
+    ],
+)
 def test_extra_args_preserved(args):
     """Whatever args the caller appends travel through the argv untouched."""
     argv = build_work_queue_argv(WORK_QUEUE_PY, args)

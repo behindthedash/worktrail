@@ -14,6 +14,7 @@ raises names this exact command.
 Usage: worktrail-routing --init [--force]
        worktrail-routing --show [--repo /path/to/repo]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -21,15 +22,15 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 import yaml
 
 from ..orchestrator import agent_capacity
 from .policy import (
     EFFORT_VOCABULARY,
-    OperatorConfigError,
     VALID_AGENT_CLIS,
+    OperatorConfigError,
     _json_safe,
     _load_yaml_mapping,
     _validate_routing,
@@ -121,9 +122,13 @@ def list_opencode_models(runner=subprocess.run) -> set:
     empty set rather than raising, since an unreachable listing must never be
     mistaken for "no models exist"."""
     try:
-        result = runner(["opencode", "models"], capture_output=True, text=True, timeout=30)
+        result = runner(
+            ["opencode", "models"], capture_output=True, text=True, timeout=30
+        )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        print(f"worktrail-routing: could not list opencode models: {exc}", file=sys.stderr)
+        print(
+            f"worktrail-routing: could not list opencode models: {exc}", file=sys.stderr
+        )
         return set()
     if result.returncode != 0:
         print(
@@ -162,9 +167,9 @@ def _show(repo: Path) -> int:
 
 
 def _check(
-    path: Optional[Path] = None,
+    path: Path | None = None,
     runner=subprocess.run,
-    capacity_path: Optional[Path] = None,
+    capacity_path: Path | None = None,
     now=None,
 ) -> int:
     """`worktrail-routing --check`: walk every declared `routing.tiers` cell
@@ -207,7 +212,7 @@ def _check(
 
     targets = routing["targets"]
     tiers = routing["tiers"]
-    opencode_models: Optional[set] = None
+    opencode_models: set | None = None
     rows = []
     gated = 0
 
@@ -239,20 +244,34 @@ def _check(
                     status = "GATED"
                     notes.append("model_unavailable")
                     gated += 1
-                if pool == "free" and not (model.endswith("-free") or model.endswith(":free")):
+                if pool == "free" and not (model.endswith(("-free", ":free"))):
                     notes.append("warn: free-pool id missing -free/:free suffix")
 
             if effort:
                 vocabulary = EFFORT_VOCABULARY.get(harness)
                 if vocabulary is None or effort not in vocabulary:
-                    notes.append(f"warn: effort {effort!r} outside {harness!r} vocabulary")
+                    notes.append(
+                        f"warn: effort {effort!r} outside {harness!r} vocabulary"
+                    )
 
-            rows.append((row, target, model, effort or "-", pool or "-", harness or "-", status,
-                         "; ".join(notes) or "-"))
+            rows.append(
+                (
+                    row,
+                    target,
+                    model,
+                    effort or "-",
+                    pool or "-",
+                    harness or "-",
+                    status,
+                    "; ".join(notes) or "-",
+                )
+            )
 
     header = ("TIER", "TARGET", "MODEL", "EFFORT", "POOL", "HARNESS", "STATUS", "NOTES")
-    widths = [max(len(header[i]), *(len(r[i]) for r in rows)) if rows else len(header[i])
-              for i in range(len(header))]
+    widths = [
+        max(len(header[i]), *(len(r[i]) for r in rows)) if rows else len(header[i])
+        for i in range(len(header))
+    ]
     fmt = "  ".join(f"{{:<{w}}}" for w in widths)
     print(fmt.format(*header))
     for r in rows:
@@ -270,11 +289,11 @@ def _target_for_harness(harness: str) -> str:
     return "opencode-free" if harness == "opencode" else f"{harness}-sub"
 
 
-def _migrate_targets(fallback_raw: Any) -> Dict[str, dict]:
+def _migrate_targets(fallback_raw: Any) -> dict[str, dict]:
     """`routing.targets` from `routing.fallback`'s harness order (design D9):
     each harness becomes one `subscription` target (opencode: `free`), first
     occurrence wins, declaration order preserved."""
-    targets: Dict[str, dict] = {}
+    targets: dict[str, dict] = {}
     if not isinstance(fallback_raw, list):
         return targets
     for entry in fallback_raw:
@@ -296,7 +315,7 @@ def _migrate_targets(fallback_raw: Any) -> Dict[str, dict]:
     return targets
 
 
-def _normalize_effort(harness: str, effort: str) -> Optional[str]:
+def _normalize_effort(harness: str, effort: str) -> str | None:
     """Clamp a legacy effort literal (e.g. `xhigh`) to `EFFORT_VOCABULARY[harness]`'s
     highest recognized value, so a migrated cell never reintroduces the exact
     out-of-vocabulary warning `--migrate` exists to clear. `opencode` has no
@@ -310,19 +329,21 @@ def _normalize_effort(harness: str, effort: str) -> Optional[str]:
     return vocabulary[-1]
 
 
-def _migrate_tiers(tiers_raw: Any, harness_to_target: Dict[str, str]) -> Dict[str, dict]:
+def _migrate_tiers(
+    tiers_raw: Any, harness_to_target: dict[str, str]
+) -> dict[str, dict]:
     """Re-key every `routing.tiers.<row>` cell from a harness literal to its
     migrated target name; a harness with no migrated target (not present in
     `routing.fallback`) drops its cell. An effort outside that harness's
     `EFFORT_VOCABULARY` is clamped via `_normalize_effort` rather than copied
     verbatim."""
-    tiers: Dict[str, dict] = {}
+    tiers: dict[str, dict] = {}
     if not isinstance(tiers_raw, dict):
         return tiers
     for row, cells in tiers_raw.items():
         if not isinstance(cells, dict):
             continue
-        row_out: Dict[str, dict] = {}
+        row_out: dict[str, dict] = {}
         for harness, cell in cells.items():
             target = harness_to_target.get(harness)
             if target is None or not isinstance(cell, dict):
@@ -343,7 +364,11 @@ def _migrate_default_tier(agents_raw: Any, tiers_raw: Any) -> str:
     """The row whose per-harness cell models match every `routing.agents.<x>.default_model`
     (design D9), else `t2-build`. Matched against the pre-migration, harness-keyed
     `routing.tiers` (the migrated one is already re-keyed by target)."""
-    if not isinstance(agents_raw, dict) or not agents_raw or not isinstance(tiers_raw, dict):
+    if (
+        not isinstance(agents_raw, dict)
+        or not agents_raw
+        or not isinstance(tiers_raw, dict)
+    ):
         return "t2-build"
     for row, cells in tiers_raw.items():
         if not isinstance(cells, dict):
@@ -362,13 +387,15 @@ def _migrate_default_tier(agents_raw: Any, tiers_raw: Any) -> str:
     return "t2-build"
 
 
-def _migrate_roles(roles_raw: Any, harness_to_target: Dict[str, str], default_tier: str) -> Dict[str, dict]:
+def _migrate_roles(
+    roles_raw: Any, harness_to_target: dict[str, str], default_tier: str
+) -> dict[str, dict]:
     """`roles.review` -> `{tier: t1-deep, prefer: <target of its agent_cli>,
     independent: true}` (design D9); any other legacy `{agent_cli, ...}` role
     migrates generically (its own tier defaults to `default_tier`, not
     independent) rather than being dropped silently. A role already in the
     current `{tier, prefer?, independent?}` shape passes through unchanged."""
-    roles: Dict[str, dict] = {}
+    roles: dict[str, dict] = {}
     if not isinstance(roles_raw, dict):
         return roles
     for role, entry in roles_raw.items():
@@ -378,7 +405,9 @@ def _migrate_roles(roles_raw: Any, harness_to_target: Dict[str, str], default_ti
             roles[role] = entry
             continue
         agent_cli = entry.get("agent_cli")
-        prefer = harness_to_target.get(agent_cli, _target_for_harness(agent_cli) if agent_cli else None)
+        prefer = harness_to_target.get(
+            agent_cli, _target_for_harness(agent_cli) if agent_cli else None
+        )
         if role == "review":
             roles[role] = {"tier": "t1-deep", "prefer": prefer, "independent": True}
         else:
@@ -386,7 +415,7 @@ def _migrate_roles(roles_raw: Any, harness_to_target: Dict[str, str], default_ti
     return roles
 
 
-def _migrate_routing_dict(raw: Dict[str, Any]) -> Dict[str, Any]:
+def _migrate_routing_dict(raw: dict[str, Any]) -> dict[str, Any]:
     """Build the migrated `routing:` mapping per design D9 from a raw legacy
     mapping already confirmed (by the caller) to trip `_reject_legacy_routing_keys()`."""
     fallback_raw = raw.get("fallback")
@@ -395,7 +424,7 @@ def _migrate_routing_dict(raw: Dict[str, Any]) -> Dict[str, Any]:
     tiers = _migrate_tiers(raw.get("tiers"), harness_to_target)
     default_tier = _migrate_default_tier(raw.get("agents"), raw.get("tiers"))
     roles = _migrate_roles(raw.get("roles"), harness_to_target, default_tier)
-    migrated: Dict[str, Any] = {"targets": targets}
+    migrated: dict[str, Any] = {"targets": targets}
     if "defaults" in raw:
         migrated["defaults"] = raw["defaults"]
     migrated["roles"] = roles
@@ -411,7 +440,7 @@ def _migrate_routing_dict(raw: Dict[str, Any]) -> Dict[str, Any]:
     return migrated
 
 
-def _migrate(path: Optional[Path] = None) -> int:
+def _migrate(path: Path | None = None) -> int:
     """`worktrail-routing --migrate`: rewrite a legacy `routing.yaml` into the
     current targets/tiers/roles schema (design D9), backing up the original
     to `<file>.bak` first. Refuses (exit 1, no write) when the file already
@@ -453,31 +482,40 @@ def _migrate(path: Optional[Path] = None) -> int:
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
-        "--init", action="store_true",
+        "--init",
+        action="store_true",
         help="write a starter routing.yaml (WORKTRAIL_ROUTING_FILE, else "
-             "worktrail_home()/routing.yaml)")
+        "worktrail_home()/routing.yaml)",
+    )
     p.add_argument(
-        "--force", action="store_true",
-        help="with --init, overwrite an existing routing.yaml")
+        "--force",
+        action="store_true",
+        help="with --init, overwrite an existing routing.yaml",
+    )
     p.add_argument(
-        "--show", action="store_true",
+        "--show",
+        action="store_true",
         help="print the routing resolved for --repo (repo-local routing: "
-             "block, else the machine-wide file, else null)")
+        "block, else the machine-wide file, else null)",
+    )
+    p.add_argument("--repo", default=".", help="repo path for --show (default: cwd)")
     p.add_argument(
-        "--repo", default=".", help="repo path for --show (default: cwd)")
-    p.add_argument(
-        "--check", action="store_true",
+        "--check",
+        action="store_true",
         help="validate every routing.tiers cell against reality: gate an "
-             "opencode model absent from `opencode models` as "
-             "model_unavailable, warn on a free-pool id missing -free/:free, "
-             "warn on an out-of-vocabulary effort, print a per-cell table, "
-             "exit non-zero on any gate")
+        "opencode model absent from `opencode models` as "
+        "model_unavailable, warn on a free-pool id missing -free/:free, "
+        "warn on an out-of-vocabulary effort, print a per-cell table, "
+        "exit non-zero on any gate",
+    )
     p.add_argument(
-        "--migrate", action="store_true",
+        "--migrate",
+        action="store_true",
         help="rewrite a legacy routing.yaml (agents/fallback/purpose_tiers/"
-             "drain.agent/harness-keyed tiers/agent_cli roles) into the "
-             "current targets/tiers/roles schema, backing up the original "
-             "to <file>.bak; refuses if the file already loads cleanly")
+        "drain.agent/harness-keyed tiers/agent_cli roles) into the "
+        "current targets/tiers/roles schema, backing up the original "
+        "to <file>.bak; refuses if the file already loads cleanly",
+    )
     args = p.parse_args(argv)
     if args.init:
         return _init(args.force)

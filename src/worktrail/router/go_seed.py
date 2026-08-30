@@ -12,19 +12,19 @@ shells out and writes nothing — the seed prompt goes to stdout only.
 
 Run the inline unit tests with `--self-test`.
 """
+
 from __future__ import annotations
 
 import argparse
 import os
 import sys
-from typing import Optional
 
 from worktrail.router import invocation_context
 
 SUPPORTED_AGENTS = invocation_context.SUPPORTED_AGENTS
 
 
-def detect_default_agent(environ: Optional[dict[str, str]] = None) -> str:
+def detect_default_agent(environ: dict[str, str] | None = None) -> str:
     """Resolve the worker CLI when the caller did not pass one explicitly.
 
     Delegates to `invocation_context.resolve()` — the single implementation of
@@ -62,7 +62,7 @@ def build_seed(
     route: str,
     spec: str,
     run: str,
-    brief: Optional[str] = None,
+    brief: str | None = None,
     agent: str | None = None,
 ) -> str:
     """Build the canonical seed prompt.
@@ -94,12 +94,14 @@ def build_seed(
         lines.append(f"Brief: {brief}")
 
     lines.append("")
-    lines.append("Instruction: Execute sdd-workflow starting at Phase 6 to begin parallel task dispatch.")
+    lines.append(
+        "Instruction: Execute sdd-workflow starting at Phase 6 to begin parallel task dispatch."
+    )
 
     return "\n".join(lines)
 
 
-def main(argv: Optional[list] = None) -> int:
+def main(argv: list | None = None) -> int:
     """CLI entry point.
 
     Args:
@@ -146,7 +148,7 @@ def main(argv: Optional[list] = None) -> int:
         default=None,
         choices=SUPPORTED_AGENTS,
         help="Headless agent CLI to use for downstream SDD workers "
-             "(default: resolved from the host environment)",
+        "(default: resolved from the host environment)",
     )
 
     args = parser.parse_args(argv)
@@ -179,7 +181,9 @@ def _run_tests() -> int:
     class TestGoSeed(unittest.TestCase):
         """Inline unit tests for go_seed.py CLI."""
 
-        def _run_cli(self, args: list, env_overrides: Optional[dict] = None) -> tuple[int, str, str]:
+        def _run_cli(
+            self, args: list, env_overrides: dict | None = None
+        ) -> tuple[int, str, str]:
             """Run the CLI via subprocess and capture stdout/stderr.
 
             Args:
@@ -190,11 +194,18 @@ def _run_tests() -> int:
                 Tuple of (exit_code, stdout, stderr).
             """
             env = os.environ.copy()
-            for key in ("GO_AGENT_CLI", "ORCH_AGENT", "OPENCODE_PARENT", "CODEX_CI", "CODEX_THREAD_ID"):
+            for key in (
+                "GO_AGENT_CLI",
+                "ORCH_AGENT",
+                "OPENCODE_PARENT",
+                "CODEX_CI",
+                "CODEX_THREAD_ID",
+            ):
                 env.pop(key, None)
             env.update(env_overrides or {})
             result = subprocess.run(
                 [sys.executable, __file__] + args,
+                check=False,
                 capture_output=True,
                 text=True,
                 env=env,
@@ -203,19 +214,28 @@ def _run_tests() -> int:
 
         def test_valid_required_only(self) -> None:
             """Test valid invocation with required arguments only."""
-            code, stdout, stderr = self._run_cli([
-                "--repo", "/home/user/projects/foo",
-                "--base", "dev",
-                "--route", "D",
-                "--spec", "016-go-subprocess-dispatch",
-                "--run", "/home/user/.worktrail/runs/test.json",
-            ])
+            code, stdout, stderr = self._run_cli(
+                [
+                    "--repo",
+                    "/home/user/projects/foo",
+                    "--base",
+                    "dev",
+                    "--route",
+                    "D",
+                    "--spec",
+                    "016-go-subprocess-dispatch",
+                    "--run",
+                    "/home/user/.worktrail/runs/test.json",
+                ]
+            )
             self.assertEqual(code, 0, f"stderr: {stderr}")
             self.assertIn("Repo: /home/user/projects/foo", stdout)
             self.assertIn("Base branch: dev", stdout)
             self.assertIn("Route: D", stdout)
             self.assertIn("Spec: 016-go-subprocess-dispatch", stdout)
-            self.assertIn("Run record path: /home/user/.worktrail/runs/test.json", stdout)
+            self.assertIn(
+                "Run record path: /home/user/.worktrail/runs/test.json", stdout
+            )
             self.assertIn("Agent CLI: claude", stdout)
             self.assertIn("Instruction: Execute sdd-workflow", stdout)
             # Seed must NOT contain go internals.
@@ -226,49 +246,73 @@ def _run_tests() -> int:
 
         def test_valid_with_brief(self) -> None:
             """Test valid invocation with optional --brief."""
-            code, stdout, stderr = self._run_cli([
-                "--repo", "/home/user/projects/foo",
-                "--base", "dev",
-                "--route", "D",
-                "--spec", "016-go-subprocess-dispatch",
-                "--run", "/home/user/.worktrail/runs/test.json",
-                "--brief", "/home/user/work-queue/queue/brief.md",
-            ])
+            code, stdout, stderr = self._run_cli(
+                [
+                    "--repo",
+                    "/home/user/projects/foo",
+                    "--base",
+                    "dev",
+                    "--route",
+                    "D",
+                    "--spec",
+                    "016-go-subprocess-dispatch",
+                    "--run",
+                    "/home/user/.worktrail/runs/test.json",
+                    "--brief",
+                    "/home/user/work-queue/queue/brief.md",
+                ]
+            )
             self.assertEqual(code, 0, f"stderr: {stderr}")
             self.assertIn("Brief: /home/user/work-queue/queue/brief.md", stdout)
 
         def test_valid_with_codex_agent(self) -> None:
             """Test valid invocation with --agent codex."""
-            code, stdout, stderr = self._run_cli([
-                "--repo", "/home/user/projects/foo",
-                "--base", "dev",
-                "--route", "D",
-                "--spec", "016-go-subprocess-dispatch",
-                "--run", "/home/user/.worktrail/runs/test.json",
-                "--agent", "codex",
-            ])
+            code, stdout, stderr = self._run_cli(
+                [
+                    "--repo",
+                    "/home/user/projects/foo",
+                    "--base",
+                    "dev",
+                    "--route",
+                    "D",
+                    "--spec",
+                    "016-go-subprocess-dispatch",
+                    "--run",
+                    "/home/user/.worktrail/runs/test.json",
+                    "--agent",
+                    "codex",
+                ]
+            )
             self.assertEqual(code, 0, f"stderr: {stderr}")
             self.assertIn("Agent CLI: codex", stdout)
 
         def test_valid_with_opencode_agent(self) -> None:
             """Test OpenCode is a first-class seeded provider."""
-            code, stdout, stderr = self._run_cli([
-                "--repo", "/home/user/projects/foo",
-                "--base", "dev",
-                "--route", "D",
-                "--spec", "016-go-subprocess-dispatch",
-                "--run", "/home/user/.worktrail/runs/test.json",
-                "--agent", "opencode",
-            ])
+            code, stdout, stderr = self._run_cli(
+                [
+                    "--repo",
+                    "/home/user/projects/foo",
+                    "--base",
+                    "dev",
+                    "--route",
+                    "D",
+                    "--spec",
+                    "016-go-subprocess-dispatch",
+                    "--run",
+                    "/home/user/.worktrail/runs/test.json",
+                    "--agent",
+                    "opencode",
+                ]
+            )
             self.assertEqual(code, 0, f"stderr: {stderr}")
             self.assertIn("Agent CLI: opencode", stdout)
 
         def test_parent_marker_selects_opencode(self) -> None:
+            self.assertEqual(detect_default_agent({"OPENCODE_PARENT": "1"}), "opencode")
             self.assertEqual(
-                detect_default_agent({"OPENCODE_PARENT": "1"}), "opencode"
-            )
-            self.assertEqual(
-                detect_default_agent({"OPENCODE_PARENT": "1", "GO_AGENT_CLI": "claude"}),
+                detect_default_agent(
+                    {"OPENCODE_PARENT": "1", "GO_AGENT_CLI": "claude"}
+                ),
                 "claude",
             )
 
@@ -277,11 +321,16 @@ def _run_tests() -> int:
             leak into the seed prompt (invocation_context validation)."""
             code, stdout, stderr = self._run_cli(
                 [
-                    "--repo", "/home/user/projects/foo",
-                    "--base", "dev",
-                    "--route", "D",
-                    "--spec", "016-go-subprocess-dispatch",
-                    "--run", "/home/user/.worktrail/runs/test.json",
+                    "--repo",
+                    "/home/user/projects/foo",
+                    "--base",
+                    "dev",
+                    "--route",
+                    "D",
+                    "--spec",
+                    "016-go-subprocess-dispatch",
+                    "--run",
+                    "/home/user/.worktrail/runs/test.json",
                 ],
                 env_overrides={"GO_AGENT_CLI": "gpt-cli"},
             )
@@ -293,12 +342,18 @@ def _run_tests() -> int:
             """--agent must win even when the env marker holds a garbage value."""
             code, stdout, stderr = self._run_cli(
                 [
-                    "--repo", "/home/user/projects/foo",
-                    "--base", "dev",
-                    "--route", "D",
-                    "--spec", "016-go-subprocess-dispatch",
-                    "--run", "/home/user/.worktrail/runs/test.json",
-                    "--agent", "claude",
+                    "--repo",
+                    "/home/user/projects/foo",
+                    "--base",
+                    "dev",
+                    "--route",
+                    "D",
+                    "--spec",
+                    "016-go-subprocess-dispatch",
+                    "--run",
+                    "/home/user/.worktrail/runs/test.json",
+                    "--agent",
+                    "claude",
                 ],
                 env_overrides={"GO_AGENT_CLI": "gpt-cli"},
             )
@@ -307,24 +362,37 @@ def _run_tests() -> int:
 
         def test_missing_required_arg(self) -> None:
             """Test error when required argument is missing."""
-            code, stdout, stderr = self._run_cli([
-                "--base", "dev",
-                "--route", "D",
-                "--spec", "016-go-subprocess-dispatch",
-                "--run", "/home/user/.worktrail/runs/test.json",
-            ])
+            code, stdout, stderr = self._run_cli(
+                [
+                    "--base",
+                    "dev",
+                    "--route",
+                    "D",
+                    "--spec",
+                    "016-go-subprocess-dispatch",
+                    "--run",
+                    "/home/user/.worktrail/runs/test.json",
+                ]
+            )
             self.assertNotEqual(code, 0, "Should exit non-zero when --repo is missing")
             self.assertIn("required", stderr.lower() or stdout.lower())
 
         def test_relative_path_validation(self) -> None:
             """Test error when a path argument is relative."""
-            code, stdout, stderr = self._run_cli([
-                "--repo", "./relative/path",
-                "--base", "dev",
-                "--route", "D",
-                "--spec", "016-go-subprocess-dispatch",
-                "--run", "/home/user/.worktrail/runs/test.json",
-            ])
+            code, _stdout, stderr = self._run_cli(
+                [
+                    "--repo",
+                    "./relative/path",
+                    "--base",
+                    "dev",
+                    "--route",
+                    "D",
+                    "--spec",
+                    "016-go-subprocess-dispatch",
+                    "--run",
+                    "/home/user/.worktrail/runs/test.json",
+                ]
+            )
             self.assertNotEqual(code, 0, "Should exit non-zero for relative path")
             self.assertIn("absolute", stderr.lower())
 

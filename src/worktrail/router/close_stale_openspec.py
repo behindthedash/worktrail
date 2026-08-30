@@ -31,6 +31,7 @@ background sweep. Nothing here duplicates it -- this operates on a worktree
 `worktrail-go` already created (`#fix-branch-worktree-setup`) and stops before
 the PR boundary.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -38,7 +39,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from ..taskformats.openspec.schema import parse_tasks_md, set_task_checked
 
@@ -46,10 +47,10 @@ from ..taskformats.openspec.schema import parse_tasks_md, set_task_checked
 def flip_and_archive(
     worktree: Path,
     change_id: str,
-    task_ids: Optional[List[str]] = None,
+    task_ids: list[str] | None = None,
     *,
     timeout: int = 300,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Flip the given (or all pending) task checkboxes for `change_id` and
     run `openspec archive -y <change_id> --json` in `worktree`.
 
@@ -69,7 +70,7 @@ def flip_and_archive(
     finished flipping.
     """
     worktree = Path(worktree)
-    result: Dict[str, Any] = {
+    result: dict[str, Any] = {
         "checked": False,
         "change_dir": None,
         "flipped": [],
@@ -109,19 +110,31 @@ def flip_and_archive(
             result["already_checked"].append(tid)
 
     if not result["flipped"] and not result["already_checked"]:
-        result["error"] = "nothing to flip and nothing already checked; refusing to archive"
+        result["error"] = (
+            "nothing to flip and nothing already checked; refusing to archive"
+        )
         return result
-    if result["unknown_task_ids"] and not result["flipped"] and not result["already_checked"]:
+    if (
+        result["unknown_task_ids"]
+        and not result["flipped"]
+        and not result["already_checked"]
+    ):
         result["error"] = f"unknown task ids: {result['unknown_task_ids']}"
         return result
 
     proc = subprocess.run(
         ["openspec", "archive", "-y", change_id, "--json"],
-        capture_output=True, text=True, cwd=str(worktree), timeout=timeout,
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=str(worktree),
+        timeout=timeout,
     )
     result["archive_output"] = (proc.stdout or proc.stderr).strip()
     if proc.returncode != 0:
-        result["error"] = f"openspec archive -y {change_id} failed: {result['archive_output']}"
+        result["error"] = (
+            f"openspec archive -y {change_id} failed: {result['archive_output']}"
+        )
         return result
 
     result["archived"] = True
@@ -130,10 +143,13 @@ def flip_and_archive(
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--worktree", required=True, help="the fix-branch worktree path")
+    parser.add_argument(
+        "--worktree", required=True, help="the fix-branch worktree path"
+    )
     parser.add_argument("--change-id", required=True)
     parser.add_argument(
-        "--task-ids", default=None,
+        "--task-ids",
+        default=None,
         help="comma-separated task ids to flip (e.g. 2.1,3.1); default: all pending",
     )
     parser.add_argument("--json", action="store_true")

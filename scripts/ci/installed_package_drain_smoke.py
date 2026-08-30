@@ -15,7 +15,6 @@ import os
 import subprocess
 import sys
 import tempfile
-import time
 from pathlib import Path
 
 
@@ -26,7 +25,9 @@ def _write_executable(path: Path, body: str) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--agent", required=True, choices=("claude", "codex", "opencode"))
+    parser.add_argument(
+        "--agent", required=True, choices=("claude", "codex", "opencode")
+    )
     parser.add_argument("--wheel", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
@@ -59,14 +60,16 @@ def main() -> int:
             "time.sleep(0.25)\n"
             "Path(os.environ['WT_TERMINAL']).write_text(json.dumps({'state': 'terminal'}))\n",
         )
-        minimal_path = os.pathsep.join((str(fake_bin), str(venv / "bin"), "/usr/bin", "/bin"))
+        minimal_path = os.pathsep.join(
+            (str(fake_bin), str(venv / "bin"), "/usr/bin", "/bin")
+        )
         env = {
             "PATH": minimal_path,
             "WT_AGENT": args.agent,
             "WT_ARGV": str(argv_path),
             "WT_TERMINAL": str(terminal_path),
         }
-        probe = r'''
+        probe = r"""
 import json, os, time
 from pathlib import Path
 from worktrail.drain.drain import build_command, run_one_shot, validate_agent_runtime
@@ -112,23 +115,38 @@ print(json.dumps({
     "missing_runtime_failure": missing_runtime_failure,
     "installed_package": __import__("worktrail").__file__,
 }, sort_keys=True))
-'''
+"""
         completed = subprocess.run(
-            [str(python), "-I", "-c", probe], cwd=tmp, env=env,
-            capture_output=True, text=True,
+            [str(python), "-I", "-c", probe],
+            check=False,
+            cwd=tmp,
+            env=env,
+            capture_output=True,
+            text=True,
         )
         (args.output / "stdout.log").write_text(completed.stdout, encoding="utf-8")
         (args.output / "stderr.log").write_text(completed.stderr, encoding="utf-8")
         if completed.returncode != 0:
-            result_path.write_text(json.dumps({
-                "agent": args.agent, "status": "failed", "exit_code": completed.returncode,
-            }, indent=2) + "\n", encoding="utf-8")
+            result_path.write_text(
+                json.dumps(
+                    {
+                        "agent": args.agent,
+                        "status": "failed",
+                        "exit_code": completed.returncode,
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
             sys.stderr.write(completed.stderr)
             return completed.returncode
         result = json.loads(completed.stdout)
         result["status"] = "passed"
         result["provider_argv"] = json.loads(argv_path.read_text(encoding="utf-8"))
-        result_path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        result_path.write_text(
+            json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
         print(json.dumps(result, sort_keys=True))
     return 0
 

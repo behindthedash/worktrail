@@ -16,8 +16,9 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from worktrail.orchestrator import live  # noqa: E402
-from worktrail.orchestrator import spawnlib  # noqa: E402
+from worktrail.orchestrator import (
+    live,
+)
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -104,14 +105,18 @@ def _seed_mismatched_resume(root: Path) -> tuple[Path, Path, str, str, str]:
 class JournaledHeadMismatchResume(unittest.TestCase):
     def _assert_resume_rejects_mismatch(self, resume, branch_only=False):
         with tempfile.TemporaryDirectory() as tmp:
-            repo, journal, branch, retained_wt, retained_sha = _seed_mismatched_resume(Path(tmp))
+            repo, journal, branch, retained_wt, retained_sha = _seed_mismatched_resume(
+                Path(tmp)
+            )
             if branch_only:
                 _git(repo, "worktree", "remove", "--force", str(retained_wt))
             spawn_calls = []
 
             def unexpected_spawn(*args):
                 spawn_calls.append(args)
-                raise AssertionError("mismatched retained worktree must be rejected before spawn")
+                raise AssertionError(
+                    "mismatched retained worktree must be rejected before spawn"
+                )
 
             kwargs = {
                 "repo": repo,
@@ -142,11 +147,13 @@ class JournaledHeadMismatchResume(unittest.TestCase):
                 )
                 entries = json.loads(journal.read_text())["entries"]
             else:
+
                 def integrate_one(*args, **kwargs):
                     group = args[0]
                     quarantined = args[10]
-                    quarantined[group["name"]] = "no deliverable after retained-head rejection"
-                    return None
+                    quarantined[group["name"]] = (
+                        "no deliverable after retained-head rejection"
+                    )
 
                 kwargs["_integrate_one"] = integrate_one
                 result = live._pipeline_scheduler(**kwargs)
@@ -155,7 +162,10 @@ class JournaledHeadMismatchResume(unittest.TestCase):
 
             self.assertEqual(spawn_calls, [])
             self.assertTrue(
-                any("journaled task head" in e["report"].get("notes", "") for e in entries)
+                any(
+                    "journaled task head" in e["report"].get("notes", "")
+                    for e in entries
+                )
             )
             self.assertEqual(_git(repo, "rev-parse", branch), retained_sha)
             if branch_only:

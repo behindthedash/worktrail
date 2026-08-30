@@ -12,6 +12,7 @@ Extraction priority per spec:
 
 Output: {"specs": [{spec_id, stage, title, feature_summary, user_request_excerpt}]}
 """
+
 from __future__ import annotations
 
 import argparse
@@ -19,11 +20,10 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 # Reuse dashboard's state detection so overlap output includes lifecycle stage.
-from .dashboard import find_spec_file, detect_stage
-
+from .dashboard import detect_stage, find_spec_file
 
 # --- extraction helpers -------------------------------------------------------
 
@@ -62,7 +62,7 @@ def _slug_to_title(spec_id: str) -> str:
     return name.replace("-", " ").title()
 
 
-def _spec_title(spec_file: Optional[Path], spec_id: str) -> str:
+def _spec_title(spec_file: Path | None, spec_id: str) -> str:
     if spec_file:
         m = _DATE_PREFIX.match(spec_file.name)
         if m:
@@ -70,7 +70,7 @@ def _spec_title(spec_file: Optional[Path], spec_id: str) -> str:
     return _slug_to_title(spec_id)
 
 
-def _feature_summary_from_spec(text: str) -> Optional[str]:
+def _feature_summary_from_spec(text: str) -> str | None:
     m = _FEATURE_SUMMARY_RE.search(text)
     if m:
         val = m.group(1).strip()
@@ -79,7 +79,7 @@ def _feature_summary_from_spec(text: str) -> Optional[str]:
     return None
 
 
-def _summary_from_problem_statement(text: str) -> Optional[str]:
+def _summary_from_problem_statement(text: str) -> str | None:
     m = _PROBLEM_STMT_RE.search(text)
     if not m:
         return None
@@ -93,7 +93,7 @@ def _summary_from_problem_statement(text: str) -> Optional[str]:
     return None
 
 
-def _user_request_excerpt(spec_dir: Path, max_chars: int = 200) -> Optional[str]:
+def _user_request_excerpt(spec_dir: Path, max_chars: int = 200) -> str | None:
     ur = spec_dir / "user-request.md"
     if not ur.is_file():
         return None
@@ -102,15 +102,19 @@ def _user_request_excerpt(spec_dir: Path, max_chars: int = 200) -> Optional[str]
     except OSError:
         return None
     # Skip the `# User Request` heading and frontmatter-style lines
-    lines = [l for l in text.splitlines()
-             if l.strip() and not l.startswith("#") and not l.startswith("**")]
+    lines = [
+        l
+        for l in text.splitlines()
+        if l.strip() and not l.startswith("#") and not l.startswith("**")
+    ]
     excerpt = " ".join(lines).strip()
     return excerpt[:max_chars] if excerpt else None
 
 
 # --- per-spec extraction ------------------------------------------------------
 
-def extract_spec_summary(spec_dir: Path) -> Optional[Dict[str, Any]]:
+
+def extract_spec_summary(spec_dir: Path) -> dict[str, Any] | None:
     spec_dir = Path(spec_dir)
     spec_id = spec_dir.name
 
@@ -142,7 +146,7 @@ def extract_spec_summary(spec_dir: Path) -> Optional[Dict[str, Any]]:
         # probe_stale=False: stage here is display-only; skip the per-spec
         # `git ls-files` probe the dashboard needs for dispatch decisions.
         stage = detect_stage(spec_dir, probe_stale=False).get("stage", "unknown")
-    except Exception:
+    except Exception:  # noqa: BLE001
         stage = "unknown"
 
     return {
@@ -156,6 +160,7 @@ def extract_spec_summary(spec_dir: Path) -> Optional[Dict[str, Any]]:
 
 # --- OpenSpec extraction -------------------------------------------------------
 
+
 def _is_openspec_root(specs_root: Path) -> bool:
     """True if `specs_root` looks like an OpenSpec project root (has a
     `changes/` and/or `specs/` subdirectory) rather than a devkit
@@ -163,7 +168,7 @@ def _is_openspec_root(specs_root: Path) -> bool:
     return (specs_root / "changes").is_dir() or (specs_root / "specs").is_dir()
 
 
-def _first_sentence(block: str) -> Optional[str]:
+def _first_sentence(block: str) -> str | None:
     for line in block.splitlines():
         line = line.strip()
         if line and not line.startswith("[") and not line.startswith("#"):
@@ -172,7 +177,7 @@ def _first_sentence(block: str) -> Optional[str]:
     return None
 
 
-def _feature_summary_from_proposal(text: str) -> Optional[str]:
+def _feature_summary_from_proposal(text: str) -> str | None:
     m = _CAPABILITIES_SECTION_RE.search(text)
     if m:
         block = m.group(1).strip()
@@ -186,7 +191,7 @@ def _feature_summary_from_proposal(text: str) -> Optional[str]:
     return None
 
 
-def _extract_openspec_change(change_dir: Path) -> Optional[Dict[str, Any]]:
+def _extract_openspec_change(change_dir: Path) -> dict[str, Any] | None:
     proposal = change_dir / "proposal.md"
     if not proposal.is_file():
         return None
@@ -203,7 +208,7 @@ def _extract_openspec_change(change_dir: Path) -> Optional[Dict[str, Any]]:
     }
 
 
-def _feature_summary_from_openspec_spec(text: str) -> Optional[str]:
+def _feature_summary_from_openspec_spec(text: str) -> str | None:
     m = _PURPOSE_SECTION_RE.search(text)
     if m:
         block = m.group(1).strip()
@@ -212,7 +217,7 @@ def _feature_summary_from_openspec_spec(text: str) -> Optional[str]:
     return None
 
 
-def _extract_openspec_spec(spec_dir: Path) -> Optional[Dict[str, Any]]:
+def _extract_openspec_spec(spec_dir: Path) -> dict[str, Any] | None:
     spec_file = spec_dir / "spec.md"
     if not spec_file.is_file():
         return None
@@ -229,10 +234,10 @@ def _extract_openspec_spec(spec_dir: Path) -> Optional[Dict[str, Any]]:
     }
 
 
-def _scan_openspec(specs_root: Path) -> List[Dict[str, Any]]:
+def _scan_openspec(specs_root: Path) -> list[dict[str, Any]]:
     """OpenSpec extraction path: `changes/*/proposal.md` and `specs/*/spec.md`,
     used in place of the devkit `NNN-slug` folder iteration below."""
-    results: List[Dict[str, Any]] = []
+    results: list[dict[str, Any]] = []
     changes_dir = specs_root / "changes"
     if changes_dir.is_dir():
         for d in sorted(changes_dir.iterdir()):
@@ -263,11 +268,11 @@ def _scan_openspec(specs_root: Path) -> List[Dict[str, Any]]:
 _TASK_LINE_RE = re.compile(r"^-\s*\[([ xX])\]\s*(\d+\.\d+)\s+(.*)$")
 
 
-def _parse_openspec_tasks(tasks_text: str) -> List[Dict[str, Any]]:
+def _parse_openspec_tasks(tasks_text: str) -> list[dict[str, Any]]:
     """Parse a `tasks.md` checkbox list into one `{task_id, task_text, checked}`
     entry per top-level task line, folding each task's wrapped/indented
     continuation lines into `task_text`."""
-    entries: List[Dict[str, Any]] = []
+    entries: list[dict[str, Any]] = []
     lines = tasks_text.splitlines()
     i, n = 0, len(lines)
     while i < n:
@@ -287,15 +292,19 @@ def _parse_openspec_tasks(tasks_text: str) -> List[Dict[str, Any]]:
             if stripped:
                 text_parts.append(stripped)
             i += 1
-        entries.append({
-            "task_id": task_id,
-            "task_text": " ".join(text_parts).strip(),
-            "checked": checked,
-        })
+        entries.append(
+            {
+                "task_id": task_id,
+                "task_text": " ".join(text_parts).strip(),
+                "checked": checked,
+            }
+        )
     return entries
 
 
-def task_candidates(specs_root: Path, target: Optional[str] = None) -> List[Dict[str, Any]]:
+def task_candidates(
+    specs_root: Path, target: str | None = None
+) -> list[dict[str, Any]]:
     """Per-task candidate enumeration, scoped to a known OpenSpec target.
 
     Given an explicit `target` OpenSpec change id whose `changes/<target>/tasks.md`
@@ -325,7 +334,7 @@ def task_candidates(specs_root: Path, target: Optional[str] = None) -> List[Dict
 _DATE_FOLDER_RE = re.compile(r"^\d{3,}-")
 
 
-def scan(specs_root: Path) -> List[Dict[str, Any]]:
+def scan(specs_root: Path) -> list[dict[str, Any]]:
     specs_root = Path(specs_root)
     if not specs_root.is_dir():
         return []
@@ -346,12 +355,17 @@ def scan(specs_root: Path) -> List[Dict[str, Any]]:
 
 # --- CLI ----------------------------------------------------------------------
 
+
 def main(argv=None) -> int:
-    p = argparse.ArgumentParser(description="Extract spec feature summaries for overlap detection")
-    p.add_argument("--root", default="docs/specs",
-                   help="specs root to scan (default: docs/specs)")
-    p.add_argument("--json", action="store_true", default=True,
-                   help="emit JSON (default: true)")
+    p = argparse.ArgumentParser(
+        description="Extract spec feature summaries for overlap detection"
+    )
+    p.add_argument(
+        "--root", default="docs/specs", help="specs root to scan (default: docs/specs)"
+    )
+    p.add_argument(
+        "--json", action="store_true", default=True, help="emit JSON (default: true)"
+    )
     args = p.parse_args(argv)
 
     specs = scan(Path(args.root))

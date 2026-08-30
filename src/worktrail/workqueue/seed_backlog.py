@@ -37,15 +37,16 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any
 
 from ..router import dashboard
 from ..router.policy import load_policy
 from ..router.policy_selfcheck import discover_repo_names
 from ..shared.brief_frontmatter import split_frontmatter
-from .create_handoff import create_handoff
 from . import work_queue
+from .create_handoff import create_handoff
 
 # One drain pass should top the queue up, not flood it: a first run against a
 # backlog that accumulated for months must not convert the whole dashboard into
@@ -54,7 +55,7 @@ from . import work_queue
 DEFAULT_MAX_SEEDS = 5
 
 
-def resolve_spec_rel(repo: Path, spec_id: str) -> Optional[str]:
+def resolve_spec_rel(repo: Path, spec_id: str) -> str | None:
     """The spec's repo-relative path for whichever task format authored it.
 
     Same contract as `drain.drain.resolve_spec_rel` (kept here rather than
@@ -69,10 +70,10 @@ def resolve_spec_rel(repo: Path, spec_id: str) -> Optional[str]:
     return None
 
 
-def _base_branch_for(repo: Path) -> Optional[str]:
+def _base_branch_for(repo: Path) -> str | None:
     try:
         return load_policy(repo).get("base_branch") or None
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
 
 
@@ -81,8 +82,8 @@ def _base_branch_for(repo: Path) -> Optional[str]:
 
 
 def find_needs_tasks_specs(
-    repos_root: Path, go_repo: Optional[str] = None
-) -> List[Dict[str, Any]]:
+    repos_root: Path, go_repo: str | None = None
+) -> list[dict[str, Any]]:
     """Every (repo, spec) pair in the `needs-tasks` dashboard stage.
 
     `needs-clarification` is deliberately excluded: its next action requires
@@ -91,7 +92,7 @@ def find_needs_tasks_specs(
     names = discover_repo_names(repos_root)
     if go_repo:
         names = [n for n in names if n == go_repo]
-    found: List[Dict[str, Any]] = []
+    found: list[dict[str, Any]] = []
     for name in names:
         repo_path = repos_root / name
         rows = dashboard.scan(repo_path / "docs" / "specs")
@@ -104,18 +105,22 @@ def find_needs_tasks_specs(
             spec_rel = resolve_spec_rel(repo_path, spec_id)
             if spec_rel is None:
                 continue
-            found.append({
-                "kind": "needs-tasks",
-                "repo": repo_path, "repo_name": name,
-                "id": spec_id, "spec_rel": spec_rel,
-                "seed_key": f"{name}:spec:{spec_id}",
-            })
+            found.append(
+                {
+                    "kind": "needs-tasks",
+                    "repo": repo_path,
+                    "repo_name": name,
+                    "id": spec_id,
+                    "spec_rel": spec_rel,
+                    "seed_key": f"{name}:spec:{spec_id}",
+                }
+            )
     return found
 
 
 def find_ready_specs(
-    repos_root: Path, go_repo: Optional[str] = None
-) -> List[Dict[str, Any]]:
+    repos_root: Path, go_repo: str | None = None
+) -> list[dict[str, Any]]:
     """Every (repo, spec) pair in the `ready-to-implement` dashboard stage, for
     repos that have opted into Route D implementation seeding.
 
@@ -126,7 +131,7 @@ def find_ready_specs(
     names = discover_repo_names(repos_root)
     if go_repo:
         names = [n for n in names if n == go_repo]
-    found: List[Dict[str, Any]] = []
+    found: list[dict[str, Any]] = []
     for name in names:
         repo_path = repos_root / name
         if not load_policy(repo_path).get("allow_seeded_implementation"):
@@ -141,18 +146,22 @@ def find_ready_specs(
             spec_rel = resolve_spec_rel(repo_path, spec_id)
             if spec_rel is None:
                 continue
-            found.append({
-                "kind": "ready-to-implement",
-                "repo": repo_path, "repo_name": name,
-                "id": spec_id, "spec_rel": spec_rel,
-                "seed_key": f"{name}:impl:{spec_id}",
-            })
+            found.append(
+                {
+                    "kind": "ready-to-implement",
+                    "repo": repo_path,
+                    "repo_name": name,
+                    "id": spec_id,
+                    "spec_rel": spec_rel,
+                    "seed_key": f"{name}:impl:{spec_id}",
+                }
+            )
     return found
 
 
 def find_epic_gaps(
-    repos_root: Path, go_repo: Optional[str] = None
-) -> List[Dict[str, Any]]:
+    repos_root: Path, go_repo: str | None = None
+) -> list[dict[str, Any]]:
     """Every epic under `docs/specs/epics/` with fewer citing specs than
     decomposed `### Feature` headings and a non-terminal `**Status:**`.
 
@@ -169,7 +178,7 @@ def find_epic_gaps(
     names = discover_repo_names(repos_root)
     if go_repo:
         names = [n for n in names if n == go_repo]
-    found: List[Dict[str, Any]] = []
+    found: list[dict[str, Any]] = []
     for name in names:
         repo_path = repos_root / name
         for row in dashboard.scan_epics(repo_path):
@@ -178,21 +187,29 @@ def find_epic_gaps(
                 continue
             epic_id = row["id"]
             if stage == "epic-unparseable":
-                found.append({
-                    "kind": "epic", "repo": repo_path, "repo_name": name,
-                    "id": epic_id, "unparseable": True,
-                })
+                found.append(
+                    {
+                        "kind": "epic",
+                        "repo": repo_path,
+                        "repo_name": name,
+                        "id": epic_id,
+                        "unparseable": True,
+                    }
+                )
                 continue
             cited = row["citing_specs"]
-            found.append({
-                "kind": "epic",
-                "repo": repo_path, "repo_name": name,
-                "id": epic_id,
-                "features": row["features"],
-                "cited": row["cited"],
-                "citing_specs": cited,
-                "seed_key": f"{name}:epic:{epic_id}:cited={row['cited']}",
-            })
+            found.append(
+                {
+                    "kind": "epic",
+                    "repo": repo_path,
+                    "repo_name": name,
+                    "id": epic_id,
+                    "features": row["features"],
+                    "cited": row["cited"],
+                    "citing_specs": cited,
+                    "seed_key": f"{name}:epic:{epic_id}:cited={row['cited']}",
+                }
+            )
     return found
 
 
@@ -228,7 +245,7 @@ def existing_seed_keys(queue_base: Path) -> set:
 # Brief synthesis
 
 
-def _needs_tasks_brief_kwargs(finding: Dict[str, Any]) -> Dict[str, Any]:
+def _needs_tasks_brief_kwargs(finding: dict[str, Any]) -> dict[str, Any]:
     spec_id, repo_name = finding["id"], finding["repo_name"]
     return {
         "focus": (
@@ -249,7 +266,7 @@ def _needs_tasks_brief_kwargs(finding: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _ready_brief_kwargs(finding: Dict[str, Any]) -> Dict[str, Any]:
+def _ready_brief_kwargs(finding: dict[str, Any]) -> dict[str, Any]:
     spec_id, repo_name = finding["id"], finding["repo_name"]
     return {
         "focus": (
@@ -270,7 +287,7 @@ def _ready_brief_kwargs(finding: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _epic_brief_kwargs(finding: Dict[str, Any]) -> Dict[str, Any]:
+def _epic_brief_kwargs(finding: dict[str, Any]) -> dict[str, Any]:
     epic_id, repo_name = finding["id"], finding["repo_name"]
     cited = finding["cited"]
     features = finding["features"]
@@ -301,12 +318,12 @@ def _epic_brief_kwargs(finding: Dict[str, Any]) -> Dict[str, Any]:
 
 def seed_backlog(
     repos_root: Path,
-    go_repo: Optional[str] = None,
-    queue_base: Optional[Path] = None,
+    go_repo: str | None = None,
+    queue_base: Path | None = None,
     max_seeds: int = DEFAULT_MAX_SEEDS,
     dry_run: bool = False,
     log: Callable[[str], None] = print,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Find unseeded backlog and capture up to `max_seeds` briefs for it.
 
     Returns a summary dict: `seeded` (one entry per created brief),
@@ -321,8 +338,10 @@ def seed_backlog(
     candidates += [f for f in epic_findings if not f.get("unparseable")]
     candidates += find_ready_specs(repos_root, go_repo)
     for finding in unparseable:
-        log(f"seed-backlog: skipping epic {finding['repo_name']} "
-            f"{finding['id']}: no '### Feature' decomposition headings found")
+        log(
+            f"seed-backlog: skipping epic {finding['repo_name']} "
+            f"{finding['id']}: no '### Feature' decomposition headings found"
+        )
 
     known = existing_seed_keys(queue_base)
     fresh = [c for c in candidates if c["seed_key"] not in known]
@@ -330,19 +349,25 @@ def seed_backlog(
     to_seed = fresh[:max_seeds] if max_seeds else fresh
     dropped = len(fresh) - len(to_seed)
     if dropped:
-        log(f"seed-backlog: capped at {max_seeds} seeds this sweep; "
-            f"{dropped} candidate(s) deferred to the next sweep")
+        log(
+            f"seed-backlog: capped at {max_seeds} seeds this sweep; "
+            f"{dropped} candidate(s) deferred to the next sweep"
+        )
 
-    seeded: List[Dict[str, Any]] = []
+    seeded: list[dict[str, Any]] = []
     for finding in to_seed:
-        kwargs = (_needs_tasks_brief_kwargs(finding)
-                  if finding["kind"] == "needs-tasks"
-                  else _ready_brief_kwargs(finding)
-                  if finding["kind"] == "ready-to-implement"
-                  else _epic_brief_kwargs(finding))
+        kwargs = (
+            _needs_tasks_brief_kwargs(finding)
+            if finding["kind"] == "needs-tasks"
+            else _ready_brief_kwargs(finding)
+            if finding["kind"] == "ready-to-implement"
+            else _epic_brief_kwargs(finding)
+        )
         entry = {
-            "kind": finding["kind"], "repo": finding["repo_name"],
-            "id": finding["id"], "seed_key": finding["seed_key"],
+            "kind": finding["kind"],
+            "repo": finding["repo_name"],
+            "id": finding["id"],
+            "seed_key": finding["seed_key"],
         }
         if dry_run:
             log(f"seed-backlog dry-run: would seed {finding['seed_key']}")
@@ -376,36 +401,53 @@ def seed_backlog(
 # CLI
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Seed the work queue from needs-tasks specs and "
-                    "under-specced epics.")
+        "under-specced epics."
+    )
     parser.add_argument("--repos-root", type=Path, default=Path.home() / "projects")
-    parser.add_argument("--repo", default=None,
-                        help="restrict seeding to one repo name")
-    parser.add_argument("--queue-dir", type=Path, default=None,
-                        help="queue base containing queue/ and picked/ "
-                             "(default: $WORK_QUEUE_DIR)")
-    parser.add_argument("--max-seeds", type=int, default=DEFAULT_MAX_SEEDS,
-                        help=f"cap per sweep (default {DEFAULT_MAX_SEEDS}; 0 = unlimited)")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="report what would be seeded, create nothing")
+    parser.add_argument(
+        "--repo", default=None, help="restrict seeding to one repo name"
+    )
+    parser.add_argument(
+        "--queue-dir",
+        type=Path,
+        default=None,
+        help="queue base containing queue/ and picked/ (default: $WORK_QUEUE_DIR)",
+    )
+    parser.add_argument(
+        "--max-seeds",
+        type=int,
+        default=DEFAULT_MAX_SEEDS,
+        help=f"cap per sweep (default {DEFAULT_MAX_SEEDS}; 0 = unlimited)",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="report what would be seeded, create nothing",
+    )
     parser.add_argument("--json", action="store_true", dest="as_json")
     args = parser.parse_args(argv)
     if not args.repos_root.is_dir():
         print(f"error: repos root {args.repos_root} does not exist", file=sys.stderr)
         return 2
     summary = seed_backlog(
-        args.repos_root, args.repo, queue_base=args.queue_dir,
-        max_seeds=args.max_seeds, dry_run=args.dry_run,
+        args.repos_root,
+        args.repo,
+        queue_base=args.queue_dir,
+        max_seeds=args.max_seeds,
+        dry_run=args.dry_run,
         log=(lambda _msg: None) if args.as_json else print,
     )
     if args.as_json:
         print(json.dumps(summary, indent=2))
     else:
-        print(f"seeded {len(summary['seeded'])}, "
-              f"skipped {summary['skipped_existing']} existing, "
-              f"deferred {summary['dropped_over_cap']}")
+        print(
+            f"seeded {len(summary['seeded'])}, "
+            f"skipped {summary['skipped_existing']} existing, "
+            f"deferred {summary['dropped_over_cap']}"
+        )
     return 0
 
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Unit tests for pre_pr_gate.py (stdlib unittest, mirrors test_policy.py style)."""
+
 from __future__ import annotations
 
 import contextlib
@@ -13,10 +14,18 @@ from unittest.mock import patch
 from worktrail.router.check_dod_verification import audit_all_specs
 from worktrail.router.policy import load_policy
 from worktrail.router.pre_pr_gate import (
-    CLARIFICATION_INTEGRITY_DRIFT_EXIT, DOD_VERIFICATION_DRIFT_EXIT,
-    REQ_AC_COVERAGE_DRIFT_EXIT, SCOPE_COMPLETENESS_EXIT, SPEC_SYNC_DRIFT_EXIT,
-    UNCONFIGURED_EXIT, is_docs_only, is_promotion_pr, main, resolve_cmd,
-    scope_review_failures, spec_sync_drift,
+    CLARIFICATION_INTEGRITY_DRIFT_EXIT,
+    DOD_VERIFICATION_DRIFT_EXIT,
+    REQ_AC_COVERAGE_DRIFT_EXIT,
+    SCOPE_COMPLETENESS_EXIT,
+    SPEC_SYNC_DRIFT_EXIT,
+    UNCONFIGURED_EXIT,
+    is_docs_only,
+    is_promotion_pr,
+    main,
+    resolve_cmd,
+    scope_review_failures,
+    spec_sync_drift,
 )
 
 
@@ -46,7 +55,9 @@ class TestPrePrGate(unittest.TestCase):
 
     # --- resolve_cmd -------------------------------------------------------
     def test_pre_pr_cmd_wins_over_integrate_smoke_cmd(self) -> None:
-        repo = self._repo('pre_pr_cmd: "echo gate"\nintegrate_smoke_cmd: "echo smoke"\n')
+        repo = self._repo(
+            'pre_pr_cmd: "echo gate"\nintegrate_smoke_cmd: "echo smoke"\n'
+        )
         self.assertEqual(resolve_cmd(load_policy(Path(repo))), "echo gate")
 
     def test_falls_back_to_integrate_smoke_cmd(self) -> None:
@@ -91,34 +102,59 @@ class TestPrePrGate(unittest.TestCase):
 
     # --- --risk / AUTOMERGE LABELS ------------------------------------------
     def test_risk_omitted_prints_no_labels_line(self) -> None:
-        repo = self._repo('pre_pr_cmd: "true"\nautomerge:\n  enabled: true\n  max_risk: medium\n')
+        repo = self._repo(
+            'pre_pr_cmd: "true"\nautomerge:\n  enabled: true\n  max_risk: medium\n'
+        )
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             self.assertEqual(main(["--repo", repo]), 0)
         self.assertNotIn("AUTOMERGE LABELS", out.getvalue())
 
     def test_eligible_risk_prints_risk_label_only(self) -> None:
-        repo = self._repo('pre_pr_cmd: "true"\nautomerge:\n  enabled: true\n  max_risk: medium\n')
+        repo = self._repo(
+            'pre_pr_cmd: "true"\nautomerge:\n  enabled: true\n  max_risk: medium\n'
+        )
         out = io.StringIO()
-        with patch("worktrail.router.pre_pr_gate.required_checks_gate", return_value=(True, "checks ok")), \
-                contextlib.redirect_stdout(out):
+        with (
+            patch(
+                "worktrail.router.pre_pr_gate.required_checks_gate",
+                return_value=(True, "checks ok"),
+            ),
+            contextlib.redirect_stdout(out),
+        ):
             self.assertEqual(main(["--repo", repo, "--risk", "low"]), 0)
         self.assertIn("AUTOMERGE LABELS: go:risk-low  (eligible=True", out.getvalue())
         self.assertNotIn("go:no-automerge", out.getvalue())
 
     def test_ineligible_risk_prints_no_automerge_label(self) -> None:
-        repo = self._repo('pre_pr_cmd: "true"\nautomerge:\n  enabled: true\n  max_risk: medium\n')
+        repo = self._repo(
+            'pre_pr_cmd: "true"\nautomerge:\n  enabled: true\n  max_risk: medium\n'
+        )
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             self.assertEqual(main(["--repo", repo, "--risk", "high"]), 0)
-        self.assertIn("AUTOMERGE LABELS: go:risk-high go:no-automerge  (eligible=False", out.getvalue())
+        self.assertIn(
+            "AUTOMERGE LABELS: go:risk-high go:no-automerge  (eligible=False",
+            out.getvalue(),
+        )
 
-    def test_labels_only_returns_exact_resolved_labels_without_running_gate(self) -> None:
-        repo = self._repo('pre_pr_cmd: "exit 3"\nautomerge:\n  enabled: true\n  max_risk: medium\n')
+    def test_labels_only_returns_exact_resolved_labels_without_running_gate(
+        self,
+    ) -> None:
+        repo = self._repo(
+            'pre_pr_cmd: "exit 3"\nautomerge:\n  enabled: true\n  max_risk: medium\n'
+        )
         out = io.StringIO()
-        with patch("worktrail.router.pre_pr_gate.required_checks_gate", return_value=(True, "checks ok")), \
-                contextlib.redirect_stdout(out):
-            self.assertEqual(main(["--repo", repo, "--risk", "low", "--labels-only"]), 0)
+        with (
+            patch(
+                "worktrail.router.pre_pr_gate.required_checks_gate",
+                return_value=(True, "checks ok"),
+            ),
+            contextlib.redirect_stdout(out),
+        ):
+            self.assertEqual(
+                main(["--repo", repo, "--risk", "low", "--labels-only"]), 0
+            )
         self.assertEqual(out.getvalue().strip(), "go:risk-low")
 
     def test_labels_only_requires_risk(self) -> None:
@@ -126,30 +162,47 @@ class TestPrePrGate(unittest.TestCase):
         self.assertEqual(main(["--repo", repo, "--labels-only"]), UNCONFIGURED_EXIT)
 
     # --- required_checks_gate integration -----------------------------------
-    def test_required_checks_gate_not_consulted_when_policy_already_ineligible(self) -> None:
+    def test_required_checks_gate_not_consulted_when_policy_already_ineligible(
+        self,
+    ) -> None:
         """Zero wasted `gh api` calls when policy alone already refuses --
         e.g. risk exceeds max_risk (as above, risk=high vs max_risk=medium)."""
-        repo = self._repo('pre_pr_cmd: "true"\nautomerge:\n  enabled: true\n  max_risk: medium\n')
+        repo = self._repo(
+            'pre_pr_cmd: "true"\nautomerge:\n  enabled: true\n  max_risk: medium\n'
+        )
         out = io.StringIO()
-        with patch("worktrail.router.pre_pr_gate.required_checks_gate") as gate, \
-                contextlib.redirect_stdout(out):
+        with (
+            patch("worktrail.router.pre_pr_gate.required_checks_gate") as gate,
+            contextlib.redirect_stdout(out),
+        ):
             self.assertEqual(main(["--repo", repo, "--risk", "high"]), 0)
         gate.assert_not_called()
 
     def test_required_checks_gate_overrides_policy_eligible(self) -> None:
         """Policy says eligible, but the base branch has no live required
         check -- the PR must still get go:no-automerge."""
-        repo = self._repo('pre_pr_cmd: "true"\nautomerge:\n  enabled: true\n  max_risk: medium\n')
+        repo = self._repo(
+            'pre_pr_cmd: "true"\nautomerge:\n  enabled: true\n  max_risk: medium\n'
+        )
         out = io.StringIO()
-        with patch("worktrail.router.pre_pr_gate.required_checks_gate",
-                   return_value=(False, "zero required status checks")), \
-                contextlib.redirect_stdout(out):
+        with (
+            patch(
+                "worktrail.router.pre_pr_gate.required_checks_gate",
+                return_value=(False, "zero required status checks"),
+            ),
+            contextlib.redirect_stdout(out),
+        ):
             self.assertEqual(main(["--repo", repo, "--risk", "low"]), 0)
-        self.assertIn("AUTOMERGE LABELS: go:risk-low go:no-automerge  (eligible=False", out.getvalue())
+        self.assertIn(
+            "AUTOMERGE LABELS: go:risk-low go:no-automerge  (eligible=False",
+            out.getvalue(),
+        )
         self.assertIn("zero required status checks", out.getvalue())
 
     def test_failing_gate_never_prints_labels(self) -> None:
-        repo = self._repo('pre_pr_cmd: "exit 3"\nautomerge:\n  enabled: true\n  max_risk: medium\n')
+        repo = self._repo(
+            'pre_pr_cmd: "exit 3"\nautomerge:\n  enabled: true\n  max_risk: medium\n'
+        )
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             self.assertEqual(main(["--repo", repo, "--risk", "low"]), 3)
@@ -175,7 +228,8 @@ class TestPrePrGate(unittest.TestCase):
         repo = self._repo('pre_pr_cmd: "true"\n')
         run = Path(repo) / "run.yaml"
         run.write_text(
-            'scope_review:\n  - "blocked | smoke test | provider unavailable"\n', encoding="utf-8"
+            'scope_review:\n  - "blocked | smoke test | provider unavailable"\n',
+            encoding="utf-8",
         )
         self.assertEqual(
             main(["--repo", repo, "--run", str(run)]), SCOPE_COMPLETENESS_EXIT
@@ -242,11 +296,7 @@ class TestSpecSyncDriftGate(unittest.TestCase):
         # docs_only_paths exists to skip pre_pr_cmd on doc-only diffs — it
         # must never mask spec-sync drift, which is unrelated to that fast
         # path (see pre_pr_gate.py module docstring).
-        repo = self._repo(
-            'pre_pr_cmd: "true"\n'
-            "docs_only_paths:\n"
-            "  - docs/**\n"
-        )
+        repo = self._repo('pre_pr_cmd: "true"\ndocs_only_paths:\n  - docs/**\n')
         _write_drifted_spec(Path(repo) / "docs" / "specs")
         self.assertEqual(main(["--repo", repo]), SPEC_SYNC_DRIFT_EXIT)
 
@@ -255,8 +305,9 @@ class TestDocsOnlySkip(unittest.TestCase):
     """Exercises the docs_only_paths fast path against a real throwaway git repo."""
 
     def _git(self, repo: str, *args: str) -> subprocess.CompletedProcess:
-        return subprocess.run(["git", *args], cwd=repo, capture_output=True,
-                              text=True, check=True)
+        return subprocess.run(
+            ["git", *args], cwd=repo, capture_output=True, text=True, check=True
+        )
 
     def _init_repo(self, policy_yaml: str, base_branch: str = "main") -> str:
         d = tempfile.mkdtemp(prefix="prepr-docsonly-")
@@ -279,11 +330,13 @@ class TestDocsOnlySkip(unittest.TestCase):
         self._git(repo, "add", ".")
         self._git(repo, "commit", "-q", "-m", message)
 
-    _POLICY = ('pre_pr_cmd: "exit 9"\n'
-               'docs_only_paths:\n'
-               '  - docs/**\n'
-               "  - '**/*.md'\n"
-               "  - .gitignore\n")
+    _POLICY = (
+        'pre_pr_cmd: "exit 9"\n'
+        "docs_only_paths:\n"
+        "  - docs/**\n"
+        "  - '**/*.md'\n"
+        "  - .gitignore\n"
+    )
 
     def test_all_docs_diff_skips_pre_pr_cmd(self) -> None:
         repo = self._init_repo(self._POLICY)
@@ -334,8 +387,9 @@ class TestPromotionPrSkip(unittest.TestCase):
     HEAD matching its own pushed `origin/<branch>`, not an empty diff.)"""
 
     def _git(self, repo: str, *args: str) -> subprocess.CompletedProcess:
-        return subprocess.run(["git", *args], cwd=repo, capture_output=True,
-                              text=True, check=True)
+        return subprocess.run(
+            ["git", *args], cwd=repo, capture_output=True, text=True, check=True
+        )
 
     def _init_repo(self, policy_yaml: str, base_branch: str = "prd") -> str:
         bare = tempfile.mkdtemp(prefix="prepr-promotion-origin-")
@@ -362,9 +416,7 @@ class TestPromotionPrSkip(unittest.TestCase):
         self._git(repo, "add", ".")
         self._git(repo, "commit", "-q", "-m", message)
 
-    _POLICY = ('pre_pr_cmd: "exit 9"\n'
-               'promotion_pairs:\n'
-               '  prd: stg\n')
+    _POLICY = 'pre_pr_cmd: "exit 9"\npromotion_pairs:\n  prd: stg\n'
 
     def test_clean_pushed_promotion_branch_skips_pre_pr_cmd(self) -> None:
         repo = self._init_repo(self._POLICY)
@@ -450,8 +502,9 @@ class TestDocsOnlyRiskCap(unittest.TestCase):
     through to the label for a diff that actually touches auth-related code)."""
 
     def _git(self, repo: str, *args: str) -> subprocess.CompletedProcess:
-        return subprocess.run(["git", *args], cwd=repo, capture_output=True,
-                              text=True, check=True)
+        return subprocess.run(
+            ["git", *args], cwd=repo, capture_output=True, text=True, check=True
+        )
 
     _POLICY = (
         'pre_pr_cmd: "true"\n'
@@ -488,18 +541,24 @@ class TestDocsOnlyRiskCap(unittest.TestCase):
         repo = self._init_repo()
         self._git(repo, "checkout", "-q", "-b", "feature")
         self._write(
-            repo, "openspec/changes/dashboard-selfcheck/tasks.md",
+            repo,
+            "openspec/changes/dashboard-selfcheck/tasks.md",
             "- [ ] add authentication-ambiguity detector\n",
         )
         self._commit(repo, "spec(dashboard-selfcheck): add tasks")
         self.assertTrue(is_docs_only(Path(repo), load_policy(Path(repo))))
 
         out = io.StringIO()
-        with patch("worktrail.router.pre_pr_gate.required_checks_gate",
-                   return_value=(True, "checks ok")), \
-                contextlib.redirect_stdout(out):
+        with (
+            patch(
+                "worktrail.router.pre_pr_gate.required_checks_gate",
+                return_value=(True, "checks ok"),
+            ),
+            contextlib.redirect_stdout(out),
+        ):
             self.assertEqual(
-                main(["--repo", repo, "--risk", "high", "--labels-only"]), 0)
+                main(["--repo", repo, "--risk", "high", "--labels-only"]), 0
+            )
         self.assertEqual(out.getvalue().strip(), "go:risk-low")
 
     def test_docs_only_diff_caps_critical_risk_too(self) -> None:
@@ -511,11 +570,16 @@ class TestDocsOnlyRiskCap(unittest.TestCase):
         self._commit(repo, "docs change")
 
         out = io.StringIO()
-        with patch("worktrail.router.pre_pr_gate.required_checks_gate",
-                   return_value=(True, "checks ok")), \
-                contextlib.redirect_stdout(out):
+        with (
+            patch(
+                "worktrail.router.pre_pr_gate.required_checks_gate",
+                return_value=(True, "checks ok"),
+            ),
+            contextlib.redirect_stdout(out),
+        ):
             self.assertEqual(
-                main(["--repo", repo, "--risk", "critical", "--labels-only"]), 0)
+                main(["--repo", repo, "--risk", "critical", "--labels-only"]), 0
+            )
         self.assertEqual(out.getvalue().strip(), "go:risk-low")
 
     def test_non_docs_only_diff_with_high_risk_is_not_capped(self) -> None:
@@ -531,7 +595,8 @@ class TestDocsOnlyRiskCap(unittest.TestCase):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             self.assertEqual(
-                main(["--repo", repo, "--risk", "high", "--labels-only"]), 0)
+                main(["--repo", repo, "--risk", "high", "--labels-only"]), 0
+            )
         self.assertEqual(out.getvalue().strip(), "go:risk-high go:no-automerge")
 
     def test_mixed_diff_with_one_non_docs_path_is_not_capped(self) -> None:
@@ -546,7 +611,8 @@ class TestDocsOnlyRiskCap(unittest.TestCase):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             self.assertEqual(
-                main(["--repo", repo, "--risk", "high", "--labels-only"]), 0)
+                main(["--repo", repo, "--risk", "high", "--labels-only"]), 0
+            )
         self.assertEqual(out.getvalue().strip(), "go:risk-high go:no-automerge")
 
 
@@ -563,8 +629,9 @@ class TestClarificationIntegrityGate(unittest.TestCase):
     )
 
     def _git(self, repo: str, *args: str) -> subprocess.CompletedProcess:
-        return subprocess.run(["git", *args], cwd=repo, capture_output=True,
-                              text=True, check=True)
+        return subprocess.run(
+            ["git", *args], cwd=repo, capture_output=True, text=True, check=True
+        )
 
     def _init_repo(self) -> str:
         d = tempfile.mkdtemp(prefix="prepr-clarify-")
@@ -573,7 +640,9 @@ class TestClarificationIntegrityGate(unittest.TestCase):
         self._git(d, "config", "user.name", "Test")
         worktrail_dir = Path(d) / ".worktrail"
         worktrail_dir.mkdir(parents=True)
-        (worktrail_dir / "policy.yaml").write_text('pre_pr_cmd: "true"\n', encoding="utf-8")
+        (worktrail_dir / "policy.yaml").write_text(
+            'pre_pr_cmd: "true"\n', encoding="utf-8"
+        )
         self._git(d, "add", ".")
         self._git(d, "commit", "-q", "-m", "base")
         return d
@@ -590,15 +659,21 @@ class TestClarificationIntegrityGate(unittest.TestCase):
     def test_newly_added_inferred_spec_fails_the_gate(self) -> None:
         repo = self._init_repo()
         self._git(repo, "checkout", "-q", "-b", "feature")
-        self._write(repo, "docs/specs/098-fixture/spec.md",
-                    self.INFERRED_AND_DECLARED_CLEAN_SPEC)
+        self._write(
+            repo,
+            "docs/specs/098-fixture/spec.md",
+            self.INFERRED_AND_DECLARED_CLEAN_SPEC,
+        )
         self._commit(repo, "add spec")
         self.assertEqual(main(["--repo", repo]), CLARIFICATION_INTEGRITY_DRIFT_EXIT)
 
     def test_pre_existing_inferred_spec_not_in_diff_does_not_fail(self) -> None:
         repo = self._init_repo()
-        self._write(repo, "docs/specs/098-fixture/spec.md",
-                    self.INFERRED_AND_DECLARED_CLEAN_SPEC)
+        self._write(
+            repo,
+            "docs/specs/098-fixture/spec.md",
+            self.INFERRED_AND_DECLARED_CLEAN_SPEC,
+        )
         self._commit(repo, "pre-existing spec on main")
         self._git(repo, "checkout", "-q", "-b", "feature")
         self._write(repo, "docs/specs/098-fixture/unrelated.md", "unrelated\n")
@@ -609,7 +684,8 @@ class TestClarificationIntegrityGate(unittest.TestCase):
         repo = self._init_repo()
         self._git(repo, "checkout", "-q", "-b", "feature")
         self._write(
-            repo, "docs/specs/099-fixture/spec.md",
+            repo,
+            "docs/specs/099-fixture/spec.md",
             "# Functional Specification: Fixture\n\n"
             "## Clarifications\n\n- Q: x? -> A: y [agent-resolved]\n\n"
             "## Open Questions\n\nNone outstanding.\n",
@@ -624,8 +700,9 @@ class TestDodVerificationGate(unittest.TestCase):
     pattern)."""
 
     def _git(self, repo: str, *args: str) -> subprocess.CompletedProcess:
-        return subprocess.run(["git", *args], cwd=repo, capture_output=True,
-                              text=True, check=True)
+        return subprocess.run(
+            ["git", *args], cwd=repo, capture_output=True, text=True, check=True
+        )
 
     def _init_repo(self) -> str:
         d = tempfile.mkdtemp(prefix="prepr-dod-")
@@ -634,7 +711,9 @@ class TestDodVerificationGate(unittest.TestCase):
         self._git(d, "config", "user.name", "Test")
         worktrail_dir = Path(d) / ".worktrail"
         worktrail_dir.mkdir(parents=True)
-        (worktrail_dir / "policy.yaml").write_text('pre_pr_cmd: "true"\n', encoding="utf-8")
+        (worktrail_dir / "policy.yaml").write_text(
+            'pre_pr_cmd: "true"\n', encoding="utf-8"
+        )
         self._git(d, "add", ".")
         self._git(d, "commit", "-q", "-m", "base")
         return d
@@ -660,8 +739,11 @@ class TestDodVerificationGate(unittest.TestCase):
         repo = self._init_repo()
         self._git(repo, "checkout", "-q", "-b", "feature")
         self._write(
-            repo, "docs/specs/098-fixture/tasks/TASK-001.md",
-            self._task("dod-checks:\n  - type: file_exists\n    path: nonexistent.txt\n"),
+            repo,
+            "docs/specs/098-fixture/tasks/TASK-001.md",
+            self._task(
+                "dod-checks:\n  - type: file_exists\n    path: nonexistent.txt\n"
+            ),
         )
         self._commit(repo, "add task")
         self.assertEqual(main(["--repo", repo]), DOD_VERIFICATION_DRIFT_EXIT)
@@ -671,7 +753,8 @@ class TestDodVerificationGate(unittest.TestCase):
         self._git(repo, "checkout", "-q", "-b", "feature")
         self._write(repo, "README.md", "present\n")
         self._write(
-            repo, "docs/specs/098-fixture/tasks/TASK-001.md",
+            repo,
+            "docs/specs/098-fixture/tasks/TASK-001.md",
             self._task("dod-checks:\n  - type: file_exists\n    path: README.md\n"),
         )
         self._commit(repo, "add task")
@@ -680,9 +763,7 @@ class TestDodVerificationGate(unittest.TestCase):
     def test_completed_task_with_no_dod_checks_passes_gate(self) -> None:
         repo = self._init_repo()
         self._git(repo, "checkout", "-q", "-b", "feature")
-        self._write(
-            repo, "docs/specs/098-fixture/tasks/TASK-001.md", self._task("")
-        )
+        self._write(repo, "docs/specs/098-fixture/tasks/TASK-001.md", self._task(""))
         self._commit(repo, "add task")
         self.assertEqual(main(["--repo", repo]), 0)
 
@@ -693,8 +774,9 @@ class TestDodVerificationDerivationGate(unittest.TestCase):
     a real throwaway git repo (mirrors TestDodVerificationGate's pattern)."""
 
     def _git(self, repo: str, *args: str) -> subprocess.CompletedProcess:
-        return subprocess.run(["git", *args], cwd=repo, capture_output=True,
-                              text=True, check=True)
+        return subprocess.run(
+            ["git", *args], cwd=repo, capture_output=True, text=True, check=True
+        )
 
     def _init_repo(self) -> str:
         d = tempfile.mkdtemp(prefix="prepr-dod-derive-")
@@ -703,7 +785,9 @@ class TestDodVerificationDerivationGate(unittest.TestCase):
         self._git(d, "config", "user.name", "Test")
         worktrail_dir = Path(d) / ".worktrail"
         worktrail_dir.mkdir(parents=True)
-        (worktrail_dir / "policy.yaml").write_text('pre_pr_cmd: "true"\n', encoding="utf-8")
+        (worktrail_dir / "policy.yaml").write_text(
+            'pre_pr_cmd: "true"\n', encoding="utf-8"
+        )
         self._git(d, "add", ".")
         self._git(d, "commit", "-q", "-m", "base")
         return d
@@ -717,11 +801,14 @@ class TestDodVerificationDerivationGate(unittest.TestCase):
         self._git(repo, "add", ".")
         self._git(repo, "commit", "-q", "-m", message)
 
-    def test_completed_task_with_unchecked_ac_box_and_no_dod_checks_fails_gate(self) -> None:
+    def test_completed_task_with_unchecked_ac_box_and_no_dod_checks_fails_gate(
+        self,
+    ) -> None:
         repo = self._init_repo()
         self._git(repo, "checkout", "-q", "-b", "feature")
         self._write(
-            repo, "docs/specs/098-fixture/tasks/TASK-001.md",
+            repo,
+            "docs/specs/098-fixture/tasks/TASK-001.md",
             "---\nid: TASK-001\ntitle: Fixture\nspec: 098-fixture\n"
             "status: completed\n---\n\n"
             "## Acceptance Criteria\n\n- [ ] does the thing\n",
@@ -729,12 +816,15 @@ class TestDodVerificationDerivationGate(unittest.TestCase):
         self._commit(repo, "add task")
         self.assertEqual(main(["--repo", repo]), DOD_VERIFICATION_DRIFT_EXIT)
 
-    def test_completed_task_with_checked_ac_boxes_and_tracked_files_passes_gate(self) -> None:
+    def test_completed_task_with_checked_ac_boxes_and_tracked_files_passes_gate(
+        self,
+    ) -> None:
         repo = self._init_repo()
         self._git(repo, "checkout", "-q", "-b", "feature")
         self._write(repo, "src/thing.py", "def thing(): return 1\n")
         self._write(
-            repo, "docs/specs/098-fixture/tasks/TASK-001.md",
+            repo,
+            "docs/specs/098-fixture/tasks/TASK-001.md",
             "---\nid: TASK-001\ntitle: Fixture\nspec: 098-fixture\n"
             "status: completed\nfiles:\n  - src/thing.py\n---\n\n"
             "## Acceptance Criteria\n\n- [x] does the thing\n",
@@ -751,7 +841,8 @@ class TestDodVerificationDerivationGate(unittest.TestCase):
         # diff-scoped gate must not fail the current PR on account of it.
         repo = self._init_repo()
         self._write(
-            repo, "docs/specs/098-fixture/tasks/TASK-001.md",
+            repo,
+            "docs/specs/098-fixture/tasks/TASK-001.md",
             "---\nid: TASK-001\ntitle: Pre-existing\nspec: 098-fixture\n"
             "status: completed\n---\n\n"
             "## Acceptance Criteria\n\n- [ ] never verified\n",
@@ -775,8 +866,9 @@ class TestReqAcCoverageGate(unittest.TestCase):
     TestDodVerificationGate's pattern)."""
 
     def _git(self, repo: str, *args: str) -> subprocess.CompletedProcess:
-        return subprocess.run(["git", *args], cwd=repo, capture_output=True,
-                              text=True, check=True)
+        return subprocess.run(
+            ["git", *args], cwd=repo, capture_output=True, text=True, check=True
+        )
 
     def _init_repo(self) -> str:
         d = tempfile.mkdtemp(prefix="prepr-reqcov-")
@@ -785,7 +877,9 @@ class TestReqAcCoverageGate(unittest.TestCase):
         self._git(d, "config", "user.name", "Test")
         worktrail_dir = Path(d) / ".worktrail"
         worktrail_dir.mkdir(parents=True)
-        (worktrail_dir / "policy.yaml").write_text('pre_pr_cmd: "true"\n', encoding="utf-8")
+        (worktrail_dir / "policy.yaml").write_text(
+            'pre_pr_cmd: "true"\n', encoding="utf-8"
+        )
         self._git(d, "add", ".")
         self._git(d, "commit", "-q", "-m", "base")
         return d
@@ -818,7 +912,8 @@ class TestReqAcCoverageGate(unittest.TestCase):
         self._git(repo, "checkout", "-q", "-b", "feature")
         self._write(repo, "docs/specs/098-fixture/spec.md", self._SPEC_WITH_REQ_001)
         self._write(
-            repo, "docs/specs/098-fixture/tasks/TASK-001.md",
+            repo,
+            "docs/specs/098-fixture/tasks/TASK-001.md",
             "---\nid: TASK-001\ntitle: Fixture\nspec: 098-fixture\n"
             "status: completed\nreqs:\n  - REQ-001\n---\n\nbody\n",
         )
@@ -856,8 +951,10 @@ class TestOrphanedTestsWarning(unittest.TestCase):
         self.assertIn("tests/test_orphan.py", err)
 
     def test_no_warning_when_the_gate_runs_the_tests(self) -> None:
-        repo = self._git_repo('pre_pr_cmd: "pytest --version >/dev/null || true"\n',
-                              ["tests/test_covered.py"])
+        repo = self._git_repo(
+            'pre_pr_cmd: "pytest --version >/dev/null || true"\n',
+            ["tests/test_covered.py"],
+        )
         code, err = self._run(repo)
         self.assertEqual(code, 0)
         self.assertNotIn("WARNING", err)
@@ -876,8 +973,10 @@ class TestOrphanedTestsWarning(unittest.TestCase):
 
     def test_detector_failure_cannot_break_the_gate(self) -> None:
         repo = self._git_repo('pre_pr_cmd: "true"\n', ["tests/test_orphan.py"])
-        with patch("worktrail.router.pre_pr_gate.orphaned_test_paths",
-                   side_effect=RuntimeError("boom")):
+        with patch(
+            "worktrail.router.pre_pr_gate.orphaned_test_paths",
+            side_effect=RuntimeError("boom"),
+        ):
             code, err = self._run(repo)
         self.assertEqual(code, 0)
         self.assertNotIn("WARNING", err)
@@ -890,8 +989,9 @@ class TestChecksOnly(unittest.TestCase):
     (design D2)."""
 
     def _git(self, repo: str, *args: str) -> subprocess.CompletedProcess:
-        return subprocess.run(["git", *args], cwd=repo, capture_output=True,
-                              text=True, check=True)
+        return subprocess.run(
+            ["git", *args], cwd=repo, capture_output=True, text=True, check=True
+        )
 
     def _init_repo(self, policy_yaml: str) -> str:
         d = tempfile.mkdtemp(prefix="prepr-checksonly-")
@@ -929,33 +1029,43 @@ class TestChecksOnly(unittest.TestCase):
     def test_clarification_integrity_drift_returns_its_own_exit_code(self) -> None:
         repo = self._init_repo('pre_pr_cmd: "true"\n')
         self._git(repo, "checkout", "-q", "-b", "feature")
-        self._write(repo, "docs/specs/098-fixture/spec.md",
-                    TestClarificationIntegrityGate.INFERRED_AND_DECLARED_CLEAN_SPEC)
+        self._write(
+            repo,
+            "docs/specs/098-fixture/spec.md",
+            TestClarificationIntegrityGate.INFERRED_AND_DECLARED_CLEAN_SPEC,
+        )
         self._commit(repo, "add spec")
-        self.assertEqual(main(["--repo", repo, "--checks-only"]),
-                          CLARIFICATION_INTEGRITY_DRIFT_EXIT)
+        self.assertEqual(
+            main(["--repo", repo, "--checks-only"]), CLARIFICATION_INTEGRITY_DRIFT_EXIT
+        )
 
     def test_dod_verification_drift_returns_its_own_exit_code(self) -> None:
         repo = self._init_repo('pre_pr_cmd: "true"\n')
         self._git(repo, "checkout", "-q", "-b", "feature")
         self._write(
-            repo, "docs/specs/098-fixture/tasks/TASK-001.md",
+            repo,
+            "docs/specs/098-fixture/tasks/TASK-001.md",
             "---\nid: TASK-001\ntitle: Fixture\nspec: 098-fixture\n"
             "status: completed\ndod-checks:\n  - type: file_exists\n"
             "    path: nonexistent.txt\n---\n\nbody\n",
         )
         self._commit(repo, "add task")
-        self.assertEqual(main(["--repo", repo, "--checks-only"]),
-                          DOD_VERIFICATION_DRIFT_EXIT)
+        self.assertEqual(
+            main(["--repo", repo, "--checks-only"]), DOD_VERIFICATION_DRIFT_EXIT
+        )
 
     def test_req_ac_coverage_drift_returns_its_own_exit_code(self) -> None:
         repo = self._init_repo('pre_pr_cmd: "true"\n')
         self._git(repo, "checkout", "-q", "-b", "feature")
-        self._write(repo, "docs/specs/098-fixture/spec.md",
-                    TestReqAcCoverageGate._SPEC_WITH_REQ_001)
+        self._write(
+            repo,
+            "docs/specs/098-fixture/spec.md",
+            TestReqAcCoverageGate._SPEC_WITH_REQ_001,
+        )
         self._commit(repo, "add spec")
-        self.assertEqual(main(["--repo", repo, "--checks-only"]),
-                          REQ_AC_COVERAGE_DRIFT_EXIT)
+        self.assertEqual(
+            main(["--repo", repo, "--checks-only"]), REQ_AC_COVERAGE_DRIFT_EXIT
+        )
 
     def test_unconfigured_pre_pr_cmd_does_not_hit_unconfigured_exit(self) -> None:
         # No pre_pr_cmd/integrate_smoke_cmd at all -- the ordinary gate would

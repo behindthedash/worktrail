@@ -13,7 +13,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from worktrail.orchestrator import coordinator  # noqa: E402
+from worktrail.orchestrator import coordinator
 
 
 def test_ac001_done_tasks_are_deliverable():
@@ -27,7 +27,9 @@ def test_ac001_done_tasks_are_deliverable():
         {"id": "TASK-002", "deps": ["TASK-001"], "files": ["b.ts"], "kind": "impl"},
     ]
     status = {"TASK-001": "done", "TASK-002": "pending"}
-    deliverable, dropped = coordinator.deliverable_subset(["TASK-001", "TASK-002"], tasks, status)
+    deliverable, dropped = coordinator.deliverable_subset(
+        ["TASK-001", "TASK-002"], tasks, status
+    )
     assert deliverable == ["TASK-001", "TASK-002"]
     assert dropped == []
 
@@ -39,7 +41,9 @@ def test_ac002_preompleted_absent():
         {"id": "TASK-002", "deps": ["TASK-001"], "files": ["b.ts"], "kind": "impl"},
     ]
     status = {"TASK-001": "completed", "TASK-002": "pending"}
-    deliverable, dropped = coordinator.deliverable_subset(["TASK-001", "TASK-002"], tasks, status)
+    deliverable, dropped = coordinator.deliverable_subset(
+        ["TASK-001", "TASK-002"], tasks, status
+    )
     assert "TASK-001" not in deliverable
     assert "TASK-001" in dropped
 
@@ -72,7 +76,9 @@ def test_ac003_failed_dependent_dropped():
         {"id": "TASK-Y", "deps": ["TASK-X"], "files": ["y.ts"], "kind": "impl"},
     ]
     status = {"TASK-X": "failed", "TASK-Y": "pending"}
-    deliverable, dropped = coordinator.deliverable_subset(["TASK-X", "TASK-Y"], tasks, status)
+    _deliverable, dropped = coordinator.deliverable_subset(
+        ["TASK-X", "TASK-Y"], tasks, status
+    )
     # Failed dependency DOES cascade-drop
     assert "TASK-Y" in dropped
 
@@ -88,7 +94,9 @@ def test_ac004_uses_already_integrated_constant():
     # "completed" is dropped (already on a group branch from a prior run)
     for status_val in coordinator.ALREADY_INTEGRATED:
         tasks = [{"id": "T1", "deps": [], "files": ["a.ts"], "kind": "impl"}]
-        deliverable, dropped = coordinator.deliverable_subset(["T1"], tasks, {"T1": status_val})
+        deliverable, dropped = coordinator.deliverable_subset(
+            ["T1"], tasks, {"T1": status_val}
+        )
         assert "T1" in dropped
         assert "T1" not in deliverable
 

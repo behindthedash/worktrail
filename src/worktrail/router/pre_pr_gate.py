@@ -124,6 +124,7 @@ Usage: pre_pr_gate.py [--repo /path/to/worktree] [--print-cmd]
                        [--target-branch BRANCH] [--run RUN_RECORD]
                        [--labels-only] [--checks-only]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -132,18 +133,23 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from .automerge_preflight import required_checks_gate
 from .check_clarification_integrity import check_changed_specs
 from .check_dod_verification import check_changed_specs as check_dod_failures
 from .check_req_coverage import (
     _resolve_base_ref as _resolve_req_coverage_base_ref,
+)
+from .check_req_coverage import (
     check_changed_specs as check_req_coverage_failures,
 )
 from .check_spec_sync import check_spec
 from .policy import (
-    POLICY_RELPATH, automerge_eligible, automerge_labels, load_policy,
+    POLICY_RELPATH,
+    automerge_eligible,
+    automerge_labels,
+    load_policy,
 )
 from .policy_drift_selfcheck import orphaned_test_paths
 from .run_record import _load as load_run_record
@@ -160,7 +166,7 @@ REQ_AC_COVERAGE_DRIFT_EXIT = 5
 CANDIDATE_BASE_REFS = ("origin/main", "origin/master", "main", "master")
 
 
-def resolve_cmd(policy: Dict[str, Any]) -> Optional[str]:
+def resolve_cmd(policy: dict[str, Any]) -> str | None:
     """Resolve the gate command: pre_pr_cmd wins, integrate_smoke_cmd is the fallback."""
     for key in ("pre_pr_cmd", "integrate_smoke_cmd"):
         value = policy.get(key)
@@ -169,7 +175,7 @@ def resolve_cmd(policy: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def _matches_any(path: str, patterns: List[str]) -> bool:
+def _matches_any(path: str, patterns: list[str]) -> bool:
     """fnmatch-based glob match with light gitignore-style '**' handling."""
     for pattern in patterns:
         if pattern.endswith("/**"):
@@ -187,7 +193,7 @@ def _matches_any(path: str, patterns: List[str]) -> bool:
     return False
 
 
-def _resolve_base_ref(repo: Path, policy: Dict[str, Any]) -> Optional[str]:
+def _resolve_base_ref(repo: Path, policy: dict[str, Any]) -> str | None:
     """Find a git ref to diff HEAD against. None if nothing resolves."""
     configured = policy.get("base_branch")
     candidates = (
@@ -196,14 +202,17 @@ def _resolve_base_ref(repo: Path, policy: Dict[str, Any]) -> Optional[str]:
     for ref in candidates:
         result = subprocess.run(
             ["git", "rev-parse", "--verify", "--quiet", ref],
-            cwd=str(repo), capture_output=True, text=True,
+            check=False,
+            cwd=str(repo),
+            capture_output=True,
+            text=True,
         )
         if result.returncode == 0:
             return ref
     return None
 
 
-def changed_paths(repo: Path, policy: Dict[str, Any]) -> Optional[List[str]]:
+def changed_paths(repo: Path, policy: dict[str, Any]) -> list[str] | None:
     """Changed paths between HEAD and the resolved base ref's merge-base.
 
     None means unresolvable (no base ref, no merge-base) — callers must treat
@@ -214,26 +223,32 @@ def changed_paths(repo: Path, policy: Dict[str, Any]) -> Optional[List[str]]:
         return None
     merge_base = subprocess.run(
         ["git", "merge-base", "HEAD", base_ref],
-        cwd=str(repo), capture_output=True, text=True,
+        check=False,
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
     )
     if merge_base.returncode != 0:
         return None
     diff = subprocess.run(
         ["git", "diff", "--name-only", merge_base.stdout.strip(), "HEAD"],
-        cwd=str(repo), capture_output=True, text=True,
+        check=False,
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
     )
     if diff.returncode != 0:
         return None
     return [line for line in diff.stdout.splitlines() if line.strip()]
 
 
-def spec_sync_drift(repo: Path) -> List[str]:
+def spec_sync_drift(repo: Path) -> list[str]:
     """Structural spec-sync failures across every numbered spec dir under
     docs/specs/. Empty list means pass or not-applicable (no docs/specs/)."""
     specs_root = repo / "docs" / "specs"
     if not specs_root.is_dir():
         return []
-    failures: List[str] = []
+    failures: list[str] = []
     for spec_dir in sorted(
         d for d in specs_root.iterdir() if d.is_dir() and re.match(r"^\d+-", d.name)
     ):
@@ -241,7 +256,7 @@ def spec_sync_drift(repo: Path) -> List[str]:
     return failures
 
 
-def is_docs_only(repo: Path, policy: Dict[str, Any]) -> bool:
+def is_docs_only(repo: Path, policy: dict[str, Any]) -> bool:
     """True iff docs_only_paths is configured and every changed path matches it."""
     patterns = policy.get("docs_only_paths") or []
     if not patterns:
@@ -253,11 +268,14 @@ def is_docs_only(repo: Path, policy: Dict[str, Any]) -> bool:
     return all(_matches_any(path, patterns) for path in paths)
 
 
-def _current_branch(repo: Path) -> Optional[str]:
+def _current_branch(repo: Path) -> str | None:
     """Current checked-out branch name, or None if unresolvable (e.g. detached HEAD)."""
     result = subprocess.run(
         ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-        cwd=str(repo), capture_output=True, text=True,
+        check=False,
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
     )
     if result.returncode != 0:
         return None
@@ -269,20 +287,35 @@ def _head_matches_pushed_remote(repo: Path, branch: str) -> bool:
     """True iff HEAD is exactly `origin/<branch>` and the working tree is
     clean — i.e. nothing local/uncommitted/unpushed that CI hasn't already
     seen and vetted when this branch's own commits landed on `origin`."""
-    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(repo),
-                           capture_output=True, text=True)
-    remote = subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"origin/{branch}"],
-                             cwd=str(repo), capture_output=True, text=True)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        check=False,
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+    )
+    remote = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"origin/{branch}"],
+        check=False,
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+    )
     if head.returncode != 0 or remote.returncode != 0:
         return False
     if head.stdout.strip() != remote.stdout.strip():
         return False
-    status = subprocess.run(["git", "status", "--porcelain"], cwd=str(repo),
-                             capture_output=True, text=True)
+    status = subprocess.run(
+        ["git", "status", "--porcelain"],
+        check=False,
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+    )
     return status.returncode == 0 and not status.stdout.strip()
 
 
-def is_promotion_pr(repo: Path, policy: Dict[str, Any], target_branch: str) -> bool:
+def is_promotion_pr(repo: Path, policy: dict[str, Any], target_branch: str) -> bool:
     """True iff the current branch is the repo's own canonical promotion
     source for `target_branch` (policy `promotion_pairs`) AND HEAD exactly
     matches its own already-pushed `origin/<branch>` with a clean working
@@ -307,7 +340,7 @@ def is_promotion_pr(repo: Path, policy: Dict[str, Any], target_branch: str) -> b
     return _head_matches_pushed_remote(repo, head_branch)
 
 
-def scope_review_failures(run_path: Optional[Path]) -> List[str]:
+def scope_review_failures(run_path: Path | None) -> list[str]:
     """Return unresolved scope-review entries; absent ``--run`` is legacy-compatible."""
     if run_path is None:
         return []
@@ -316,7 +349,7 @@ def scope_review_failures(run_path: Optional[Path]) -> List[str]:
     review = load_run_record(run_path).get("scope_review")
     if not review:
         return ["no scope review recorded in the run record"]
-    failures: List[str] = []
+    failures: list[str] = []
     for entry in review:
         parts = entry.split(" | ", 2) if isinstance(entry, str) else []
         if len(parts) != 3:
@@ -326,7 +359,7 @@ def scope_review_failures(run_path: Optional[Path]) -> List[str]:
         if status == "blocked":
             failures.append(f"blocked scope item: {item} ({detail})")
         elif status == "out-of-scope" and not (
-            detail.startswith("different purpose:") or detail.startswith("user approved:")
+            detail.startswith(("different purpose:", "user approved:"))
         ):
             failures.append(
                 f"out-of-scope item lacks a different-purpose or user-approved reason: {item}"
@@ -337,9 +370,13 @@ def scope_review_failures(run_path: Optional[Path]) -> List[str]:
 
 
 def resolve_pr_labels(
-    repo: Path, policy: Dict[str, Any], risk: str, gates: List[str], target_branch: str,
-    route: Optional[str] = None,
-) -> Tuple[List[str], bool, str]:
+    repo: Path,
+    policy: dict[str, Any],
+    risk: str,
+    gates: list[str],
+    target_branch: str,
+    route: str | None = None,
+) -> tuple[list[str], bool, str]:
     """The exact label set `--labels-only` and `--risk` both compute: policy
     eligibility, then (only if policy-eligible) the live required-checks gate.
     Single source of truth so `--labels-only`, the printed AUTOMERGE LABELS
@@ -365,8 +402,13 @@ def resolve_pr_labels(
     if is_docs_only(repo, policy):
         risk = "low"
     eligible, reason = automerge_eligible(
-        policy, risk, gates, target_branch,
-        route=route, changed_paths=changed_paths(repo, policy))
+        policy,
+        risk,
+        gates,
+        target_branch,
+        route=route,
+        changed_paths=changed_paths(repo, policy),
+    )
     if eligible:
         eligible, reason = required_checks_gate(repo, target_branch)
     return automerge_labels(eligible, risk), eligible, reason
@@ -385,70 +427,97 @@ def _warn_orphaned_tests(repo: Path) -> None:
     """
     try:
         orphaned = orphaned_test_paths(repo)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return
     if not orphaned:
         return
-    print(f"PRE-PR GATE: WARNING — {len(orphaned)} test file(s) in this repo are run "
-          "by neither this gate command nor any CI workflow:", file=sys.stderr)
+    print(
+        f"PRE-PR GATE: WARNING — {len(orphaned)} test file(s) in this repo are run "
+        "by neither this gate command nor any CI workflow:",
+        file=sys.stderr,
+    )
     for rel in orphaned[:5]:
         print(f"    {rel}", file=sys.stderr)
     if len(orphaned) > 5:
         print(f"    … +{len(orphaned) - 5} more", file=sys.stderr)
-    print(f"  Not blocking. Fix by extending pre_pr_cmd in {POLICY_RELPATH} or adding "
-          "a CI job, or delete the dead tests.", file=sys.stderr)
+    print(
+        f"  Not blocking. Fix by extending pre_pr_cmd in {POLICY_RELPATH} or adding "
+        "a CI job, or delete the dead tests.",
+        file=sys.stderr,
+    )
 
 
-def run_drift_checks(repo: Path, policy: Dict[str, Any]) -> int:
+def run_drift_checks(repo: Path, policy: dict[str, Any]) -> int:
     """Run the four deterministic drift checks in order, stderr-reporting each
     failure exactly as `main()` does inline. Returns the matching
     `*_DRIFT_EXIT` constant on the first failure, 0 when all pass."""
     drift = spec_sync_drift(repo)
     if drift:
-        print("PRE-PR GATE: FAIL — spec/task drift detected in docs/specs/:",
-              file=sys.stderr)
+        print(
+            "PRE-PR GATE: FAIL — spec/task drift detected in docs/specs/:",
+            file=sys.stderr,
+        )
         for failure in drift:
             print(f"  - {failure}", file=sys.stderr)
-        print("  Run worktrail-check-spec-sync on the affected spec(s) to fix.",
-              file=sys.stderr)
+        print(
+            "  Run worktrail-check-spec-sync on the affected spec(s) to fix.",
+            file=sys.stderr,
+        )
         return SPEC_SYNC_DRIFT_EXIT
 
     clarification_failures = check_changed_specs(
         repo, changed_paths(repo, policy) or []
     )
     if clarification_failures:
-        print("PRE-PR GATE: FAIL — clarification-integrity issue(s) detected in "
-              "changed docs/specs/ files:", file=sys.stderr)
+        print(
+            "PRE-PR GATE: FAIL — clarification-integrity issue(s) detected in "
+            "changed docs/specs/ files:",
+            file=sys.stderr,
+        )
         for failure in clarification_failures:
             print(f"  - {failure}", file=sys.stderr)
-        print("  An owner-escalated marker was resolved by inference and declared "
-              "clean — see Decision Classification in specs.spec-check.md.",
-              file=sys.stderr)
+        print(
+            "  An owner-escalated marker was resolved by inference and declared "
+            "clean — see Decision Classification in specs.spec-check.md.",
+            file=sys.stderr,
+        )
         return CLARIFICATION_INTEGRITY_DRIFT_EXIT
 
     dod_failures = check_dod_failures(repo, changed_paths(repo, policy) or [])
     if dod_failures:
-        print("PRE-PR GATE: FAIL — Definition-of-Done verification failed for "
-              "completed task(s):", file=sys.stderr)
+        print(
+            "PRE-PR GATE: FAIL — Definition-of-Done verification failed for "
+            "completed task(s):",
+            file=sys.stderr,
+        )
         for failure in dod_failures:
             print(f"  - {failure}", file=sys.stderr)
-        print("  Run worktrail-check-dod-verification --suggest-remediation on the "
-              "affected task(s) for a stale-path vs unmet-AC hint.",
-              file=sys.stderr)
+        print(
+            "  Run worktrail-check-dod-verification --suggest-remediation on the "
+            "affected task(s) for a stale-path vs unmet-AC hint.",
+            file=sys.stderr,
+        )
         return DOD_VERIFICATION_DRIFT_EXIT
 
-    req_coverage_base_ref = _resolve_req_coverage_base_ref(repo, policy.get("base_branch"))
+    req_coverage_base_ref = _resolve_req_coverage_base_ref(
+        repo, policy.get("base_branch")
+    )
     if req_coverage_base_ref is not None:
         req_coverage_failures = check_req_coverage_failures(
             repo, changed_paths(repo, policy) or [], req_coverage_base_ref
         )
         if req_coverage_failures:
-            print("PRE-PR GATE: FAIL — req/AC coverage issue(s) detected in "
-                  "changed docs/specs/ files:", file=sys.stderr)
+            print(
+                "PRE-PR GATE: FAIL — req/AC coverage issue(s) detected in "
+                "changed docs/specs/ files:",
+                file=sys.stderr,
+            )
             for failure in req_coverage_failures:
                 print(f"  - {failure}", file=sys.stderr)
-            print("  Run worktrail-check-req-coverage on the affected spec(s) to fix.",
-                  file=sys.stderr)
+            print(
+                "  Run worktrail-check-req-coverage on the affected spec(s) to fix.",
+                file=sys.stderr,
+            )
             return REQ_AC_COVERAGE_DRIFT_EXIT
 
     return 0
@@ -456,31 +525,55 @@ def run_drift_checks(repo: Path, policy: Dict[str, Any]) -> int:
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--repo", default=".",
-                   help="worktree root to gate (default: cwd)")
-    p.add_argument("--print-cmd", action="store_true",
-                   help="print the resolved command without running it "
-                        "(exit 0 when resolvable/skip, 2 when unconfigured)")
+    p.add_argument("--repo", default=".", help="worktree root to gate (default: cwd)")
     p.add_argument(
-        "--risk", default=None, choices=("low", "medium", "high", "critical"),
+        "--print-cmd",
+        action="store_true",
+        help="print the resolved command without running it "
+        "(exit 0 when resolvable/skip, 2 when unconfigured)",
+    )
+    p.add_argument(
+        "--risk",
+        default=None,
+        choices=("low", "medium", "high", "critical"),
         help="classifier risk for this PR — when set, a PASS also prints the "
-             "AUTOMERGE LABELS line (go:risk-<level>, plus go:no-automerge "
-             "when automerge_eligible() is false) to pass to `gh pr create "
-             "--label`. Omit to skip label computation entirely.")
-    p.add_argument("--gates", default="",
-                    help="comma-separated classifier gates for --risk's eligibility check")
-    p.add_argument("--target-branch", default="main",
-                   help="PR target branch for --risk's eligibility check")
-    p.add_argument("--route", default=None,
-                   help="classified route letter for --risk's require_human_routes check")
-    p.add_argument("--labels-only", action="store_true",
-                   help="print resolved PR labels without running the test command")
-    p.add_argument("--checks-only", action="store_true",
-                   help="run the four deterministic drift checks (spec sync, "
-                        "clarification integrity, DoD failures, requirement coverage) "
-                        "and do not run the policy test command")
-    p.add_argument("--run", default=None, metavar="RUN_RECORD",
-                   help="shared go run record; enables mandatory scope completeness review")
+        "AUTOMERGE LABELS line (go:risk-<level>, plus go:no-automerge "
+        "when automerge_eligible() is false) to pass to `gh pr create "
+        "--label`. Omit to skip label computation entirely.",
+    )
+    p.add_argument(
+        "--gates",
+        default="",
+        help="comma-separated classifier gates for --risk's eligibility check",
+    )
+    p.add_argument(
+        "--target-branch",
+        default="main",
+        help="PR target branch for --risk's eligibility check",
+    )
+    p.add_argument(
+        "--route",
+        default=None,
+        help="classified route letter for --risk's require_human_routes check",
+    )
+    p.add_argument(
+        "--labels-only",
+        action="store_true",
+        help="print resolved PR labels without running the test command",
+    )
+    p.add_argument(
+        "--checks-only",
+        action="store_true",
+        help="run the four deterministic drift checks (spec sync, "
+        "clarification integrity, DoD failures, requirement coverage) "
+        "and do not run the policy test command",
+    )
+    p.add_argument(
+        "--run",
+        default=None,
+        metavar="RUN_RECORD",
+        help="shared go run record; enables mandatory scope completeness review",
+    )
     args = p.parse_args(argv)
 
     repo = Path(args.repo).resolve()
@@ -506,10 +599,15 @@ def main(argv=None) -> int:
 
     scope_failures = scope_review_failures(Path(args.run) if args.run else None)
     if scope_failures:
-        print("PRE-PR GATE: FAIL — scope completeness review required:", file=sys.stderr)
+        print(
+            "PRE-PR GATE: FAIL — scope completeness review required:", file=sys.stderr
+        )
         for failure in scope_failures:
             print(f"  - {failure}", file=sys.stderr)
-        print("  Complete in-scope work before handoff/PR, or record a different-purpose or user-approved exclusion.", file=sys.stderr)
+        print(
+            "  Complete in-scope work before handoff/PR, or record a different-purpose or user-approved exclusion.",
+            file=sys.stderr,
+        )
         return SCOPE_COMPLETENESS_EXIT
 
     if not args.print_cmd:
@@ -518,37 +616,51 @@ def main(argv=None) -> int:
             return drift_exit
 
     if not args.print_cmd and is_docs_only(repo, policy):
-        print("PRE-PR GATE: DOCS-ONLY SKIP — every changed path matched "
-              f"docs_only_paths in {POLICY_RELPATH}. Record this skip in the "
-              "PR body's 'Pre-PR Test Gate' section.")
+        print(
+            "PRE-PR GATE: DOCS-ONLY SKIP — every changed path matched "
+            f"docs_only_paths in {POLICY_RELPATH}. Record this skip in the "
+            "PR body's 'Pre-PR Test Gate' section."
+        )
         return 0
 
     if not args.print_cmd and is_promotion_pr(repo, policy, args.target_branch):
-        print("PRE-PR GATE: PROMOTION-SHAPED PR SKIP — current branch is the "
-              f"canonical promotion source for {args.target_branch} per "
-              f"promotion_pairs in {POLICY_RELPATH}, and HEAD exactly matches "
-              "its own already-pushed remote with a clean working tree (every "
-              "commit already went through CI on its way onto origin). Record "
-              "this skip in the PR body's 'Pre-PR Test Gate' section.")
+        print(
+            "PRE-PR GATE: PROMOTION-SHAPED PR SKIP — current branch is the "
+            f"canonical promotion source for {args.target_branch} per "
+            f"promotion_pairs in {POLICY_RELPATH}, and HEAD exactly matches "
+            "its own already-pushed remote with a clean working tree (every "
+            "commit already went through CI on its way onto origin). Record "
+            "this skip in the PR body's 'Pre-PR Test Gate' section."
+        )
         return 0
 
     cmd = resolve_cmd(policy)
 
     if cmd is not None and cmd.lower() in SKIP_VALUES:
-        print(f"PRE-PR GATE: SKIP — explicit 'pre_pr_cmd: {cmd}' in {POLICY_RELPATH}. "
-              "Record this skip in the PR body's 'Pre-PR Test Gate' section.")
+        print(
+            f"PRE-PR GATE: SKIP — explicit 'pre_pr_cmd: {cmd}' in {POLICY_RELPATH}. "
+            "Record this skip in the PR body's 'Pre-PR Test Gate' section."
+        )
         return 0
 
     if cmd is None:
         print("PRE-PR GATE: FAIL — unconfigured (default-deny).", file=sys.stderr)
-        print(f"  No pre_pr_cmd or integrate_smoke_cmd in {repo / POLICY_RELPATH}.",
-              file=sys.stderr)
-        print("  Every /go route must pass a repo-defined test gate before opening a PR.",
-              file=sys.stderr)
-        print('  Fix: add   pre_pr_cmd: "<fast command mirroring the CI merge gate>"',
-              file=sys.stderr)
-        print("  to that file (or   pre_pr_cmd: skip   to opt the repo out explicitly).",
-              file=sys.stderr)
+        print(
+            f"  No pre_pr_cmd or integrate_smoke_cmd in {repo / POLICY_RELPATH}.",
+            file=sys.stderr,
+        )
+        print(
+            "  Every /go route must pass a repo-defined test gate before opening a PR.",
+            file=sys.stderr,
+        )
+        print(
+            '  Fix: add   pre_pr_cmd: "<fast command mirroring the CI merge gate>"',
+            file=sys.stderr,
+        )
+        print(
+            "  to that file (or   pre_pr_cmd: skip   to opt the repo out explicitly).",
+            file=sys.stderr,
+        )
         return UNCONFIGURED_EXIT
 
     if args.print_cmd:
@@ -564,22 +676,27 @@ def main(argv=None) -> int:
         labels, eligible, reason = resolve_pr_labels(
             repo, policy, args.risk, gates, args.target_branch, route=args.route
         )
-        label_line = f"AUTOMERGE LABELS: {' '.join(labels)}  (eligible={eligible}: {reason})"
+        label_line = (
+            f"AUTOMERGE LABELS: {' '.join(labels)}  (eligible={eligible}: {reason})"
+        )
         hint_line = f"  Pass to PR creation: gh pr create {' '.join(f'--label {l}' for l in labels)} ..."
     else:
         label_line = None
         hint_line = None
         reason = None
 
-    result = subprocess.run(["bash", "-c", cmd], cwd=str(repo))
+    result = subprocess.run(["bash", "-c", cmd], check=False, cwd=str(repo))
     if result.returncode == 0:
         print("PRE-PR GATE: PASS")
         if args.risk is not None and label_line:
             print(label_line, flush=True)
             print(hint_line, flush=True)
         return 0
-    print(f"PRE-PR GATE: FAIL (exit {result.returncode}) — do NOT open the PR. "
-          "Fix the failures and re-run the gate.", file=sys.stderr)
+    print(
+        f"PRE-PR GATE: FAIL (exit {result.returncode}) — do NOT open the PR. "
+        "Fix the failures and re-run the gate.",
+        file=sys.stderr,
+    )
     return result.returncode
 
 

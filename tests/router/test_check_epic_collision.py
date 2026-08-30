@@ -3,6 +3,7 @@
 unittest. Mirrors test_check_spec_collision.py's shape: real throwaway
 fixture directories rather than mocking, since `check()` is a thin wrapper
 over `dashboard.detect_epic_stage()` -- a fake would just re-assert a mock."""
+
 from __future__ import annotations
 
 import tempfile
@@ -17,8 +18,15 @@ def _write(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
 
 
-def _mk_epic(repo: Path, epic_id: str, *, title: str, business_objective: str = "",
-             features: int = 1, status: str | None = None) -> Path:
+def _mk_epic(
+    repo: Path,
+    epic_id: str,
+    *,
+    title: str,
+    business_objective: str = "",
+    features: int = 1,
+    status: str | None = None,
+) -> Path:
     body = [f"# {title}", ""]
     if status is not None:
         body.append(f"**Status:** {status}")
@@ -59,13 +67,17 @@ class CheckEpicCollision(unittest.TestCase):
 
     def test_candidate_carries_title_summary_and_citing_specs(self):
         _mk_epic(
-            self.repo, "004-james-agentic-vertical-slice",
+            self.repo,
+            "004-james-agentic-vertical-slice",
             title="Epic: James Agentic Vertical Slice",
             business_objective="Prove Lena can drive the workflow end to end.",
             features=2,
         )
-        _mk_citing_spec(self.repo, "088-output-first-workflow-vertical-slice",
-                         "004-james-agentic-vertical-slice")
+        _mk_citing_spec(
+            self.repo,
+            "088-output-first-workflow-vertical-slice",
+            "004-james-agentic-vertical-slice",
+        )
 
         result = cec.check(self.repo)
 
@@ -74,8 +86,9 @@ class CheckEpicCollision(unittest.TestCase):
         c = result["candidates"][0]
         self.assertEqual(c["epic_id"], "004-james-agentic-vertical-slice")
         self.assertEqual(c["title"], "Epic: James Agentic Vertical Slice")
-        self.assertEqual(c["feature_summary"],
-                          "Prove Lena can drive the workflow end to end.")
+        self.assertEqual(
+            c["feature_summary"], "Prove Lena can drive the workflow end to end."
+        )
         self.assertEqual(c["stage"], "epic-gap")
         self.assertEqual(c["features"], 2)
         self.assertIn("088-output-first-workflow-vertical-slice", c["citing_specs"])
@@ -88,8 +101,9 @@ class CheckEpicCollision(unittest.TestCase):
         self.assertEqual(result["candidates"][0]["citing_specs"], [])
 
     def test_epic_with_terminal_status_has_no_title_fallback_needed(self):
-        _mk_epic(self.repo, "006-done", title="Epic: Done", features=1,
-                  status="Completed")
+        _mk_epic(
+            self.repo, "006-done", title="Epic: Done", features=1, status="Completed"
+        )
 
         result = cec.check(self.repo)
 
@@ -130,8 +144,10 @@ class BuildPendingDecision(unittest.TestCase):
         from worktrail.workqueue import decisions
 
         envelope = cec.build_pending_decision(
-            "004-james-agentic-vertical-slice", "target/repo",
-            run_id="go-20260827-105852", dispatch_mode="native-skill",
+            "004-james-agentic-vertical-slice",
+            "target/repo",
+            run_id="go-20260827-105852",
+            dispatch_mode="native-skill",
         )
 
         self.assertIsNotNone(envelope)
@@ -140,8 +156,9 @@ class BuildPendingDecision(unittest.TestCase):
         self.assertEqual(parsed["status"], "pending")
         self.assertTrue(parsed["decision_id"].startswith("dec-"))
         self.assertEqual(parsed["provenance"]["source"], cec.GUARD_SOURCE)
-        self.assertEqual(parsed["provenance"]["subject"],
-                          "004-james-agentic-vertical-slice")
+        self.assertEqual(
+            parsed["provenance"]["subject"], "004-james-agentic-vertical-slice"
+        )
         self.assertEqual(parsed["provenance"]["repo"], "target/repo")
         self.assertEqual(parsed["provenance"]["run_id"], "go-20260827-105852")
         self.assertEqual(parsed["provenance"]["dispatch_mode"], "native-skill")
@@ -157,7 +174,8 @@ class BuildPendingDecision(unittest.TestCase):
         self.assertEqual(
             first["decision_id"],
             decisions.decision_identity(
-                cec.GUARD_SOURCE, "repo/a", "004-epic", cec.DECISION_QUESTION),
+                cec.GUARD_SOURCE, "repo/a", "004-epic", cec.DECISION_QUESTION
+            ),
         )
 
     def test_blank_epic_id_or_repo_returns_none(self):
@@ -165,15 +183,21 @@ class BuildPendingDecision(unittest.TestCase):
         self.assertIsNone(cec.build_pending_decision("004-epic", ""))
 
     def test_decision_for_cli_flag(self):
+        import contextlib
         import io
         import json
-        import contextlib
 
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            rc = cec.main([
-                "--repo", "target/repo", "--decision-for", "004-epic", "--json",
-            ])
+            rc = cec.main(
+                [
+                    "--repo",
+                    "target/repo",
+                    "--decision-for",
+                    "004-epic",
+                    "--json",
+                ]
+            )
 
         self.assertEqual(rc, 0)
         envelope = json.loads(buf.getvalue())
@@ -182,9 +206,9 @@ class BuildPendingDecision(unittest.TestCase):
 
 class CheckEpicCollisionCli(unittest.TestCase):
     def test_main_json_output(self):
+        import contextlib
         import io
         import json
-        import contextlib
 
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)

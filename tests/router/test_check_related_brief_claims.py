@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Unit tests for the `/go` Phase 5.5 related-brief collision guard."""
+
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
 
 import pytest
 
@@ -15,12 +15,12 @@ def _write_brief(
     path: Path,
     *,
     related=None,
-    status: Optional[str] = "queued",
-    claimed_by: Optional[str] = None,
-    claimed_at: Optional[str] = None,
-    repo: Optional[str] = None,
-    focus: Optional[str] = "Some focus text.",
-    brief_id: Optional[str] = None,
+    status: str | None = "queued",
+    claimed_by: str | None = None,
+    claimed_at: str | None = None,
+    repo: str | None = None,
+    focus: str | None = "Some focus text.",
+    brief_id: str | None = None,
 ) -> Path:
     """Write a brief-shaped markdown file with the given frontmatter fields."""
     lines = ["---"]
@@ -220,7 +220,9 @@ class TestRunRecordEnrichment:
         repo_dir = runs_dir / "some-repo"
         repo_dir.mkdir(parents=True)
         record = repo_dir / "20260101-000000.yaml"
-        record.write_text("brief: related-brief\nstatus: in_progress\n", encoding="utf-8")
+        record.write_text(
+            "brief: related-brief\nstatus: in_progress\n", encoding="utf-8"
+        )
 
         res = crbc.check(
             claimed, picked_dir, queue_dir, agent_label=agent_label, runs_dir=runs_dir
@@ -270,7 +272,11 @@ class TestRunRecordEnrichment:
         )
 
         res = crbc.check(
-            claimed, picked_dir, queue_dir, agent_label="thishost:456", runs_dir=runs_dir
+            claimed,
+            picked_dir,
+            queue_dir,
+            agent_label="thishost:456",
+            runs_dir=runs_dir,
         )
 
         assert len(res["active"]) == 1
@@ -319,8 +325,10 @@ class TestFailsOpen:
 # Provider-neutral pending-decision envelope (pending-user-decision-dispatch-contract 2.1)
 # --------------------------------------------------------------------------- #
 class TestPendingDecisionEnvelope:
-    def _active_claim(self, tmp_path: Path, queue_dirs, brief_id="20260101-000000-other"):
-        picked_dir, queue_dir = queue_dirs
+    def _active_claim(
+        self, tmp_path: Path, queue_dirs, brief_id="20260101-000000-other"
+    ):
+        picked_dir, _queue_dir = queue_dirs
         _write_brief(
             picked_dir / f"{brief_id}.md",
             status="picked",
@@ -363,24 +371,29 @@ class TestPendingDecisionEnvelope:
         second = crbc.check(claimed, picked_dir, queue_dir)["pending_decision"]
         assert first["decision_id"] == second["decision_id"]
         assert first["decision_id"] == decisions.decision_identity(
-            crbc.GUARD_SOURCE, "target/repo", "20260202-000000-claimed",
-            crbc.DECISION_QUESTION)
+            crbc.GUARD_SOURCE,
+            "target/repo",
+            "20260202-000000-claimed",
+            crbc.DECISION_QUESTION,
+        )
 
     def test_subject_falls_back_to_stem_without_frontmatter_id(
         self, tmp_path, queue_dirs
     ):
         picked_dir, queue_dir = queue_dirs
         _write_brief(picked_dir / "20260101-000000-other.md", status="picked")
-        claimed = _write_brief(tmp_path / "20260202-000000-claimed.md", related=["other"])
+        claimed = _write_brief(
+            tmp_path / "20260202-000000-claimed.md", related=["other"]
+        )
 
         res = crbc.check(claimed, picked_dir, queue_dir)
 
-        assert res["pending_decision"]["provenance"]["subject"] == \
-            "20260202-000000-claimed"
+        assert (
+            res["pending_decision"]["provenance"]["subject"]
+            == "20260202-000000-claimed"
+        )
 
-    def test_repo_provenance_falls_back_then_to_unspecified(
-        self, tmp_path, queue_dirs
-    ):
+    def test_repo_provenance_falls_back_then_to_unspecified(self, tmp_path, queue_dirs):
         picked_dir, queue_dir = queue_dirs
         # no repo anywhere -> the stable placeholder, never a dropped envelope
         _write_brief(picked_dir / "20260101-000000-other.md", status="picked")
@@ -391,7 +404,9 @@ class TestPendingDecisionEnvelope:
         # claimed brief lacks repo, but the active claim carries one
         _write_brief(
             picked_dir / "20260103-000000-other3.md",
-            status="picked", claimed_by="h:1", repo="active/repo",
+            status="picked",
+            claimed_by="h:1",
+            repo="active/repo",
         )
         claimed2 = _write_brief(tmp_path / "claimed2.md", related=["other3"])
         res2 = crbc.check(claimed2, picked_dir, queue_dir)
@@ -401,8 +416,13 @@ class TestPendingDecisionEnvelope:
         claimed = self._active_claim(tmp_path, queue_dirs)
         picked_dir, queue_dir = queue_dirs
 
-        res = crbc.check(claimed, picked_dir, queue_dir,
-                         run_id="go-20260825-101010", dispatch_mode="adapter")
+        res = crbc.check(
+            claimed,
+            picked_dir,
+            queue_dir,
+            run_id="go-20260825-101010",
+            dispatch_mode="adapter",
+        )
 
         prov = res["pending_decision"]["provenance"]
         assert prov["run_id"] == "go-20260825-101010"

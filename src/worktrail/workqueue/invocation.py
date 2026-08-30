@@ -11,14 +11,13 @@ drain.list_queue and router/consolidate_cluster._run_work_queue_cli.
 
 import sys
 from pathlib import Path
-from typing import List
 
 # work_queue.py is the work-queue subsystem's owner of queue/picked -- a
 # sibling module within worktrail, resolved relative to this file.
 WORK_QUEUE_PY = Path(__file__).resolve().parent / "work_queue.py"
 
 
-def build_work_queue_argv(work_queue_py: Path, args: List[str]) -> List[str]:
+def build_work_queue_argv(work_queue_py: Path, args: list[str]) -> list[str]:
     """Build the subprocess argv that runs work_queue.py with `args`.
 
     The canonical installed module (`WORK_QUEUE_PY`) is invoked via

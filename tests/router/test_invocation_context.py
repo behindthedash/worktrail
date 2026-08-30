@@ -28,13 +28,13 @@ class ProviderResolutionTests(unittest.TestCase):
         self.assertEqual(resolved.agent_cli, "opencode")
 
     def test_policy_agent_outranks_machine_wide_environment(self):
-        resolved = _resolve(
-            policy_agent="codex", environ={"GO_AGENT_CLI": "opencode"}
-        )
+        resolved = _resolve(policy_agent="codex", environ={"GO_AGENT_CLI": "opencode"})
         self.assertEqual(resolved.agent_cli, "codex")
 
     def test_host_markers_are_the_last_resort_before_claude(self):
-        self.assertEqual(_resolve(environ={"OPENCODE_PARENT": "1"}).agent_cli, "opencode")
+        self.assertEqual(
+            _resolve(environ={"OPENCODE_PARENT": "1"}).agent_cli, "opencode"
+        )
         self.assertEqual(_resolve(environ={"CODEX_THREAD_ID": "t"}).agent_cli, "codex")
         self.assertEqual(_resolve(environ={}).agent_cli, "claude")
 
@@ -79,9 +79,7 @@ class CapabilityIndependenceTests(unittest.TestCase):
 
 class CapabilitySignalPrecedenceTests(unittest.TestCase):
     def test_explicit_parameter_outranks_the_environment_override(self):
-        resolved = _resolve(
-            native_skill=False, environ={"WORKTRAIL_NATIVE_SKILL": "1"}
-        )
+        resolved = _resolve(native_skill=False, environ={"WORKTRAIL_NATIVE_SKILL": "1"})
         self.assertFalse(resolved.native_skill_available)
         self.assertEqual(resolved.capability_source, "explicit")
 
@@ -143,7 +141,9 @@ class ActiveResumeTests(unittest.TestCase):
 
     def test_active_resume_outranks_the_blocked_branch(self):
         resolved = _resolve(
-            agent="codex", native_skill=False, active_resume=True,
+            agent="codex",
+            native_skill=False,
+            active_resume=True,
             which=lambda _n: None,
         )
         self.assertEqual(resolved.dispatch_mode, "in-session-resume")
@@ -194,10 +194,13 @@ class CliTests(unittest.TestCase):
     def _run(self, argv, environ=None, installed=True):
         out, err = StringIO(), StringIO()
         located = "/usr/bin/stub" if installed else None
-        with patch.dict(os.environ, environ or {}, clear=True):
-            with patch.object(invocation_context, "_which", return_value=located):
-                with redirect_stdout(out), redirect_stderr(err):
-                    code = invocation_context.main(argv)
+        with (
+            patch.dict(os.environ, environ or {}, clear=True),
+            patch.object(invocation_context, "_which", return_value=located),
+            redirect_stdout(out),
+            redirect_stderr(err),
+        ):
+            code = invocation_context.main(argv)
         return code, out.getvalue(), err.getvalue()
 
     def test_json_output_carries_both_axes_and_the_dispatch_mode(self):
@@ -215,7 +218,14 @@ class CliTests(unittest.TestCase):
         import json
 
         code, stdout, _ = self._run(
-            ["--agent", "codex", "--no-native-skill", "--dispatch-id", "go-abc123", "--json"]
+            [
+                "--agent",
+                "codex",
+                "--no-native-skill",
+                "--dispatch-id",
+                "go-abc123",
+                "--json",
+            ]
         )
         self.assertEqual(code, 0)
         payload = json.loads(stdout)

@@ -12,7 +12,7 @@ know which adapter owns a spec.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
 from worktrail.taskformats.devkit import source as devkit
 from worktrail.taskformats.openspec import source as openspec
@@ -39,7 +39,7 @@ def detect_format(spec_path: Path | str) -> str:
     return FORMAT_DEVKIT
 
 
-def _split(spec_path: Path, fmt: str) -> Tuple[Path, str]:
+def _split(spec_path: Path, fmt: str) -> tuple[Path, str]:
     """Split an absolute spec path into `(repo_root, spec_ref)`.
 
     Both adapters are constructed with a repo root and addressed by a short ref,
@@ -59,11 +59,15 @@ def _split(spec_path: Path, fmt: str) -> Tuple[Path, str]:
         spec_ref = spec_path.name
     else:
         spec_ref = spec_path.name
-    depth = len(Path(
-        (openspec.DEFAULT_SPEC_ROOT if fmt == FORMAT_OPENSPEC
-         else speckit.DEFAULT_SPEC_ROOT if fmt == FORMAT_SPECKIT
-         else devkit.DEFAULT_SPEC_ROOT)
-    ).parts)
+    depth = len(
+        Path(
+            openspec.DEFAULT_SPEC_ROOT
+            if fmt == FORMAT_OPENSPEC
+            else speckit.DEFAULT_SPEC_ROOT
+            if fmt == FORMAT_SPECKIT
+            else devkit.DEFAULT_SPEC_ROOT
+        ).parts
+    )
     repo_root = spec_path
     for _ in range(depth + 1):  # +1 for the spec_ref segment itself
         repo_root = repo_root.parent
@@ -82,7 +86,7 @@ def task_source_for(spec_path: Path | str):
     return devkit.DevkitSpecTaskSource(repo_root)
 
 
-def load_spec(spec_path: Path | str) -> Tuple[str, List[Dict[str, Any]]]:
+def load_spec(spec_path: Path | str) -> tuple[str, list[dict[str, Any]]]:
     """Format-agnostic replacement for `devkit.source.load_spec()`.
 
     Same `(spec_id, tasks)` contract, so the orchestrator's existing call sites
@@ -111,7 +115,7 @@ def spec_ref_for(spec_path: Path | str) -> str:
     return _split(spec_path, detect_format(spec_path))[1]
 
 
-def task_brief_ref_for(spec_path: Path | str, task_id: str) -> Tuple[str, str]:
+def task_brief_ref_for(spec_path: Path | str, task_id: str) -> tuple[str, str]:
     """`(repo-relative path, anchor)` for the brief a worker should open.
 
     `anchor` is `""` when the file is the whole brief. Feeds the cold-worker
@@ -138,7 +142,7 @@ def spec_root_prefix_for(spec_path: Path | str) -> str:
     return devkit.DevkitSpecTaskSource(Path(".")).spec_root_prefix()
 
 
-def resolve_external_dependency(spec_path: Path | str, dep_ref: str) -> Dict[str, Any]:
+def resolve_external_dependency(spec_path: Path | str, dep_ref: str) -> dict[str, Any]:
     """Resolve a dependency using the adapter that owns ``spec_path``."""
     spec_path = Path(spec_path)
     if detect_format(spec_path) == FORMAT_DEVKIT and "docs" not in spec_path.parts:
@@ -157,7 +161,9 @@ def mark_status_completed(path: Path | str) -> bool:
     return bool(set_status_completed(Path(path)))
 
 
-def resolve_external_dependency_for_repo(repo_root: Path | str, dep_ref: str) -> Dict[str, Any]:
+def resolve_external_dependency_for_repo(
+    repo_root: Path | str, dep_ref: str
+) -> dict[str, Any]:
     """Resolve a dependency when only the repository and reference are known."""
     repo_root = Path(repo_root)
     spec_id = dep_ref.partition("/")[0]
@@ -168,16 +174,18 @@ def resolve_external_dependency_for_repo(repo_root: Path | str, dep_ref: str) ->
     ):
         if candidate.is_dir():
             return resolve_external_dependency(candidate, dep_ref)
-    return resolve_external_dependency(repo_root / openspec.DEFAULT_SPEC_ROOT / spec_id, dep_ref)
+    return resolve_external_dependency(
+        repo_root / openspec.DEFAULT_SPEC_ROOT / spec_id, dep_ref
+    )
 
 
-def task_for(spec_path: Path | str, task_id: str) -> Dict[str, Any] | None:
+def task_for(spec_path: Path | str, task_id: str) -> dict[str, Any] | None:
     """Find one task through its owning adapter."""
     source = task_source_for(spec_path)
     _, tasks = source.load(spec_ref_for(spec_path))
     return next((task for task in tasks if task.get("id") == task_id), None)
 
 
-def file_sections_for(path: Path | str, text: str) -> tuple[List[str], List[str]]:
+def file_sections_for(path: Path | str, text: str) -> tuple[list[str], list[str]]:
     """Extract format-specific file sections without importing an adapter."""
     return task_source_for(path).file_sections(text)

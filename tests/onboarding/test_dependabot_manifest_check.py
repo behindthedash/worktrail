@@ -7,6 +7,7 @@ writes the constant to a tmp file and loads it via
 `importlib.util.spec_from_file_location` (design D6) so the tests exercise
 the actual vendored source, not a copy of its logic.
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -23,7 +24,9 @@ def load_check_module(tmp_path: Path):
     """Write `DEPENDABOT_MANIFEST_CHECK_PY` to `tmp_path` and import it as a module."""
     script_path = tmp_path / "test_dependabot_config.py"
     script_path.write_text(DEPENDABOT_MANIFEST_CHECK_PY)
-    spec = importlib.util.spec_from_file_location("dependabot_manifest_check", script_path)
+    spec = importlib.util.spec_from_file_location(
+        "dependabot_manifest_check", script_path
+    )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -126,9 +129,7 @@ def test_npm_subdirectory_with_package_json_passes(tmp_path, capsys):
         tmp_path,
         dependabot_yml={
             "version": 2,
-            "updates": [
-                {"package-ecosystem": "npm", "directory": "/services/api"}
-            ],
+            "updates": [{"package-ecosystem": "npm", "directory": "/services/api"}],
         },
         manifests=["services/api/package.json"],
     )

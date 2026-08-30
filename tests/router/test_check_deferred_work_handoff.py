@@ -8,6 +8,7 @@ candidates once they match a deferral phrase (Requirement: Deferral-Phrase
 Matching); and a candidate is flagged only when no existing `queue/` or
 `picked/` brief already covers it (Requirement: Handoff Cross-Check Before
 Flagging)."""
+
 from __future__ import annotations
 
 import json
@@ -29,10 +30,21 @@ from worktrail.router.check_deferred_work_handoff import (
 def _start_record(tmp: str) -> str:
     out = StringIO()
     with patch("sys.stdout", out):
-        rc = run_record.main([
-            "start", "--repo", "/tmp/fake-repo", "--request", "fix the thing",
-            "--route", "F", "--risk", "low", "--dir", tmp,
-        ])
+        rc = run_record.main(
+            [
+                "start",
+                "--repo",
+                "/tmp/fake-repo",
+                "--request",
+                "fix the thing",
+                "--route",
+                "F",
+                "--risk",
+                "low",
+                "--dir",
+                tmp,
+            ]
+        )
     assert rc == 0
     return json.loads(out.getvalue())["path"]
 
@@ -43,10 +55,18 @@ def _append(path: str, key: str, value: str) -> None:
 
 
 def _scope_review_out_of_scope(path: str, item: str, reason: str) -> None:
-    rc = run_record.main([
-        "scope-review", path, "--item", item, "--status", "out-of-scope",
-        "--reason", reason,
-    ])
+    rc = run_record.main(
+        [
+            "scope-review",
+            path,
+            "--item",
+            item,
+            "--status",
+            "out-of-scope",
+            "--reason",
+            reason,
+        ]
+    )
     assert rc == 0
 
 
@@ -56,7 +76,8 @@ class LoadDeferredWorkEntriesTests(unittest.TestCase):
             path = _start_record(tmp)
             _append(path, "deferred_work", "clean up the retry helper in a later pr")
             _scope_review_out_of_scope(
-                path, "rate-limit tuning",
+                path,
+                "rate-limit tuning",
                 "different purpose: deferred until calibration is done",
             )
 
@@ -74,7 +95,8 @@ class LoadDeferredWorkEntriesTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = _start_record(tmp)
             _scope_review_out_of_scope(
-                path, "logging cleanup",
+                path,
+                "logging cleanup",
                 "different purpose: deferred, follow-up work for later",
             )
 
@@ -85,17 +107,21 @@ class LoadDeferredWorkEntriesTests(unittest.TestCase):
 
 class FindFlaggedIgnoresScopeReviewTests(unittest.TestCase):
     def test_scope_review_deferral_vocabulary_never_flagged(self):
-        with tempfile.TemporaryDirectory() as tmp, \
-                tempfile.TemporaryDirectory() as queue_home:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            tempfile.TemporaryDirectory() as queue_home,
+        ):
             path = _start_record(tmp)
             _scope_review_out_of_scope(
-                path, "rate-limit tuning",
+                path,
+                "rate-limit tuning",
                 "different purpose: deferred until calibration is done",
             )
             _append(path, "deferred_work", "wire the retry backoff in a later pr")
 
             with patch.dict(
-                "os.environ", {"WORK_QUEUE_DIR": str(Path(queue_home) / "work-queue")},
+                "os.environ",
+                {"WORK_QUEUE_DIR": str(Path(queue_home) / "work-queue")},
             ):
                 flagged = find_flagged([path])
 
@@ -103,7 +129,8 @@ class FindFlaggedIgnoresScopeReviewTests(unittest.TestCase):
             self.assertEqual(flagged[0]["text"], "wire the retry backoff in a later pr")
             flagged_texts = [f["text"] for f in flagged]
             self.assertNotIn(
-                "different purpose: deferred until calibration is done", flagged_texts,
+                "different purpose: deferred until calibration is done",
+                flagged_texts,
             )
 
 
@@ -113,7 +140,9 @@ class MatchesDeferralPhraseTests(unittest.TestCase):
         self.assertTrue(matches_deferral_phrase("wire the retry backoff in a LATER PR"))
 
     def test_does_not_match_text_without_any_deferral_phrase(self):
-        self.assertFalse(matches_deferral_phrase("rename the helper function for clarity"))
+        self.assertFalse(
+            matches_deferral_phrase("rename the helper function for clarity")
+        )
 
 
 class PhraseMatchingCandidacyTests(unittest.TestCase):
@@ -122,69 +151,94 @@ class PhraseMatchingCandidacyTests(unittest.TestCase):
     coverage."""
 
     def test_phrase_matching_entry_without_coverage_becomes_candidate(self):
-        with tempfile.TemporaryDirectory() as tmp, \
-                tempfile.TemporaryDirectory() as queue_home:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            tempfile.TemporaryDirectory() as queue_home,
+        ):
             path = _start_record(tmp)
             _append(path, "deferred_work", "clean up the retry helper in a later pr")
 
             with patch.dict(
-                "os.environ", {"WORK_QUEUE_DIR": str(Path(queue_home) / "work-queue")},
+                "os.environ",
+                {"WORK_QUEUE_DIR": str(Path(queue_home) / "work-queue")},
             ):
                 flagged = find_flagged([path])
 
             self.assertEqual(len(flagged), 1)
-            self.assertEqual(flagged[0]["text"], "clean up the retry helper in a later pr")
+            self.assertEqual(
+                flagged[0]["text"], "clean up the retry helper in a later pr"
+            )
             self.assertEqual(flagged[0]["run_record"], path)
 
     def test_non_matching_entry_never_flagged_even_without_handoff_coverage(self):
-        with tempfile.TemporaryDirectory() as tmp, \
-                tempfile.TemporaryDirectory() as queue_home:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            tempfile.TemporaryDirectory() as queue_home,
+        ):
             path = _start_record(tmp)
             _append(path, "deferred_work", "rename the helper function for clarity")
 
-            with patch.dict(
-                "os.environ", {"WORK_QUEUE_DIR": str(Path(queue_home) / "work-queue")},
-            ), patch(
-                "worktrail.router.check_deferred_work_handoff.has_handoff_coverage",
-                return_value=False,
+            with (
+                patch.dict(
+                    "os.environ",
+                    {"WORK_QUEUE_DIR": str(Path(queue_home) / "work-queue")},
+                ),
+                patch(
+                    "worktrail.router.check_deferred_work_handoff.has_handoff_coverage",
+                    return_value=False,
+                ),
             ):
                 flagged = find_flagged([path])
 
             self.assertEqual(flagged, [])
 
-    def test_non_matching_entry_never_flagged_even_when_coverage_would_have_matched(self):
-        with tempfile.TemporaryDirectory() as tmp, \
-                tempfile.TemporaryDirectory() as queue_home:
+    def test_non_matching_entry_never_flagged_even_when_coverage_would_have_matched(
+        self,
+    ):
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            tempfile.TemporaryDirectory() as queue_home,
+        ):
             path = _start_record(tmp)
             _append(path, "deferred_work", "rename the helper function for clarity")
 
             # If handoff coverage were somehow the only gate, this would force
             # a flag; phrase matching must still exclude this entry first.
-            with patch.dict(
-                "os.environ", {"WORK_QUEUE_DIR": str(Path(queue_home) / "work-queue")},
-            ), patch(
-                "worktrail.router.check_deferred_work_handoff.has_handoff_coverage",
-                return_value=True,
+            with (
+                patch.dict(
+                    "os.environ",
+                    {"WORK_QUEUE_DIR": str(Path(queue_home) / "work-queue")},
+                ),
+                patch(
+                    "worktrail.router.check_deferred_work_handoff.has_handoff_coverage",
+                    return_value=True,
+                ),
             ):
                 flagged = find_flagged([path])
 
             self.assertEqual(flagged, [])
 
     def test_mixed_entries_only_phrase_matching_one_becomes_candidate(self):
-        with tempfile.TemporaryDirectory() as tmp, \
-                tempfile.TemporaryDirectory() as queue_home:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            tempfile.TemporaryDirectory() as queue_home,
+        ):
             path = _start_record(tmp)
             _append(path, "deferred_work", "rename the helper function for clarity")
-            _append(path, "deferred_work", "revisit this once calibrated against prod data")
+            _append(
+                path, "deferred_work", "revisit this once calibrated against prod data"
+            )
 
             with patch.dict(
-                "os.environ", {"WORK_QUEUE_DIR": str(Path(queue_home) / "work-queue")},
+                "os.environ",
+                {"WORK_QUEUE_DIR": str(Path(queue_home) / "work-queue")},
             ):
                 flagged = find_flagged([path])
 
             flagged_texts = [f["text"] for f in flagged]
             self.assertEqual(
-                flagged_texts, ["revisit this once calibrated against prod data"],
+                flagged_texts,
+                ["revisit this once calibrated against prod data"],
             )
 
 
@@ -228,7 +282,9 @@ class HandoffCrossCheckTests(unittest.TestCase):
     def test_probe_matching_picked_brief_is_not_flagged(self):
         with tempfile.TemporaryDirectory() as queue_home:
             base = Path(queue_home) / "work-queue"
-            self._write_brief(base / "picked", "Touches src/widget.py for retry tuning.")
+            self._write_brief(
+                base / "picked", "Touches src/widget.py for retry tuning."
+            )
 
             with patch.dict("os.environ", {"WORK_QUEUE_DIR": str(base)}):
                 covered = has_handoff_coverage(self._CANDIDATE)
@@ -238,7 +294,9 @@ class HandoffCrossCheckTests(unittest.TestCase):
     def test_candidate_matching_no_brief_is_flagged(self):
         with tempfile.TemporaryDirectory() as queue_home:
             base = Path(queue_home) / "work-queue"
-            self._write_brief(base / "queue", "Touches src/other.py for unrelated work.")
+            self._write_brief(
+                base / "queue", "Touches src/other.py for unrelated work."
+            )
 
             with patch.dict("os.environ", {"WORK_QUEUE_DIR": str(base)}):
                 covered = has_handoff_coverage(self._CANDIDATE)
@@ -246,12 +304,16 @@ class HandoffCrossCheckTests(unittest.TestCase):
             self.assertFalse(covered)
 
     def test_candidate_matching_no_brief_is_flagged_end_to_end(self):
-        with tempfile.TemporaryDirectory() as tmp, \
-                tempfile.TemporaryDirectory() as queue_home:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            tempfile.TemporaryDirectory() as queue_home,
+        ):
             path = _start_record(tmp)
             _append(path, "deferred_work", self._CANDIDATE)
             base = Path(queue_home) / "work-queue"
-            self._write_brief(base / "queue", "Touches src/other.py for unrelated work.")
+            self._write_brief(
+                base / "queue", "Touches src/other.py for unrelated work."
+            )
 
             with patch.dict("os.environ", {"WORK_QUEUE_DIR": str(base)}):
                 flagged = find_flagged([path])
@@ -269,8 +331,10 @@ class HandoffCrossCheckTests(unittest.TestCase):
             self.assertFalse(covered)
 
     def test_missing_work_queue_directory_yields_flagged_end_to_end_never_raises(self):
-        with tempfile.TemporaryDirectory() as tmp, \
-                tempfile.TemporaryDirectory() as queue_home:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            tempfile.TemporaryDirectory() as queue_home,
+        ):
             path = _start_record(tmp)
             _append(path, "deferred_work", self._CANDIDATE)
             base = Path(queue_home) / "does-not-exist"
@@ -297,8 +361,10 @@ class HandoffCrossCheckTests(unittest.TestCase):
             self.assertFalse(covered)
 
     def test_unreadable_queue_directory_yields_flagged_end_to_end_never_raises(self):
-        with tempfile.TemporaryDirectory() as tmp, \
-                tempfile.TemporaryDirectory() as queue_home:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            tempfile.TemporaryDirectory() as queue_home,
+        ):
             path = _start_record(tmp)
             _append(path, "deferred_work", self._CANDIDATE)
             base = Path(queue_home) / "work-queue"
@@ -316,8 +382,10 @@ class HandoffCrossCheckTests(unittest.TestCase):
             self.assertEqual(flagged[0]["text"], self._CANDIDATE)
 
     def test_end_to_end_phrase_matching_candidate_covered_by_brief_is_not_flagged(self):
-        with tempfile.TemporaryDirectory() as tmp, \
-                tempfile.TemporaryDirectory() as queue_home:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            tempfile.TemporaryDirectory() as queue_home,
+        ):
             path = _start_record(tmp)
             _append(path, "deferred_work", self._CANDIDATE)
             base = Path(queue_home) / "work-queue"
@@ -329,12 +397,16 @@ class HandoffCrossCheckTests(unittest.TestCase):
             self.assertEqual(flagged, [])
 
     def test_probe_matching_picked_brief_is_not_flagged_end_to_end(self):
-        with tempfile.TemporaryDirectory() as tmp, \
-                tempfile.TemporaryDirectory() as queue_home:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            tempfile.TemporaryDirectory() as queue_home,
+        ):
             path = _start_record(tmp)
             _append(path, "deferred_work", self._CANDIDATE)
             base = Path(queue_home) / "work-queue"
-            self._write_brief(base / "picked", "Touches src/widget.py for retry tuning.")
+            self._write_brief(
+                base / "picked", "Touches src/widget.py for retry tuning."
+            )
 
             with patch.dict("os.environ", {"WORK_QUEUE_DIR": str(base)}):
                 flagged = find_flagged([path])

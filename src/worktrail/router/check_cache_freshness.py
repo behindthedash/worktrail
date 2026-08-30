@@ -26,6 +26,7 @@ Best-effort by design: no canonical checkout, no git, or an unrecognized path
 shape all resolve to `fresh: true` (nothing to compare against) rather than
 raising -- staleness detection is an enhancement, not a hard dependency.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -34,16 +35,16 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Dict, Optional
 
 _CACHE_SHA_RE = re.compile(r"/([0-9a-f]{12})(?:/|$)")
 
 
-def _git_head_short(repo: Path) -> Optional[str]:
+def _git_head_short(repo: Path) -> str | None:
     """Short (12-char) HEAD SHA of `repo`, or None if it isn't a usable git repo."""
     try:
         out = subprocess.run(
             ["git", "-C", str(repo), "rev-parse", "--short=12", "HEAD"],
+            check=False,
             capture_output=True,
             text=True,
             timeout=5,
@@ -56,7 +57,7 @@ def _git_head_short(repo: Path) -> Optional[str]:
     return sha or None
 
 
-def _find_git_root(path: Path) -> Optional[Path]:
+def _find_git_root(path: Path) -> Path | None:
     """Walk up from `path` to the nearest ancestor containing `.git`."""
     for d in (path, *path.parents):
         if (d / ".git").exists():
@@ -64,7 +65,7 @@ def _find_git_root(path: Path) -> Optional[Path]:
     return None
 
 
-def resolved_sha(resolved: Path) -> Optional[str]:
+def resolved_sha(resolved: Path) -> str | None:
     """Best-effort commit identity of a resolved skill-dir path.
 
     - A `.../<plugin>/<12-hex-sha>/...` cache path -> the embedded SHA (no git
@@ -82,7 +83,7 @@ def resolved_sha(resolved: Path) -> Optional[str]:
     return None
 
 
-def _skill_suffix(resolved: Path) -> Optional[str]:
+def _skill_suffix(resolved: Path) -> str | None:
     """The `skills/<name>[/...]` tail of a resolved path, for rebuilding the
     equivalent path under a different checkout root."""
     parts = resolved.parts
@@ -92,7 +93,7 @@ def _skill_suffix(resolved: Path) -> Optional[str]:
     return None
 
 
-def check(resolved: str, plugin: str, canonical: str) -> Dict[str, object]:
+def check(resolved: str, plugin: str, canonical: str) -> dict[str, object]:
     """Compare `resolved` (an already-resolved skill dir path) against the
     canonical checkout's copy of the same plugin/skill.
 
@@ -104,7 +105,7 @@ def check(resolved: str, plugin: str, canonical: str) -> Dict[str, object]:
     resolved_path = Path(resolved)
     canonical_path = Path(canonical).expanduser()
 
-    result: Dict[str, object] = {
+    result: dict[str, object] = {
         "fresh": True,
         "resolved_sha": None,
         "canonical_sha": None,
@@ -152,7 +153,9 @@ def main(argv=None) -> int:
         default="~/projects/worktrail",
         help="canonical Worktrail checkout to compare against (default: ~/projects/worktrail)",
     )
-    p.add_argument("--json", action="store_true", help="emit JSON instead of a summary line")
+    p.add_argument(
+        "--json", action="store_true", help="emit JSON instead of a summary line"
+    )
     args = p.parse_args(argv)
 
     res = check(args.resolved, args.plugin, args.canonical)

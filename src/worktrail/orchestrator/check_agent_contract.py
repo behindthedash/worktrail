@@ -31,10 +31,9 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import List, Optional
 
-from . import spawnlib
 from ..runtime.selection import Cell
+from . import spawnlib
 
 CONTRACT_PROMPT = "Reply with exactly the single word: ok"
 EXPECTED_REPLY = "ok"
@@ -51,14 +50,16 @@ KNOWN_EVENT_TYPES = {
 
 
 class ContractCheckResult:
-    def __init__(self, agent: str, ok: bool, detail: str, unknown_types: Optional[List[str]] = None):
+    def __init__(
+        self, agent: str, ok: bool, detail: str, unknown_types: list[str] | None = None
+    ):
         self.agent = agent
         self.ok = ok
         self.detail = detail
         self.unknown_types = unknown_types or []
 
 
-def _distinct_event_types(raw: str) -> List[str]:
+def _distinct_event_types(raw: str) -> list[str]:
     types: set = set()
     for line in raw.splitlines():
         line = line.strip()
@@ -75,9 +76,9 @@ def _distinct_event_types(raw: str) -> List[str]:
 
 def check_agent(
     agent: str,
-    cwd: "str | Path",
+    cwd: str | Path,
     *,
-    model: Optional[str] = None,
+    model: str | None = None,
     timeout: int = 120,
     prompt: str = CONTRACT_PROMPT,
     runner=None,
@@ -91,10 +92,14 @@ def check_agent(
         fd, output_file = tempfile.mkstemp(prefix="contract-codex-last-", suffix=".txt")
         os.close(fd)
 
-    cell = Cell(target=agent, harness=agent, model=model, effort=None, pool="subscription")
+    cell = Cell(
+        target=agent, harness=agent, model=model, effort=None, pool="subscription"
+    )
     cmd = spawnlib.build_cmd(prompt, cell, output_last_message=output_file)
     try:
-        proc = runner(cmd, cwd=str(cwd), capture_output=True, text=True, timeout=timeout)
+        proc = runner(
+            cmd, cwd=str(cwd), capture_output=True, text=True, timeout=timeout
+        )
     except subprocess.TimeoutExpired:
         return ContractCheckResult(agent, False, f"{agent}: timed out after {timeout}s")
     except FileNotFoundError:
@@ -120,19 +125,24 @@ def check_agent(
                     pass
         if spawnlib.is_infra_failure(proc.returncode, raw):
             return ContractCheckResult(
-                agent, False,
+                agent,
+                False,
                 f"codex: infra failure (exit {proc.returncode}); stderr: {(proc.stderr or '')[-300:]}",
             )
         if EXPECTED_REPLY not in text.strip().lower():
             return ContractCheckResult(
-                agent, False,
+                agent,
+                False,
                 f"codex: --output-last-message did not contain the expected reply; got: {text[:200]!r}",
             )
-        return ContractCheckResult(agent, True, "codex: --output-last-message parsed correctly")
+        return ContractCheckResult(
+            agent, True, "codex: --output-last-message parsed correctly"
+        )
 
     if spawnlib.is_infra_failure(proc.returncode, raw):
         return ContractCheckResult(
-            agent, False,
+            agent,
+            False,
             f"{agent}: infra failure (exit {proc.returncode}); stderr: {(proc.stderr or '')[-300:]}",
         )
 
@@ -146,7 +156,8 @@ def check_agent(
         # on a recognized "result"/"text" event. Text staying equal to the full
         # raw transcript is exactly the raw-fallback symptom PR #366 fixed.
         return ContractCheckResult(
-            agent, False,
+            agent,
+            False,
             f"{agent}: parser fell back to raw output (schema not recognized); "
             f"saw types {sorted(seen_types)!r}, parser recognizes {sorted(known)!r}",
             unknown_types=unknown,
@@ -154,7 +165,8 @@ def check_agent(
 
     if EXPECTED_REPLY not in text.strip().lower():
         return ContractCheckResult(
-            agent, False,
+            agent,
+            False,
             f"{agent}: parsed text did not contain the expected reply; got: {text[:200]!r}",
             unknown_types=unknown,
         )
@@ -166,12 +178,18 @@ def check_agent(
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument(
-        "--agent", action="append", choices=sorted(spawnlib.SUPPORTED_AGENTS),
+        "--agent",
+        action="append",
+        choices=sorted(spawnlib.SUPPORTED_AGENTS),
         help="agent(s) to check (default: every supported agent)",
     )
-    parser.add_argument("--cwd", default=".", help="working directory to spawn the check from")
+    parser.add_argument(
+        "--cwd", default=".", help="working directory to spawn the check from"
+    )
     parser.add_argument("--timeout", type=int, default=120)
     args = parser.parse_args(argv)
 

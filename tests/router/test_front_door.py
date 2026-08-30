@@ -8,6 +8,7 @@ merge decision fails CI.
 
 Run: python3 -m pytest tests/router/test_front_door.py -q
 """
+
 import json
 import tempfile
 import unittest
@@ -17,7 +18,11 @@ from worktrail.router import classify as _classify_mod
 from worktrail.router.classify import classify
 from worktrail.router.policy import automerge_eligible, load_policy
 
-_CASSETTE = Path(_classify_mod.__file__).resolve().parent / "cassettes" / "routing_cassette.json"
+_CASSETTE = (
+    Path(_classify_mod.__file__).resolve().parent
+    / "cassettes"
+    / "routing_cassette.json"
+)
 
 # Gates that must veto auto-merge no matter how permissive the policy is.
 _BLOCKING_GATES = {"require_human_approval", "never_automerge"}
@@ -33,7 +38,8 @@ def _permissive_policy(tmp, target="dev"):
     d.mkdir(parents=True, exist_ok=True)
     (d / "policy.yaml").write_text(
         "automerge:\n  enabled: true\n  max_risk: medium\n"
-        f"  target_branches:\n    - {target}\n")
+        f"  target_branches:\n    - {target}\n"
+    )
     return load_policy(Path(tmp))
 
 
@@ -61,12 +67,16 @@ class TestMergeGateEndToEnd(unittest.TestCase):
                 risky = res["risk"] in ("high", "critical")
                 if gated or risky:
                     self.assertFalse(
-                        ok, f"{s['id']} must not auto-merge (gates={res['gates']}, "
-                            f"risk={res['risk']}) but was eligible")
+                        ok,
+                        f"{s['id']} must not auto-merge (gates={res['gates']}, "
+                        f"risk={res['risk']}) but was eligible",
+                    )
                 else:
                     self.assertTrue(
-                        ok, f"{s['id']} should be eligible under permissive policy "
-                            f"(gates={res['gates']}, risk={res['risk']}): {why}")
+                        ok,
+                        f"{s['id']} should be eligible under permissive policy "
+                        f"(gates={res['gates']}, risk={res['risk']}): {why}",
+                    )
 
     def test_protected_operation_never_automerges(self):
         """The non-overridable invariant: protected ops veto regardless of policy."""

@@ -35,11 +35,13 @@ stays valid JSON, and `main()` always exits 0. A broken checker must never
 block a capture suggestion; it only fails to trigger the downgrade-to-
 suggestion behavior the hook applies on hits.
 """
+
 from __future__ import annotations
 
 import os
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Tuple, Union
+from typing import Any
 
 from .run_record import _load_lenient
 
@@ -50,7 +52,7 @@ PLANNED_STATUS = "planned_ready_for_implementation"
 # path classifies identically whether the transcript carried it absolute
 # (`/repo/docs/specs/x/spec.md`), repo-relative (`docs/specs/x/spec.md`),
 # or `~`-expanded.
-DURABLE_ARTIFACT_PATH_PREFIXES: Tuple[Tuple[str, ...], ...] = (
+DURABLE_ARTIFACT_PATH_PREFIXES: tuple[tuple[str, ...], ...] = (
     ("docs", "specs"),
     ("openspec", "changes"),
 )
@@ -58,20 +60,20 @@ DURABLE_ARTIFACT_PATH_PREFIXES: Tuple[Tuple[str, ...], ...] = (
 # Transcript Bash-command substrings treated as "this session merged".
 # Deliberately narrow: `gh pr merge` already covers --merge/--squash/--rebase,
 # and a false positive only downgrades capture to a suggestion, never blocks.
-MERGE_MARKERS: Tuple[str, ...] = ("gh pr merge", "git merge")
+MERGE_MARKERS: tuple[str, ...] = ("gh pr merge", "git merge")
 
 SESSION_TOUCHED_DURABLE_ARTIFACT = "session_touched_durable_artifact"
 PLANNED_RUN_RECORD = "planned_run_record"
 MERGED_DOCS_ONLY_SPEC_PR = "merged_docs_only_spec_pr"
 
 
-def _segments(raw: Union[str, Path]) -> List[str]:
+def _segments(raw: str | Path) -> list[str]:
     """Lowercased, non-empty path segments of `raw`, separators normalized."""
     text = str(raw).replace("\\", "/").strip()
     return [segment.lower() for segment in text.split("/") if segment not in ("", ".")]
 
 
-def is_durable_artifact_path(raw: Union[str, Path]) -> bool:
+def is_durable_artifact_path(raw: str | Path) -> bool:
     """Is `raw` a path with content under one of the durable spec trees?
 
     The sliding-window bound doubles as the content check: a path ending
@@ -88,9 +90,9 @@ def is_durable_artifact_path(raw: Union[str, Path]) -> bool:
     return False
 
 
-def touched_durable_artifacts(touched_paths: Iterable[Union[str, Path]]) -> List[str]:
+def touched_durable_artifacts(touched_paths: Iterable[str | Path]) -> list[str]:
     """Unique durable-spec-tree paths among `touched_paths`, input order kept."""
-    artifacts: List[str] = []
+    artifacts: list[str] = []
     seen: set[str] = set()
     for raw in touched_paths:
         if not is_durable_artifact_path(raw):
@@ -103,8 +105,8 @@ def touched_durable_artifacts(touched_paths: Iterable[Union[str, Path]]) -> List
 
 
 def find_planned_run_records(
-    run_record_paths: Iterable[Union[str, Path]],
-) -> List[Dict[str, str]]:
+    run_record_paths: Iterable[str | Path],
+) -> list[dict[str, str]]:
     """Run records that finished `planned_ready_for_implementation`.
 
     Each path goes through `run_record._load_lenient`, which converts its own
@@ -113,7 +115,7 @@ def find_planned_run_records(
     mirroring `check_deferred_work_handoff.load_deferred_work_entries`.
     Duplicate paths are read once.
     """
-    planned: List[Dict[str, str]] = []
+    planned: list[dict[str, str]] = []
     seen: set[str] = set()
     for raw_path in run_record_paths:
         path = Path(os.path.expanduser(str(raw_path)))
@@ -132,9 +134,9 @@ def find_planned_run_records(
     return planned
 
 
-def merge_markers_in(bash_commands: Iterable[str]) -> List[str]:
+def merge_markers_in(bash_commands: Iterable[str]) -> list[str]:
     """Merge markers (`MERGE_MARKERS`) appearing in any given command line."""
-    markers: List[str] = []
+    markers: list[str] = []
     for command in bash_commands:
         lowered = str(command).lower()
         for marker in MERGE_MARKERS:
@@ -144,12 +146,12 @@ def merge_markers_in(bash_commands: Iterable[str]) -> List[str]:
 
 
 def find_hits(
-    touched_paths: Iterable[Union[str, Path]],
-    run_record_paths: Iterable[Union[str, Path]],
+    touched_paths: Iterable[str | Path],
+    run_record_paths: Iterable[str | Path],
     bash_commands: Iterable[str] = (),
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """All dedup hits, kinds ordered: touched artifacts, planned records, merged PR."""
-    hits: List[Dict[str, Any]] = []
+    hits: list[dict[str, Any]] = []
     spec_paths = touched_durable_artifacts(touched_paths)
     for path in spec_paths:
         hits.append({"kind": SESSION_TOUCHED_DURABLE_ARTIFACT, "path": path})
@@ -167,23 +169,32 @@ def find_hits(
     return hits
 
 
-def main(argv: List[str] | None = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     import argparse
     import json
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--touched-path", dest="touched_path", action="append", default=[],
+        "--touched-path",
+        dest="touched_path",
+        action="append",
+        default=[],
         metavar="PATH",
         help="session-touched file path from the hook's transcript scan; may be repeated",
     )
     parser.add_argument(
-        "--run-record", dest="run_record", action="append", default=[],
+        "--run-record",
+        dest="run_record",
+        action="append",
+        default=[],
         metavar="PATH",
         help="run-record YAML path mentioned in the transcript; may be repeated",
     )
     parser.add_argument(
-        "--bash-command", dest="bash_command", action="append", default=[],
+        "--bash-command",
+        dest="bash_command",
+        action="append",
+        default=[],
         metavar="TEXT",
         help="Bash command line from the hook's transcript scan; may be repeated",
     )

@@ -17,7 +17,7 @@ import pytest
 from worktrail.router import journal_selfcheck, run_record
 
 
-def _repo_with_journal(tmp_path: Path, name: str, journal: "dict | str") -> Path:
+def _repo_with_journal(tmp_path: Path, name: str, journal: dict | str) -> Path:
     repo = tmp_path / "projects" / "myapp"
     repo.mkdir(parents=True, exist_ok=True)
     wt = tmp_path / "projects" / "myapp-worktrees"
@@ -32,7 +32,11 @@ class TestStrandedTail:
         repo = _repo_with_journal(
             tmp_path,
             "008-x",
-            {"integrate_complete": True, "pending_tail_tasks": ["3.1", "3.2"], "groups": {}},
+            {
+                "integrate_complete": True,
+                "pending_tail_tasks": ["3.1", "3.2"],
+                "groups": {},
+            },
         )
         findings = journal_selfcheck.check_repo(repo)["findings"]
         assert len(findings) == 1
@@ -42,14 +46,18 @@ class TestStrandedTail:
 
     def test_no_pending_tail_is_clean(self, tmp_path):
         repo = _repo_with_journal(
-            tmp_path, "008-x", {"integrate_complete": True, "pending_tail_tasks": [], "groups": {}}
+            tmp_path,
+            "008-x",
+            {"integrate_complete": True, "pending_tail_tasks": [], "groups": {}},
         )
         assert journal_selfcheck.check_repo(repo)["findings"] == []
 
     def test_integrate_incomplete_is_clean(self, tmp_path):
         # Mid-run state: tail outstanding but integrate not complete — normal.
         repo = _repo_with_journal(
-            tmp_path, "008-x", {"integrate_complete": False, "pending_tail_tasks": ["3.1"]}
+            tmp_path,
+            "008-x",
+            {"integrate_complete": False, "pending_tail_tasks": ["3.1"]},
         )
         assert journal_selfcheck.check_repo(repo)["findings"] == []
 
@@ -57,10 +65,12 @@ class TestStrandedTail:
         import fcntl
 
         repo = _repo_with_journal(
-            tmp_path, "008-x", {"integrate_complete": True, "pending_tail_tasks": ["3.1"]}
+            tmp_path,
+            "008-x",
+            {"integrate_complete": True, "pending_tail_tasks": ["3.1"]},
         )
         lock = repo.parent / "myapp-worktrees" / "run-008-x.lock"
-        fh = open(lock, "a")
+        fh = open(lock, "a")  # noqa: SIM115 -- held across the surrounding scope as a lock file
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         try:
             assert journal_selfcheck.check_repo(repo)["findings"] == []
@@ -99,7 +109,11 @@ class TestUnreconciledTailEvidence:
         repo = _repo_with_journal(
             tmp_path,
             "008-x",
-            {"integrate_complete": True, "unreconciled_tail_evidence": [], "groups": {}},
+            {
+                "integrate_complete": True,
+                "unreconciled_tail_evidence": [],
+                "groups": {},
+            },
         )
         assert journal_selfcheck.check_repo(repo)["findings"] == []
 
@@ -112,7 +126,7 @@ class TestUnreconciledTailEvidence:
             {"unreconciled_tail_evidence": [{"task": "T022"}]},
         )
         lock = repo.parent / "myapp-worktrees" / "run-008-x.lock"
-        fh = open(lock, "a")
+        fh = open(lock, "a")  # noqa: SIM115 -- held across the surrounding scope as a lock file
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         try:
             assert journal_selfcheck.check_repo(repo)["findings"] == []
@@ -137,7 +151,9 @@ class TestUnreconciledTailEvidence:
         assert kinds == {"stranded-tail", "unreconciled-tail-evidence"}
 
     @pytest.mark.parametrize("reconcile_state", ["opened", "already-open"])
-    def test_open_auto_reconciliation_pr_gets_informational_wording(self, tmp_path, reconcile_state):
+    def test_open_auto_reconciliation_pr_gets_informational_wording(
+        self, tmp_path, reconcile_state
+    ):
         repo = _repo_with_journal(
             tmp_path,
             "008-x",
@@ -185,8 +201,10 @@ class TestUnreconciledTailEvidence:
         assert "reconcile before the worktree is cleaned up" not in detail
 
     @pytest.mark.parametrize("reconcile_state", ["quarantined", None])
-    def test_unresolved_state_keeps_manual_triage_wording(self, tmp_path, reconcile_state):
-        entry: "dict[str, object]" = {"task": "T022"}
+    def test_unresolved_state_keeps_manual_triage_wording(
+        self, tmp_path, reconcile_state
+    ):
+        entry: dict[str, object] = {"task": "T022"}
         if reconcile_state is not None:
             entry["reconcile_state"] = reconcile_state
         repo = _repo_with_journal(
@@ -235,7 +253,9 @@ class TestUnreconciledTailEvidence:
         findings = journal_selfcheck.check_repo(repo)["findings"]
         assert len(findings) == 1
         detail = findings[0]["detail"]
-        assert "T022" in detail and "reconcile before the worktree is cleaned up" in detail
+        assert (
+            "T022" in detail and "reconcile before the worktree is cleaned up" in detail
+        )
         assert "T023" in detail and "auto-reconciliation" in detail
         assert "https://github.com/acme/myapp/pull/43" in detail
         assert "T024" not in detail
@@ -243,13 +263,17 @@ class TestUnreconciledTailEvidence:
 
 class TestMalformedJournal:
     def test_unparseable_journal_is_flagged(self, tmp_path):
-        repo = _repo_with_journal(tmp_path, "008-x", "integrate_complete: true\ngroups: {}\n")
+        repo = _repo_with_journal(
+            tmp_path, "008-x", "integrate_complete: true\ngroups: {}\n"
+        )
         findings = journal_selfcheck.check_repo(repo)["findings"]
         assert len(findings) == 1
         assert findings[0]["kind"] == "malformed-journal"
 
     def test_non_object_root_is_flagged(self, tmp_path):
-        repo = _repo_with_journal(tmp_path, "008-x", json.dumps(["not", "an", "object"]))
+        repo = _repo_with_journal(
+            tmp_path, "008-x", json.dumps(["not", "an", "object"])
+        )
         findings = journal_selfcheck.check_repo(repo)["findings"]
         assert findings[0]["kind"] == "malformed-journal"
         assert "list" in findings[0]["detail"]
@@ -278,7 +302,9 @@ class TestMalformedRunRecord:
         run_dir.mkdir(parents=True)
         (run_dir / "go-corrupted.yaml").write_text(_CORRUPTED_RECORD_TEXT)
 
-        findings = journal_selfcheck.check_repo(repo, run_record_dir=runs_dir)["findings"]
+        findings = journal_selfcheck.check_repo(repo, run_record_dir=runs_dir)[
+            "findings"
+        ]
 
         assert len(findings) == 1
         assert findings[0]["kind"] == "malformed-run-record"
@@ -293,10 +319,18 @@ class TestMalformedRunRecord:
         run_dir.mkdir(parents=True)
         run_record._save(
             run_dir / "go-y.yaml",
-            {"run_id": "go-y", "repository": "r", "decisions": [], "final_status": None},
+            {
+                "run_id": "go-y",
+                "repository": "r",
+                "decisions": [],
+                "final_status": None,
+            },
         )
 
-        assert journal_selfcheck.check_repo(repo, run_record_dir=runs_dir)["findings"] == []
+        assert (
+            journal_selfcheck.check_repo(repo, run_record_dir=runs_dir)["findings"]
+            == []
+        )
 
     def test_no_run_record_dir_is_clean(self, tmp_path):
         repo = tmp_path / "projects" / "myapp"
@@ -324,7 +358,8 @@ class TestMalformedRunRecord:
 
     def test_composes_with_journal_findings_for_the_same_repo(self, tmp_path):
         repo = _repo_with_journal(
-            tmp_path, "008-x",
+            tmp_path,
+            "008-x",
             {"integrate_complete": True, "pending_tail_tasks": ["3.1"], "groups": {}},
         )
         runs_dir = tmp_path / "runs"
@@ -334,7 +369,9 @@ class TestMalformedRunRecord:
 
         kinds = {
             f["kind"]
-            for f in journal_selfcheck.check_repo(repo, run_record_dir=runs_dir)["findings"]
+            for f in journal_selfcheck.check_repo(repo, run_record_dir=runs_dir)[
+                "findings"
+            ]
         }
 
         assert kinds == {"stranded-tail", "malformed-run-record"}
@@ -396,7 +433,12 @@ class TestDashboardWiring:
                     "quarantine_findings": [],
                     "quarantine_resumable": [],
                     "journal_findings": [
-                        {"kind": "stranded-tail", "spec_id": "008-x", "journal": "j", "detail": "d"}
+                        {
+                            "kind": "stranded-tail",
+                            "spec_id": "008-x",
+                            "journal": "j",
+                            "detail": "d",
+                        }
                     ],
                 }
             ],

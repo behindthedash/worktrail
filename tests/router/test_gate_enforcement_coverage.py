@@ -22,6 +22,7 @@ This test closes the whole failure mode:
    enforcement exists (not just a comment claiming it does) -- exercised by
    `test_registered_consumers_actually_enforce`.
 """
+
 import ast
 import json
 import tempfile
@@ -43,14 +44,16 @@ def extract_emitted_gate_strings() -> set:
     tree = ast.parse(CLASSIFY_SRC.read_text())
     found = set()
     for node in ast.walk(tree):
-        if (isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "append"
-                and isinstance(node.func.value, ast.Name)
-                and node.func.value.id == "gates"
-                and node.args
-                and isinstance(node.args[0], ast.Constant)
-                and isinstance(node.args[0].value, str)):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "append"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "gates"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ):
             found.add(node.args[0].value)
     return found
 
@@ -67,16 +70,20 @@ def _proves_require_human_approval():
     present, independent of risk (max_risk set to the loosest tier so only
     the gate itself can be responsible for the denial)."""
     eligible, _ = policy_mod.automerge_eligible(
-        _policy(max_risk="critical"), "low", ["require_human_approval"], "main")
+        _policy(max_risk="critical"), "low", ["require_human_approval"], "main"
+    )
     if eligible is not False:
-        raise AssertionError("require_human_approval did not block automerge eligibility")
+        raise AssertionError(
+            "require_human_approval did not block automerge eligibility"
+        )
 
 
 def _proves_never_automerge():
     """Same consumer as require_human_approval: automerge_eligible()'s first
     check ORs the two gate strings together."""
     eligible, _ = policy_mod.automerge_eligible(
-        _policy(max_risk="critical"), "low", ["never_automerge"], "main")
+        _policy(max_risk="critical"), "low", ["never_automerge"], "main"
+    )
     if eligible is not False:
         raise AssertionError("never_automerge did not block automerge eligibility")
 
@@ -90,11 +97,13 @@ def _proves_pause_before_merge():
     risk pairing this gate always carries is itself denied under a default
     (max_risk=low) policy."""
     eligible, reason = policy_mod.automerge_eligible(
-        _policy(max_risk="low"), "high", ["pause_before_merge"], "main")
+        _policy(max_risk="low"), "high", ["pause_before_merge"], "main"
+    )
     if eligible is not False:
         raise AssertionError(
             "risk='high' (pause_before_merge's invariant pairing) was not "
-            f"denied by the policy max_risk ceiling: {reason}")
+            f"denied by the policy max_risk ceiling: {reason}"
+        )
 
 
 def _proves_routing_cassette_required():
@@ -105,14 +114,16 @@ def _proves_routing_cassette_required():
     expectation stops holding. Prove such a scenario currently exists."""
     data = json.loads(CASSETTE.read_text())
     matches = [
-        sc for sc in data["scenarios"]
+        sc
+        for sc in data["scenarios"]
         if sc.get("expect", {}).get("route") == "J"
         and "routing_cassette_required" in sc.get("expect", {}).get("gates_include", [])
     ]
     if not matches:
         raise AssertionError(
             "no routing_cassette.json scenario asserts route J + "
-            "gates_include: ['routing_cassette_required']")
+            "gates_include: ['routing_cassette_required']"
+        )
 
 
 def _proves_no_implementation_without_approval():
@@ -123,10 +134,21 @@ def _proves_no_implementation_without_approval():
     with tempfile.TemporaryDirectory() as tmp:
         out = StringIO()
         with patch("sys.stdout", out):
-            rc = run_record_main([
-                "start", "--repo", "/tmp/fake-repo", "--request", "t",
-                "--route", "A", "--risk", "low", "--dir", tmp,
-            ])
+            rc = run_record_main(
+                [
+                    "start",
+                    "--repo",
+                    "/tmp/fake-repo",
+                    "--request",
+                    "t",
+                    "--route",
+                    "A",
+                    "--risk",
+                    "low",
+                    "--dir",
+                    tmp,
+                ]
+            )
         if rc != 0:
             raise AssertionError("run_record.py start failed")
         run_path = json.loads(out.getvalue())["path"]
@@ -136,7 +158,8 @@ def _proves_no_implementation_without_approval():
             return
         raise AssertionError(
             "Route A finished on an implementation-completion state with no "
-            "recorded decision -- no_implementation_without_approval is unenforced")
+            "recorded decision -- no_implementation_without_approval is unenforced"
+        )
 
 
 # gate string -> callable proving a real, behavior-changing consumer exists.
@@ -151,23 +174,27 @@ GATE_CONSUMERS = {
 
 
 class TestGateEnforcementCoverage(unittest.TestCase):
-
     def test_every_emitted_gate_has_a_registered_consumer(self):
         emitted = extract_emitted_gate_strings()
-        self.assertTrue(emitted, "extraction found no gates.append(...) calls -- "
-                                  "classify.py's gate logic may have moved/renamed")
+        self.assertTrue(
+            emitted,
+            "extraction found no gates.append(...) calls -- "
+            "classify.py's gate logic may have moved/renamed",
+        )
         registered = set(GATE_CONSUMERS)
         missing = emitted - registered
         self.assertFalse(
             missing,
             f"classify.py emits gate string(s) {sorted(missing)} with no "
             "registered consumer in GATE_CONSUMERS -- add a proof function "
-            "before shipping (see classify-gate-enforcement-audit.md)")
+            "before shipping (see classify-gate-enforcement-audit.md)",
+        )
         stale = registered - emitted
         self.assertFalse(
             stale,
             f"GATE_CONSUMERS registers {sorted(stale)}, which classify.py no "
-            "longer emits -- remove the stale entry")
+            "longer emits -- remove the stale entry",
+        )
 
     def test_registered_consumers_actually_enforce(self):
         for gate, proof in GATE_CONSUMERS.items():

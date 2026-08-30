@@ -5,7 +5,13 @@ import json
 from pathlib import Path
 from unittest import mock
 
-_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "ci" / "rulesets" / "rulesets_sync.py"
+_SCRIPT = (
+    Path(__file__).resolve().parents[1]
+    / "scripts"
+    / "ci"
+    / "rulesets"
+    / "rulesets_sync.py"
+)
 _spec = importlib.util.spec_from_file_location("rulesets_sync", _SCRIPT)
 assert _spec is not None and _spec.loader is not None
 rs = importlib.util.module_from_spec(_spec)
@@ -75,9 +81,11 @@ def test_check_detects_missing_required_status_check(tmp_path, capsys):
             return live_full
         raise AssertionError(f"unexpected call: {method} {path}")
 
-    with mock.patch.object(rs, "gh_api", side_effect=fake_gh_api), \
-         mock.patch.object(rs, "resolve_token", return_value="tok"), \
-         mock.patch.object(rs, "resolve_repo", return_value="owner/repo"):
+    with (
+        mock.patch.object(rs, "gh_api", side_effect=fake_gh_api),
+        mock.patch.object(rs, "resolve_token", return_value="tok"),
+        mock.patch.object(rs, "resolve_repo", return_value="owner/repo"),
+    ):
         code = rs.main(["--check", "--dir", str(tmp_path)])
 
     assert code == 1
@@ -97,9 +105,11 @@ def test_check_passes_when_identical(tmp_path, capsys):
             return live_full
         raise AssertionError(f"unexpected call: {method} {path}")
 
-    with mock.patch.object(rs, "gh_api", side_effect=fake_gh_api), \
-         mock.patch.object(rs, "resolve_token", return_value="tok"), \
-         mock.patch.object(rs, "resolve_repo", return_value="owner/repo"):
+    with (
+        mock.patch.object(rs, "gh_api", side_effect=fake_gh_api),
+        mock.patch.object(rs, "resolve_token", return_value="tok"),
+        mock.patch.object(rs, "resolve_repo", return_value="owner/repo"),
+    ):
         code = rs.main(["--check", "--dir", str(tmp_path)])
 
     assert code == 0
@@ -123,9 +133,11 @@ def test_apply_puts_committed_json_when_drifted(tmp_path):
             return {}
         raise AssertionError(f"unexpected call: {method} {path}")
 
-    with mock.patch.object(rs, "gh_api", side_effect=fake_gh_api), \
-         mock.patch.object(rs, "resolve_token", return_value="tok"), \
-         mock.patch.object(rs, "resolve_repo", return_value="owner/repo"):
+    with (
+        mock.patch.object(rs, "gh_api", side_effect=fake_gh_api),
+        mock.patch.object(rs, "resolve_token", return_value="tok"),
+        mock.patch.object(rs, "resolve_repo", return_value="owner/repo"),
+    ):
         code = rs.main(["--apply", "--dir", str(tmp_path)])
 
     assert code == 0
@@ -146,9 +158,11 @@ def test_missing_live_ruleset_reports_and_fails_check(tmp_path, capsys):
             return []
         raise AssertionError(f"unexpected call: {method} {path}")
 
-    with mock.patch.object(rs, "gh_api", side_effect=fake_gh_api), \
-         mock.patch.object(rs, "resolve_token", return_value="tok"), \
-         mock.patch.object(rs, "resolve_repo", return_value="owner/repo"):
+    with (
+        mock.patch.object(rs, "gh_api", side_effect=fake_gh_api),
+        mock.patch.object(rs, "resolve_token", return_value="tok"),
+        mock.patch.object(rs, "resolve_repo", return_value="owner/repo"),
+    ):
         code = rs.main(["--check", "--dir", str(tmp_path)])
 
     assert code == 1
@@ -163,6 +177,8 @@ def test_committed_rulesets_match_repo_rulesets_dir():
     for f in files:
         canon = rs.canonicalize(json.loads(f.read_text()))
         assert canon["name"] == f.stem
-        assert canon["rules"].get("required_status_checks", {}).get(
-            "required_status_checks"
+        assert (
+            canon["rules"]
+            .get("required_status_checks", {})
+            .get("required_status_checks")
         ), f"{f.name} has no required status checks"

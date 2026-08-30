@@ -48,6 +48,7 @@ kept as the primary source of truth). The override does not change the
 `resumable=False` contract in any way -- it only changes whether the check
 runs at all when frontmatter is absent.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -56,7 +57,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from ..shared.brief_frontmatter import read_frontmatter
 from ..shared.homedir import worktrail_home
@@ -66,16 +67,25 @@ from .poll_run import read_run_record
 DEFAULT_GH_TIMEOUT = 10
 
 
-def _run_gh(repo: Path, args: List[str], timeout: int) -> Optional["subprocess.CompletedProcess[str]"]:
+def _run_gh(
+    repo: Path, args: list[str], timeout: int
+) -> subprocess.CompletedProcess[str] | None:
     try:
         return subprocess.run(
-            ["gh", *args], capture_output=True, text=True, timeout=timeout, cwd=str(repo),
+            ["gh", *args],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=str(repo),
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
 
 
-def _find_inflight_run_record(brief_id: str, repo: str, runs_dir: Path) -> Optional[Dict[str, Any]]:
+def _find_inflight_run_record(
+    brief_id: str, repo: str, runs_dir: Path
+) -> dict[str, Any] | None:
     """Scan `runs_dir/<repo-name>/*.yaml` for a non-terminal record referencing
     `brief_id`. Returns `{"path": str, "worktree": str|None}` for the first
     match, or `None` if the directory is missing or nothing non-terminal
@@ -98,15 +108,25 @@ def _find_inflight_run_record(brief_id: str, repo: str, runs_dir: Path) -> Optio
     return None
 
 
-def _find_open_pr(brief_id: str, repo: str, timeout: int) -> Optional[Dict[str, Any]]:
+def _find_open_pr(brief_id: str, repo: str, timeout: int) -> dict[str, Any] | None:
     """Best-effort `gh pr list --search <brief_id> --state open`. Returns the
     first match, or `None` on no match, `gh` unavailable, or any failure."""
     if not shutil.which("gh"):
         return None
     out = _run_gh(
         Path(repo),
-        ["pr", "list", "--state", "open", "--search", brief_id,
-         "--json", "number,title,url", "--limit", "5"],
+        [
+            "pr",
+            "list",
+            "--state",
+            "open",
+            "--search",
+            brief_id,
+            "--json",
+            "number,title,url",
+            "--limit",
+            "5",
+        ],
         timeout,
     )
     if out is None or out.returncode != 0:
@@ -123,11 +143,11 @@ def _find_open_pr(brief_id: str, repo: str, timeout: int) -> Optional[Dict[str, 
 
 def check(
     brief_path: Path,
-    runs_dir: Optional[Path] = None,
+    runs_dir: Path | None = None,
     do_gh: bool = True,
     gh_timeout: int = DEFAULT_GH_TIMEOUT,
-    repo_override: Optional[str] = None,
-) -> Dict[str, Any]:
+    repo_override: str | None = None,
+) -> dict[str, Any]:
     """Does the claimed brief at `brief_path` have real resumable state?
 
     Returns `{"checked": bool, "resumable": bool, "evidence": {"run_record":
@@ -147,7 +167,7 @@ def check(
     SKILL.md's Phase 3 `$REPO`), not a second source of truth to reconcile
     against the brief's own claim.
     """
-    result: Dict[str, Any] = {
+    result: dict[str, Any] = {
         "checked": False,
         "resumable": False,
         "evidence": {"run_record": None, "worktree": None, "open_pr": None},
@@ -172,7 +192,11 @@ def check(
         return result
 
     result["checked"] = True
-    resolved_runs_dir = Path(runs_dir).expanduser() if runs_dir is not None else worktrail_home() / "runs"
+    resolved_runs_dir = (
+        Path(runs_dir).expanduser()
+        if runs_dir is not None
+        else worktrail_home() / "runs"
+    )
 
     record = _find_inflight_run_record(brief_id, str(repo), resolved_runs_dir)
     if record is not None:
@@ -196,11 +220,16 @@ def check(
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--brief", required=True, help="path to the claimed brief")
-    p.add_argument("--dir", default=None, help="run records directory (default worktrail_home()/runs)")
+    p.add_argument(
+        "--dir",
+        default=None,
+        help="run records directory (default worktrail_home()/runs)",
+    )
     p.add_argument("--no-gh", action="store_true", help="skip the open-PR gh lookup")
     p.add_argument("--gh-timeout", type=int, default=DEFAULT_GH_TIMEOUT)
     p.add_argument(
-        "--repo", default=None,
+        "--repo",
+        default=None,
         help="fallback target repo, used only when the brief has no repo: frontmatter",
     )
     p.add_argument("--json", action="store_true")
@@ -220,7 +249,9 @@ def main(argv=None) -> int:
     elif res["resumable"]:
         print(f"RESUMABLE: {res['evidence']}")
     else:
-        line = "not resumable: no in-flight run record with existing worktree, no open PR"
+        line = (
+            "not resumable: no in-flight run record with existing worktree, no open PR"
+        )
         if res.get("warning"):
             line += f"\n  warning: {res['warning']}"
         print(line)

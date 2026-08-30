@@ -6,9 +6,14 @@ Ported unchanged from developer-kit's `hooks/task_lifecycle.py` CLI section
 TASK-(CHG-)?\\d+\\.md files). devkit now shims this via the installed
 `worktrail-task-lifecycle` console script.
 """
+
 import sys
 
-from worktrail.taskformats.devkit.schema import is_task_file, update_status, validate_task
+from worktrail.taskformats.devkit.schema import (
+    is_task_file,
+    update_status,
+    validate_task,
+)
 
 
 def main():

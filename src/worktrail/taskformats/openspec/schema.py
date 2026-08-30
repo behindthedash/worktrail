@@ -33,7 +33,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
 
 # `## 1. Setup` / `## 12. Core Implementation`
 GROUP_RE = re.compile(r"^##\s+(\d+)\.\s*(.*?)\s*$")
@@ -81,7 +80,7 @@ def split_tags(title: str) -> tuple[str, list[str]]:
         if not m:
             break
         tags.append(m.group(1).strip())
-        rest = rest[m.end():]
+        rest = rest[m.end() :]
     return rest.strip(), tags
 
 
@@ -105,15 +104,17 @@ class ParsedTask:
     line_no: int  # 0-based index into the file's lines; the write-back anchor
     kind: str = DEFAULT_KIND  # from a leading [tag]; gates the fan-out holdout
     tags: list = field(default_factory=list)  # every leading tag, in order
-    files: list[str] = field(default_factory=list)  # paths from an indented `files:` line, if any
+    files: list[str] = field(
+        default_factory=list
+    )  # paths from an indented `files:` line, if any
 
 
 @dataclass
 class ParsedTasks:
-    tasks: List[ParsedTask] = field(default_factory=list)
-    warnings: List[str] = field(default_factory=list)
+    tasks: list[ParsedTask] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
-    def by_id(self, task_id: str) -> Optional[ParsedTask]:
+    def by_id(self, task_id: str) -> ParsedTask | None:
         for t in self.tasks:
             if t.id == task_id:
                 return t
@@ -161,7 +162,7 @@ def parse_tasks_md(text: str) -> ParsedTasks:
 
             files: list[str] = []
             files_declared = False
-            for j, follow in enumerate(lines[i + 1:], start=i + 1):
+            for j, follow in enumerate(lines[i + 1 :], start=i + 1):
                 if not follow.strip():
                     break
                 if GROUP_RE.match(follow) or TASK_RE.match(follow):

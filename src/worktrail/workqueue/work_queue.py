@@ -135,7 +135,7 @@ import re
 import socket
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import yaml
 
@@ -203,7 +203,7 @@ _CONSOLIDATED_FROM_RE = re.compile(
 )
 
 
-def _consolidated_member_ids(body: str) -> List[str]:
+def _consolidated_member_ids(body: str) -> list[str]:
     """Member ids listed under a `## Consolidated from` section in `body`, or
     `[]` when the brief carries no such section -- i.e. it is not itself a
     consolidation-batch brief, the overwhelmingly common case for `done()`.
@@ -211,10 +211,12 @@ def _consolidated_member_ids(body: str) -> List[str]:
     m = _CONSOLIDATED_FROM_RE.search(body)
     if not m:
         return []
-    return [line[2:].strip() for line in m.group(1).splitlines() if line.startswith("- ")]
+    return [
+        line[2:].strip() for line in m.group(1).splitlines() if line.startswith("- ")
+    ]
 
 
-def _consolidation_closure_missing_evidence(body: str, note: Optional[str]) -> List[str]:
+def _consolidation_closure_missing_evidence(body: str, note: str | None) -> list[str]:
     """Member ids from `body`'s `## Consolidated from` section that `note`
     does not evidence. Empty means either `body` is not a consolidation-batch
     brief (nothing to gate) or `note` evidences every listed member.
@@ -238,7 +240,7 @@ def _consolidation_closure_missing_evidence(body: str, note: Optional[str]) -> L
     return [member_id for member_id in member_ids if member_id not in note]
 
 
-def _target_task_checkbox_out_of_sync(fm: Dict[str, Any]) -> bool:
+def _target_task_checkbox_out_of_sync(fm: dict[str, Any]) -> bool:
     """True only when a closing brief's `target-task:` is confirmed still
     unticked in its `target-spec:` OpenSpec change's `tasks.md`.
 
@@ -316,7 +318,7 @@ def _now_iso() -> str:
 # --------------------------------------------------------------------------- #
 
 
-def _read_frontmatter(path: Path) -> Dict[str, Any]:
+def _read_frontmatter(path: Path) -> dict[str, Any]:
     return read_frontmatter(path)
 
 
@@ -368,15 +370,14 @@ def _yaml_scalar(value: Any) -> str:
     dumped = yaml.safe_dump(
         value, default_flow_style=True, width=10**9, allow_unicode=True
     )
-    if dumped.endswith("...\n"):  # document-end marker on a plain scalar
-        dumped = dumped[: -len("...\n")]
+    dumped = dumped.removesuffix("...\n")
     scalar = dumped.strip()
     if "\n" in scalar:
         return json.dumps(value if isinstance(value, str) else str(value))
     return scalar
 
 
-def _set_fm_fields(path: Path, fields: Dict[str, str]) -> None:
+def _set_fm_fields(path: Path, fields: dict[str, str]) -> None:
     """Set/replace simple scalar fields inside the YAML frontmatter block.
 
     Operates only on the frontmatter region to preserve body formatting and key
@@ -409,7 +410,9 @@ def _set_fm_fields(path: Path, fields: Dict[str, str]) -> None:
     for k, v in remaining.items():  # append any not already present
         lines.append(f"{k}: {_yaml_scalar(v)}")
     new_block = "\n".join(lines)
-    path.write_text(content[: m.start(1)] + new_block + content[m.end(1) :], encoding="utf-8")
+    path.write_text(
+        content[: m.start(1)] + new_block + content[m.end(1) :], encoding="utf-8"
+    )
 
 
 def _remove_fm_field(path: Path, key: str) -> None:
@@ -423,10 +426,12 @@ def _remove_fm_field(path: Path, key: str) -> None:
     lines = [line for line in block.split("\n") if not key_re.match(line)]
     new_block = "\n".join(lines)
     if new_block != block:
-        path.write_text(content[: m.start(1)] + new_block + content[m.end(1) :], encoding="utf-8")
+        path.write_text(
+            content[: m.start(1)] + new_block + content[m.end(1) :], encoding="utf-8"
+        )
 
 
-def _set_fm_list_field(path: Path, key: str, values: List[str]) -> None:
+def _set_fm_list_field(path: Path, key: str, values: list[str]) -> None:
     """Set/replace a list field inside the YAML frontmatter block atomically.
 
     Renders the field as a YAML block sequence. When ``values`` is empty the key
@@ -449,14 +454,14 @@ def _set_fm_list_field(path: Path, key: str, values: List[str]) -> None:
 
     block = m.group(1)
     lines = block.split("\n")
-    new_lines: List[str] = []
+    new_lines: list[str] = []
     skip_continuations = False
     key_found = False
     key_re = re.compile(r"^" + re.escape(key) + r"\s*:")
 
     for line in lines:
         if skip_continuations:
-            if line.startswith("  ") or line.startswith("\t"):
+            if line.startswith(("  ", "\t")):
                 continue
             skip_continuations = False
         if key_re.match(line):
@@ -473,7 +478,9 @@ def _set_fm_list_field(path: Path, key: str, values: List[str]) -> None:
         new_lines.extend(f"  - {_yaml_scalar(v)}" for v in values)
 
     new_block = "\n".join(new_lines)
-    path.write_text(content[: m.start(1)] + new_block + content[m.end(1) :], encoding="utf-8")
+    path.write_text(
+        content[: m.start(1)] + new_block + content[m.end(1) :], encoding="utf-8"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -481,7 +488,7 @@ def _set_fm_list_field(path: Path, key: str, values: List[str]) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def _md_files(d: Path) -> List[Path]:
+def _md_files(d: Path) -> list[Path]:
     if not d.is_dir():
         return []
     return sorted(
@@ -500,7 +507,7 @@ def normalize_dependency_reference(raw: Any) -> str:
     lossy split that can silently change eligibility semantics.
     """
     if not isinstance(raw, str):
-        raise ValueError("dependency reference must be a string")
+        raise ValueError("dependency reference must be a string")  # noqa: TRY004 -- ValueError is this function's uniform malformed-input contract; callers catch ValueError specifically
     ref = raw.strip()
     if not ref:
         raise ValueError("dependency reference must not be blank")
@@ -509,7 +516,7 @@ def normalize_dependency_reference(raw: Any) -> str:
     return ref
 
 
-def classify_dependency_reference(raw: Any) -> Dict[str, Any]:
+def classify_dependency_reference(raw: Any) -> dict[str, Any]:
     """Classify one dependency reference against queue/ and picked/.
 
     Returns a structured result with the original raw value preserved, the
@@ -518,7 +525,7 @@ def classify_dependency_reference(raw: Any) -> Dict[str, Any]:
     candidate paths that matched, and a ``satisfied`` flag that is true only
     for ``done`` and ``stale``.
     """
-    result: Dict[str, Any] = {
+    result: dict[str, Any] = {
         "raw": raw,
         "reference": None,
         "state": "malformed",
@@ -536,24 +543,24 @@ def classify_dependency_reference(raw: Any) -> Dict[str, Any]:
     queue_res = resolve(ref, queue_dir())
     picked_res = resolve(ref, picked_dir())
 
-    candidate_paths: List[str] = []
-    if queue_res["status"] == "match":
+    candidate_paths: list[str] = []
+    if queue_res["status"] == "match" or queue_res["status"] == "ambiguous":
         candidate_paths.extend(queue_res["candidates"])
-    elif queue_res["status"] == "ambiguous":
-        candidate_paths.extend(queue_res["candidates"])
-    if picked_res["status"] == "match":
-        candidate_paths.extend(picked_res["candidates"])
-    elif picked_res["status"] == "ambiguous":
+    if picked_res["status"] == "match" or picked_res["status"] == "ambiguous":
         candidate_paths.extend(picked_res["candidates"])
 
-    candidates: List[str] = []
+    candidates: list[str] = []
     seen: set[str] = set()
     for candidate in candidate_paths:
         if candidate not in seen:
             seen.add(candidate)
             candidates.append(candidate)
 
-    if queue_res["status"] == "ambiguous" or picked_res["status"] == "ambiguous" or len(candidates) > 1:
+    if (
+        queue_res["status"] == "ambiguous"
+        or picked_res["status"] == "ambiguous"
+        or len(candidates) > 1
+    ):
         state = "ambiguous"
     elif not candidates:
         state = "stale"
@@ -562,7 +569,9 @@ def classify_dependency_reference(raw: Any) -> Dict[str, Any]:
     else:
         picked_path = Path(candidates[0])
         picked_fm = _read_frontmatter(picked_path)
-        state = "done" if str(picked_fm.get("status") or "").strip() == "done" else "active"
+        state = (
+            "done" if str(picked_fm.get("status") or "").strip() == "done" else "active"
+        )
 
     result["reference"] = ref
     result["candidates"] = candidates
@@ -571,7 +580,7 @@ def classify_dependency_reference(raw: Any) -> Dict[str, Any]:
     return result
 
 
-def _blocked_by_refs(fm: Dict[str, Any]) -> List[Any]:
+def _blocked_by_refs(fm: dict[str, Any]) -> list[Any]:
     deps = fm.get("blocked-by")
     if deps is None:
         return []
@@ -583,7 +592,10 @@ def _blocked_by_refs(fm: Dict[str, Any]) -> List[Any]:
 def _is_blocked(path: Path) -> bool:
     """Return True if any `blocked-by` prerequisite is not yet satisfied."""
     fm = _read_frontmatter(path)
-    return any(not classify_dependency_reference(dep)["satisfied"] for dep in _blocked_by_refs(fm))
+    return any(
+        not classify_dependency_reference(dep)["satisfied"]
+        for dep in _blocked_by_refs(fm)
+    )
 
 
 def _is_not_yet_due(path: Path) -> bool:
@@ -600,7 +612,7 @@ def _is_not_yet_due(path: Path) -> bool:
         due = datetime.date.fromisoformat(str(raw))
     except ValueError:
         return False
-    return datetime.date.today() < due
+    return datetime.date.today() < due  # noqa: DTZ011
 
 
 RECENTLY_RELEASED_MINUTES = 20.0
@@ -612,7 +624,7 @@ RECENTLY_RELEASED_MINUTES = 20.0
 VALID_TRIAGE = ("blocker", "deferred")
 
 
-def _recently_released_info(path: Path) -> Dict[str, Any]:
+def _recently_released_info(path: Path) -> dict[str, Any]:
     """`{"recently_released": bool, "released_at": str|None, "released_by": str|None}`.
 
     A brief `release()` just returned to the queue carries a stale `released-at`
@@ -626,14 +638,22 @@ def _recently_released_info(path: Path) -> Dict[str, Any]:
     """
     fm = _read_frontmatter(path)
     raw = fm.get("released-at")
-    info: Dict[str, Any] = {"recently_released": False, "released_at": None, "released_by": None}
+    info: dict[str, Any] = {
+        "recently_released": False,
+        "released_at": None,
+        "released_by": None,
+    }
     if not raw:
         return info
     try:
         released_at = datetime.datetime.fromisoformat(str(raw))
     except ValueError:
         return info
-    now = datetime.datetime.now(released_at.tzinfo) if released_at.tzinfo else datetime.datetime.now()
+    now = (
+        datetime.datetime.now(released_at.tzinfo)
+        if released_at.tzinfo
+        else datetime.datetime.now()  # noqa: DTZ005
+    )
     age_minutes = (now - released_at).total_seconds() / 60.0
     if 0 <= age_minutes < RECENTLY_RELEASED_MINUTES:
         info["recently_released"] = True
@@ -661,7 +681,7 @@ def _frontmatter_unparsable(path: Path) -> bool:
     return not read_frontmatter(path)
 
 
-def _awaiting_decision_info(path: Path) -> Dict[str, Any]:
+def _awaiting_decision_info(path: Path) -> dict[str, Any]:
     """`{"awaiting_decision": id|None, "decision_status": str|None}` for a
     brief's optional `awaiting-decision:` frontmatter link.
 
@@ -675,13 +695,14 @@ def _awaiting_decision_info(path: Path) -> Dict[str, Any]:
     if not dec_id:
         return {"awaiting_decision": None, "decision_status": None}
     from . import decisions  # function-level: decisions imports this module
+
     return {
         "awaiting_decision": str(dec_id),
         "decision_status": decisions.decision_status(str(dec_id)),
     }
 
 
-def list_queue() -> Dict[str, Any]:
+def list_queue() -> dict[str, Any]:
     """Queue briefs newest-first:
 
     {"briefs": [{filename, path, focus, repo, blocked, not_yet_due,
@@ -694,7 +715,7 @@ def list_queue() -> Dict[str, Any]:
     the moment a human answers.
     """
 
-    def _brief_dict(f: Path) -> Dict[str, Any]:
+    def _brief_dict(f: Path) -> dict[str, Any]:
         fm = _read_frontmatter(f)
         related = fm.get("related")
         released = _recently_released_info(f)
@@ -719,7 +740,7 @@ def list_queue() -> Dict[str, Any]:
     return {"briefs": [_brief_dict(f) for f in _md_files(queue_dir())]}
 
 
-def resolve(identifier: str, folder: Path) -> Dict[str, Any]:
+def resolve(identifier: str, folder: Path) -> dict[str, Any]:
     """Match identifier against .md files in `folder`.
 
     An identifier that is itself an absolute path to a file directly inside
@@ -747,7 +768,11 @@ def resolve(identifier: str, folder: Path) -> Dict[str, Any]:
     files = _md_files(folder)
     hits: set = set()
     for f in files:
-        if f.name == identifier or f.stem == identifier or f.name.startswith(identifier):
+        if (
+            f.name == identifier
+            or f.stem == identifier
+            or f.name.startswith(identifier)
+        ):
             hits.add(f)
     if not hits:
         for f in files:
@@ -766,7 +791,6 @@ def resolve(identifier: str, folder: Path) -> Dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 
-
 # A queued brief's premise can drift out from under it -- something it asks for gets
 # reverted, superseded, or decided against on the base branch while it sits waiting.
 # Full ground-truth reconciliation (matching a brief's touched paths against reversal-
@@ -779,7 +803,7 @@ def resolve(identifier: str, folder: Path) -> Dict[str, Any]:
 PREMISE_DRIFT_THRESHOLD_DAYS = 7
 
 
-def _premise_drift_warning(path: Path) -> Optional[str]:
+def _premise_drift_warning(path: Path) -> str | None:
     """Return a warning string if `created:` is more than PREMISE_DRIFT_THRESHOLD_DAYS
     old, else None. Lenient like the other warning helpers: a missing or unparsable
     `created` value never produces a warning."""
@@ -791,7 +815,11 @@ def _premise_drift_warning(path: Path) -> Optional[str]:
         created = datetime.datetime.fromisoformat(str(raw))
     except ValueError:
         return None
-    now = datetime.datetime.now(created.tzinfo) if created.tzinfo else datetime.datetime.now()
+    now = (
+        datetime.datetime.now(created.tzinfo)
+        if created.tzinfo
+        else datetime.datetime.now()  # noqa: DTZ005
+    )
     age_days = (now - created).total_seconds() / 86400.0
     if age_days <= PREMISE_DRIFT_THRESHOLD_DAYS:
         return None
@@ -802,11 +830,11 @@ def _premise_drift_warning(path: Path) -> Optional[str]:
     )
 
 
-def _claim_warnings(path: Path) -> List[str]:
+def _claim_warnings(path: Path) -> list[str]:
     """Return warning strings for any unresolved blocked-by dependencies, plus a
     premise-drift age warning when applicable."""
     fm = _read_frontmatter(path)
-    warnings: List[str] = []
+    warnings: list[str] = []
     for dep in _blocked_by_refs(fm):
         resolution = classify_dependency_reference(dep)
         if resolution["satisfied"]:
@@ -830,14 +858,15 @@ def _claim_warnings(path: Path) -> List[str]:
     if awaiting["decision_status"] == "open":
         warnings.append(
             f"awaiting decision {awaiting['awaiting_decision']} (still open -- "
-            "a human has not answered yet; see worktrail-decision show)")
+            "a human has not answered yet; see worktrail-decision show)"
+        )
     drift = _premise_drift_warning(path)
     if drift:
         warnings.append(drift)
     return warnings
 
 
-def _same_owner(existing_path: Path, by: Optional[str]) -> Optional[bool]:
+def _same_owner(existing_path: Path, by: str | None) -> bool | None:
     """Compare an already-claimed brief's stamped `claimed-by` against `by`.
 
     Returns None (unknown -- never assume ownership) when `by` was not
@@ -855,7 +884,7 @@ def _same_owner(existing_path: Path, by: Optional[str]) -> Optional[bool]:
     return claimed_by is not None and claimed_by == by
 
 
-def _ownership_block(path: Path, by: Optional[str], force: bool) -> Optional[Dict[str, Any]]:
+def _ownership_block(path: Path, by: str | None, force: bool) -> dict[str, Any] | None:
     """Guard for done()/release(): refuse to mutate a brief stamped `claimed-by`
     a different identity than `by`, unless `force` overrides.
 
@@ -886,7 +915,7 @@ def _ownership_block(path: Path, by: Optional[str], force: bool) -> Optional[Dic
     }
 
 
-def claim(identifier: str, by: Optional[str] = None) -> Dict[str, Any]:
+def claim(identifier: str, by: str | None = None) -> dict[str, Any]:
     """Atomically move the matching queue brief into picked/ and stamp it.
 
     Returns {"status": "claimed"|"none"|"ambiguous"|"already-claimed"|"error",
@@ -976,7 +1005,12 @@ def claim(identifier: str, by: Optional[str] = None) -> Dict[str, Any]:
 
     try:
         _set_fm_fields(
-            dst, {"status": "picked", "claimed-at": _now_iso(), "claimed-by": by or _agent_label()}
+            dst,
+            {
+                "status": "picked",
+                "claimed-at": _now_iso(),
+                "claimed-by": by or _agent_label(),
+            },
         )
     except OSError as exc:  # claim already holds; stamping is best-effort
         return {
@@ -1037,7 +1071,9 @@ def claim(identifier: str, by: Optional[str] = None) -> Dict[str, Any]:
     }
 
 
-def claim_batch(primary: str, companions: List[str], by: Optional[str] = None) -> Dict[str, Any]:
+def claim_batch(
+    primary: str, companions: list[str], by: str | None = None
+) -> dict[str, Any]:
     """Claim a primary brief plus related companion briefs as one batch.
 
     The primary is claimed first via claim(); any non-claimed outcome aborts the
@@ -1054,11 +1090,11 @@ def claim_batch(primary: str, companions: List[str], by: Optional[str] = None) -
         return {**primary_res, "companions": []}
 
     primary_path = Path(primary_res["path"])
-    claimed_stems: List[str] = []
-    companion_results: List[Dict[str, Any]] = []
+    claimed_stems: list[str] = []
+    companion_results: list[dict[str, Any]] = []
     for ident in companions:
         res = claim(ident, by=label)
-        entry: Dict[str, Any] = {
+        entry: dict[str, Any] = {
             "identifier": ident,
             "status": res["status"],
             "path": res.get("path"),
@@ -1068,7 +1104,10 @@ def claim_batch(primary: str, companions: List[str], by: Optional[str] = None) -
             comp_path = Path(res["path"])
             try:
                 _set_fm_fields(comp_path, {"batch-primary": primary_path.stem})
-            except (OSError, ValueError) as exc:  # claim already holds; stamping is best-effort
+            except (
+                OSError,
+                ValueError,
+            ) as exc:  # claim already holds; stamping is best-effort
                 entry["error"] = f"stamp failed: {exc}"
             claimed_stems.append(comp_path.stem)
         companion_results.append(entry)
@@ -1095,10 +1134,10 @@ def done(
     *,
     planning_only: bool = False,
     implementation_complete: bool = False,
-    note: Optional[str] = None,
-    by: Optional[str] = None,
+    note: str | None = None,
+    by: str | None = None,
     force: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Stamp a picked brief as completed.
 
     ``by``/``force``: see `_ownership_block` -- omitted `by` (every existing
@@ -1181,7 +1220,12 @@ def done(
     try:
         original = path.read_text(encoding="utf-8")
     except OSError as exc:
-        return {"status": "error", "path": str(path), "candidates": [], "error": str(exc)}
+        return {
+            "status": "error",
+            "path": str(path),
+            "candidates": [],
+            "error": str(exc),
+        }
     consolidation_missing = _consolidation_closure_missing_evidence(original, note)
     if consolidation_missing:
         return {
@@ -1197,7 +1241,9 @@ def done(
                 "and retry."
             ),
         }
-    checkbox_out_of_sync = implementation_complete and _target_task_checkbox_out_of_sync(fm)
+    checkbox_out_of_sync = (
+        implementation_complete and _target_task_checkbox_out_of_sync(fm)
+    )
     closure_note_parts = []
     if note:
         closure_note_parts.append(note)
@@ -1210,11 +1256,19 @@ def done(
     if closure_note_parts:
         try:
             path.write_text(
-                original + "\n## Closure Note\n\n" + "\n\n".join(closure_note_parts) + "\n",
+                original
+                + "\n## Closure Note\n\n"
+                + "\n\n".join(closure_note_parts)
+                + "\n",
                 encoding="utf-8",
             )
         except OSError as exc:
-            return {"status": "error", "path": str(path), "candidates": [], "error": str(exc)}
+            return {
+                "status": "error",
+                "path": str(path),
+                "candidates": [],
+                "error": str(exc),
+            }
     try:
         _set_fm_fields(path, {"status": "done", "completed-at": _now_iso()})
     except (OSError, ValueError) as exc:
@@ -1222,7 +1276,12 @@ def done(
             path.write_text(original, encoding="utf-8")
         except OSError:
             pass
-        return {"status": "error", "path": str(path), "candidates": [], "error": str(exc)}
+        return {
+            "status": "error",
+            "path": str(path),
+            "candidates": [],
+            "error": str(exc),
+        }
 
     ok, verr = validate_brief(path)
     if not ok:
@@ -1230,7 +1289,12 @@ def done(
             path.write_text(original, encoding="utf-8")
         except OSError:
             pass
-        return {"status": "write-verification-failed", "path": str(path), "candidates": [], "error": verr}
+        return {
+            "status": "write-verification-failed",
+            "path": str(path),
+            "candidates": [],
+            "error": verr,
+        }
 
     result = {"status": "done", "path": str(path), "candidates": [], "error": None}
     if checkbox_out_of_sync:
@@ -1240,11 +1304,11 @@ def done(
 
 def release(
     identifier: str,
-    next_check_after: Optional[str] = None,
+    next_check_after: str | None = None,
     *,
-    by: Optional[str] = None,
+    by: str | None = None,
     force: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Return an abandoned picked brief to the queue (status: queued).
 
     ``next_check_after``, when given, is written as the `next-check-after` frontmatter
@@ -1279,7 +1343,9 @@ def release(
         queue_dir().mkdir(parents=True, exist_ok=True)
         os.rename(src, dst)
         _set_fm_fields(dst, {"status": "queued", "released-at": _now_iso()})
-        _remove_fm_field(dst, "batch-primary")  # a re-queued brief must not carry a stale link
+        _remove_fm_field(
+            dst, "batch-primary"
+        )  # a re-queued brief must not carry a stale link
         if next_check_after:
             _set_fm_fields(dst, {"next-check-after": next_check_after})
     except (OSError, ValueError) as exc:
@@ -1292,12 +1358,17 @@ def release(
             os.rename(dst, src)
         except OSError:
             pass
-        return {"status": "write-verification-failed", "path": None, "candidates": [], "error": verr}
+        return {
+            "status": "write-verification-failed",
+            "path": None,
+            "candidates": [],
+            "error": verr,
+        }
 
     return {"status": "released", "path": str(dst), "candidates": [], "error": None}
 
 
-def set_triage(identifier: str, value: str) -> Dict[str, Any]:
+def set_triage(identifier: str, value: str) -> dict[str, Any]:
     """Classify a brief for release scoping: `triage: blocker|deferred`.
 
     Resolves against queue/ first, then picked/ (a claimed brief can still be
@@ -1329,11 +1400,16 @@ def set_triage(identifier: str, value: str) -> Dict[str, Any]:
         else:
             _set_fm_fields(path, {"triage": value})
     except (OSError, ValueError) as exc:
-        return {"status": "error", "path": str(path), "candidates": [], "error": str(exc)}
+        return {
+            "status": "error",
+            "path": str(path),
+            "candidates": [],
+            "error": str(exc),
+        }
     return {"status": "triaged", "path": str(path), "candidates": [], "error": None}
 
 
-def link(id_a: str, id_b: str) -> Dict[str, Any]:
+def link(id_a: str, id_b: str) -> dict[str, Any]:
     """Link two briefs as related (symmetric, idempotent, never touches blocked-by).
 
     Resolves both identifiers across queue/ and picked/. Appends each brief's
@@ -1343,7 +1419,7 @@ def link(id_a: str, id_b: str) -> Dict[str, Any]:
              "paths": [...], "candidates": [...], "error": str|None}.
     """
 
-    def _resolve_anywhere(ident: str) -> Dict[str, Any]:
+    def _resolve_anywhere(ident: str) -> dict[str, Any]:
         q_res = resolve(ident, queue_dir())
         if q_res["status"] == "match":
             return q_res
@@ -1388,7 +1464,7 @@ def link(id_a: str, id_b: str) -> Dict[str, Any]:
     stem_a = path_a.stem
     stem_b = path_b.stem
 
-    def _coerce_ids(val: Any) -> List[str]:
+    def _coerce_ids(val: Any) -> list[str]:
         if isinstance(val, list):
             return [str(x) for x in val if x is not None]
         if isinstance(val, str) and val:
@@ -1422,7 +1498,12 @@ def link(id_a: str, id_b: str) -> Dict[str, Any]:
                 path_b.write_text(original_b, encoding="utf-8")
             except OSError:
                 pass
-            return {"status": "write-verification-failed", "paths": [], "candidates": [], "error": verr}
+            return {
+                "status": "write-verification-failed",
+                "paths": [],
+                "candidates": [],
+                "error": verr,
+            }
 
     return {
         "status": "linked",
@@ -1448,7 +1529,12 @@ def _git_backup(reason: str) -> None:
     Every git call is best-effort: a backup must never be able to break a queue
     mutation, so all errors (offline, no remote, nothing staged) are swallowed.
     """
-    if os.environ.get("WORK_QUEUE_GIT_SYNC", "").strip().lower() not in ("1", "true", "yes", "on"):
+    if os.environ.get("WORK_QUEUE_GIT_SYNC", "").strip().lower() not in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
         return
     root = base_dir()
     if not (root / ".git").is_dir():
@@ -1465,7 +1551,7 @@ def _git_backup(reason: str) -> None:
                 timeout=30,
                 check=False,
             )
-        except Exception:  # noqa: BLE001 -- backup is best-effort, never disrupt the queue op
+        except Exception:  # noqa: BLE001, S110 -- backup is best-effort, never disrupt the queue op
             pass
 
     _git("add", "-A")
@@ -1506,7 +1592,9 @@ def main(argv=None) -> int:
     subs.required = True
 
     subs.add_parser("list", parents=[common], help="list queue/ newest-first")
-    rp = subs.add_parser("resolve", parents=[common], help="resolve an identifier against queue/")
+    rp = subs.add_parser(
+        "resolve", parents=[common], help="resolve an identifier against queue/"
+    )
     rp.add_argument("identifier")
     cp = subs.add_parser(
         "claim", parents=[common], help="atomically claim a brief (queue/ -> picked/)"
@@ -1549,7 +1637,9 @@ def main(argv=None) -> int:
         action="store_true",
         help="override an ownership mismatch and close the brief anyway",
     )
-    sp = subs.add_parser("release", parents=[common], help="return a picked brief to the queue")
+    sp = subs.add_parser(
+        "release", parents=[common], help="return a picked brief to the queue"
+    )
     sp.add_argument("identifier")
     sp.add_argument(
         "--next-check-after",
@@ -1568,7 +1658,9 @@ def main(argv=None) -> int:
         help="override an ownership mismatch and release the brief anyway",
     )
     lp = subs.add_parser(
-        "link", parents=[common], help="link two briefs as related (symmetric, idempotent)"
+        "link",
+        parents=[common],
+        help="link two briefs as related (symmetric, idempotent)",
     )
     lp.add_argument("id_a")
     lp.add_argument("id_b")
@@ -1635,10 +1727,12 @@ def main(argv=None) -> int:
     return 0
 
 
-def _print_human(cmd: str, result: Dict[str, Any]) -> None:
+def _print_human(cmd: str, result: dict[str, Any]) -> None:
     if cmd == "list":
         ready = [
-            b for b in result["briefs"] if not b.get("blocked") and not b.get("not_yet_due")
+            b
+            for b in result["briefs"]
+            if not b.get("blocked") and not b.get("not_yet_due")
         ]
         blocked = [b for b in result["briefs"] if b.get("blocked")]
         not_yet_due = [
@@ -1661,8 +1755,10 @@ def _print_human(cmd: str, result: Dict[str, Any]) -> None:
     if status in ("match", "claimed", "done", "released", "triaged"):
         print(f"{status}: {result.get('path') or result['candidates'][0]}")
         for comp in result.get("companions") or []:
-            print(f"  companion {comp['identifier']}: {comp['status']}" +
-                  (f" -> {comp['path']}" if comp.get("path") else ""))
+            print(
+                f"  companion {comp['identifier']}: {comp['status']}"
+                + (f" -> {comp['path']}" if comp.get("path") else "")
+            )
     elif status == "linked":
         paths = result.get("paths", [])
         if len(paths) >= 2:
@@ -1678,7 +1774,10 @@ def _print_human(cmd: str, result: Dict[str, Any]) -> None:
     elif status == "none":
         print("none: no matching brief found")
     elif status == "write-verification-failed":
-        print(f"write verification failed (rolled back): {result.get('error')}", file=sys.stderr)
+        print(
+            f"write verification failed (rolled back): {result.get('error')}",
+            file=sys.stderr,
+        )
     else:
         print(f"error: {result.get('error')}", file=sys.stderr)
 

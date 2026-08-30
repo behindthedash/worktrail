@@ -21,8 +21,10 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from worktrail.orchestrator import live  # noqa: E402
-from worktrail.orchestrator import progress  # noqa: E402
+from worktrail.orchestrator import (
+    live,
+    progress,
+)
 
 
 class FmtDur(unittest.TestCase):
@@ -118,7 +120,11 @@ def _entry(tid, role, dur, *, review_status=None):
     return {
         "task": tid,
         "role": role,
-        "report": {"status": "success", "head_sha": "abc", "review_status": review_status},
+        "report": {
+            "status": "success",
+            "head_sha": "abc",
+            "review_status": review_status,
+        },
         "started_at": 1000.0,
         "ended_at": 1000.0 + dur,
         "duration_s": dur,
@@ -204,7 +210,13 @@ class TimingKeysDoNotBreakReplay(unittest.TestCase):
 
     def test_reconcile_ignores_timing_keys(self):
         tasks = [
-            {"id": "TASK-001", "status": "pending", "retry_count": 0, "deps": [], "files": ["a.py"]}
+            {
+                "id": "TASK-001",
+                "status": "pending",
+                "retry_count": 0,
+                "deps": [],
+                "files": ["a.py"],
+            }
         ]
         journal = {
             "entries": [
@@ -283,22 +295,46 @@ class ConcurrentPhaseProgress(unittest.TestCase):
 
 class SummarizeUsage(unittest.TestCase):
     def _u(self, **kw):
-        base = dict(
-            input_tokens=0,
-            cache_creation_input_tokens=0,
-            cache_read_input_tokens=0,
-            output_tokens=0,
-            total_cost_usd=0.0,
-        )
+        base = {
+            "input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "output_tokens": 0,
+            "total_cost_usd": 0.0,
+        }
         base.update(kw)
         return base
 
     def test_aggregates_per_role_and_total(self):
         journal = {
             "entries": [
-                {"role": "implement", "usage": self._u(input_tokens=11000, cache_creation_input_tokens=24000, output_tokens=3000, total_cost_usd=0.21)},
-                {"role": "implement", "usage": self._u(input_tokens=9000, cache_read_input_tokens=24000, output_tokens=2500, total_cost_usd=0.07)},
-                {"role": "review", "usage": self._u(input_tokens=5000, cache_read_input_tokens=24000, output_tokens=800, total_cost_usd=0.04)},
+                {
+                    "role": "implement",
+                    "usage": self._u(
+                        input_tokens=11000,
+                        cache_creation_input_tokens=24000,
+                        output_tokens=3000,
+                        total_cost_usd=0.21,
+                    ),
+                },
+                {
+                    "role": "implement",
+                    "usage": self._u(
+                        input_tokens=9000,
+                        cache_read_input_tokens=24000,
+                        output_tokens=2500,
+                        total_cost_usd=0.07,
+                    ),
+                },
+                {
+                    "role": "review",
+                    "usage": self._u(
+                        input_tokens=5000,
+                        cache_read_input_tokens=24000,
+                        output_tokens=800,
+                        total_cost_usd=0.04,
+                    ),
+                },
             ]
         }
         s = progress.summarize_usage(journal)
@@ -314,10 +350,15 @@ class SummarizeUsage(unittest.TestCase):
 
     def test_entries_without_usage_are_ignored(self):
         # A python-cleanup step (no spawn) carries no usage and must not be counted.
-        journal = {"entries": [
-            {"role": "implement", "usage": self._u(input_tokens=100, total_cost_usd=0.01)},
-            {"role": "cleanup"},  # deterministic, no spawn
-        ]}
+        journal = {
+            "entries": [
+                {
+                    "role": "implement",
+                    "usage": self._u(input_tokens=100, total_cost_usd=0.01),
+                },
+                {"role": "cleanup"},  # deterministic, no spawn
+            ]
+        }
         s = progress.summarize_usage(journal)
         self.assertEqual(s["total"]["spawns"], 1)
         self.assertEqual(s["entries_with_usage"], 1)
@@ -325,12 +366,26 @@ class SummarizeUsage(unittest.TestCase):
         self.assertNotIn("cleanup", s["roles"])
 
     def test_turns_aggregated_per_role_and_total(self):
-        journal = {"entries": [
-            {"role": "implement", "usage": self._u(cache_read_input_tokens=200000, num_turns=8)},
-            {"role": "implement", "usage": self._u(cache_read_input_tokens=400000, num_turns=12)},
-            {"role": "review", "usage": self._u(cache_read_input_tokens=300000, num_turns=15)},
-            {"role": "fix", "usage": self._u(cache_read_input_tokens=100000)},  # pre-capture: no num_turns
-        ]}
+        journal = {
+            "entries": [
+                {
+                    "role": "implement",
+                    "usage": self._u(cache_read_input_tokens=200000, num_turns=8),
+                },
+                {
+                    "role": "implement",
+                    "usage": self._u(cache_read_input_tokens=400000, num_turns=12),
+                },
+                {
+                    "role": "review",
+                    "usage": self._u(cache_read_input_tokens=300000, num_turns=15),
+                },
+                {
+                    "role": "fix",
+                    "usage": self._u(cache_read_input_tokens=100000),
+                },  # pre-capture: no num_turns
+            ]
+        }
         s = progress.summarize_usage(journal)
         self.assertEqual(s["roles"]["implement"]["turns"], 20)
         self.assertEqual(s["roles"]["review"]["turns"], 15)
@@ -338,24 +393,42 @@ class SummarizeUsage(unittest.TestCase):
         self.assertEqual(s["total"]["turns"], 35)
         # cache_read / turns = the per-turn context the prefix actually costs.
         self.assertEqual(progress._ctx_per_turn(s["roles"]["implement"]), 30000)
-        self.assertEqual(progress._ctx_per_turn(s["roles"]["fix"]), 0)  # no turns -> no div-by-zero
+        self.assertEqual(
+            progress._ctx_per_turn(s["roles"]["fix"]), 0
+        )  # no turns -> no div-by-zero
 
     def test_cache_hit_ratio(self):
         # 24K read of 48K input-side -> 50%.
         self.assertAlmostEqual(
             progress._cache_hit_ratio(
-                {"cache_read_input_tokens": 24000, "input_tokens": 16000, "cache_creation_input_tokens": 8000}
+                {
+                    "cache_read_input_tokens": 24000,
+                    "input_tokens": 16000,
+                    "cache_creation_input_tokens": 8000,
+                }
             ),
             0.5,
         )
-        self.assertEqual(progress._cache_hit_ratio({}), 0.0)  # no tokens -> no div-by-zero
+        self.assertEqual(
+            progress._cache_hit_ratio({}), 0.0
+        )  # no tokens -> no div-by-zero
 
 
 class RenderUsage(unittest.TestCase):
     def test_renders_table_with_total_and_cache_line(self):
-        journal = {"entries": [
-            {"role": "implement", "usage": {"input_tokens": 11000, "cache_read_input_tokens": 24000, "output_tokens": 3000, "total_cost_usd": 0.21}},
-        ]}
+        journal = {
+            "entries": [
+                {
+                    "role": "implement",
+                    "usage": {
+                        "input_tokens": 11000,
+                        "cache_read_input_tokens": 24000,
+                        "output_tokens": 3000,
+                        "total_cost_usd": 0.21,
+                    },
+                },
+            ]
+        }
         out = progress.render_usage(journal)
         self.assertIn("token usage (per role):", out)
         self.assertIn("implement", out)
@@ -366,15 +439,29 @@ class RenderUsage(unittest.TestCase):
         self.assertNotIn("re-read once per turn", out)
 
     def test_turn_amplification_footer_when_turns_recorded(self):
-        journal = {"entries": [
-            {"role": "review", "usage": {"input_tokens": 20, "cache_read_input_tokens": 400000, "cache_creation_input_tokens": 30000, "output_tokens": 10000, "total_cost_usd": 0.8, "num_turns": 20}},
-        ]}
+        journal = {
+            "entries": [
+                {
+                    "role": "review",
+                    "usage": {
+                        "input_tokens": 20,
+                        "cache_read_input_tokens": 400000,
+                        "cache_creation_input_tokens": 30000,
+                        "output_tokens": 10000,
+                        "total_cost_usd": 0.8,
+                        "num_turns": 20,
+                    },
+                },
+            ]
+        }
         out = progress.render_usage(journal)
         self.assertIn("20 turn(s) x ~20K ctx/turn", out)
         self.assertIn("fewer turns, not a smaller spawn, is the lever", out)
 
     def test_empty_usage_explains_absence(self):
-        out = progress.render_usage({"entries": [{"role": "implement"}, {"role": "review"}]})
+        out = progress.render_usage(
+            {"entries": [{"role": "implement"}, {"role": "review"}]}
+        )
         self.assertIn("no per-spawn usage recorded on 2 entries", out)
 
     def test_no_entries(self):
@@ -384,17 +471,49 @@ class RenderUsage(unittest.TestCase):
     def test_pre_spec_journal_without_agent_labels_has_no_pool_section(self):
         # AC-029: a journal missing pool-label data renders byte-compatibly
         # with today's report -- no pool section, no exception.
-        journal = {"entries": [
-            {"role": "implement", "usage": {"input_tokens": 11000, "cache_read_input_tokens": 24000, "output_tokens": 3000, "total_cost_usd": 0.21}},
-        ]}
+        journal = {
+            "entries": [
+                {
+                    "role": "implement",
+                    "usage": {
+                        "input_tokens": 11000,
+                        "cache_read_input_tokens": 24000,
+                        "output_tokens": 3000,
+                        "total_cost_usd": 0.21,
+                    },
+                },
+            ]
+        }
         out = progress.render_usage(journal)
         self.assertNotIn("usage by pool:", out)
 
     def test_pool_section_groups_agents_when_labeled(self):
-        journal = {"entries": [
-            {"role": "implement", "agent": "claude", "usage": {"input_tokens": 1000, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0, "output_tokens": 100, "total_cost_usd": 0.05}},
-            {"role": "implement", "agent": "opencode", "usage": {"input_tokens": 2000, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0, "output_tokens": 200, "total_cost_usd": 0.0}},
-        ]}
+        journal = {
+            "entries": [
+                {
+                    "role": "implement",
+                    "agent": "claude",
+                    "usage": {
+                        "input_tokens": 1000,
+                        "cache_read_input_tokens": 0,
+                        "cache_creation_input_tokens": 0,
+                        "output_tokens": 100,
+                        "total_cost_usd": 0.05,
+                    },
+                },
+                {
+                    "role": "implement",
+                    "agent": "opencode",
+                    "usage": {
+                        "input_tokens": 2000,
+                        "cache_read_input_tokens": 0,
+                        "cache_creation_input_tokens": 0,
+                        "output_tokens": 200,
+                        "total_cost_usd": 0.0,
+                    },
+                },
+            ]
+        }
         out = progress.render_usage(journal)
         self.assertIn("usage by pool:", out)
         self.assertIn("subscription", out)
@@ -403,10 +522,31 @@ class RenderUsage(unittest.TestCase):
         self.assertIn("opencode", out)
 
     def test_mixed_labeled_unlabeled_still_renders_per_role_breakdown(self):
-        journal = {"entries": [
-            {"role": "implement", "agent": "claude", "usage": {"input_tokens": 1000, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0, "output_tokens": 100, "total_cost_usd": 0.05}},
-            {"role": "review", "usage": {"input_tokens": 500, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0, "output_tokens": 50, "total_cost_usd": 0.02}},
-        ]}
+        journal = {
+            "entries": [
+                {
+                    "role": "implement",
+                    "agent": "claude",
+                    "usage": {
+                        "input_tokens": 1000,
+                        "cache_read_input_tokens": 0,
+                        "cache_creation_input_tokens": 0,
+                        "output_tokens": 100,
+                        "total_cost_usd": 0.05,
+                    },
+                },
+                {
+                    "role": "review",
+                    "usage": {
+                        "input_tokens": 500,
+                        "cache_read_input_tokens": 0,
+                        "cache_creation_input_tokens": 0,
+                        "output_tokens": 50,
+                        "total_cost_usd": 0.02,
+                    },
+                },
+            ]
+        }
         out = progress.render_usage(journal)
         # Per-role breakdown (unchanged) still reports both roles, agent or not.
         self.assertIn("implement", out)
@@ -419,22 +559,36 @@ class RenderUsage(unittest.TestCase):
 
 class SummarizePoolUsage(unittest.TestCase):
     def _u(self, **kw):
-        base = dict(
-            input_tokens=0,
-            cache_creation_input_tokens=0,
-            cache_read_input_tokens=0,
-            output_tokens=0,
-            total_cost_usd=0.0,
-        )
+        base = {
+            "input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "output_tokens": 0,
+            "total_cost_usd": 0.0,
+        }
         base.update(kw)
         return base
 
     def test_groups_claude_codex_opencode_by_pool(self):
-        journal = {"entries": [
-            {"role": "implement", "agent": "claude", "usage": self._u(input_tokens=1000, total_cost_usd=0.1)},
-            {"role": "implement", "agent": "codex", "usage": self._u(input_tokens=2000, total_cost_usd=0.2)},
-            {"role": "implement", "agent": "opencode", "usage": self._u(input_tokens=3000, total_cost_usd=0.3)},
-        ]}
+        journal = {
+            "entries": [
+                {
+                    "role": "implement",
+                    "agent": "claude",
+                    "usage": self._u(input_tokens=1000, total_cost_usd=0.1),
+                },
+                {
+                    "role": "implement",
+                    "agent": "codex",
+                    "usage": self._u(input_tokens=2000, total_cost_usd=0.2),
+                },
+                {
+                    "role": "implement",
+                    "agent": "opencode",
+                    "usage": self._u(input_tokens=3000, total_cost_usd=0.3),
+                },
+            ]
+        }
         s = progress.summarize_pool_usage(journal)
         self.assertEqual(s["entries_with_agent_label"], 3)
         self.assertEqual(set(s["pools"]["subscription"]), {"claude", "codex"})
@@ -444,26 +598,46 @@ class SummarizePoolUsage(unittest.TestCase):
         self.assertEqual(s["pools"]["free"]["opencode"]["input_tokens"], 3000)
 
     def test_unknown_agent_falls_back_to_api_pool(self):
-        journal = {"entries": [
-            {"role": "implement", "agent": "some-api-model", "usage": self._u(input_tokens=500, total_cost_usd=0.5)},
-        ]}
+        journal = {
+            "entries": [
+                {
+                    "role": "implement",
+                    "agent": "some-api-model",
+                    "usage": self._u(input_tokens=500, total_cost_usd=0.5),
+                },
+            ]
+        }
         s = progress.summarize_pool_usage(journal)
         self.assertEqual(set(s["pools"]["api"]), {"some-api-model"})
 
     def test_entries_without_agent_label_are_omitted(self):
         # Pre-spec journal: no `agent` key on any entry -> no pool grouping.
-        journal = {"entries": [
-            {"role": "implement", "usage": self._u(input_tokens=100, total_cost_usd=0.01)},
-        ]}
+        journal = {
+            "entries": [
+                {
+                    "role": "implement",
+                    "usage": self._u(input_tokens=100, total_cost_usd=0.01),
+                },
+            ]
+        }
         s = progress.summarize_pool_usage(journal)
         self.assertEqual(s["pools"], {})
         self.assertEqual(s["entries_with_agent_label"], 0)
 
     def test_mixed_labeled_and_unlabeled_entries_only_count_labeled(self):
-        journal = {"entries": [
-            {"role": "implement", "agent": "claude", "usage": self._u(input_tokens=100, total_cost_usd=0.01)},
-            {"role": "implement", "usage": self._u(input_tokens=999, total_cost_usd=9.99)},  # unlabeled, omitted
-        ]}
+        journal = {
+            "entries": [
+                {
+                    "role": "implement",
+                    "agent": "claude",
+                    "usage": self._u(input_tokens=100, total_cost_usd=0.01),
+                },
+                {
+                    "role": "implement",
+                    "usage": self._u(input_tokens=999, total_cost_usd=9.99),
+                },  # unlabeled, omitted
+            ]
+        }
         s = progress.summarize_pool_usage(journal)
         self.assertEqual(s["entries_with_agent_label"], 1)
         self.assertEqual(s["pools"]["subscription"]["claude"]["spawns"], 1)
@@ -538,8 +712,16 @@ class RenderContextQuality(unittest.TestCase):
     def test_summarize_counts_and_collects_missing(self):
         journal = {
             "entries": [
-                {"task": "TASK-001", "role": "implement", "report": {"context_quality": "sufficient"}},
-                {"task": "TASK-002", "role": "review", "report": {"context_quality": "too_much"}},
+                {
+                    "task": "TASK-001",
+                    "role": "implement",
+                    "report": {"context_quality": "sufficient"},
+                },
+                {
+                    "task": "TASK-002",
+                    "role": "review",
+                    "report": {"context_quality": "too_much"},
+                },
                 {
                     "task": "TASK-003",
                     "role": "implement",
@@ -551,18 +733,34 @@ class RenderContextQuality(unittest.TestCase):
             ]
         }
         s = progress.summarize_context_quality(journal)
-        self.assertEqual(s["counts"], {"sufficient": 1, "too_much": 1, "insufficient": 1})
+        self.assertEqual(
+            s["counts"], {"sufficient": 1, "too_much": 1, "insufficient": 1}
+        )
         self.assertEqual(s["entries_with_signal"], 3)
         self.assertEqual(
             s["missing"],
-            [{"task": "TASK-003", "role": "implement", "items": ["data-model.md §Orders"]}],
+            [
+                {
+                    "task": "TASK-003",
+                    "role": "implement",
+                    "items": ["data-model.md §Orders"],
+                }
+            ],
         )
 
     def test_render_lists_counts_too_much_hint_and_missing(self):
         journal = {
             "entries": [
-                {"task": "TASK-001", "role": "implement", "report": {"context_quality": "sufficient"}},
-                {"task": "TASK-002", "role": "review", "report": {"context_quality": "too_much"}},
+                {
+                    "task": "TASK-001",
+                    "role": "implement",
+                    "report": {"context_quality": "sufficient"},
+                },
+                {
+                    "task": "TASK-002",
+                    "role": "review",
+                    "report": {"context_quality": "too_much"},
+                },
                 {
                     "task": "TASK-003",
                     "role": "implement",
@@ -576,7 +774,9 @@ class RenderContextQuality(unittest.TestCase):
         out = progress.render_context_quality(journal)
         self.assertIn("1 sufficient · 1 too_much · 1 insufficient (of 3 reports)", out)
         self.assertIn("too_much context", out)
-        self.assertIn("missing context: TASK-003 implement → [data-model.md §Orders]", out)
+        self.assertIn(
+            "missing context: TASK-003 implement → [data-model.md §Orders]", out
+        )
 
     def test_render_none_recorded_message(self):
         out = progress.render_context_quality({"entries": []})
@@ -590,7 +790,10 @@ class RenderContextQuality(unittest.TestCase):
         journal = {
             "entries": [
                 {"role": "implement"},
-                {"role": "review", "report": {"context_quality": None, "missing_context": []}},
+                {
+                    "role": "review",
+                    "report": {"context_quality": None, "missing_context": []},
+                },
                 {"role": "fix", "report": {}},
             ]
         }
@@ -625,12 +828,19 @@ class AppendSafetyNetEvents(unittest.TestCase):
         self.assertFalse(self.journal_path.exists())
 
     def test_appends_preserving_existing_fields(self):
-        self._write_journal({
-            "spec_id": "001-feature", "run_id": "run-abc",
-            "entries": [{"task": "TASK-001", "role": "implement", "report": {}}],
-        })
-        event = {"event": "automerge_preflight_fallback", "group": "base",
-                  "reason": "gh api failed", "outcome": "queued"}
+        self._write_journal(
+            {
+                "spec_id": "001-feature",
+                "run_id": "run-abc",
+                "entries": [{"task": "TASK-001", "role": "implement", "report": {}}],
+            }
+        )
+        event = {
+            "event": "automerge_preflight_fallback",
+            "group": "base",
+            "reason": "gh api failed",
+            "outcome": "queued",
+        }
         progress.append_safety_net_events(self.journal_path, [event])
 
         data = json.loads(self.journal_path.read_text())

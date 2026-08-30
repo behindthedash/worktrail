@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Tests for quarantine_selfcheck.py. Run: python3 -m pytest test_quarantine_selfcheck.py -q"""
+
 import io
 import json
 import os
@@ -158,7 +159,9 @@ def _git_repo(root: Path, name: str) -> Path:
     repo = root / name
     repo.mkdir(parents=True)
     subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"], cwd=repo, check=True
+    )
     subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
     return repo
 
@@ -200,12 +203,18 @@ class TestMergedPrMatching(unittest.TestCase):
     def _run(self, stdout="", returncode=0, raise_exc=None):
         if raise_exc:
             return patch("subprocess.run", side_effect=raise_exc)
-        result = subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout)
+        result = subprocess.CompletedProcess(
+            args=[], returncode=returncode, stdout=stdout
+        )
         return patch("subprocess.run", return_value=result)
 
     def test_matching_merged_pr_returns_its_url(self):
-        prs = [{"url": "https://example.com/pr/9",
-                "files": [{"path": "a.py"}, {"path": "b.py"}, {"path": "c.py"}]}]
+        prs = [
+            {
+                "url": "https://example.com/pr/9",
+                "files": [{"path": "a.py"}, {"path": "b.py"}, {"path": "c.py"}],
+            }
+        ]
         with self._run(stdout=json.dumps(prs)):
             result = _merged_pr_matching(self.repo, ["a.py", "b.py"])
         self.assertEqual(result, "https://example.com/pr/9")
@@ -273,9 +282,15 @@ class TestReconcileFinding(unittest.TestCase):
         # No commit -- files absent from base -- forces the PR-search fallback.
         _write_runplan(repo, "some-spec", _RUNPLAN_TASKS)
         finding = {"spec_id": "some-spec", "group": "feature-1"}
-        prs = [{"url": "https://example.com/pr/9",
-                "files": [{"path": "a.py"}, {"path": "b.py"}]}]
-        gh_result = subprocess.CompletedProcess(args=[], returncode=0, stdout=json.dumps(prs))
+        prs = [
+            {
+                "url": "https://example.com/pr/9",
+                "files": [{"path": "a.py"}, {"path": "b.py"}],
+            }
+        ]
+        gh_result = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=json.dumps(prs)
+        )
         with patch("subprocess.run", side_effect=self._gh_only_side_effect(gh_result)):
             reconciliation = reconcile_finding(repo, finding)
         self.assertIsNotNone(reconciliation)
@@ -300,8 +315,10 @@ class TestCheckRepoReconciliation(unittest.TestCase):
         _commit_files(repo, {"a.py": "1", "b.py": "2"})
         _write_runplan(repo, "quarantine-reconciliation", _RUNPLAN_TASKS)
         worktrees_dir = self.tmp / "myrepo-worktrees"
-        groups = {"1.1": {"state": "MERGED", "pr_url": "https://example.com/pr/1"},
-                  "feature-1": {"state": "QUARANTINED", "pr_url": ""}}
+        groups = {
+            "1.1": {"state": "MERGED", "pr_url": "https://example.com/pr/1"},
+            "feature-1": {"state": "QUARANTINED", "pr_url": ""},
+        }
         _journal(worktrees_dir, "quarantine-reconciliation", groups)
 
         result = check_repo(repo)
@@ -328,7 +345,7 @@ class TestSweep(unittest.TestCase):
         tmp = Path(tempfile.mkdtemp())
         clean_repo = _repo_with_worktrees(tmp, "clean-repo")
         _journal(tmp / "clean-repo-worktrees", "spec-a", _CLEAN_GROUPS)
-        flagged_repo = _repo_with_worktrees(tmp, "flagged-repo")
+        _repo_with_worktrees(tmp, "flagged-repo")
         _journal(tmp / "flagged-repo-worktrees", "spec-b", _QUARANTINED_GROUPS)
         _repo_with_worktrees(tmp, "no-worktrees-repo")
 
@@ -388,7 +405,9 @@ class TestCli(unittest.TestCase):
         resumable) is not `flagged` -- exit 0, not the 1 a genuine finding
         would produce."""
         repo = _repo_with_worktrees(self.tmp, "resumable-repo")
-        _journal(self.tmp / "resumable-repo-worktrees", "spec-c", _BUDGET_EXHAUSTED_GROUPS)
+        _journal(
+            self.tmp / "resumable-repo-worktrees", "spec-c", _BUDGET_EXHAUSTED_GROUPS
+        )
 
         out = io.StringIO()
         with redirect_stdout(out):

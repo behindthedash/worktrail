@@ -17,7 +17,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from worktrail.orchestrator import live
 
-
 # ---------------------------------------------------------------------------
 # _fire_notify
 # ---------------------------------------------------------------------------
@@ -32,7 +31,9 @@ class FireNotifyTests(unittest.TestCase):
             return MagicMock(returncode=0)
 
         with patch("subprocess.run", side_effect=fake_run):
-            live._fire_notify("cat", {"spec": "001-foo", "phase": "fanout", "tasks_done": 1})
+            live._fire_notify(
+                "cat", {"spec": "001-foo", "phase": "fanout", "tasks_done": 1}
+            )
 
         self.assertEqual(len(received), 1)
         self.assertEqual(received[0]["cmd"], "cat")
@@ -124,9 +125,12 @@ class CLIRunBudgetArgs(unittest.TestCase):
 
         argv = [
             "full-real",
-            "--repo", "/fake/repo",
-            "--spec", "docs/specs/001-foo",
-            "--base", "dev",
+            "--repo",
+            "/fake/repo",
+            "--spec",
+            "docs/specs/001-foo",
+            "--base",
+            "dev",
         ] + list(extra)
 
         with patch.object(live, "full_real", side_effect=fake_full_real):
@@ -170,22 +174,35 @@ class ProgressEmitterTests(unittest.TestCase):
             printed.append(" ".join(str(a) for a in pargs))
             original_print(*pargs, **kwargs)
 
-        fake_tasks = [{"id": "TASK-001", "status": "done", "retry_count": 0, "files": []}]
+        fake_tasks = [
+            {"id": "TASK-001", "status": "done", "retry_count": 0, "files": []}
+        ]
 
         with tempfile.TemporaryDirectory() as td:
             cassette = os.path.join(td, "run.json")
 
             with (
-                patch("worktrail.taskformats.devkit.source.load_spec", return_value=("spec-001", fake_tasks)),
-                patch("worktrail.orchestrator.coordinator.runnable_frontier", return_value=[]),
+                patch(
+                    "worktrail.taskformats.devkit.source.load_spec",
+                    return_value=("spec-001", fake_tasks),
+                ),
+                patch(
+                    "worktrail.orchestrator.coordinator.runnable_frontier",
+                    return_value=[],
+                ),
                 patch("worktrail.orchestrator.coordinator.DONE", {"done", "completed"}),
                 patch("worktrail.orchestrator.coordinator.IN_FLIGHT", set()),
-                patch("worktrail.orchestrator.coordinator.disjoint_batches", return_value=[]),
+                patch(
+                    "worktrail.orchestrator.coordinator.disjoint_batches",
+                    return_value=[],
+                ),
                 patch("worktrail.orchestrator.live.validate_task_metadata"),
                 patch("builtins.print", side_effect=capture_print),
             ):
                 live.live_run_real(
-                    repo=MagicMock(__truediv__=lambda *_: MagicMock(exists=lambda: False)),
+                    repo=MagicMock(
+                        __truediv__=lambda *_: MagicMock(exists=lambda: False)
+                    ),
                     spec_rel="docs/specs/001-foo",
                     out_cassette=cassette,
                     progress_interval=interval,
@@ -206,20 +223,33 @@ class ProgressEmitterTests(unittest.TestCase):
         """When progress_interval is None, no emitter thread is spawned."""
         thread_names_before = {t.name for t in threading.enumerate()}
 
-        fake_tasks = [{"id": "TASK-001", "status": "done", "retry_count": 0, "files": []}]
+        fake_tasks = [
+            {"id": "TASK-001", "status": "done", "retry_count": 0, "files": []}
+        ]
 
         with tempfile.TemporaryDirectory() as td:
             cassette = os.path.join(td, "run.json")
             with (
-                patch("worktrail.taskformats.devkit.source.load_spec", return_value=("spec-001", fake_tasks)),
-                patch("worktrail.orchestrator.coordinator.runnable_frontier", return_value=[]),
+                patch(
+                    "worktrail.taskformats.devkit.source.load_spec",
+                    return_value=("spec-001", fake_tasks),
+                ),
+                patch(
+                    "worktrail.orchestrator.coordinator.runnable_frontier",
+                    return_value=[],
+                ),
                 patch("worktrail.orchestrator.coordinator.DONE", {"done", "completed"}),
                 patch("worktrail.orchestrator.coordinator.IN_FLIGHT", set()),
-                patch("worktrail.orchestrator.coordinator.disjoint_batches", return_value=[]),
+                patch(
+                    "worktrail.orchestrator.coordinator.disjoint_batches",
+                    return_value=[],
+                ),
                 patch("worktrail.orchestrator.live.validate_task_metadata"),
             ):
                 live.live_run_real(
-                    repo=MagicMock(__truediv__=lambda *_: MagicMock(exists=lambda: False)),
+                    repo=MagicMock(
+                        __truediv__=lambda *_: MagicMock(exists=lambda: False)
+                    ),
                     spec_rel="docs/specs/001-foo",
                     out_cassette=cassette,
                     progress_interval=None,

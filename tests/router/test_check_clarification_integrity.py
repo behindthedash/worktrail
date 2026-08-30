@@ -21,7 +21,8 @@ import unittest
 from pathlib import Path
 
 from worktrail.router.check_clarification_integrity import (
-    check_changed_specs, check_text,
+    check_changed_specs,
+    check_text,
 )
 
 CLEAN_SPEC = """# Functional Specification: Fixture
@@ -119,12 +120,8 @@ class CheckChangedSpecsTests(unittest.TestCase):
         self.assertEqual(check_changed_specs(self.repo, ["src/app.py"]), [])
 
     def test_changed_spec_with_anti_pattern_fails(self) -> None:
-        self._write(
-            "docs/specs/098-fixture/spec.md", INFERRED_AND_DECLARED_CLEAN_SPEC
-        )
-        failures = check_changed_specs(
-            self.repo, ["docs/specs/098-fixture/spec.md"]
-        )
+        self._write("docs/specs/098-fixture/spec.md", INFERRED_AND_DECLARED_CLEAN_SPEC)
+        failures = check_changed_specs(self.repo, ["docs/specs/098-fixture/spec.md"])
         self.assertEqual(len(failures), 1)
         self.assertIn("docs/specs/098-fixture/spec.md", failures[0])
 
@@ -132,9 +129,7 @@ class CheckChangedSpecsTests(unittest.TestCase):
         # File exists on disk but isn't in the changed-paths list -- must be
         # ignored, since pre-existing merged specs are out of scope for this
         # check (see handoff brief 20260724-161249-fleet-spec-inference-...).
-        self._write(
-            "docs/specs/098-fixture/spec.md", INFERRED_AND_DECLARED_CLEAN_SPEC
-        )
+        self._write("docs/specs/098-fixture/spec.md", INFERRED_AND_DECLARED_CLEAN_SPEC)
         self.assertEqual(check_changed_specs(self.repo, []), [])
 
     def test_clean_changed_spec_passes(self) -> None:
@@ -148,8 +143,9 @@ class MainCliGitIntegrationTests(unittest.TestCase):
     """Exercises main()'s own git-diff resolution against a real throwaway repo."""
 
     def _git(self, repo: str, *args: str) -> subprocess.CompletedProcess:
-        return subprocess.run(["git", *args], cwd=repo, capture_output=True,
-                              text=True, check=True)
+        return subprocess.run(
+            ["git", *args], cwd=repo, capture_output=True, text=True, check=True
+        )
 
     def _init_repo(self) -> str:
         d = tempfile.mkdtemp(prefix="clarify-")
@@ -179,8 +175,16 @@ class MainCliGitIntegrationTests(unittest.TestCase):
         self._commit(repo, "add spec")
 
         result = subprocess.run(
-            [sys.executable, "-m", "worktrail.router.check_clarification_integrity",
-             "--repo", repo], capture_output=True, text=True
+            [
+                sys.executable,
+                "-m",
+                "worktrail.router.check_clarification_integrity",
+                "--repo",
+                repo,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
         )
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("docs/specs/098-fixture/spec.md", result.stdout)
@@ -192,8 +196,16 @@ class MainCliGitIntegrationTests(unittest.TestCase):
         self._commit(repo, "add spec")
 
         result = subprocess.run(
-            [sys.executable, "-m", "worktrail.router.check_clarification_integrity",
-             "--repo", repo], capture_output=True, text=True
+            [
+                sys.executable,
+                "-m",
+                "worktrail.router.check_clarification_integrity",
+                "--repo",
+                repo,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
@@ -208,8 +220,16 @@ class MainCliGitIntegrationTests(unittest.TestCase):
         self._commit(repo, "unrelated change")
 
         result = subprocess.run(
-            [sys.executable, "-m", "worktrail.router.check_clarification_integrity",
-             "--repo", repo], capture_output=True, text=True
+            [
+                sys.executable,
+                "-m",
+                "worktrail.router.check_clarification_integrity",
+                "--repo",
+                repo,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 

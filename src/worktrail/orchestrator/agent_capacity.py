@@ -12,10 +12,10 @@ import os
 import re
 import sys
 import tempfile
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, Iterable, Iterator, Optional
 
 from ..shared.homedir import env_setting, worktrail_home
 
@@ -25,6 +25,8 @@ def cache_path() -> Path:
     if override:
         return Path(override).expanduser()
     return worktrail_home() / "agent-capacity.json"
+
+
 DEFAULT_COOLDOWNS = {
     "startup": 60,
     "sandbox": 60,
@@ -38,7 +40,7 @@ DEFAULT_COOLDOWNS = {
 class ProviderUnavailable(RuntimeError):
     """Raised when a provider's persisted cooldown has not expired."""
 
-    def __init__(self, provider_key: str, state: Dict):
+    def __init__(self, provider_key: str, state: dict):
         self.provider_key = provider_key
         self.state = state
         until = state.get("retry_after") or state.get("reset_at") or "unknown"
@@ -48,7 +50,7 @@ class ProviderUnavailable(RuntimeError):
 class AllProvidersUnavailable(ProviderUnavailable):
     """Raised when the primary and configured fallback providers are all gated."""
 
-    def __init__(self, providers: Iterable[str], states: Dict[str, Dict]):
+    def __init__(self, providers: Iterable[str], states: dict[str, dict]):
         self.providers = tuple(providers)
         self.states = states
         # Keep provider_key aligned with the final fallback check for callers
@@ -56,14 +58,16 @@ class AllProvidersUnavailable(ProviderUnavailable):
         # available in ``providers``/``states`` for the new gate record.
         last = self.providers[-1] if self.providers else "unknown"
         super().__init__(last, states.get(last, {}))
-        self.args = ("all configured providers unavailable: " + ", ".join(self.providers),)
+        self.args = (
+            "all configured providers unavailable: " + ", ".join(self.providers),
+        )
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _parse_time(value: object) -> Optional[datetime]:
+def _parse_time(value: object) -> datetime | None:
     if not isinstance(value, str):
         return None
     try:
@@ -84,7 +88,7 @@ def _safe_identifier(value: str) -> str:
     return cleaned[:120] or "unknown"
 
 
-def load(path: Optional[Path] = None) -> Dict:
+def load(path: Path | None = None) -> dict:
     path = path or cache_path()
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -95,7 +99,7 @@ def load(path: Optional[Path] = None) -> Dict:
     return value
 
 
-def save(value: Dict, path: Optional[Path] = None) -> None:
+def save(value: dict, path: Path | None = None) -> None:
     path = path or cache_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
@@ -145,8 +149,8 @@ def write_lock(path: Path) -> Iterator[None]:
 
 
 def gate_snapshot(
-    providers: Iterable[str], path: Optional[Path] = None, now: Optional[datetime] = None
-) -> Dict:
+    providers: Iterable[str], path: Path | None = None, now: datetime | None = None
+) -> dict:
     """Return sanitized active-gate data for the run record/dashboard.
 
     ``providers`` is the caller-supplied provider-key set to evaluate (e.g. the
@@ -163,13 +167,19 @@ def gate_snapshot(
         state = data.get("providers", {}).get(key)
         if not isinstance(state, dict) or state.get("status") != "unavailable":
             continue
-        retry_at = _parse_time(state.get("retry_after")) or _parse_time(state.get("reset_at"))
+        retry_at = _parse_time(state.get("retry_after")) or _parse_time(
+            state.get("reset_at")
+        )
         if retry_at and retry_at > now:
-            gated.append({
-                "provider": key,
-                "failure_class": _safe_identifier(state.get("failure_class") or "unknown"),
-                "retry_after": retry_at.isoformat(),
-            })
+            gated.append(
+                {
+                    "provider": key,
+                    "failure_class": _safe_identifier(
+                        state.get("failure_class") or "unknown"
+                    ),
+                    "retry_after": retry_at.isoformat(),
+                }
+            )
     return {
         "configured": configured,
         "gated": gated,
@@ -178,13 +188,17 @@ def gate_snapshot(
     }
 
 
-def check(target: str, model: str, path: Optional[Path] = None, now: Optional[datetime] = None) -> None:
+def check(
+    target: str, model: str, path: Path | None = None, now: datetime | None = None
+) -> None:
     now = now or _now()
     key = provider_key(target, model)
     state = load(path).get("providers", {}).get(key)
     if not isinstance(state, dict):
         return
-    retry_at = _parse_time(state.get("retry_after")) or _parse_time(state.get("reset_at"))
+    retry_at = _parse_time(state.get("retry_after")) or _parse_time(
+        state.get("reset_at")
+    )
     if retry_at and retry_at > now:
         raise ProviderUnavailable(key, state)
 
@@ -194,13 +208,13 @@ def record(
     model: str,
     *,
     outcome: str,
-    failure_class: Optional[str] = None,
-    retry_after: Optional[datetime] = None,
+    failure_class: str | None = None,
+    retry_after: datetime | None = None,
     source: str = "spawn",
     confidence: str = "high",
-    path: Optional[Path] = None,
-    now: Optional[datetime] = None,
-) -> Dict:
+    path: Path | None = None,
+    now: datetime | None = None,
+) -> dict:
     now = now or _now()
     path = path or cache_path()
     key = provider_key(target, model)
@@ -225,11 +239,21 @@ def record(
 
 def classify_failure(returncode: int, stdout: str, stderr: str) -> str:
     text = f"{stdout}\n{stderr}".lower()
-    if any(token in text for token in
-           ("model not found", "unknown model", "invalid model", "unsupported model",
-            "model does not exist", "no such model")):
+    if any(
+        token in text
+        for token in (
+            "model not found",
+            "unknown model",
+            "invalid model",
+            "unsupported model",
+            "model does not exist",
+            "no such model",
+        )
+    ):
         return "model_unavailable"
-    if any(token in text for token in ("authentication", "unauthorized", "invalid api key")):
+    if any(
+        token in text for token in ("authentication", "unauthorized", "invalid api key")
+    ):
         return "auth"
     # "usage limit"/"session limit" cover Codex's and Claude's own wording for a
     # provider-side usage cap (confirmed live 2026-08-02: codex's "You've hit
@@ -241,13 +265,25 @@ def classify_failure(returncode: int, stdout: str, stderr: str) -> str:
     # previously fell through to "transport" too, causing two consecutive
     # weekly-cap hits to trip worktrail-drain's circuit breaker as plain
     # failures instead of a capacity gate).
-    if any(token in text for token in
-           ("billing", "payment", "quota exceeded", "usage limit", "session limit",
-            "weekly limit")):
+    if any(
+        token in text
+        for token in (
+            "billing",
+            "payment",
+            "quota exceeded",
+            "usage limit",
+            "session limit",
+            "weekly limit",
+        )
+    ):
         return "billing"
-    if any(token in text for token in ("sandbox", "permission denied", "not permitted")):
+    if any(
+        token in text for token in ("sandbox", "permission denied", "not permitted")
+    ):
         return "sandbox"
-    if returncode != 0 and any(token in text for token in ("not found", "command", "startup")):
+    if returncode != 0 and any(
+        token in text for token in ("not found", "command", "startup")
+    ):
         return "startup"
     return "transport"
 
@@ -260,7 +296,7 @@ _EXPLICIT_RESET_RE = re.compile(
 )
 
 
-def parse_explicit_reset(text: str) -> Optional[datetime]:
+def parse_explicit_reset(text: str) -> datetime | None:
     """Extract an explicit reset timestamp from a usage-cap notice, e.g. Codex's
     "try again at Aug 8th, 2026 2:17 AM." Returns None when no such timestamp
     is present, so callers fall back to the generic per-failure-class cooldown
@@ -278,16 +314,21 @@ def parse_explicit_reset(text: str) -> Optional[datetime]:
     candidate = f"{month} {day} {year} {clock.replace(' ', '').upper()}"
     for fmt in ("%b %d %Y %I:%M%p", "%B %d %Y %I:%M%p"):
         try:
-            parsed = datetime.strptime(candidate, fmt)
+            parsed = datetime.strptime(candidate, fmt)  # noqa: DTZ007
         except ValueError:
             continue
         return parsed.astimezone(timezone.utc)
     return None
 
 
-def retry_time(failure_class: str, now: Optional[datetime] = None) -> datetime:
+def retry_time(failure_class: str, now: datetime | None = None) -> datetime:
     now = now or _now()
-    seconds = int(os.environ.get(f"GO_AGENT_{failure_class.upper()}_COOLDOWN", DEFAULT_COOLDOWNS.get(failure_class, 30)))
+    seconds = int(
+        os.environ.get(
+            f"GO_AGENT_{failure_class.upper()}_COOLDOWN",
+            DEFAULT_COOLDOWNS.get(failure_class, 30),
+        )
+    )
     return now + timedelta(seconds=max(1, seconds))
 
 
@@ -295,21 +336,30 @@ MAX_REASON_LENGTH = 500
 MAX_AUDIT_ENTRIES = 100
 
 
-def _add_audit(data: Dict, action: str, scope: str, providers: list[str], reason: str, at: Optional[datetime] = None) -> None:
+def _add_audit(
+    data: dict,
+    action: str,
+    scope: str,
+    providers: list[str],
+    reason: str,
+    at: datetime | None = None,
+) -> None:
     at = at or _now()
     data.setdefault("audit", [])
-    data["audit"].append({
-        "action": action,
-        "scope": scope,
-        "providers": sorted(providers),
-        "reason": reason[:MAX_REASON_LENGTH],
-        "at": at.isoformat(),
-    })
+    data["audit"].append(
+        {
+            "action": action,
+            "scope": scope,
+            "providers": sorted(providers),
+            "reason": reason[:MAX_REASON_LENGTH],
+            "at": at.isoformat(),
+        }
+    )
     if len(data["audit"]) > MAX_AUDIT_ENTRIES:
         data["audit"] = data["audit"][-MAX_AUDIT_ENTRIES:]
 
 
-def cmd_status(path: Optional[Path] = None, now: Optional[datetime] = None) -> int:
+def cmd_status(path: Path | None = None, now: datetime | None = None) -> int:
     """Print every provider this cache has a recorded status for.
 
     Pre-7.2, this listed only the ``configured_providers`` subset written by
@@ -330,7 +380,9 @@ def cmd_status(path: Optional[Path] = None, now: Optional[datetime] = None) -> i
         for key in sorted(providers):
             state = providers[key]
             status_label = state.get("status", "unknown")
-            retry_at = _parse_time(state.get("retry_after")) or _parse_time(state.get("reset_at"))
+            retry_at = _parse_time(state.get("retry_after")) or _parse_time(
+                state.get("reset_at")
+            )
             active = "  (active)" if retry_at and retry_at > now else ""
             fc = state.get("failure_class", "")
             checked = state.get("checked_at", "")
@@ -347,11 +399,15 @@ def cmd_status(path: Optional[Path] = None, now: Optional[datetime] = None) -> i
     if audit:
         print(f"\naudit: {len(audit)} entries (last 5)")
         for entry in audit[-5:]:
-            print(f"  {entry.get('at','')}  {entry.get('action','')}  scope={entry.get('scope','')}  reason={entry.get('reason','')}")
+            print(
+                f"  {entry.get('at', '')}  {entry.get('action', '')}  scope={entry.get('scope', '')}  reason={entry.get('reason', '')}"
+            )
     return 0
 
 
-def cmd_clear(scope: str, reason: str, path: Optional[Path] = None, now: Optional[datetime] = None) -> int:
+def cmd_clear(
+    scope: str, reason: str, path: Path | None = None, now: datetime | None = None
+) -> int:
     now = now or _now()
     p = path or cache_path()
     reason_trimmed = reason.strip()
@@ -359,7 +415,10 @@ def cmd_clear(scope: str, reason: str, path: Optional[Path] = None, now: Optiona
         print("error: --reason is required and must be non-empty", file=sys.stderr)
         return 1
     if len(reason_trimmed) > MAX_REASON_LENGTH:
-        print(f"error: --reason must be at most {MAX_REASON_LENGTH} characters", file=sys.stderr)
+        print(
+            f"error: --reason must be at most {MAX_REASON_LENGTH} characters",
+            file=sys.stderr,
+        )
         return 1
 
     with write_lock(p):
@@ -389,18 +448,29 @@ def cmd_clear(scope: str, reason: str, path: Optional[Path] = None, now: Optiona
         return 0
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     import argparse
+
     parser = argparse.ArgumentParser(description="capacity-cache operator")
     parser.add_argument("--cache", type=str, default=None, help="override cache path")
     sub = parser.add_subparsers(dest="command")
 
-    status_parser = sub.add_parser("status", help="show capacity cache status")
+    sub.add_parser("status", help="show capacity cache status")
 
     clear_parser = sub.add_parser("clear", help="clear capacity gate(s)")
-    clear_parser.add_argument("scope", nargs="?", default=None, help="provider key or --all")
-    clear_parser.add_argument("--all", dest="all_flag", action="store_true", default=False, help="clear all gates")
-    clear_parser.add_argument("--reason", type=str, default="", help="required reason for clearing")
+    clear_parser.add_argument(
+        "scope", nargs="?", default=None, help="provider key or --all"
+    )
+    clear_parser.add_argument(
+        "--all",
+        dest="all_flag",
+        action="store_true",
+        default=False,
+        help="clear all gates",
+    )
+    clear_parser.add_argument(
+        "--reason", type=str, default="", help="required reason for clearing"
+    )
 
     args = parser.parse_args(argv)
 

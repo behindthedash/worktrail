@@ -19,7 +19,9 @@ class SplitFrontmatterRegression(unittest.TestCase):
     `_find_frontmatter_block` refactor unchanged."""
 
     def test_well_formed(self):
-        fm, body = bf.split_frontmatter("---\nid: a\nstatus: queued\n---\n\nbody text\n")
+        fm, body = bf.split_frontmatter(
+            "---\nid: a\nstatus: queued\n---\n\nbody text\n"
+        )
         self.assertEqual(fm, {"id": "a", "status": "queued"})
         self.assertEqual(body, "\nbody text\n")
 
@@ -72,7 +74,9 @@ class ValidateBriefText(unittest.TestCase):
         self.assertIn("frontmatter", err)
 
     def test_unclosed_fence_fails(self):
-        ok, err = bf.validate_brief_text("---\nid: a\nstatus: queued\nno closing fence\n")
+        ok, err = bf.validate_brief_text(
+            "---\nid: a\nstatus: queued\nno closing fence\n"
+        )
         self.assertFalse(ok)
         self.assertIn("frontmatter", err)
 
@@ -101,19 +105,21 @@ class ValidateBriefText(unittest.TestCase):
         """Real historical briefs omit frontmatter `id` (filename/stem is
         the canonical identifier) and some omit `focus` (body-only). The
         default `required` must not treat either as a hard failure."""
-        ok, err = bf.validate_brief_text("---\nstatus: queued\n---\n\n# Focus\n\nbody\n")
+        ok, err = bf.validate_brief_text(
+            "---\nstatus: queued\n---\n\n# Focus\n\nbody\n"
+        )
         self.assertTrue(ok, msg=err)
 
     def test_custom_required_can_demand_focus(self):
         ok, err = bf.validate_brief_text(
-            "---\nid: a\nstatus: queued\nfocus: \"\"\n---\nbody\n",
+            '---\nid: a\nstatus: queued\nfocus: ""\n---\nbody\n',
             required=("id", "status", "focus"),
         )
         self.assertFalse(ok)
         self.assertIn("focus", err)
 
     def test_whitespace_only_field_fails(self):
-        ok, err = bf.validate_brief_text('---\nid: a\nstatus: "   "\n---\nbody\n')
+        ok, _err = bf.validate_brief_text('---\nid: a\nstatus: "   "\n---\nbody\n')
         self.assertFalse(ok)
 
     def test_non_string_field_fails(self):
@@ -140,7 +146,9 @@ class ValidateBrief(unittest.TestCase):
 
 class SerializeFrontmatter(unittest.TestCase):
     def test_focus_renders_as_literal_block(self):
-        text = bf.serialize_frontmatter({"id": "a", "focus": "fix the thing", "status": "queued"})
+        text = bf.serialize_frontmatter(
+            {"id": "a", "focus": "fix the thing", "status": "queued"}
+        )
         self.assertIn("focus: |-\n  fix the thing\n", text)
 
     def test_focus_with_colon_and_hash_needs_no_quoting(self):
@@ -166,7 +174,9 @@ class SerializeFrontmatter(unittest.TestCase):
         self.assertIn("status: queued\n", text)
 
     def test_created_timestamp_is_quoted(self):
-        text = bf.serialize_frontmatter({"created": "2026-08-20T09:00:00-07:00", "focus": "x"})
+        text = bf.serialize_frontmatter(
+            {"created": "2026-08-20T09:00:00-07:00", "focus": "x"}
+        )
         self.assertIn("created: '2026-08-20T09:00:00-07:00'\n", text)
 
     def test_unicode_round_trips(self):
@@ -177,7 +187,9 @@ class SerializeFrontmatter(unittest.TestCase):
 
 class IsCanonicalStyle(unittest.TestCase):
     def test_serialize_frontmatter_output_is_canonical(self):
-        text = bf.serialize_frontmatter({"id": "a", "focus": "fix the thing", "status": "queued"})
+        text = bf.serialize_frontmatter(
+            {"id": "a", "focus": "fix the thing", "status": "queued"}
+        )
         self.assertTrue(bf.is_canonical_style("---\n" + text + "---\n\nbody\n"))
 
     def test_double_quoted_folded_focus_is_not_canonical(self):
@@ -193,7 +205,9 @@ class IsCanonicalStyle(unittest.TestCase):
         self.assertFalse(bf.is_canonical_style(content))
 
     def test_unparseable_yaml_is_not_canonical(self):
-        self.assertFalse(bf.is_canonical_style("---\nfocus: [unterminated\n---\n\nbody\n"))
+        self.assertFalse(
+            bf.is_canonical_style("---\nfocus: [unterminated\n---\n\nbody\n")
+        )
 
     def test_no_frontmatter_block_is_not_canonical(self):
         self.assertFalse(bf.is_canonical_style("no frontmatter here\n"))

@@ -14,25 +14,40 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from pathlib import Path
 from collections import namedtuple
+from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from worktrail.orchestrator import spawnlib  # noqa: E402
+from typing import ClassVar
 
-os.environ.setdefault("GO_AGENT_CAPACITY_CACHE", os.path.join(tempfile.mkdtemp(), "capacity.json"))
+from worktrail.orchestrator import spawnlib
+
+os.environ.setdefault(
+    "GO_AGENT_CAPACITY_CACHE", os.path.join(tempfile.mkdtemp(), "capacity.json")
+)
 
 Proc = namedtuple("Proc", "returncode stdout stderr")
 
 
-def _cell(harness="claude", model=None, effort=None, pool="subscription", auth=None, target=None):
+def _cell(
+    harness="claude",
+    model=None,
+    effort=None,
+    pool="subscription",
+    auth=None,
+    target=None,
+):
     """Build a `Cell` for a `build_cmd`/`build_child_env` test without every
     call site spelling out all six fields."""
     return spawnlib.Cell(
-        target=target or harness, harness=harness, model=model, effort=effort,
-        pool=pool, auth=auth,
+        target=target or harness,
+        harness=harness,
+        model=model,
+        effort=effort,
+        pool=pool,
+        auth=auth,
     )
 
 
@@ -46,8 +61,12 @@ def _routing(targets, tiers, default_tier=None):
     `spawn_agent`/`spawn_claude_p` test -- mirrors `tests/runtime/test_selection.py`'s
     own `_routing`/`_target` helpers."""
     return {
-        "targets": targets, "tiers": tiers, "roles": {}, "purposes": {},
-        "default_tier": default_tier, "drain": {},
+        "targets": targets,
+        "tiers": tiers,
+        "roles": {},
+        "purposes": {},
+        "default_tier": default_tier,
+        "drain": {},
     }
 
 
@@ -66,10 +85,15 @@ CLAUDE_THEN_OPENCODE_ROUTING = _routing(
         "claude-sub": _target("claude"),
         "opencode-free": _target("opencode", pool="free"),
     },
-    {"t2-build": {
-        "claude-sub": {"model": "sonnet", "effort": None},
-        "opencode-free": {"model": "opencode/deepseek-v4-flash-free", "effort": None},
-    }},
+    {
+        "t2-build": {
+            "claude-sub": {"model": "sonnet", "effort": None},
+            "opencode-free": {
+                "model": "opencode/deepseek-v4-flash-free",
+                "effort": None,
+            },
+        }
+    },
     default_tier="t2-build",
 )
 
@@ -81,7 +105,14 @@ SINGLE_CODEX_ROUTING = _routing(
 
 SINGLE_OPENCODE_ROUTING = _routing(
     {"opencode-free": _target("opencode", pool="free")},
-    {"t2-build": {"opencode-free": {"model": "opencode/deepseek-v4-flash-free", "effort": None}}},
+    {
+        "t2-build": {
+            "opencode-free": {
+                "model": "opencode/deepseek-v4-flash-free",
+                "effort": None,
+            }
+        }
+    },
     default_tier="t2-build",
 )
 
@@ -92,6 +123,7 @@ def _patch_routing(routing):
     called with, so `spawn_agent`/`spawn_claude_p` resolve a deterministic
     `Cell` without a real routing.yaml on disk."""
     return patch.object(spawnlib, "resolve_routing", return_value=routing)
+
 
 # Claude-only argv tokens (spec spawnlib-cross-hop-argv-invariant): every
 # element here is legal ONLY on a `claude -p` command line; a codex or opencode
@@ -162,7 +194,9 @@ class SpawnRetry(unittest.TestCase):
         self._orig = spawnlib.subprocess.run
         self._cache = tempfile.TemporaryDirectory()
         self._old_cache = os.environ.get("GO_AGENT_CAPACITY_CACHE")
-        os.environ["GO_AGENT_CAPACITY_CACHE"] = os.path.join(self._cache.name, "capacity.json")
+        os.environ["GO_AGENT_CAPACITY_CACHE"] = os.path.join(
+            self._cache.name, "capacity.json"
+        )
         self._routing_patch = _patch_routing(SINGLE_CLAUDE_ROUTING)
         self._routing_patch.start()
 
@@ -213,9 +247,13 @@ class SpawnRetry(unittest.TestCase):
         self.assertEqual(out.text, report)
 
     def test_timeout_propagates(self):
-        spawnlib.subprocess.run = FakeRun([subprocess.TimeoutExpired(cmd="claude", timeout=1)])
+        spawnlib.subprocess.run = FakeRun(
+            [subprocess.TimeoutExpired(cmd="claude", timeout=1)]
+        )
         with self.assertRaises(subprocess.TimeoutExpired):
-            spawnlib.spawn_claude_p("p", "/tmp", tier="t2-build", retries=2, sleep=lambda *_: None)
+            spawnlib.spawn_claude_p(
+                "p", "/tmp", tier="t2-build", retries=2, sleep=lambda *_: None
+            )
 
 
 class KeepTranscripts(unittest.TestCase):
@@ -223,7 +261,9 @@ class KeepTranscripts(unittest.TestCase):
         self._orig = spawnlib.subprocess.run
         self._cache = tempfile.TemporaryDirectory()
         self._old_cache = os.environ.get("GO_AGENT_CAPACITY_CACHE")
-        os.environ["GO_AGENT_CAPACITY_CACHE"] = os.path.join(self._cache.name, "capacity.json")
+        os.environ["GO_AGENT_CAPACITY_CACHE"] = os.path.join(
+            self._cache.name, "capacity.json"
+        )
         self._old_keep = os.environ.get("WORKTRAIL_KEEP_TRANSCRIPTS")
         self._routing_patch = _patch_routing(SINGLE_CLAUDE_ROUTING)
         self._routing_patch.start()
@@ -245,7 +285,9 @@ class KeepTranscripts(unittest.TestCase):
         os.environ.pop("WORKTRAIL_KEEP_TRANSCRIPTS", None)
         with tempfile.TemporaryDirectory() as would_be_dir:
             spawnlib.subprocess.run = FakeRun([Proc(0, "ok report", "")])
-            spawnlib.spawn_claude_p("prompt", "/tmp", tier="t2-build", retries=0, sleep=lambda *_: None)
+            spawnlib.spawn_claude_p(
+                "prompt", "/tmp", tier="t2-build", retries=0, sleep=lambda *_: None
+            )
             # Nothing is written anywhere when the flag is unset -- there is no
             # target dir to inspect, so this only asserts the spawn itself succeeds.
             self.assertTrue(os.path.isdir(would_be_dir))
@@ -257,17 +299,23 @@ class KeepTranscripts(unittest.TestCase):
             raw = '{"type": "result", "result": "ok report"}'
             spawnlib.subprocess.run = FakeRun([Proc(0, raw, "")])
             spawnlib.spawn_claude_p(
-                "prompt", "/some/task-worktree", tier="t2-build", retries=0, sleep=lambda *_: None
+                "prompt",
+                "/some/task-worktree",
+                tier="t2-build",
+                retries=0,
+                sleep=lambda *_: None,
             )
             files = os.listdir(tdir)
             self.assertEqual(len(files), 1)
             self.assertTrue(files[0].startswith("task-worktree-claude-"))
-            self.assertEqual(open(os.path.join(tdir, files[0])).read(), raw)
+            self.assertEqual(Path(tdir, files[0]).read_text(), raw)
 
     def test_write_failure_is_non_fatal(self):
         with tempfile.TemporaryDirectory() as tdir:
             blocked = os.path.join(tdir, "blocked")
-            open(blocked, "w").close()  # a file, not a dir -- mkdir(parents=True) raises
+            open(
+                blocked, "w"
+            ).close()  # a file, not a dir -- mkdir(parents=True) raises
             os.environ["WORKTRAIL_KEEP_TRANSCRIPTS"] = blocked
             spawnlib.subprocess.run = FakeRun([Proc(0, "ok report", "")])
             out = spawnlib.spawn_claude_p(
@@ -282,29 +330,33 @@ class SessionLimitParse(unittest.TestCase):
         self.assertIsNone(spawnlib.parse_session_limit_reset(None))
 
     def test_parses_reset_same_day(self):
-        now = datetime.datetime(2026, 6, 4, 10, 0)
+        now = datetime.datetime(2026, 6, 4, 10, 0)  # noqa: DTZ001
         r = spawnlib.parse_session_limit_reset(
             "You've hit your session limit. Your limit resets at 3:00pm.", now=now
         )
-        self.assertEqual(r, datetime.datetime(2026, 6, 4, 15, 0))
+        self.assertEqual(r, datetime.datetime(2026, 6, 4, 15, 0))  # noqa: DTZ001
 
     def test_rolls_to_tomorrow_when_reset_already_passed(self):
-        now = datetime.datetime(2026, 6, 4, 16, 0)
-        r = spawnlib.parse_session_limit_reset("hit your session limit, resets 3:00pm", now=now)
-        self.assertEqual(r, datetime.datetime(2026, 6, 5, 15, 0))
+        now = datetime.datetime(2026, 6, 4, 16, 0)  # noqa: DTZ001
+        r = spawnlib.parse_session_limit_reset(
+            "hit your session limit, resets 3:00pm", now=now
+        )
+        self.assertEqual(r, datetime.datetime(2026, 6, 5, 15, 0))  # noqa: DTZ001
 
     def test_handles_am_and_loose_spacing(self):
-        now = datetime.datetime(2026, 6, 4, 10, 0)
+        now = datetime.datetime(2026, 6, 4, 10, 0)  # noqa: DTZ001
         r = spawnlib.parse_session_limit_reset(
             "hit your session limit ... resets 9:30 am", now=now
         )
-        self.assertEqual(r, datetime.datetime(2026, 6, 5, 9, 30))
+        self.assertEqual(r, datetime.datetime(2026, 6, 5, 9, 30))  # noqa: DTZ001
 
     def test_ignores_benign_mention_of_session_limit(self):
         # A plain "session limit" reference (no "hit your ... resets <time>") is not a
         # rate-limit hit and must not trigger a wait.
         self.assertIsNone(
-            spawnlib.parse_session_limit_reset("note: the session limit config is 5 hours")
+            spawnlib.parse_session_limit_reset(
+                "note: the session limit config is 5 hours"
+            )
         )
 
     def test_long_transcript_quoting_notice_is_not_a_limit(self):
@@ -315,17 +367,17 @@ class SessionLimitParse(unittest.TestCase):
         # the docstring example on every spawn and parked runs until "3:00pm".
         transcript = (
             "I updated spawnlib.py. The docstring example reads: "
-            "\"You've hit your session limit. Your limit resets at 3:00pm.\"\n"
+            '"You\'ve hit your session limit. Your limit resets at 3:00pm."\n'
             + ("x" * (spawnlib._SESSION_LIMIT_NOTICE_MAX_CHARS + 1))
         )
         self.assertIsNone(spawnlib.parse_session_limit_reset(transcript))
 
     def test_short_genuine_notice_still_parses(self):
-        now = datetime.datetime(2026, 6, 4, 10, 0)
+        now = datetime.datetime(2026, 6, 4, 10, 0)  # noqa: DTZ001
         r = spawnlib.parse_session_limit_reset(
             "You've hit your session limit. Your limit resets at 3:00pm.", now=now
         )
-        self.assertEqual(r, datetime.datetime(2026, 6, 4, 15, 0))
+        self.assertEqual(r, datetime.datetime(2026, 6, 4, 15, 0))  # noqa: DTZ001
 
 
 class SessionLimitRetry(unittest.TestCase):
@@ -336,7 +388,9 @@ class SessionLimitRetry(unittest.TestCase):
         self._orig = spawnlib.subprocess.run
         self._cache = tempfile.TemporaryDirectory()
         self._old_cache = os.environ.get("GO_AGENT_CAPACITY_CACHE")
-        os.environ["GO_AGENT_CAPACITY_CACHE"] = os.path.join(self._cache.name, "capacity.json")
+        os.environ["GO_AGENT_CAPACITY_CACHE"] = os.path.join(
+            self._cache.name, "capacity.json"
+        )
         self._routing_patch = _patch_routing(SINGLE_CLAUDE_ROUTING)
         self._routing_patch.start()
 
@@ -354,7 +408,12 @@ class SessionLimitRetry(unittest.TestCase):
         spawnlib.subprocess.run = fr
         slept = []
         out = spawnlib.spawn_claude_p(
-            "p", "/tmp", tier="t2-build", retries=2, sleep=lambda s: slept.append(s), **kw
+            "p",
+            "/tmp",
+            tier="t2-build",
+            retries=2,
+            sleep=lambda s: slept.append(s),
+            **kw,
         )
         return out, fr, slept
 
@@ -370,7 +429,7 @@ class SessionLimitRetry(unittest.TestCase):
         # (first attempt + 2 retries). The wait must not eat an infra attempt.
         limit = Proc(0, "hit your session limit resets 3:00pm", "")
         fail = Proc(1, "", "boom")
-        out, fr, slept = self._run([limit, fail, fail, fail], session_limit_waits=3)
+        _out, fr, slept = self._run([limit, fail, fail, fail], session_limit_waits=3)
         self.assertEqual(fr.calls, 4)  # 1 wait + 3 infra attempts
         self.assertEqual(len(slept), 3)  # 1 session wait + 2 infra backoffs
 
@@ -389,7 +448,7 @@ class SessionLimitRetry(unittest.TestCase):
         # a normal success — no session-limit sleep, no retry, work not discarded.
         transcript = (
             "Edited spawnlib.py; the docstring example is "
-            "\"You've hit your session limit. Your limit resets at 3:00pm.\" "
+            '"You\'ve hit your session limit. Your limit resets at 3:00pm." '
             + ("done. " * 200)
         )
         out, fr, slept = self._run([Proc(0, transcript, "")])
@@ -402,14 +461,28 @@ class SessionLimitRetry(unittest.TestCase):
         # (tool echoes of the file being edited) while the final "result" event is a
         # normal report — the parsed RESULT text is what gets scanned, so no wait.
         lines = [
-            json.dumps({
-                "type": "assistant",
-                "message": {"content": [{"type": "text", "text":
-                    "The docstring says: You've hit your session limit. "
-                    "Your limit resets at 3:00pm."}]},
-            }),
-            json.dumps({"type": "result", "subtype": "success",
-                        "result": "final report: all edits committed", "usage": {}}),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "The docstring says: You've hit your session limit. "
+                                "Your limit resets at 3:00pm.",
+                            }
+                        ]
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "result",
+                    "subtype": "success",
+                    "result": "final report: all edits committed",
+                    "usage": {},
+                }
+            ),
         ]
         out, fr, slept = self._run([Proc(0, "\n".join(lines), "")])
         self.assertEqual(fr.calls, 1)
@@ -446,7 +519,9 @@ class Helpers(unittest.TestCase):
         self.assertEqual(c[idx + 1], "stream-json")
 
     def test_build_cmd_opencode(self):
-        c = spawnlib.build_cmd("hi", _cell(harness="opencode", model="opencode/claude-sonnet-4-6"))
+        c = spawnlib.build_cmd(
+            "hi", _cell(harness="opencode", model="opencode/claude-sonnet-4-6")
+        )
         self.assertEqual(c[:3], ["opencode", "run", "--format"])
         self.assertEqual(c[3], "json")
         self.assertIn("--model", c)
@@ -455,7 +530,8 @@ class Helpers(unittest.TestCase):
 
     def test_build_cmd_codex(self):
         c = spawnlib.build_cmd(
-            "hi", _cell(harness="codex", model="gpt-5.3-codex"),
+            "hi",
+            _cell(harness="codex", model="gpt-5.3-codex"),
             output_last_message="/tmp/out",
         )
         self.assertEqual(c[:2], ["codex", "exec"])
@@ -476,12 +552,16 @@ class Helpers(unittest.TestCase):
         # model-tier-routing 3.4: effort=None must not perturb any agent's
         # command line -- byte-identical to the pre-effort build_cmd() output.
         for agent in ("claude", "opencode", "codex"):
-            with_effort_none = spawnlib.build_cmd("hi", _cell(harness=agent, effort=None))
+            with_effort_none = spawnlib.build_cmd(
+                "hi", _cell(harness=agent, effort=None)
+            )
             without_effort_kwarg = spawnlib.build_cmd("hi", _cell(harness=agent))
             self.assertEqual(with_effort_none, without_effort_kwarg)
             self.assertNotIn("--effort", with_effort_none)
             self.assertNotIn("--variant", with_effort_none)
-            self.assertFalse(any("model_reasoning_effort" in part for part in with_effort_none))
+            self.assertFalse(
+                any("model_reasoning_effort" in part for part in with_effort_none)
+            )
 
     def test_build_cmd_claude_effort_flag(self):
         c = spawnlib.build_cmd("hi", _cell(effort="high"))
@@ -533,7 +613,9 @@ class DefaultSettingSourcesStructural(unittest.TestCase):
         self.assertEqual(c[idx + 1], "project,local")
 
     def test_claude_gets_default_with_unrelated_extra_args(self):
-        c = spawnlib.build_cmd("hi", _cell(), extra_args=["--append-system-prompt", "x"])
+        c = spawnlib.build_cmd(
+            "hi", _cell(), extra_args=["--append-system-prompt", "x"]
+        )
         self.assertIn("--setting-sources", c)
         idx = c.index("--setting-sources")
         self.assertEqual(c[idx + 1], "project,local")
@@ -547,7 +629,10 @@ class DefaultSettingSourcesStructural(unittest.TestCase):
         self.assertEqual(c[idx + 1], "all")
 
     def test_codex_and_opencode_never_get_the_claude_only_flag(self):
-        for agent, model in (("codex", "gpt-5.3-codex"), ("opencode", "opencode/claude-sonnet-4-6")):
+        for agent, model in (
+            ("codex", "gpt-5.3-codex"),
+            ("opencode", "opencode/claude-sonnet-4-6"),
+        ):
             c = spawnlib.build_cmd("hi", _cell(harness=agent, model=model))
             self.assertNotIn("--setting-sources", c, agent)
 
@@ -564,7 +649,9 @@ class DefaultSettingSourcesStructural(unittest.TestCase):
         spawnlib.subprocess.run = fake_run
         try:
             with _patch_routing(SINGLE_CLAUDE_ROUTING):
-                spawnlib.spawn_agent("prompt", "/tmp", tier="t2-build", sleep=lambda *_: None)
+                spawnlib.spawn_agent(
+                    "prompt", "/tmp", tier="t2-build", sleep=lambda *_: None
+                )
         finally:
             spawnlib.subprocess.run = orig
         cmd = captured_cmd["cmd"]
@@ -599,25 +686,40 @@ class SpawnAgentSelection(unittest.TestCase):
             captured["cmd"] = cmd
             return Proc(0, "ok", "")
 
-        with _patch_routing(SINGLE_CLAUDE_ROUTING), \
-                patch.object(spawnlib.subprocess, "run", side_effect=fake_run):
+        with (
+            _patch_routing(SINGLE_CLAUDE_ROUTING),
+            patch.object(spawnlib.subprocess, "run", side_effect=fake_run),
+        ):
             result = spawnlib.spawn_agent("prompt", "/tmp", tier="t2-build", retries=0)
 
         self.assertEqual(result.text, "ok")
         self.assertEqual(captured["cmd"][0:3], ["claude", "-p", "prompt"])
-        self.assertEqual(captured["cmd"][captured["cmd"].index("--model") + 1], "sonnet")
+        self.assertEqual(
+            captured["cmd"][captured["cmd"].index("--model") + 1], "sonnet"
+        )
 
     def test_prefer_moves_a_declared_target_to_the_front(self):
         captured = {}
 
         def fake_run(cmd, **kwargs):
             captured["cmd"] = cmd
-            return Proc(0, json.dumps({
-                "type": "text", "sessionID": "s", "part": {"type": "text", "text": "opencode ok"},
-            }) + "\n", "")
+            return Proc(
+                0,
+                json.dumps(
+                    {
+                        "type": "text",
+                        "sessionID": "s",
+                        "part": {"type": "text", "text": "opencode ok"},
+                    }
+                )
+                + "\n",
+                "",
+            )
 
-        with _patch_routing(CLAUDE_THEN_OPENCODE_ROUTING), \
-                patch.object(spawnlib.subprocess, "run", side_effect=fake_run):
+        with (
+            _patch_routing(CLAUDE_THEN_OPENCODE_ROUTING),
+            patch.object(spawnlib.subprocess, "run", side_effect=fake_run),
+        ):
             result = spawnlib.spawn_agent(
                 "prompt", "/tmp", tier="t2-build", prefer="opencode-free", retries=0
             )
@@ -628,8 +730,10 @@ class SpawnAgentSelection(unittest.TestCase):
     def test_exclude_harness_is_soft_and_still_wins_if_nothing_else_has_capacity(self):
         spawnlib.agent_capacity.save({"version": 1, "providers": {}})
         spawnlib.agent_capacity.record(
-            "opencode-free", "opencode/deepseek-v4-flash-free",
-            outcome="unavailable", failure_class="billing",
+            "opencode-free",
+            "opencode/deepseek-v4-flash-free",
+            outcome="unavailable",
+            failure_class="billing",
             retry_after=datetime.datetime.now(datetime.timezone.utc)
             + datetime.timedelta(seconds=300),
         )
@@ -639,8 +743,10 @@ class SpawnAgentSelection(unittest.TestCase):
             captured["cmd"] = cmd
             return Proc(0, "ok", "")
 
-        with _patch_routing(CLAUDE_THEN_OPENCODE_ROUTING), \
-                patch.object(spawnlib.subprocess, "run", side_effect=fake_run):
+        with (
+            _patch_routing(CLAUDE_THEN_OPENCODE_ROUTING),
+            patch.object(spawnlib.subprocess, "run", side_effect=fake_run),
+        ):
             result = spawnlib.spawn_agent(
                 "prompt", "/tmp", tier="t2-build", exclude_harness="claude", retries=0
             )
@@ -659,7 +765,10 @@ class SpawnAgentSelection(unittest.TestCase):
         pre-select_cell; --setting-sources is claude-only, opencode rejects it)."""
         spawnlib.agent_capacity.save({"version": 1, "providers": {}})
         spawnlib.agent_capacity.record(
-            "claude-sub", "sonnet", outcome="unavailable", failure_class="billing",
+            "claude-sub",
+            "sonnet",
+            outcome="unavailable",
+            failure_class="billing",
             retry_after=datetime.datetime.now(datetime.timezone.utc)
             + datetime.timedelta(seconds=300),
         )
@@ -667,15 +776,30 @@ class SpawnAgentSelection(unittest.TestCase):
 
         def fake_run(cmd, **kwargs):
             captured["cmd"] = cmd
-            return Proc(0, json.dumps({
-                "type": "text", "sessionID": "s", "part": {"type": "text", "text": "opencode ok"},
-            }) + "\n", "")
+            return Proc(
+                0,
+                json.dumps(
+                    {
+                        "type": "text",
+                        "sessionID": "s",
+                        "part": {"type": "text", "text": "opencode ok"},
+                    }
+                )
+                + "\n",
+                "",
+            )
 
-        with _patch_routing(CLAUDE_THEN_OPENCODE_ROUTING), \
-                patch.object(spawnlib.subprocess, "run", side_effect=fake_run):
+        with (
+            _patch_routing(CLAUDE_THEN_OPENCODE_ROUTING),
+            patch.object(spawnlib.subprocess, "run", side_effect=fake_run),
+        ):
             result = spawnlib.spawn_agent(
-                "prompt", "/tmp", tier="t2-build", prefer="claude-sub",
-                extra_args=["--setting-sources", "project,local"], retries=0,
+                "prompt",
+                "/tmp",
+                tier="t2-build",
+                prefer="claude-sub",
+                extra_args=["--setting-sources", "project,local"],
+                retries=0,
             )
 
         self.assertEqual(result.text, "opencode ok")
@@ -691,11 +815,17 @@ class SpawnAgentSelection(unittest.TestCase):
             captured["cmd"] = cmd
             return Proc(0, "ok", "")
 
-        with _patch_routing(CLAUDE_THEN_OPENCODE_ROUTING), \
-                patch.object(spawnlib.subprocess, "run", side_effect=fake_run):
+        with (
+            _patch_routing(CLAUDE_THEN_OPENCODE_ROUTING),
+            patch.object(spawnlib.subprocess, "run", side_effect=fake_run),
+        ):
             result = spawnlib.spawn_agent(
-                "prompt", "/tmp", tier="t2-build", prefer="claude-sub",
-                extra_args=["--setting-sources", "project,local"], retries=0,
+                "prompt",
+                "/tmp",
+                tier="t2-build",
+                prefer="claude-sub",
+                extra_args=["--setting-sources", "project,local"],
+                retries=0,
             )
 
         self.assertEqual(result.text, "ok")
@@ -705,7 +835,10 @@ class SpawnAgentSelection(unittest.TestCase):
     def test_every_cell_gated_raises_no_execution_target_before_any_subprocess(self):
         spawnlib.agent_capacity.save({"version": 1, "providers": {}})
         spawnlib.agent_capacity.record(
-            "claude-sub", "sonnet", outcome="unavailable", failure_class="billing",
+            "claude-sub",
+            "sonnet",
+            outcome="unavailable",
+            failure_class="billing",
             retry_after=datetime.datetime.now(datetime.timezone.utc)
             + datetime.timedelta(seconds=300),
         )
@@ -715,10 +848,12 @@ class SpawnAgentSelection(unittest.TestCase):
             calls.append(cmd)
             return Proc(0, "unused", "")
 
-        with _patch_routing(SINGLE_CLAUDE_ROUTING), \
-                patch.object(spawnlib.subprocess, "run", side_effect=fake_run):
-            with self.assertRaises(spawnlib.NoExecutionTarget):
-                spawnlib.spawn_agent("prompt", "/tmp", tier="t2-build")
+        with (
+            _patch_routing(SINGLE_CLAUDE_ROUTING),
+            patch.object(spawnlib.subprocess, "run", side_effect=fake_run),
+            self.assertRaises(spawnlib.NoExecutionTarget),
+        ):
+            spawnlib.spawn_agent("prompt", "/tmp", tier="t2-build")
         self.assertEqual(calls, [])
 
 
@@ -727,21 +862,23 @@ class ParseStreamJson(unittest.TestCase):
         return "\n".join(json.dumps(e) for e in events)
 
     def test_extracts_result_and_usage(self):
-        raw = self._stream([
-            {"type": "system", "subtype": "init"},
-            {
-                "type": "result",
-                "subtype": "success",
-                "result": "final answer",
-                "total_cost_usd": 0.005,
-                "usage": {
-                    "input_tokens": 100,
-                    "cache_creation_input_tokens": 10,
-                    "cache_read_input_tokens": 50,
-                    "output_tokens": 20,
+        raw = self._stream(
+            [
+                {"type": "system", "subtype": "init"},
+                {
+                    "type": "result",
+                    "subtype": "success",
+                    "result": "final answer",
+                    "total_cost_usd": 0.005,
+                    "usage": {
+                        "input_tokens": 100,
+                        "cache_creation_input_tokens": 10,
+                        "cache_read_input_tokens": 50,
+                        "output_tokens": 20,
+                    },
                 },
-            },
-        ])
+            ]
+        )
         text, usage, tools, skills, sid = spawnlib._parse_stream_json(raw)
         self.assertEqual(text, "final answer")
         self.assertEqual(usage["input_tokens"], 100)
@@ -765,19 +902,21 @@ class ParseStreamJson(unittest.TestCase):
         # -analysis" from "the model finished cleanly but chose not to write the
         # block" -- verified field names from a live `claude -p --output-format
         # stream-json` result event (handoff 20260711-130900).
-        raw = self._stream([
-            {
-                "type": "result",
-                "subtype": "error_max_turns",
-                "is_error": True,
-                "result": "(partial analysis, no trailing json block)",
-                "stop_reason": "max_tokens",
-                "num_turns": 42,
-                "permission_denials": ["Task"],
-                "total_cost_usd": 1.2,
-                "usage": {"input_tokens": 500, "output_tokens": 4000},
-            },
-        ])
+        raw = self._stream(
+            [
+                {
+                    "type": "result",
+                    "subtype": "error_max_turns",
+                    "is_error": True,
+                    "result": "(partial analysis, no trailing json block)",
+                    "stop_reason": "max_tokens",
+                    "num_turns": 42,
+                    "permission_denials": ["Task"],
+                    "total_cost_usd": 1.2,
+                    "usage": {"input_tokens": 500, "output_tokens": 4000},
+                },
+            ]
+        )
         text, usage, _, _, _ = spawnlib._parse_stream_json(raw)
         self.assertEqual(text, "(partial analysis, no trailing json block)")
         self.assertEqual(usage["subtype"], "error_max_turns")
@@ -787,55 +926,95 @@ class ParseStreamJson(unittest.TestCase):
         self.assertEqual(usage["permission_denials"], ["Task"])
 
     def test_extracts_tool_names(self):
-        raw = self._stream([
-            {
-                "type": "assistant",
-                "message": {
-                    "content": [
-                        {"type": "tool_use", "id": "1", "name": "Read", "input": {}},
-                        {"type": "tool_use", "id": "2", "name": "Bash", "input": {}},
-                        {"type": "text", "text": "thinking"},
-                    ]
+        raw = self._stream(
+            [
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "id": "1",
+                                "name": "Read",
+                                "input": {},
+                            },
+                            {
+                                "type": "tool_use",
+                                "id": "2",
+                                "name": "Bash",
+                                "input": {},
+                            },
+                            {"type": "text", "text": "thinking"},
+                        ]
+                    },
                 },
-            },
-            {
-                "type": "assistant",
-                "message": {
-                    "content": [
-                        {"type": "tool_use", "id": "3", "name": "Edit", "input": {}},
-                        {"type": "tool_use", "id": "4", "name": "Read", "input": {}},
-                    ]
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "id": "3",
+                                "name": "Edit",
+                                "input": {},
+                            },
+                            {
+                                "type": "tool_use",
+                                "id": "4",
+                                "name": "Read",
+                                "input": {},
+                            },
+                        ]
+                    },
                 },
-            },
-            {"type": "result", "subtype": "success", "result": "done", "total_cost_usd": 0.0, "usage": {}},
-        ])
+                {
+                    "type": "result",
+                    "subtype": "success",
+                    "result": "done",
+                    "total_cost_usd": 0.0,
+                    "usage": {},
+                },
+            ]
+        )
         _, _, tools, skills, _ = spawnlib._parse_stream_json(raw)
         self.assertEqual(tools, ["Bash", "Edit", "Read"])
         self.assertEqual(skills, [])
 
     def test_extracts_skill_names_from_skill_tool(self):
-        raw = self._stream([
-            {
-                "type": "assistant",
-                "message": {
-                    "content": [
-                        {
-                            "type": "tool_use",
-                            "id": "1",
-                            "name": "Skill",
-                            "input": {"skill": "developer-kit-specs:parallel-orchestrator"},
-                        },
-                        {
-                            "type": "tool_use",
-                            "id": "2",
-                            "name": "Skill",
-                            "input": {"skill": "developer-kit-specs:parallel-orchestrator"},
-                        },
-                    ]
+        raw = self._stream(
+            [
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "id": "1",
+                                "name": "Skill",
+                                "input": {
+                                    "skill": "developer-kit-specs:parallel-orchestrator"
+                                },
+                            },
+                            {
+                                "type": "tool_use",
+                                "id": "2",
+                                "name": "Skill",
+                                "input": {
+                                    "skill": "developer-kit-specs:parallel-orchestrator"
+                                },
+                            },
+                        ]
+                    },
                 },
-            },
-            {"type": "result", "subtype": "success", "result": "done", "total_cost_usd": 0.0, "usage": {}},
-        ])
+                {
+                    "type": "result",
+                    "subtype": "success",
+                    "result": "done",
+                    "total_cost_usd": 0.0,
+                    "usage": {},
+                },
+            ]
+        )
         _, _, tools, skills, _ = spawnlib._parse_stream_json(raw)
         self.assertNotIn("Skill", tools)
         self.assertEqual(skills, ["developer-kit-specs:parallel-orchestrator"])
@@ -851,12 +1030,12 @@ class ParseStreamJson(unittest.TestCase):
 
     def test_fallback_on_old_json_envelope(self):
         raw = '{"result": "the answer", "total_cost_usd": 0.01, "usage": {"input_tokens": 5}}'
-        text, usage, tools, skills, sid = spawnlib._parse_stream_json(raw)
+        text, _usage, _tools, _skills, sid = spawnlib._parse_stream_json(raw)
         self.assertEqual(text, raw)
         self.assertEqual(sid, "")
 
     def test_empty_stream(self):
-        text, usage, tools, skills, sid = spawnlib._parse_stream_json("")
+        text, usage, _tools, _skills, sid = spawnlib._parse_stream_json("")
         self.assertEqual(text, "")
         self.assertEqual(usage, {})
         self.assertEqual(sid, "")
@@ -867,7 +1046,9 @@ class ParseStreamJson(unittest.TestCase):
         self.assertEqual(r.skills_used, [])
 
     def test_spawn_result_with_tools(self):
-        r = spawnlib.SpawnResult(text="hi", usage={}, tools_used=["Bash", "Read"], skills_used=["foo:bar"])
+        r = spawnlib.SpawnResult(
+            text="hi", usage={}, tools_used=["Bash", "Read"], skills_used=["foo:bar"]
+        )
         self.assertEqual(r.tools_used, ["Bash", "Read"])
         self.assertEqual(r.skills_used, ["foo:bar"])
 
@@ -885,28 +1066,62 @@ class ParseStreamJsonOpenCode(unittest.TestCase):
         return "\n".join(json.dumps(e) for e in events)
 
     def test_text_event_becomes_result_text(self):
-        raw = self._stream([
-            {"type": "step_start", "sessionID": "ses_1", "part": {"type": "step-start"}},
-            {"type": "text", "sessionID": "ses_1", "part": {"type": "text", "text": "final opencode text"}},
-        ])
-        text, usage, tools, skills, sid = spawnlib._parse_stream_json(raw)
+        raw = self._stream(
+            [
+                {
+                    "type": "step_start",
+                    "sessionID": "ses_1",
+                    "part": {"type": "step-start"},
+                },
+                {
+                    "type": "text",
+                    "sessionID": "ses_1",
+                    "part": {"type": "text", "text": "final opencode text"},
+                },
+            ]
+        )
+        text, _usage, _tools, _skills, sid = spawnlib._parse_stream_json(raw)
         self.assertEqual(text, "final opencode text")
         self.assertEqual(sid, "ses_1")
 
     def test_last_text_event_wins(self):
-        raw = self._stream([
-            {"type": "text", "sessionID": "ses_1", "part": {"type": "text", "text": "turn 1"}},
-            {"type": "text", "sessionID": "ses_1", "part": {"type": "text", "text": "turn 2 final"}},
-        ])
+        raw = self._stream(
+            [
+                {
+                    "type": "text",
+                    "sessionID": "ses_1",
+                    "part": {"type": "text", "text": "turn 1"},
+                },
+                {
+                    "type": "text",
+                    "sessionID": "ses_1",
+                    "part": {"type": "text", "text": "turn 2 final"},
+                },
+            ]
+        )
         text, *_ = spawnlib._parse_stream_json(raw)
         self.assertEqual(text, "turn 2 final")
 
     def test_tool_use_event_collects_tool_name(self):
-        raw = self._stream([
-            {"type": "tool_use", "sessionID": "ses_1", "part": {"type": "tool", "tool": "bash"}},
-            {"type": "tool_use", "sessionID": "ses_1", "part": {"type": "tool", "tool": "read"}},
-            {"type": "tool_use", "sessionID": "ses_1", "part": {"type": "tool", "tool": "bash"}},
-        ])
+        raw = self._stream(
+            [
+                {
+                    "type": "tool_use",
+                    "sessionID": "ses_1",
+                    "part": {"type": "tool", "tool": "bash"},
+                },
+                {
+                    "type": "tool_use",
+                    "sessionID": "ses_1",
+                    "part": {"type": "tool", "tool": "read"},
+                },
+                {
+                    "type": "tool_use",
+                    "sessionID": "ses_1",
+                    "part": {"type": "tool", "tool": "bash"},
+                },
+            ]
+        )
         _, _, tools, skills, _ = spawnlib._parse_stream_json(raw)
         self.assertEqual(tools, ["bash", "read"])
         self.assertEqual(skills, [])
@@ -915,28 +1130,40 @@ class ParseStreamJsonOpenCode(unittest.TestCase):
         # Real shape from a live reproduction: opencode has no single final
         # aggregate event like claude's "result" -- one "step_finish" per step,
         # each carrying that step's own token slice.
-        raw = self._stream([
-            {
-                "type": "step_finish",
-                "sessionID": "ses_1",
-                "part": {
-                    "type": "step-finish",
-                    "tokens": {"total": 10, "input": 6, "output": 2, "reasoning": 0,
-                               "cache": {"write": 1, "read": 1}},
-                    "cost": 0.0,
+        raw = self._stream(
+            [
+                {
+                    "type": "step_finish",
+                    "sessionID": "ses_1",
+                    "part": {
+                        "type": "step-finish",
+                        "tokens": {
+                            "total": 10,
+                            "input": 6,
+                            "output": 2,
+                            "reasoning": 0,
+                            "cache": {"write": 1, "read": 1},
+                        },
+                        "cost": 0.0,
+                    },
                 },
-            },
-            {
-                "type": "step_finish",
-                "sessionID": "ses_1",
-                "part": {
-                    "type": "step-finish",
-                    "tokens": {"total": 20, "input": 12, "output": 4, "reasoning": 0,
-                               "cache": {"write": 0, "read": 4}},
-                    "cost": 0.0005,
+                {
+                    "type": "step_finish",
+                    "sessionID": "ses_1",
+                    "part": {
+                        "type": "step-finish",
+                        "tokens": {
+                            "total": 20,
+                            "input": 12,
+                            "output": 4,
+                            "reasoning": 0,
+                            "cache": {"write": 0, "read": 4},
+                        },
+                        "cost": 0.0005,
+                    },
                 },
-            },
-        ])
+            ]
+        )
         _, usage, _, _, sid = spawnlib._parse_stream_json(raw)
         self.assertEqual(usage["input_tokens"], 18)
         self.assertEqual(usage["output_tokens"], 6)
@@ -946,21 +1173,41 @@ class ParseStreamJsonOpenCode(unittest.TestCase):
         self.assertEqual(sid, "ses_1")
 
     def test_step_start_and_todowrite_tool_do_not_break_parsing(self):
-        raw = self._stream([
-            {"type": "step_start", "sessionID": "ses_1", "part": {"type": "step-start"}},
-            {"type": "tool_use", "sessionID": "ses_1", "part": {"type": "tool", "tool": "todowrite"}},
-            {"type": "text", "sessionID": "ses_1", "part": {"type": "text", "text": "done"}},
-        ])
-        text, usage, tools, skills, sid = spawnlib._parse_stream_json(raw)
+        raw = self._stream(
+            [
+                {
+                    "type": "step_start",
+                    "sessionID": "ses_1",
+                    "part": {"type": "step-start"},
+                },
+                {
+                    "type": "tool_use",
+                    "sessionID": "ses_1",
+                    "part": {"type": "tool", "tool": "todowrite"},
+                },
+                {
+                    "type": "text",
+                    "sessionID": "ses_1",
+                    "part": {"type": "text", "text": "done"},
+                },
+            ]
+        )
+        text, _usage, tools, _skills, _sid = spawnlib._parse_stream_json(raw)
         self.assertEqual(text, "done")
         self.assertEqual(tools, ["todowrite"])
 
     def test_no_step_finish_leaves_usage_empty(self):
         # A run with only text/tool_use events (no step_finish reached, e.g. an
         # immediate top-level error) must not fabricate a zeroed usage dict.
-        raw = self._stream([
-            {"type": "tool_use", "sessionID": "ses_1", "part": {"type": "tool", "tool": "read"}},
-        ])
+        raw = self._stream(
+            [
+                {
+                    "type": "tool_use",
+                    "sessionID": "ses_1",
+                    "part": {"type": "tool", "tool": "read"},
+                },
+            ]
+        )
         _, usage, _, _, _ = spawnlib._parse_stream_json(raw)
         self.assertEqual(usage, {})
 
@@ -973,11 +1220,16 @@ class OpenCodeErrorEvent(unittest.TestCase):
     misclassified as a clean success."""
 
     def test_opencode_error_event_helper_extracts_error(self):
-        line = json.dumps({
-            "type": "error",
-            "sessionID": "ses_err",
-            "error": {"name": "UnknownError", "data": {"message": "boom", "ref": "err_1"}},
-        })
+        line = json.dumps(
+            {
+                "type": "error",
+                "sessionID": "ses_err",
+                "error": {
+                    "name": "UnknownError",
+                    "data": {"message": "boom", "ref": "err_1"},
+                },
+            }
+        )
         err = spawnlib._opencode_error_event(line)
         self.assertEqual(err["name"], "UnknownError")
         self.assertEqual(err["data"]["message"], "boom")
@@ -991,10 +1243,15 @@ class OpenCodeErrorEvent(unittest.TestCase):
         self.assertIsNone(spawnlib._opencode_error_event(None))
 
     def test_is_infra_failure_true_for_opencode_error_event(self):
-        line = json.dumps({
-            "type": "error",
-            "error": {"name": "UnknownError", "data": {"message": "Unexpected server error."}},
-        })
+        line = json.dumps(
+            {
+                "type": "error",
+                "error": {
+                    "name": "UnknownError",
+                    "data": {"message": "Unexpected server error."},
+                },
+            }
+        )
         self.assertTrue(spawnlib.is_infra_failure(0, line))
 
     def test_is_infra_failure_false_for_opencode_success_event(self):
@@ -1020,10 +1277,13 @@ class CodexSpawn(unittest.TestCase):
             return Proc(0, '{"type":"event"}\n', "")
 
         spawnlib.subprocess.run = fake_run
-        with _patch_routing(SINGLE_CODEX_ROUTING), patch.object(
-            spawnlib,
-            "prepare_codex_child_environment",
-            return_value=(os.environ.copy(), "/tmp/worktrail-codex-child", False),
+        with (
+            _patch_routing(SINGLE_CODEX_ROUTING),
+            patch.object(
+                spawnlib,
+                "prepare_codex_child_environment",
+                return_value=(os.environ.copy(), "/tmp/worktrail-codex-child", False),
+            ),
         ):
             out = spawnlib.spawn_agent("prompt", "/tmp", tier="t2-build")
         self.assertEqual(out.text, "codex final report")
@@ -1041,11 +1301,14 @@ class CodexSpawn(unittest.TestCase):
             return Proc(0, '{"type":"event"}\n', "")
 
         spawnlib.subprocess.run = fake_run
-        with _patch_routing(SINGLE_CODEX_ROUTING), patch.object(
-            spawnlib,
-            "prepare_codex_child_environment",
-            return_value=(child_env.copy(), child_env["CODEX_HOME"], False),
-        ) as prepare:
+        with (
+            _patch_routing(SINGLE_CODEX_ROUTING),
+            patch.object(
+                spawnlib,
+                "prepare_codex_child_environment",
+                return_value=(child_env.copy(), child_env["CODEX_HOME"], False),
+            ) as prepare,
+        ):
             spawnlib.spawn_agent("prompt", "/tmp", tier="t2-build")
 
         # Subscription lane: default home selection, ChatGPT auth inherited --
@@ -1057,8 +1320,14 @@ class CodexSpawn(unittest.TestCase):
 
     def _api_routing(self, codex_home):
         return _routing(
-            {"codex-api": _target("codex", pool="api", api_opt_in=True,
-                                  auth={"codex_home": codex_home} if codex_home else None)},
+            {
+                "codex-api": _target(
+                    "codex",
+                    pool="api",
+                    api_opt_in=True,
+                    auth={"codex_home": codex_home} if codex_home else None,
+                )
+            },
             {"t2-build": {"codex-api": {"model": "gpt-5.3-codex", "effort": None}}},
             default_tier="t2-build",
         )
@@ -1078,20 +1347,25 @@ class CodexSpawn(unittest.TestCase):
                 return Proc(0, '{"type":"event"}\n', "")
 
             spawnlib.subprocess.run = fake_run
-            with _patch_routing(self._api_routing(home)), patch.object(
-                spawnlib,
-                "prepare_codex_child_environment",
-                return_value=(child_env.copy(), home, False),
-            ) as prepare:
+            with (
+                _patch_routing(self._api_routing(home)),
+                patch.object(
+                    spawnlib,
+                    "prepare_codex_child_environment",
+                    return_value=(child_env.copy(), home, False),
+                ) as prepare,
+            ):
                 spawnlib.spawn_agent("prompt", "/tmp", tier="t2-build")
             prepare.assert_called_once_with(home, inherit_auth=False)
 
     def test_codex_api_cell_without_codex_home_fails_loud_before_launch(self):
         launched = []
         spawnlib.subprocess.run = lambda *a, **k: launched.append(a) or Proc(0, "", "")
-        with _patch_routing(self._api_routing(None)):
-            with self.assertRaises(spawnlib.OperatorConfigError) as ctx:
-                spawnlib.spawn_agent("prompt", "/tmp", tier="t2-build")
+        with (
+            _patch_routing(self._api_routing(None)),
+            self.assertRaises(spawnlib.OperatorConfigError) as ctx,
+        ):
+            spawnlib.spawn_agent("prompt", "/tmp", tier="t2-build")
         self.assertIn("auth.codex_home", str(ctx.exception))
         self.assertIn("codex-api", str(ctx.exception))
         self.assertEqual(launched, [])
@@ -1099,10 +1373,12 @@ class CodexSpawn(unittest.TestCase):
     def test_codex_api_cell_with_unprovisioned_home_fails_loud_before_launch(self):
         launched = []
         spawnlib.subprocess.run = lambda *a, **k: launched.append(a) or Proc(0, "", "")
-        with tempfile.TemporaryDirectory() as home:  # exists, but no auth.json
-            with _patch_routing(self._api_routing(home)):
-                with self.assertRaises(spawnlib.OperatorConfigError) as ctx:
-                    spawnlib.spawn_agent("prompt", "/tmp", tier="t2-build")
+        with (
+            tempfile.TemporaryDirectory() as home,
+            _patch_routing(self._api_routing(home)),
+            self.assertRaises(spawnlib.OperatorConfigError) as ctx,
+        ):
+            spawnlib.spawn_agent("prompt", "/tmp", tier="t2-build")
         self.assertIn("auth.json", str(ctx.exception))
         self.assertIn("--with-api-key", str(ctx.exception))
         self.assertEqual(launched, [])
@@ -1113,7 +1389,9 @@ class OpenCodeSpawn(unittest.TestCase):
         self._orig = spawnlib.subprocess.run
         self._cache = tempfile.TemporaryDirectory()
         self._old_cache = os.environ.get("GO_AGENT_CAPACITY_CACHE")
-        os.environ["GO_AGENT_CAPACITY_CACHE"] = os.path.join(self._cache.name, "capacity.json")
+        os.environ["GO_AGENT_CAPACITY_CACHE"] = os.path.join(
+            self._cache.name, "capacity.json"
+        )
         self._routing_patch = _patch_routing(SINGLE_OPENCODE_ROUTING)
         self._routing_patch.start()
 
@@ -1161,19 +1439,36 @@ class OpenCodeSpawn(unittest.TestCase):
 
     def test_opencode_step_finish_usage_reaches_spawn_result(self):
         events = [
-            {"type": "step_start", "sessionID": "ses_1", "part": {"type": "step-start"}},
-            {"type": "tool_use", "sessionID": "ses_1", "part": {"type": "tool", "tool": "read"}},
+            {
+                "type": "step_start",
+                "sessionID": "ses_1",
+                "part": {"type": "step-start"},
+            },
+            {
+                "type": "tool_use",
+                "sessionID": "ses_1",
+                "part": {"type": "tool", "tool": "read"},
+            },
             {
                 "type": "step_finish",
                 "sessionID": "ses_1",
                 "part": {
                     "type": "step-finish",
-                    "tokens": {"total": 100, "input": 60, "output": 20, "reasoning": 0,
-                               "cache": {"write": 5, "read": 15}},
+                    "tokens": {
+                        "total": 100,
+                        "input": 60,
+                        "output": 20,
+                        "reasoning": 0,
+                        "cache": {"write": 5, "read": 15},
+                    },
                     "cost": 0.001,
                 },
             },
-            {"type": "text", "sessionID": "ses_1", "part": {"type": "text", "text": "opencode report"}},
+            {
+                "type": "text",
+                "sessionID": "ses_1",
+                "part": {"type": "text", "text": "opencode report"},
+            },
         ]
         raw = "\n".join(json.dumps(e) for e in events) + "\n"
 
@@ -1195,20 +1490,26 @@ class OpenCodeSpawn(unittest.TestCase):
         # blip surfaces as a clean exit (0) carrying only a top-level error event.
         # Before this fix that was recorded as outcome="available" with zero
         # retries; now it must retry like any other infra failure.
-        error_line = json.dumps({
-            "type": "error",
-            "sessionID": "ses_err",
-            "error": {
-                "name": "UnknownError",
-                "data": {"message": "Unexpected server error. Check server logs for details.",
-                          "ref": "err_55ac1dc1"},
-            },
-        })
-        success_line = json.dumps({
-            "type": "text",
-            "sessionID": "ses_err",
-            "part": {"type": "text", "text": "opencode retried report"},
-        })
+        error_line = json.dumps(
+            {
+                "type": "error",
+                "sessionID": "ses_err",
+                "error": {
+                    "name": "UnknownError",
+                    "data": {
+                        "message": "Unexpected server error. Check server logs for details.",
+                        "ref": "err_55ac1dc1",
+                    },
+                },
+            }
+        )
+        success_line = json.dumps(
+            {
+                "type": "text",
+                "sessionID": "ses_err",
+                "part": {"type": "text", "text": "opencode retried report"},
+            }
+        )
         fr = FakeRun([Proc(0, error_line, ""), Proc(0, success_line, "")])
         spawnlib.subprocess.run = fr
         with tempfile.TemporaryDirectory() as cwd:
@@ -1223,23 +1524,30 @@ class OpenCodeSpawn(unittest.TestCase):
         # failure class. `list_opencode_models()` no longer serves this cell's
         # model id, so the exhausted UnknownError is classified
         # model_unavailable (a long cooldown), not the generic "transport".
-        error_line = json.dumps({
-            "type": "error",
-            "sessionID": "ses_retired",
-            "error": {
-                "name": "UnknownError",
-                "data": {"message": "Unexpected server error.", "ref": "err_retired"},
-            },
-        })
+        error_line = json.dumps(
+            {
+                "type": "error",
+                "sessionID": "ses_retired",
+                "error": {
+                    "name": "UnknownError",
+                    "data": {
+                        "message": "Unexpected server error.",
+                        "ref": "err_retired",
+                    },
+                },
+            }
+        )
         fr = FakeRun([Proc(0, error_line, "")])
         spawnlib.subprocess.run = fr
-        with patch.object(
-            spawnlib.routing_cli, "list_opencode_models", return_value=set()
-        ) as list_models:
-            with tempfile.TemporaryDirectory() as cwd:
-                spawnlib.spawn_agent(
-                    "prompt", cwd, tier="t2-build", retries=0, sleep=lambda *_: None
-                )
+        with (
+            patch.object(
+                spawnlib.routing_cli, "list_opencode_models", return_value=set()
+            ) as list_models,
+            tempfile.TemporaryDirectory() as cwd,
+        ):
+            spawnlib.spawn_agent(
+                "prompt", cwd, tier="t2-build", retries=0, sleep=lambda *_: None
+            )
         list_models.assert_called_once_with()
         key = spawnlib.agent_capacity.provider_key(
             "opencode-free", "opencode/deepseek-v4-flash-free"
@@ -1251,24 +1559,29 @@ class OpenCodeSpawn(unittest.TestCase):
         # The same top-level UnknownError, but the cell's model id is still
         # listed -- a transient provider-side blip, not a retired model, so
         # the short "transport" cooldown applies instead.
-        error_line = json.dumps({
-            "type": "error",
-            "sessionID": "ses_blip",
-            "error": {
-                "name": "UnknownError",
-                "data": {"message": "Unexpected server error.", "ref": "err_blip"},
-            },
-        })
+        error_line = json.dumps(
+            {
+                "type": "error",
+                "sessionID": "ses_blip",
+                "error": {
+                    "name": "UnknownError",
+                    "data": {"message": "Unexpected server error.", "ref": "err_blip"},
+                },
+            }
+        )
         fr = FakeRun([Proc(0, error_line, "")])
         spawnlib.subprocess.run = fr
-        with patch.object(
-            spawnlib.routing_cli, "list_opencode_models",
-            return_value={"opencode/deepseek-v4-flash-free"},
-        ) as list_models:
-            with tempfile.TemporaryDirectory() as cwd:
-                spawnlib.spawn_agent(
-                    "prompt", cwd, tier="t2-build", retries=0, sleep=lambda *_: None
-                )
+        with (
+            patch.object(
+                spawnlib.routing_cli,
+                "list_opencode_models",
+                return_value={"opencode/deepseek-v4-flash-free"},
+            ) as list_models,
+            tempfile.TemporaryDirectory() as cwd,
+        ):
+            spawnlib.spawn_agent(
+                "prompt", cwd, tier="t2-build", retries=0, sleep=lambda *_: None
+            )
         list_models.assert_called_once_with()
         key = spawnlib.agent_capacity.provider_key(
             "opencode-free", "opencode/deepseek-v4-flash-free"
@@ -1311,8 +1624,10 @@ class OpencodeHeadlessEnvironment(unittest.TestCase):
                 self.assertEqual(fh.read().strip(), "*")
 
     def test_auth_symlinked_from_parent_data_dir(self):
-        with tempfile.TemporaryDirectory() as parent_xdg, \
-                tempfile.TemporaryDirectory() as cwd:
+        with (
+            tempfile.TemporaryDirectory() as parent_xdg,
+            tempfile.TemporaryDirectory() as cwd,
+        ):
             parent_data = os.path.join(parent_xdg, "opencode")
             os.makedirs(parent_data)
             auth = os.path.join(parent_data, "auth.json")
@@ -1330,8 +1645,7 @@ class OpencodeHeadlessEnvironment(unittest.TestCase):
 
     def test_permission_config_scopes_cwd_and_git_common_dir_only(self):
         with tempfile.TemporaryDirectory() as cwd:
-            subprocess.run(["git", "init", "-q", cwd], check=True,
-                           capture_output=True)
+            subprocess.run(["git", "init", "-q", cwd], check=True, capture_output=True)
             env, _ = spawnlib.prepare_opencode_child_environment(cwd, {})
             config = json.loads(env["OPENCODE_CONFIG_CONTENT"])
             perm = config["permission"]
@@ -1351,22 +1665,24 @@ class OpencodeHeadlessEnvironment(unittest.TestCase):
 
     def test_existing_config_content_is_merged_not_clobbered(self):
         base = {
-            "OPENCODE_CONFIG_CONTENT": json.dumps({
-                "model": "x/y",
-                "permission": {
-                    "webfetch": "deny",
-                    "edit": "ask",
-                    "bash": {"rm -rf *": "deny"},
-                },
-            })
+            "OPENCODE_CONFIG_CONTENT": json.dumps(
+                {
+                    "model": "x/y",
+                    "permission": {
+                        "webfetch": "deny",
+                        "edit": "ask",
+                        "bash": {"rm -rf *": "deny"},
+                    },
+                }
+            )
         }
         with tempfile.TemporaryDirectory() as cwd:
             env, _ = spawnlib.prepare_opencode_child_environment(cwd, base)
         config = json.loads(env["OPENCODE_CONFIG_CONTENT"])
         perm = config["permission"]
-        self.assertEqual(config["model"], "x/y")       # non-permission key kept
-        self.assertEqual(perm["webfetch"], "deny")     # explicit deny never widened
-        self.assertEqual(perm["edit"], "allow")        # headless "ask" upgraded
+        self.assertEqual(config["model"], "x/y")  # non-permission key kept
+        self.assertEqual(perm["webfetch"], "deny")  # explicit deny never widened
+        self.assertEqual(perm["edit"], "allow")  # headless "ask" upgraded
         self.assertEqual(perm["bash"], {"*": "allow", "rm -rf *": "deny"})
 
     # -- spawn_agent wiring --------------------------------------------------- #
@@ -1376,13 +1692,24 @@ class OpencodeHeadlessEnvironment(unittest.TestCase):
 
         def fake_run(cmd, **kwargs):
             seen["env"] = kwargs["env"]
-            return Proc(0, json.dumps({
-                "type": "text", "sessionID": "ses_iso",
-                "part": {"type": "text", "text": "done"},
-            }) + "\n", "")
+            return Proc(
+                0,
+                json.dumps(
+                    {
+                        "type": "text",
+                        "sessionID": "ses_iso",
+                        "part": {"type": "text", "text": "done"},
+                    }
+                )
+                + "\n",
+                "",
+            )
 
         spawnlib.subprocess.run = fake_run
-        with tempfile.TemporaryDirectory() as cwd, _patch_routing(SINGLE_OPENCODE_ROUTING):
+        with (
+            tempfile.TemporaryDirectory() as cwd,
+            _patch_routing(SINGLE_OPENCODE_ROUTING),
+        ):
             out = spawnlib.spawn_agent("p", cwd, tier="t2-build")
             self.assertTrue(seen["env"]["XDG_DATA_HOME"].startswith(cwd))
         self.assertEqual(seen["env"]["CC_HEADLESS"], "1")
@@ -1393,30 +1720,60 @@ class OpencodeHeadlessEnvironment(unittest.TestCase):
         # Event shapes captured from a live v1.17.13 reproduction: a headless
         # "ask" is auto-rejected and surfaces as a tool_use error state.
         events = [
-            {"type": "step_start", "sessionID": "ses_deny",
-             "part": {"type": "step-start"}},
-            {"type": "tool_use", "sessionID": "ses_deny", "part": {
-                "type": "tool", "tool": "bash", "callID": "call_1",
-                "state": {"status": "error",
-                          "input": {"command": "echo hi"},
-                          "error": "The user rejected permission to use "
-                                   "this specific tool call."}}},
-            {"type": "step_finish", "sessionID": "ses_deny", "part": {
-                "type": "step-finish",
-                "tokens": {"total": 10, "input": 5, "output": 5, "reasoning": 0,
-                           "cache": {"write": 0, "read": 0}},
-                "cost": 0}},
+            {
+                "type": "step_start",
+                "sessionID": "ses_deny",
+                "part": {"type": "step-start"},
+            },
+            {
+                "type": "tool_use",
+                "sessionID": "ses_deny",
+                "part": {
+                    "type": "tool",
+                    "tool": "bash",
+                    "callID": "call_1",
+                    "state": {
+                        "status": "error",
+                        "input": {"command": "echo hi"},
+                        "error": "The user rejected permission to use "
+                        "this specific tool call.",
+                    },
+                },
+            },
+            {
+                "type": "step_finish",
+                "sessionID": "ses_deny",
+                "part": {
+                    "type": "step-finish",
+                    "tokens": {
+                        "total": 10,
+                        "input": 5,
+                        "output": 5,
+                        "reasoning": 0,
+                        "cache": {"write": 0, "read": 0},
+                    },
+                    "cost": 0,
+                },
+            },
         ]
         raw = "\n".join(json.dumps(e) for e in events) + "\n"
         logs = []
         spawnlib.subprocess.run = lambda cmd, **kw: Proc(0, raw, "")
-        with tempfile.TemporaryDirectory() as cwd, _patch_routing(SINGLE_OPENCODE_ROUTING):
+        with (
+            tempfile.TemporaryDirectory() as cwd,
+            _patch_routing(SINGLE_OPENCODE_ROUTING),
+        ):
             out = spawnlib.spawn_agent("p", cwd, tier="t2-build", log=logs.append)
             data_dir = str(spawnlib.opencode_data_dir(cwd))
-        self.assertEqual(out.usage["permission_denials"], [{
-            "tool": "bash",
-            "error": "The user rejected permission to use this specific tool call.",
-        }])
+        self.assertEqual(
+            out.usage["permission_denials"],
+            [
+                {
+                    "tool": "bash",
+                    "error": "The user rejected permission to use this specific tool call.",
+                }
+            ],
+        )
         self.assertEqual(out.usage["opencode_data_dir"], data_dir)
         joined = "\n".join(logs)
         self.assertIn("ses_deny", joined)
@@ -1424,11 +1781,21 @@ class OpencodeHeadlessEnvironment(unittest.TestCase):
         self.assertIn("permission_denials=1", joined)
 
     def test_denials_reach_usage_even_without_step_finish(self):
-        line = json.dumps({"type": "tool_use", "sessionID": "ses_d2", "part": {
-            "type": "tool", "tool": "edit",
-            "state": {"status": "error",
-                      "error": "The user rejected permission to use "
-                               "this specific tool call."}}})
+        line = json.dumps(
+            {
+                "type": "tool_use",
+                "sessionID": "ses_d2",
+                "part": {
+                    "type": "tool",
+                    "tool": "edit",
+                    "state": {
+                        "status": "error",
+                        "error": "The user rejected permission to use "
+                        "this specific tool call.",
+                    },
+                },
+            }
+        )
         _, usage, _, _, sid = spawnlib._parse_stream_json(line + "\n")
         self.assertEqual(sid, "ses_d2")
         self.assertEqual(len(usage["permission_denials"]), 1)
@@ -1437,21 +1804,42 @@ class OpencodeHeadlessEnvironment(unittest.TestCase):
     def test_happy_path_report_back_has_no_denials(self):
         report = '```json\n{"task":"T1","step":"implement","status":"success"}\n```'
         events = [
-            {"type": "tool_use", "sessionID": "ses_ok", "part": {
-                "type": "tool", "tool": "bash",
-                "state": {"status": "completed",
-                          "input": {"command": "echo hi"}}}},
-            {"type": "step_finish", "sessionID": "ses_ok", "part": {
-                "type": "step-finish",
-                "tokens": {"total": 10, "input": 5, "output": 5, "reasoning": 0,
-                           "cache": {"write": 0, "read": 0}},
-                "cost": 0.002}},
-            {"type": "text", "sessionID": "ses_ok",
-             "part": {"type": "text", "text": report}},
+            {
+                "type": "tool_use",
+                "sessionID": "ses_ok",
+                "part": {
+                    "type": "tool",
+                    "tool": "bash",
+                    "state": {"status": "completed", "input": {"command": "echo hi"}},
+                },
+            },
+            {
+                "type": "step_finish",
+                "sessionID": "ses_ok",
+                "part": {
+                    "type": "step-finish",
+                    "tokens": {
+                        "total": 10,
+                        "input": 5,
+                        "output": 5,
+                        "reasoning": 0,
+                        "cache": {"write": 0, "read": 0},
+                    },
+                    "cost": 0.002,
+                },
+            },
+            {
+                "type": "text",
+                "sessionID": "ses_ok",
+                "part": {"type": "text", "text": report},
+            },
         ]
         raw = "\n".join(json.dumps(e) for e in events) + "\n"
         spawnlib.subprocess.run = lambda cmd, **kw: Proc(0, raw, "")
-        with tempfile.TemporaryDirectory() as cwd, _patch_routing(SINGLE_OPENCODE_ROUTING):
+        with (
+            tempfile.TemporaryDirectory() as cwd,
+            _patch_routing(SINGLE_OPENCODE_ROUTING),
+        ):
             out = spawnlib.spawn_agent("p", cwd, tier="t2-build")
         self.assertEqual(out.text, report)
         self.assertEqual(out.usage["permission_denials"], [])
@@ -1466,18 +1854,35 @@ class OpencodeHeadlessEnvironment(unittest.TestCase):
         def fake_run(cmd, **kwargs):
             calls.append((cmd, kwargs["env"]))
             if len(calls) == 1:
-                return Proc(0, "You've hit your session limit. "
-                               "Your limit resets at 11:59pm.", "")
-            return Proc(0, json.dumps({
-                "type": "text", "sessionID": "ses_hop",
-                "part": {"type": "text", "text": "hopped"},
-            }) + "\n", "")
+                return Proc(
+                    0,
+                    "You've hit your session limit. Your limit resets at 11:59pm.",
+                    "",
+                )
+            return Proc(
+                0,
+                json.dumps(
+                    {
+                        "type": "text",
+                        "sessionID": "ses_hop",
+                        "part": {"type": "text", "text": "hopped"},
+                    }
+                )
+                + "\n",
+                "",
+            )
 
         spawnlib.agent_capacity.save({"version": 1, "providers": {}})
         spawnlib.subprocess.run = fake_run
-        with tempfile.TemporaryDirectory() as cwd, _patch_routing(CLAUDE_THEN_OPENCODE_ROUTING):
+        with (
+            tempfile.TemporaryDirectory() as cwd,
+            _patch_routing(CLAUDE_THEN_OPENCODE_ROUTING),
+        ):
             out = spawnlib.spawn_agent(
-                "p", cwd, tier="t2-build", sleep=lambda *_: None,
+                "p",
+                cwd,
+                tier="t2-build",
+                sleep=lambda *_: None,
             )
             claude_env, opencode_env = calls[0][1], calls[1][1]
             self.assertFalse(claude_env.get("XDG_DATA_HOME", "").startswith(cwd))
@@ -1497,16 +1902,28 @@ class SessionLimitFallback(unittest.TestCase):
         def fake_run(cmd, **kwargs):
             calls.append(cmd)
             if len(calls) == 1:
-                return Proc(0, "You've hit your session limit. Your limit resets at 11:59pm.", "")
-            return Proc(0, json.dumps({"type": "result", "result": "done", "usage": {}}) + "\n", "")
+                return Proc(
+                    0,
+                    "You've hit your session limit. Your limit resets at 11:59pm.",
+                    "",
+                )
+            return Proc(
+                0,
+                json.dumps({"type": "result", "result": "done", "usage": {}}) + "\n",
+                "",
+            )
 
         original = spawnlib.subprocess.run
         spawnlib.subprocess.run = fake_run
         try:
-            with tempfile.TemporaryDirectory() as cwd, \
-                    _patch_routing(CLAUDE_THEN_OPENCODE_ROUTING):
+            with (
+                tempfile.TemporaryDirectory() as cwd,
+                _patch_routing(CLAUDE_THEN_OPENCODE_ROUTING),
+            ):
                 out = spawnlib.spawn_agent(
-                    "prompt", cwd, tier="t2-build",
+                    "prompt",
+                    cwd,
+                    tier="t2-build",
                     extra_args=["--append-system-prompt", "claude-only"],
                     sleep=lambda seconds: sleeps.append(seconds),
                 )
@@ -1539,17 +1956,27 @@ class InfraFailureFallback(unittest.TestCase):
             calls.append(cmd)
             if cmd[0] == "claude":
                 return Proc(1, "", "boom")
-            return Proc(0, json.dumps(
-                {"type": "result", "result": "opencode saved it", "usage": {}}
-            ) + "\n", "")
+            return Proc(
+                0,
+                json.dumps(
+                    {"type": "result", "result": "opencode saved it", "usage": {}}
+                )
+                + "\n",
+                "",
+            )
 
         original = spawnlib.subprocess.run
         spawnlib.subprocess.run = fake_run
         try:
-            with tempfile.TemporaryDirectory() as cwd, \
-                    _patch_routing(CLAUDE_THEN_OPENCODE_ROUTING):
+            with (
+                tempfile.TemporaryDirectory() as cwd,
+                _patch_routing(CLAUDE_THEN_OPENCODE_ROUTING),
+            ):
                 out = spawnlib.spawn_agent(
-                    "prompt", cwd, tier="t2-build", retries=2,
+                    "prompt",
+                    cwd,
+                    tier="t2-build",
+                    retries=2,
                     extra_args=["--append-system-prompt", "claude-only"],
                     sleep=lambda seconds: sleeps.append(seconds),
                 )
@@ -1580,10 +2007,15 @@ class InfraFailureFallback(unittest.TestCase):
         original = spawnlib.subprocess.run
         spawnlib.subprocess.run = fake_run
         try:
-            with tempfile.TemporaryDirectory() as cwd, \
-                    _patch_routing(CLAUDE_THEN_OPENCODE_ROUTING):
+            with (
+                tempfile.TemporaryDirectory() as cwd,
+                _patch_routing(CLAUDE_THEN_OPENCODE_ROUTING),
+            ):
                 out = spawnlib.spawn_agent(
-                    "prompt", cwd, tier="t2-build", retries=1,
+                    "prompt",
+                    cwd,
+                    tier="t2-build",
+                    retries=1,
                     sleep=lambda *_: None,
                 )
         finally:
@@ -1615,16 +2047,28 @@ class SpawnClaudePFallback(unittest.TestCase):
         def fake_run(cmd, **kwargs):
             calls.append(cmd)
             if len(calls) == 1:
-                return Proc(0, "You've hit your session limit. Your limit resets at 11:59pm.", "")
-            return Proc(0, json.dumps({"type": "result", "result": "done", "usage": {}}) + "\n", "")
+                return Proc(
+                    0,
+                    "You've hit your session limit. Your limit resets at 11:59pm.",
+                    "",
+                )
+            return Proc(
+                0,
+                json.dumps({"type": "result", "result": "done", "usage": {}}) + "\n",
+                "",
+            )
 
         original = spawnlib.subprocess.run
         spawnlib.subprocess.run = fake_run
         try:
-            with tempfile.TemporaryDirectory() as cwd, \
-                    _patch_routing(CLAUDE_THEN_OPENCODE_ROUTING):
+            with (
+                tempfile.TemporaryDirectory() as cwd,
+                _patch_routing(CLAUDE_THEN_OPENCODE_ROUTING),
+            ):
                 out = spawnlib.spawn_claude_p(
-                    "prompt", cwd, tier="t2-build",
+                    "prompt",
+                    cwd,
+                    tier="t2-build",
                     sleep=lambda seconds: sleeps.append(seconds),
                 )
         finally:
@@ -1643,15 +2087,25 @@ class SpawnClaudePFallback(unittest.TestCase):
         def fake_run(cmd, **kwargs):
             calls.append(cmd)
             if len(calls) == 1:
-                return Proc(0, "You've hit your session limit. Your limit resets at 11:59pm.", "")
-            return Proc(0, json.dumps({"type": "result", "result": "done", "usage": {}}) + "\n", "")
+                return Proc(
+                    0,
+                    "You've hit your session limit. Your limit resets at 11:59pm.",
+                    "",
+                )
+            return Proc(
+                0,
+                json.dumps({"type": "result", "result": "done", "usage": {}}) + "\n",
+                "",
+            )
 
         original = spawnlib.subprocess.run
         spawnlib.subprocess.run = fake_run
         try:
             with _patch_routing(SINGLE_CLAUDE_ROUTING):
                 out = spawnlib.spawn_claude_p(
-                    "prompt", "/tmp", tier="t2-build",
+                    "prompt",
+                    "/tmp",
+                    tier="t2-build",
                     sleep=lambda seconds: sleeps.append(seconds),
                 )
         finally:
@@ -1676,7 +2130,7 @@ class CrossHopArgvInvariant(unittest.TestCase):
 
     # Deterministic per-target models so argv assertions can identify which
     # cell ran by model, independent of the routing fixture's target names.
-    HOP_MODELS = {
+    HOP_MODELS: ClassVar = {
         "claude": "pin-claude-model",
         "codex": "pin-codex-model",
         "opencode": "pin-opencode-model",
@@ -1684,18 +2138,25 @@ class CrossHopArgvInvariant(unittest.TestCase):
 
     CLAUDE_CODEX_ROUTING = _routing(
         {"claude-sub": _target("claude"), "codex-sub": _target("codex")},
-        {"t2-build": {
-            "claude-sub": {"model": HOP_MODELS["claude"], "effort": "high"},
-            "codex-sub": {"model": HOP_MODELS["codex"], "effort": None},
-        }},
+        {
+            "t2-build": {
+                "claude-sub": {"model": HOP_MODELS["claude"], "effort": "high"},
+                "codex-sub": {"model": HOP_MODELS["codex"], "effort": None},
+            }
+        },
         default_tier="t2-build",
     )
     CLAUDE_OPENCODE_ROUTING = _routing(
-        {"claude-sub": _target("claude"), "opencode-free": _target("opencode", pool="free")},
-        {"t2-build": {
-            "claude-sub": {"model": HOP_MODELS["claude"], "effort": "high"},
-            "opencode-free": {"model": HOP_MODELS["opencode"], "effort": None},
-        }},
+        {
+            "claude-sub": _target("claude"),
+            "opencode-free": _target("opencode", pool="free"),
+        },
+        {
+            "t2-build": {
+                "claude-sub": {"model": HOP_MODELS["claude"], "effort": "high"},
+                "opencode-free": {"model": HOP_MODELS["opencode"], "effort": None},
+            }
+        },
         default_tier="t2-build",
     )
     THREE_TARGET_ROUTING = _routing(
@@ -1704,11 +2165,13 @@ class CrossHopArgvInvariant(unittest.TestCase):
             "codex-sub": _target("codex"),
             "opencode-free": _target("opencode", pool="free"),
         },
-        {"t2-build": {
-            "claude-sub": {"model": HOP_MODELS["claude"], "effort": "high"},
-            "codex-sub": {"model": HOP_MODELS["codex"], "effort": None},
-            "opencode-free": {"model": HOP_MODELS["opencode"], "effort": None},
-        }},
+        {
+            "t2-build": {
+                "claude-sub": {"model": HOP_MODELS["claude"], "effort": "high"},
+                "codex-sub": {"model": HOP_MODELS["codex"], "effort": None},
+                "opencode-free": {"model": HOP_MODELS["opencode"], "effort": None},
+            }
+        },
         default_tier="t2-build",
     )
     SINGLE_CLAUDE = _routing(
@@ -1720,7 +2183,9 @@ class CrossHopArgvInvariant(unittest.TestCase):
     def setUp(self):
         self._cache = tempfile.TemporaryDirectory()
         self._old_cache = os.environ.get("GO_AGENT_CAPACITY_CACHE")
-        os.environ["GO_AGENT_CAPACITY_CACHE"] = os.path.join(self._cache.name, "capacity.json")
+        os.environ["GO_AGENT_CAPACITY_CACHE"] = os.path.join(
+            self._cache.name, "capacity.json"
+        )
         self._orig_run = spawnlib.subprocess.run
 
     def tearDown(self):
@@ -1781,16 +2246,25 @@ class CrossHopArgvInvariant(unittest.TestCase):
     # default), the routing fixtures' claude-sub effort="high" above, or the
     # resume_session_id kwarg below -- the positive control pins every
     # token, keeping the negative assertions honest.
-    SWEEP_EXTRA_ARGS = [
+    SWEEP_EXTRA_ARGS: ClassVar = [
         "--strict-mcp-config",
-        "--tools", "Read", "Edit", "Write", "Bash", "Grep", "Glob",
-        "--append-system-prompt", "lean worker system prompt",
+        "--tools",
+        "Read",
+        "Edit",
+        "Write",
+        "Bash",
+        "Grep",
+        "Glob",
+        "--append-system-prompt",
+        "lean worker system prompt",
     ]
     SWEEP_RESUME_SESSION_ID = "sess-sweep-0001"
 
     # Short (<600 chars) genuine usage-cap notice: exit 0, non-empty stdout,
     # no report-back -- the in-flight trigger for a session-limit hop.
-    LIMIT_NOTICE = Proc(0, "You've hit your session limit. Your limit resets at 11:59pm.", "")
+    LIMIT_NOTICE = Proc(
+        0, "You've hit your session limit. Your limit resets at 11:59pm.", ""
+    )
 
     def _sweep(self, outcomes, routing, **kw):
         """Script *outcomes* and run one spawn_agent call carrying the full
@@ -1803,13 +2277,15 @@ class CrossHopArgvInvariant(unittest.TestCase):
         sleeps = []
         kw.setdefault("sleep", lambda seconds: sleeps.append(seconds))
         calls = self._script_run(list(outcomes))
-        with tempfile.TemporaryDirectory() as cwd, \
-                _patch_routing(routing), \
-                patch.object(
-                    spawnlib,
-                    "prepare_codex_child_environment",
-                    return_value=(os.environ.copy(), "/tmp/worktrail-codex-child", False),
-                ):
+        with (
+            tempfile.TemporaryDirectory() as cwd,
+            _patch_routing(routing),
+            patch.object(
+                spawnlib,
+                "prepare_codex_child_environment",
+                return_value=(os.environ.copy(), "/tmp/worktrail-codex-child", False),
+            ),
+        ):
             out = spawnlib.spawn_agent("prompt", cwd, tier="t2-build", **kw)
         return out, calls, sleeps
 
@@ -1855,7 +2331,9 @@ class CrossHopArgvInvariant(unittest.TestCase):
         # receives EVERY CLAUDE_ONLY_ARGV_TOKENS element -- proving the sweep
         # payload really spans the whole token set (values intact), i.e. the
         # negative assertions above are testing something.
-        out, calls, _sleeps = self._sweep([Proc(0, "claude report", "")], self.SINGLE_CLAUDE)
+        out, calls, _sleeps = self._sweep(
+            [Proc(0, "claude report", "")], self.SINGLE_CLAUDE
+        )
         self.assertEqual(out.text, "claude report")
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0][0], "claude")
@@ -1864,7 +2342,9 @@ class CrossHopArgvInvariant(unittest.TestCase):
         idx = calls[0].index("--append-system-prompt")
         self.assertEqual(calls[0][idx + 1], "lean worker system prompt")
         self.assertEqual(
-            calls[0][calls[0].index("--tools") + 1: calls[0].index("--append-system-prompt")],
+            calls[0][
+                calls[0].index("--tools") + 1 : calls[0].index("--append-system-prompt")
+            ],
             ["Read", "Edit", "Write", "Bash", "Grep", "Glob"],
         )
         self.assert_no_claude_only_flags(calls)
@@ -1886,13 +2366,13 @@ class ParseStreamJsonSessionId(unittest.TestCase):
 
     def test_parse_stream_json_extracts_session_id(self):
         raw = self._result_line(session_id="sess-abc123")
-        text, usage, tools, skills, sid = spawnlib._parse_stream_json(raw)
+        text, _usage, _tools, _skills, sid = spawnlib._parse_stream_json(raw)
         self.assertEqual(sid, "sess-abc123")
         self.assertEqual(text, "done")
 
     def test_parse_stream_json_missing_session_id(self):
         raw = self._result_line()  # no session_id key
-        text, usage, tools, skills, sid = spawnlib._parse_stream_json(raw)
+        _text, _usage, _tools, _skills, sid = spawnlib._parse_stream_json(raw)
         self.assertEqual(sid, "")
 
     def test_spawn_result_session_id_default(self):
@@ -1989,7 +2469,9 @@ class BuildChildEnv(unittest.TestCase):
         base = {"ANTHROPIC_API_KEY": "sk-ambient"}
         for pool in ("subscription", "free", "api"):
             with self.subTest(pool=pool):
-                env = spawnlib.build_child_env(_cell(harness="opencode", pool=pool), base)
+                env = spawnlib.build_child_env(
+                    _cell(harness="opencode", pool=pool), base
+                )
                 self.assertEqual(env, base)
 
     def test_codex_is_a_noop_regardless_of_pool(self):
@@ -2024,8 +2506,10 @@ class DispatchIdEnvVar(unittest.TestCase):
             captured["env"] = kwargs["env"]
             return Proc(0, "ok", "")
 
-        with _patch_routing(SINGLE_CLAUDE_ROUTING), \
-                patch.object(spawnlib.subprocess, "run", side_effect=fake_run):
+        with (
+            _patch_routing(SINGLE_CLAUDE_ROUTING),
+            patch.object(spawnlib.subprocess, "run", side_effect=fake_run),
+        ):
             spawnlib.spawn_agent(
                 "prompt", "/tmp", tier="t2-build", dispatch_id="go-abc123", retries=0
             )
@@ -2039,11 +2523,11 @@ class DispatchIdEnvVar(unittest.TestCase):
             captured["env"] = kwargs["env"]
             return Proc(0, "ok", "")
 
-        with _patch_routing(SINGLE_CLAUDE_ROUTING), \
-                patch.object(spawnlib.subprocess, "run", side_effect=fake_run):
-            spawnlib.spawn_agent(
-                "prompt", "/tmp", tier="t2-build", retries=0
-            )
+        with (
+            _patch_routing(SINGLE_CLAUDE_ROUTING),
+            patch.object(spawnlib.subprocess, "run", side_effect=fake_run),
+        ):
+            spawnlib.spawn_agent("prompt", "/tmp", tier="t2-build", retries=0)
 
         self.assertNotIn("WORKTRAIL_DISPATCH_ID", captured["env"])
 
@@ -2054,8 +2538,10 @@ class DispatchIdEnvVar(unittest.TestCase):
             captured["env"] = kwargs["env"]
             return Proc(0, "ok", "")
 
-        with _patch_routing(SINGLE_CLAUDE_ROUTING), \
-                patch.object(spawnlib.subprocess, "run", side_effect=fake_run):
+        with (
+            _patch_routing(SINGLE_CLAUDE_ROUTING),
+            patch.object(spawnlib.subprocess, "run", side_effect=fake_run),
+        ):
             spawnlib.spawn_agent(
                 "prompt", "/tmp", tier="t2-build", dispatch_id=None, retries=0
             )

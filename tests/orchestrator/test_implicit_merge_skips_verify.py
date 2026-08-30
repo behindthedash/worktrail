@@ -28,7 +28,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from worktrail.orchestrator import live  # noqa: E402
+from worktrail.orchestrator import live
 
 
 def _init_already_merged_repo(root: Path) -> Path:
@@ -47,9 +47,13 @@ def _init_already_merged_repo(root: Path) -> Path:
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@t"], check=True)
     subprocess.run(["git", "-C", str(repo), "config", "user.name", "T"], check=True)
-    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True)
     subprocess.run(
-        ["git", "-C", str(repo), "commit", "-q", "-m", "init"], check=True, capture_output=True
+        ["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-q", "-m", "init"],
+        check=True,
+        capture_output=True,
     )
     return repo
 
@@ -62,8 +66,18 @@ def _unreachable_spawn(role, task, wt):
 
 
 class _UnreachableVerifier:
-    def verify_one(self, group, group_branch, delivered, merged, quarantined, lock,
-                    self_merged=None, armed=None, post_merge_regressed=None):
+    def verify_one(
+        self,
+        group,
+        group_branch,
+        delivered,
+        merged,
+        quarantined,
+        lock,
+        self_merged=None,
+        armed=None,
+        post_merge_regressed=None,
+    ):
         raise AssertionError(
             f"verify_one should never be called for an all-already-integrated "
             f"group ({group.get('name')!r}, branch={group_branch!r}) -- nothing "
@@ -96,11 +110,13 @@ class ImplicitMergeSkipsVerifyTest(unittest.TestCase):
             )
 
             self.assertEqual(
-                result["quarantined"], {},
+                result["quarantined"],
+                {},
                 f"already-merged group was wrongly quarantined: {result['quarantined']}",
             )
             self.assertEqual(
-                len(result["group_prs"]), 1,
+                len(result["group_prs"]),
+                1,
                 f"expected exactly one already-merged group recorded: {result['group_prs']}",
             )
 

@@ -96,7 +96,9 @@ class CheckRepoDriftTests(unittest.TestCase):
     def test_no_drift_returns_empty_findings_and_no_error(self):
         make_clean_spec(self.specs_root, "001-fixture-one")
         result = check_repo_drift(self.repo)
-        self.assertEqual(result, {"repo": str(self.repo), "findings": [], "error": None})
+        self.assertEqual(
+            result, {"repo": str(self.repo), "findings": [], "error": None}
+        )
 
     def test_single_spec_drift_returns_one_tagged_finding(self):
         spec_dir = make_drifting_spec(self.specs_root, "001-fixture-one")
@@ -140,11 +142,15 @@ class CheckRepoDriftTests(unittest.TestCase):
         self.specs_root.mkdir(parents=True)
         (self.specs_root / "README.md").write_text("not a spec dir\n", encoding="utf-8")
         result = check_repo_drift(self.repo)
-        self.assertEqual(result, {"repo": str(self.repo), "findings": [], "error": None})
+        self.assertEqual(
+            result, {"repo": str(self.repo), "findings": [], "error": None}
+        )
 
     def test_missing_docs_specs_dir_is_not_an_error(self):
         result = check_repo_drift(self.repo)
-        self.assertEqual(result, {"repo": str(self.repo), "findings": [], "error": None})
+        self.assertEqual(
+            result, {"repo": str(self.repo), "findings": [], "error": None}
+        )
 
     def test_never_mutates_checked_repo(self):
         make_drifting_spec(self.specs_root, "001-fixture-one")
@@ -182,7 +188,9 @@ class CheckRepoDriftIntegrationTests(unittest.TestCase):
         result = check_repo_drift(self.repo)
 
         self.assertIsNone(result["error"])
-        reported_reasons = [f["reason"] for f in result["findings"] if f["spec"] == "026-fixture"]
+        reported_reasons = [
+            f["reason"] for f in result["findings"] if f["spec"] == "026-fixture"
+        ]
         self.assertEqual(reported_reasons, direct_failures)
 
 

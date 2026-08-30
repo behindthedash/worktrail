@@ -23,9 +23,11 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from worktrail.orchestrator import coordinator  # noqa: E402
-from worktrail.orchestrator import live  # noqa: E402
-from worktrail.orchestrator import spawnlib  # noqa: E402
+from worktrail.orchestrator import (
+    coordinator,
+    live,
+    spawnlib,
+)
 
 
 def _init_repo(root: Path, tasks_frontmatter: dict) -> Path:
@@ -37,9 +39,13 @@ def _init_repo(root: Path, tasks_frontmatter: dict) -> Path:
     for tid, fm in tasks_frontmatter.items():
         (repo / "docs" / "specs" / "001-x" / "tasks" / f"{tid}.md").write_text(fm)
     (repo / "README.md").write_text("x\n")
-    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True)
     subprocess.run(
-        ["git", "-C", str(repo), "commit", "-q", "-m", "init"], check=True, capture_output=True
+        ["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-q", "-m", "init"],
+        check=True,
+        capture_output=True,
     )
     return repo
 
@@ -64,7 +70,9 @@ class FakeSpawn:
             f = Path(wt) / "src" / f"{task['id'].lower()}.txt"
             f.parent.mkdir(parents=True, exist_ok=True)
             f.write_text(f"{task['id']} {role}\n")
-            subprocess.run(["git", "-C", str(wt), "add", "-A"], check=True, capture_output=True)
+            subprocess.run(
+                ["git", "-C", str(wt), "add", "-A"], check=True, capture_output=True
+            )
             subprocess.run(
                 ["git", "-C", str(wt), "commit", "-q", "-m", f"{role} {task['id']}"],
                 check=True,
@@ -73,7 +81,10 @@ class FakeSpawn:
         with self.lock:
             self.current -= 1
         sha = subprocess.run(
-            ["git", "-C", str(wt), "rev-parse", "HEAD"], capture_output=True, text=True
+            ["git", "-C", str(wt), "rev-parse", "HEAD"],
+            check=False,
+            capture_output=True,
+            text=True,
         ).stdout.strip()
         rs = '"PASSED"' if role == "review" else "null"
         return spawnlib.SpawnResult(
@@ -202,7 +213,10 @@ class ConcurrentFanout(unittest.TestCase):
                 {
                     "TASK-E2E": _fm("TASK-E2E", "src/e2e.txt", kind="e2e"),
                     "TASK-CLEANUP": _fm(
-                        "TASK-CLEANUP", "src/cleanup.txt", deps="TASK-E2E", kind="cleanup"
+                        "TASK-CLEANUP",
+                        "src/cleanup.txt",
+                        deps="TASK-E2E",
+                        kind="cleanup",
                     ),
                 },
             )
@@ -266,7 +280,9 @@ class ConcurrentFanout(unittest.TestCase):
                 {
                     "TASK-A": _fm("TASK-A", "src/a.txt"),
                     "TASK-B": _fm("TASK-B", "src/b.txt", deps="TASK-A"),
-                    "TASK-TAIL": _fm("TASK-TAIL", "src/tail.txt", deps="TASK-B", kind="e2e"),
+                    "TASK-TAIL": _fm(
+                        "TASK-TAIL", "src/tail.txt", deps="TASK-B", kind="e2e"
+                    ),
                 },
             )
             journal = str(Path(tmp) / "run-001-x.json")
@@ -301,7 +317,9 @@ class ConcurrentFanout(unittest.TestCase):
             self.assertNotIn(("implement", "TASK-TAIL"), fake.calls)
             entries = json.loads(Path(journal).read_text())["entries"]
             gates = [
-                e for e in entries if e["task"] == "TASK-TAIL" and e["role"] == "dependency-gate"
+                e
+                for e in entries
+                if e["task"] == "TASK-TAIL" and e["role"] == "dependency-gate"
             ]
             self.assertTrue(gates)
             self.assertEqual(gates[0]["blocked_by"], ["TASK-B"])
@@ -418,7 +436,7 @@ class MissingTaskFileQuarantineE2E(unittest.TestCase):
             )
 
 
-from worktrail.orchestrator import verify as _verify_module  # noqa: E402
+from worktrail.orchestrator import verify as _verify_module
 
 # ---------------------------------------------------------------------------
 # TASK-005 AC-012: registry lock parameter wiring and serialization
@@ -467,6 +485,7 @@ class _CountingLock:
 def _mk_verifier(git_lock=None, sleep_s=0.0):
     """Create a minimal hermetic Verifier (no real git/gh; no real worktrees)."""
     from collections import namedtuple
+
     Proc = namedtuple("Proc", "returncode stdout stderr")
 
     def fake_run(cmd):
@@ -478,7 +497,10 @@ def _mk_verifier(git_lock=None, sleep_s=0.0):
         return Proc(0, "", "")
 
     return _verify_module.Verifier(
-        Path("/fake-repo"), "origin", "main", "001-x",
+        Path("/fake-repo"),
+        "origin",
+        "main",
+        "001-x",
         run=fake_run,
         log=lambda *_: None,
         sleep=lambda *_: None,
@@ -494,15 +516,21 @@ class RegistryLockParamTest(unittest.TestCase):
         """Two Verifiers created without git_lock= must have distinct lock objects."""
         v1 = _mk_verifier()
         v2 = _mk_verifier()
-        self.assertIsNot(v1._git_lock, v2._git_lock,
-                         "default-local locks must be independent per-Verifier objects")
+        self.assertIsNot(
+            v1._git_lock,
+            v2._git_lock,
+            "default-local locks must be independent per-Verifier objects",
+        )
 
     def test_verifier_uses_injected_lock(self):
         """Passing git_lock= makes Verifier use that exact object as _git_lock."""
         shared = threading.Lock()
         v = _mk_verifier(git_lock=shared)
-        self.assertIs(v._git_lock, shared,
-                      "Verifier._git_lock must be the injected lock, not a new one")
+        self.assertIs(
+            v._git_lock,
+            shared,
+            "Verifier._git_lock must be the injected lock, not a new one",
+        )
 
     def test_verify_and_cleanup_passes_lock_to_verifier(self):
         """verify_and_cleanup with git_lock= routes it to Verifier (visible via CountingLock)."""
@@ -510,6 +538,7 @@ class RegistryLockParamTest(unittest.TestCase):
         # verify_and_cleanup creates a Verifier with our lock; the acquire_count > 0
         # after run_all proves the lock was actually used inside cleanup_group.
         from collections import namedtuple
+
         Proc = namedtuple("Proc", "returncode stdout stderr")
 
         GREEN = [{"name": "ci", "status": "COMPLETED", "conclusion": "SUCCESS"}]
@@ -518,13 +547,20 @@ class RegistryLockParamTest(unittest.TestCase):
             if "get-url" in cmd:
                 return Proc(0, "https://github.com/o/r.git", "")
             if cmd[:3] == ["gh", "pr", "view"]:
-                return Proc(0, json.dumps({
-                    "number": 1, "state": "OPEN",
-                    "mergeable": "MERGEABLE",
-                    "mergeStateStatus": "CLEAN",
-                    "statusCheckRollup": GREEN,
-                    "headRefOid": "abc",
-                }), "")
+                return Proc(
+                    0,
+                    json.dumps(
+                        {
+                            "number": 1,
+                            "state": "OPEN",
+                            "mergeable": "MERGEABLE",
+                            "mergeStateStatus": "CLEAN",
+                            "statusCheckRollup": GREEN,
+                            "headRefOid": "abc",
+                        }
+                    ),
+                    "",
+                )
             if cmd[:3] == ["gh", "pr", "merge"]:
                 return Proc(0, "", "")
             return Proc(0, "", "")
@@ -532,15 +568,19 @@ class RegistryLockParamTest(unittest.TestCase):
         group = {"name": "g1", "tasks": [], "reqs": [], "depends_on": []}
         try:
             _verify_module.verify_and_cleanup(
-                Path("/fake-repo"), "origin", "main", "001-x",
-                [group], {"g1": "g1-branch"},
+                Path("/fake-repo"),
+                "origin",
+                "main",
+                "001-x",
+                [group],
+                {"g1": "g1-branch"},
                 git_lock=cl,
                 run=fake_run,
                 log=lambda *_: None,
                 sleep=lambda *_: None,
                 worktree_base=Path("/tmp/fake-wt"),
             )
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             pass  # git/gh calls may fail in hermetic mode; we only care the lock was passed
         # The lock must have been used (cleanup_group or _group_worktree acquired it)
         self.assertIs(
@@ -572,8 +612,11 @@ class RegistryLockParamTest(unittest.TestCase):
                 git_lock=cl,
             )
             # ensure_wt acquires the lock when creating a worktree
-            self.assertGreater(cl.acquire_count, 0,
-                               "injected git_lock must be acquired during ensure_wt")
+            self.assertGreater(
+                cl.acquire_count,
+                0,
+                "injected git_lock must be acquired during ensure_wt",
+            )
 
 
 class RegistryLockSerializationTest(unittest.TestCase):
@@ -606,8 +649,11 @@ class RegistryLockSerializationTest(unittest.TestCase):
         t1.join()
         t2.join()
 
-        self.assertEqual(cl.max_concurrent, 1,
-                         f"registry mutations must serialize: max_concurrent={cl.max_concurrent}")
+        self.assertEqual(
+            cl.max_concurrent,
+            1,
+            f"registry mutations must serialize: max_concurrent={cl.max_concurrent}",
+        )
 
     def test_cleanup_mutations_all_run_under_shared_lock(self):
         """All five cleanup mutations in cleanup_group execute under one lock acquisition.
@@ -622,11 +668,13 @@ class RegistryLockSerializationTest(unittest.TestCase):
         v.cleanup_group(group, "full/grp")
 
         # Lock was acquired at least once (the with-block entered)
-        self.assertGreaterEqual(cl.acquire_count, 1,
-                                "cleanup_group must acquire the shared git_lock")
+        self.assertGreaterEqual(
+            cl.acquire_count, 1, "cleanup_group must acquire the shared git_lock"
+        )
         # Lock was released (current == 0 after call)
-        self.assertEqual(cl.current, 0,
-                         "shared git_lock must be released after cleanup_group")
+        self.assertEqual(
+            cl.current, 0, "shared git_lock must be released after cleanup_group"
+        )
 
     def test_pipeline_fanout_and_verify_share_same_lock_object(self):
         """In pipeline mode, fan-out and Verifier use the same registry lock object.
@@ -650,9 +698,22 @@ class RegistryLockSerializationTest(unittest.TestCase):
 
             fake = FakeSpawn()
 
-            def fake_integrate_one(g, repo_, spec_id, tasks, remote, run_id_,
-                                   base_, journal_path, status, group_branch, quarantined):
-                deliverable = [t for t in g["tasks"] if status.get(t) in ("done", "completed")]
+            def fake_integrate_one(
+                g,
+                repo_,
+                spec_id,
+                tasks,
+                remote,
+                run_id_,
+                base_,
+                journal_path,
+                status,
+                group_branch,
+                quarantined,
+            ):
+                deliverable = [
+                    t for t in g["tasks"] if status.get(t) in ("done", "completed")
+                ]
                 if not deliverable:
                     quarantined[g["name"]] = "no deliverable"
                     return None
@@ -681,8 +742,11 @@ class RegistryLockSerializationTest(unittest.TestCase):
 
             if received_locks:
                 for lk in received_locks:
-                    self.assertIs(lk, shared_lock,
-                                  "Verifier in pipeline mode must use the injected registry lock")
+                    self.assertIs(
+                        lk,
+                        shared_lock,
+                        "Verifier in pipeline mode must use the injected registry lock",
+                    )
 
 
 def _completed_journal_entry(tid, role, *, review_status=None):
@@ -722,7 +786,9 @@ class ResumeValidatesAfterReconcile(unittest.TestCase):
                         "run_id": "resume-1",
                         "entries": [
                             _completed_journal_entry("TASK-001", "implement"),
-                            _completed_journal_entry("TASK-001", "review", review_status="PASSED"),
+                            _completed_journal_entry(
+                                "TASK-001", "review", review_status="PASSED"
+                            ),
                             _completed_journal_entry("TASK-001", "cleanup"),
                         ],
                     }
@@ -795,7 +861,9 @@ class _BarrierSpawn:
             f = Path(wt) / "src" / f"{task['id'].lower()}.txt"
             f.parent.mkdir(parents=True, exist_ok=True)
             f.write_text(f"{task['id']} {role}\n")
-            subprocess.run(["git", "-C", str(wt), "add", "-A"], check=True, capture_output=True)
+            subprocess.run(
+                ["git", "-C", str(wt), "add", "-A"], check=True, capture_output=True
+            )
             subprocess.run(
                 ["git", "-C", str(wt), "commit", "-q", "-m", f"{role} {task['id']}"],
                 check=True,
@@ -804,7 +872,10 @@ class _BarrierSpawn:
         with self.lock:
             self.current -= 1
         sha = subprocess.run(
-            ["git", "-C", str(wt), "rev-parse", "HEAD"], capture_output=True, text=True
+            ["git", "-C", str(wt), "rev-parse", "HEAD"],
+            check=False,
+            capture_output=True,
+            text=True,
         ).stdout.strip()
         rs = '"PASSED"' if role == "review" else "null"
         return spawnlib.SpawnResult(
@@ -870,7 +941,8 @@ class ParallelMidflightResume(unittest.TestCase):
             # Both finished, and the mid-flight resume overlapped (max_concurrent > 1).
             self.assertTrue(all(t["status"] in coordinator.DONE for t in res["tasks"]))
             self.assertGreaterEqual(
-                fake.max_concurrent, 2,
+                fake.max_concurrent,
+                2,
                 f"mid-flight resume must run in parallel, max_concurrent={fake.max_concurrent}",
             )
             # Only review was re-spawned (implement already done, cleanup is deterministic).

@@ -32,12 +32,13 @@ adding its markers to `LABEL_FAMILY_MARKERS`
 (src/worktrail/router/label_family_markers.py) with a registered
 `FILE_CONSUMERS` proof, per the design note above.
 """
+
 from __future__ import annotations
 
 import json
 import re
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 from .label_family_markers import LABEL_FAMILY_MARKERS
 
@@ -61,15 +62,15 @@ def _looks_like_named_action(token: str) -> bool:
         return True
     if token.startswith("worktrail-"):
         return True
-    core = token[:-2] if token.endswith("()") else token
+    core = token.removesuffix("()")
     return bool(_CALLABLE_CORE_RE.match(core) and "_" in core)
 
 
-def _split_paragraphs(text: str) -> List[str]:
+def _split_paragraphs(text: str) -> list[str]:
     return [p for p in re.split(r"\n\s*\n", text) if p.strip()]
 
 
-def scan(skills_root: Path = SKILLS_ROOT_DEFAULT) -> Dict[str, Any]:
+def scan(skills_root: Path = SKILLS_ROOT_DEFAULT) -> dict[str, Any]:
     """Scan every `skills/**/*.md` paragraph for an emphatic mandate cue
     paired with a named corrective action, excluding paragraphs already
     covered by the closed go:risk-*/go:no-automerge vocabulary.
@@ -81,7 +82,7 @@ def scan(skills_root: Path = SKILLS_ROOT_DEFAULT) -> Dict[str, Any]:
     Pure text extraction -- never raises, never touches git or the network.
     """
     skills_root = Path(skills_root)
-    candidates: List[Dict[str, Any]] = []
+    candidates: list[dict[str, Any]] = []
     files_scanned = 0
 
     for path in sorted(skills_root.rglob("*.md")):
@@ -95,7 +96,11 @@ def scan(skills_root: Path = SKILLS_ROOT_DEFAULT) -> Dict[str, Any]:
             if cue is None:
                 continue
             action = next(
-                (t for t in _BACKTICK_RE.findall(paragraph) if _looks_like_named_action(t)),
+                (
+                    t
+                    for t in _BACKTICK_RE.findall(paragraph)
+                    if _looks_like_named_action(t)
+                ),
                 None,
             )
             if action is None:
@@ -103,18 +108,22 @@ def scan(skills_root: Path = SKILLS_ROOT_DEFAULT) -> Dict[str, Any]:
             excerpt = " ".join(paragraph.strip().split())
             if len(excerpt) > 240:
                 excerpt = excerpt[:237] + "..."
-            candidates.append({"file": rel, "cue": cue, "action": action, "excerpt": excerpt})
+            candidates.append(
+                {"file": rel, "cue": cue, "action": action, "excerpt": excerpt}
+            )
 
     return {"candidates": candidates, "files_scanned": files_scanned}
 
 
-def _format_human(res: Dict[str, Any]) -> str:
+def _format_human(res: dict[str, Any]) -> str:
     candidates = res["candidates"]
     if not candidates:
         return f"no candidates ({res['files_scanned']} file(s) scanned) -- nothing to triage"
     lines = [
-        f"{len(candidates)} candidate(s) for human triage "
-        f"({res['files_scanned']} file(s) scanned) -- advisory only, not a CI failure:"
+        (
+            f"{len(candidates)} candidate(s) for human triage "
+            f"({res['files_scanned']} file(s) scanned) -- advisory only, not a CI failure:"
+        )
     ]
     for c in candidates:
         lines.append(f"  {c['file']}  cue={c['cue']!r}  action=`{c['action']}`")
@@ -133,7 +142,8 @@ def main(argv=None) -> int:
 
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
-        "--skills-root", default=None,
+        "--skills-root",
+        default=None,
         help="skills/ directory to scan (default: this repo's own skills/)",
     )
     p.add_argument("--json", action="store_true")
@@ -156,4 +166,5 @@ def main(argv=None) -> int:
 
 if __name__ == "__main__":
     import sys
+
     sys.exit(main())

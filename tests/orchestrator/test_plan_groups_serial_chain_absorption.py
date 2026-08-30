@@ -49,8 +49,12 @@ def _incident_shaped_tasks():
     """Mirrors the real incident's task shape (ids match the actual spec)."""
     return [
         _task("1.1", files=["src/worktrail/router/consolidate_cluster.py"]),
-        _task("1.2", deps=["1.1"], files=["src/worktrail/router/consolidate_cluster.py"]),
-        _task("1.3", deps=["1.2"], files=["src/worktrail/router/consolidate_cluster.py"]),
+        _task(
+            "1.2", deps=["1.1"], files=["src/worktrail/router/consolidate_cluster.py"]
+        ),
+        _task(
+            "1.3", deps=["1.2"], files=["src/worktrail/router/consolidate_cluster.py"]
+        ),
         _task("2.1", files=["src/worktrail/router/check_brief_staleness.py"]),
         _task("3.1", files=["openspec/specs/stale-brief-precheck/spec.md"]),
         _task(
@@ -58,7 +62,9 @@ def _incident_shaped_tasks():
             deps=["1.1", "1.2", "1.3"],
             files=["tests/router/test_consolidate_cluster.py"],
         ),
-        _task("3.3", deps=["2.1"], files=["tests/router/test_check_brief_staleness.py"]),
+        _task(
+            "3.3", deps=["2.1"], files=["tests/router/test_check_brief_staleness.py"]
+        ),
     ]
 
 
@@ -86,7 +92,9 @@ class SerialChainAbsorptionTests(unittest.TestCase):
         gof = _group_of(groups)
         self.assertNotEqual(gof["2.1"], "base")
         self.assertNotEqual(gof["3.1"], "base")
-        self.assertEqual(gof["2.1"], gof["3.3"], "3.3 depends only on 2.1 -- same group")
+        self.assertEqual(
+            gof["2.1"], gof["3.3"], "3.3 depends only on 2.1 -- same group"
+        )
 
 
 class NonContinuationsAreNotAbsorbedTests(unittest.TestCase):

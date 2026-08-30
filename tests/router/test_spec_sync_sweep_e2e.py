@@ -25,10 +25,10 @@ import os
 import subprocess
 import tempfile
 import unittest
+from collections.abc import Generator
 from contextlib import contextmanager, redirect_stdout
 from io import StringIO
 from pathlib import Path
-from typing import Dict, Generator, Tuple
 from unittest import mock
 
 from worktrail.router import spec_sync_sweep as sss
@@ -38,7 +38,6 @@ from worktrail.router.spec_sync_sweep_checkbox_check import (
 from worktrail.shared.brief_frontmatter import read_frontmatter
 from worktrail.workqueue import work_queue
 
-
 # --------------------------------------------------------------------------- #
 # Fixture builders
 # --------------------------------------------------------------------------- #
@@ -46,7 +45,9 @@ from worktrail.workqueue import work_queue
 
 def _git_init(repo: Path) -> None:
     repo.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["git", "init", "-q"], cwd=repo, capture_output=True, text=True, check=True)
+    subprocess.run(
+        ["git", "init", "-q"], cwd=repo, capture_output=True, text=True, check=True
+    )
 
 
 def _write(path: Path, content: str) -> None:
@@ -178,7 +179,9 @@ def _make_spec_sync_only_repo(root: Path, name: str) -> Path:
     repo = root / name
     _git_init(repo)
     spec_dir = repo / "docs" / "specs" / "001-fixture"
-    _make_task_with_dod_checkbox(spec_dir, "TASK-001", "completed", checkbox_ticked=True)
+    _make_task_with_dod_checkbox(
+        spec_dir, "TASK-001", "completed", checkbox_ticked=True
+    )
     _make_parent_spec(spec_dir, "Draft")
     return repo
 
@@ -190,7 +193,9 @@ def _make_checkbox_only_repo(root: Path, name: str) -> Path:
     repo = root / name
     _git_init(repo)
     spec_dir = repo / "docs" / "specs" / "001-fixture"
-    _make_task_with_dod_checkbox(spec_dir, "TASK-001", "completed", checkbox_ticked=False)
+    _make_task_with_dod_checkbox(
+        spec_dir, "TASK-001", "completed", checkbox_ticked=False
+    )
     _make_parent_spec(spec_dir, "Implemented")
     return repo
 
@@ -202,7 +207,9 @@ def _make_both_drift_repo(root: Path, name: str) -> Path:
     repo = root / name
     _git_init(repo)
     spec_dir = repo / "docs" / "specs" / "001-fixture"
-    _make_task_with_dod_checkbox(spec_dir, "TASK-001", "completed", checkbox_ticked=False)
+    _make_task_with_dod_checkbox(
+        spec_dir, "TASK-001", "completed", checkbox_ticked=False
+    )
     _make_parent_spec(spec_dir, "Draft")
     return repo
 
@@ -213,16 +220,18 @@ def _make_neither_drift_repo(root: Path, name: str) -> Path:
     repo = root / name
     _git_init(repo)
     spec_dir = repo / "docs" / "specs" / "001-fixture"
-    _make_task_with_dod_checkbox(spec_dir, "TASK-001", "completed", checkbox_ticked=True)
+    _make_task_with_dod_checkbox(
+        spec_dir, "TASK-001", "completed", checkbox_ticked=True
+    )
     _make_parent_spec(spec_dir, "Implemented")
     return repo
 
 
-def _hash_tree(root: Path) -> Dict[str, Tuple[int, int, str]]:
+def _hash_tree(root: Path) -> dict[str, tuple[int, int, str]]:
     """Snapshot every file under `root` (including inside `.git/`) as
     (size, mtime_ns, sha256) keyed by relative path, for byte-identical
     before/after comparison."""
-    snapshot: Dict[str, Tuple[int, int, str]] = {}
+    snapshot: dict[str, tuple[int, int, str]] = {}
     for path in sorted(root.rglob("*")):
         if path.is_file():
             st = path.stat()
@@ -255,7 +264,7 @@ class SpecSyncSweepE2ETests(unittest.TestCase):
         self.queue_base = self.root / "queue-base"
         self.lock_path = self.root / "sweep.lock"
 
-    def _run_main_json(self) -> Dict:
+    def _run_main_json(self) -> dict:
         buf = StringIO()
         with redirect_stdout(buf):
             rc = sss.main(
@@ -377,9 +386,10 @@ class SpecSyncSweepE2ETests(unittest.TestCase):
         self.assertEqual(record["drifted"], [])
         self.assertEqual(record["filed"], [])
         self.assertEqual(record["failed"], [])
-        self.assertFalse((self.queue_base / "queue").is_dir() and any(
-            (self.queue_base / "queue").glob("*.md")
-        ))
+        self.assertFalse(
+            (self.queue_base / "queue").is_dir()
+            and any((self.queue_base / "queue").glob("*.md"))
+        )
 
     # -- Per-repo failure isolation (REQ-008, REQ-NR004) ---------------------
 
@@ -405,11 +415,13 @@ class SpecSyncSweepE2ETests(unittest.TestCase):
         _make_drifted_repo_single_spec(self.repos_root, "drifted-repo")
 
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
-        holder = open(self.lock_path, "a+")
+        holder = open(self.lock_path, "a+")  # noqa: SIM115 -- held across the surrounding scope as a lock file
         self.addCleanup(holder.close)
         fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
 
-        with mock.patch("worktrail.router.spec_sync_sweep.discover_repos_with_specs") as spy:
+        with mock.patch(
+            "worktrail.router.spec_sync_sweep.discover_repos_with_specs"
+        ) as spy:
             record = sss.run_sweep(self.repos_root, self.queue_base, self.lock_path)
             spy.assert_not_called()
 
@@ -506,7 +518,7 @@ class SpecSyncSweepCheckboxDriftE2ETests(unittest.TestCase):
         self.queue_base = self.root / "queue-base"
         self.lock_path = self.root / "sweep.lock"
 
-    def _run_main_json(self) -> Dict:
+    def _run_main_json(self) -> dict:
         buf = StringIO()
         with redirect_stdout(buf):
             rc = sss.main(
@@ -523,8 +535,8 @@ class SpecSyncSweepCheckboxDriftE2ETests(unittest.TestCase):
         self.assertEqual(rc, 0, f"main() exited non-zero: {buf.getvalue()}")
         return json.loads(buf.getvalue())
 
-    def _queue_briefs_by_drift_source(self) -> Dict[str, Path]:
-        result: Dict[str, Path] = {}
+    def _queue_briefs_by_drift_source(self) -> dict[str, Path]:
+        result: dict[str, Path] = {}
         for f in (self.queue_base / "queue").glob("*.md"):
             fm = read_frontmatter(f)
             result[str(fm.get("drift-source"))] = f
@@ -536,7 +548,9 @@ class SpecSyncSweepCheckboxDriftE2ETests(unittest.TestCase):
     def test_four_repo_shapes_happy_path_buckets_both_check_families_correctly(
         self,
     ) -> None:
-        spec_sync_only = _make_spec_sync_only_repo(self.repos_root, "spec-sync-only-repo")
+        spec_sync_only = _make_spec_sync_only_repo(
+            self.repos_root, "spec-sync-only-repo"
+        )
         checkbox_only = _make_checkbox_only_repo(self.repos_root, "checkbox-only-repo")
         both = _make_both_drift_repo(self.repos_root, "both-drift-repo")
         neither = _make_neither_drift_repo(self.repos_root, "neither-drift-repo")
@@ -597,7 +611,7 @@ class SpecSyncSweepCheckboxDriftE2ETests(unittest.TestCase):
         queue_files = list((self.queue_base / "queue").glob("*.md"))
         self.assertEqual(len(queue_files), 4)
 
-        by_repo_and_source: Dict[Tuple[str, str], Path] = {}
+        by_repo_and_source: dict[tuple[str, str], Path] = {}
         for f in queue_files:
             fm = read_frontmatter(f)
             by_repo_and_source[(str(fm.get("repo")), str(fm.get("drift-source")))] = f
@@ -636,7 +650,9 @@ class SpecSyncSweepCheckboxDriftE2ETests(unittest.TestCase):
         self.assertIn(str(both), second["checkbox_skipped_existing"])
 
         by_source = self._queue_briefs_by_drift_source()
-        self.assertEqual(set(by_source.keys()), {"spec-sync-sweep", "checkbox-drift-sweep"})
+        self.assertEqual(
+            set(by_source.keys()), {"spec-sync-sweep", "checkbox-drift-sweep"}
+        )
         queue_files = list((self.queue_base / "queue").glob("*.md"))
         self.assertEqual(len(queue_files), 2)
 
@@ -651,7 +667,9 @@ class SpecSyncSweepCheckboxDriftE2ETests(unittest.TestCase):
         self.assertIn(str(both), first["checkbox_filed"])
 
         by_source = self._queue_briefs_by_drift_source()
-        self.assertEqual(set(by_source.keys()), {"spec-sync-sweep", "checkbox-drift-sweep"})
+        self.assertEqual(
+            set(by_source.keys()), {"spec-sync-sweep", "checkbox-drift-sweep"}
+        )
         spec_sync_brief_stem = by_source["spec-sync-sweep"].stem
         checkbox_brief_stem = by_source["checkbox-drift-sweep"].stem
 
@@ -665,13 +683,15 @@ class SpecSyncSweepCheckboxDriftE2ETests(unittest.TestCase):
             self.assertEqual(done_result["status"], "done")
 
         self.assertEqual(
-            read_frontmatter(self.queue_base / "picked" / f"{checkbox_brief_stem}.md").get(
-                "status"
-            ),
+            read_frontmatter(
+                self.queue_base / "picked" / f"{checkbox_brief_stem}.md"
+            ).get("status"),
             "done",
         )
         # The spec-sync-drift brief is still sitting in queue/, unresolved.
-        self.assertTrue((self.queue_base / "queue" / f"{spec_sync_brief_stem}.md").exists())
+        self.assertTrue(
+            (self.queue_base / "queue" / f"{spec_sync_brief_stem}.md").exists()
+        )
 
         # Repo is still drifted on both checks -> the second run must file a
         # brand-new checkbox-drift brief while leaving the still-unresolved
@@ -686,7 +706,10 @@ class SpecSyncSweepCheckboxDriftE2ETests(unittest.TestCase):
         # queue/ now holds the original (still-unresolved) spec-sync-drift
         # brief plus exactly one new checkbox-drift brief -- never two of
         # the latter.
-        queue_by_source: Dict[str, list] = {"spec-sync-sweep": [], "checkbox-drift-sweep": []}
+        queue_by_source: dict[str, list] = {
+            "spec-sync-sweep": [],
+            "checkbox-drift-sweep": [],
+        }
         for f in (self.queue_base / "queue").glob("*.md"):
             fm = read_frontmatter(f)
             queue_by_source.setdefault(str(fm.get("drift-source")), []).append(f)
@@ -699,9 +722,9 @@ class SpecSyncSweepCheckboxDriftE2ETests(unittest.TestCase):
         # The original (now-resolved) checkbox-drift brief is untouched in
         # picked/, still done.
         self.assertEqual(
-            read_frontmatter(self.queue_base / "picked" / f"{checkbox_brief_stem}.md").get(
-                "status"
-            ),
+            read_frontmatter(
+                self.queue_base / "picked" / f"{checkbox_brief_stem}.md"
+            ).get("status"),
             "done",
         )
 
@@ -728,15 +751,22 @@ class SpecSyncSweepCheckboxDriftE2ETests(unittest.TestCase):
         self,
     ) -> None:
         failing = _make_both_drift_repo(self.repos_root, "failing-checkbox-repo")
-        healthy_checkbox = _make_checkbox_only_repo(self.repos_root, "healthy-checkbox-repo")
+        healthy_checkbox = _make_checkbox_only_repo(
+            self.repos_root, "healthy-checkbox-repo"
+        )
 
-        def fake_checkbox_check(repo: Path) -> Dict:
+        def fake_checkbox_check(repo: Path) -> dict:
             if repo == failing:
-                return {"repo": str(repo), "findings": [], "error": "simulated checkbox failure"}
+                return {
+                    "repo": str(repo),
+                    "findings": [],
+                    "error": "simulated checkbox failure",
+                }
             return _real_check_repo_checkbox_drift(repo)
 
         with mock.patch(
-            "worktrail.router.spec_sync_sweep.check_repo_checkbox_drift", side_effect=fake_checkbox_check
+            "worktrail.router.spec_sync_sweep.check_repo_checkbox_drift",
+            side_effect=fake_checkbox_check,
         ):
             record = self._run_main_json()
 
@@ -764,7 +794,9 @@ class SpecSyncSweepCheckboxDriftE2ETests(unittest.TestCase):
     def test_no_fixture_repo_file_is_mutated_across_the_full_two_check_run(
         self,
     ) -> None:
-        spec_sync_only = _make_spec_sync_only_repo(self.repos_root, "spec-sync-only-repo")
+        spec_sync_only = _make_spec_sync_only_repo(
+            self.repos_root, "spec-sync-only-repo"
+        )
         checkbox_only = _make_checkbox_only_repo(self.repos_root, "checkbox-only-repo")
         both = _make_both_drift_repo(self.repos_root, "both-drift-repo")
         neither = _make_neither_drift_repo(self.repos_root, "neither-drift-repo")

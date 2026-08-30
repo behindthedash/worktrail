@@ -13,13 +13,14 @@ Usage:
   dashboard_selfcheck.py --repo /path/to/repo [--json]
   dashboard_selfcheck.py --repos-root ~/projects [--json]   # sweep every repo
 """
+
 from __future__ import annotations
 
 import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .dashboard import _is_spec_doc, find_spec_file
 from .policy_selfcheck import discover_repo_names
@@ -27,11 +28,11 @@ from .policy_selfcheck import discover_repo_names
 _SPECS_RELPATH = Path("docs") / "specs"
 
 
-def check_repo(repo: Path) -> Dict[str, Any]:
+def check_repo(repo: Path) -> dict[str, Any]:
     """Findings for one repo's `docs/specs/*/`. Empty `findings` = clean."""
     repo = Path(repo)
     specs_root = repo / _SPECS_RELPATH
-    result: Dict[str, Any] = {"repo": repo.name, "path": str(repo), "findings": []}
+    result: dict[str, Any] = {"repo": repo.name, "path": str(repo), "findings": []}
     if not specs_root.is_dir():
         return result
     findings = result["findings"]
@@ -42,18 +43,20 @@ def check_repo(repo: Path) -> Dict[str, Any]:
             continue
         if find_spec_file(spec_dir) is not None:
             continue
-        findings.append({
-            "signal": "ambiguous-spec-doc",
-            "spec": spec_dir.name,
-            "detail": (
-                f"{len(cands)} untagged spec-doc candidates tie, refusing to guess: "
-                + ", ".join(sorted(f.name for f in cands))
-            ),
-        })
+        findings.append(
+            {
+                "signal": "ambiguous-spec-doc",
+                "spec": spec_dir.name,
+                "detail": (
+                    f"{len(cands)} untagged spec-doc candidates tie, refusing to guess: "
+                    + ", ".join(sorted(f.name for f in cands))
+                ),
+            }
+        )
     return result
 
 
-def sweep(repos_root: Path) -> List[Dict[str, Any]]:
+def sweep(repos_root: Path) -> list[dict[str, Any]]:
     """check_repo() for every repo under `repos_root` that has findings."""
     names = discover_repo_names(repos_root)
     results = []
@@ -64,7 +67,7 @@ def sweep(repos_root: Path) -> List[Dict[str, Any]]:
     return results
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--repo", help="single repo to check")
     p.add_argument("--repos-root", help="sweep every repo under this directory")
@@ -85,7 +88,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(json.dumps({"results": results, "flagged": len(flagged)}, indent=2))
     else:
         if not flagged:
-            print(f"dashboard_selfcheck: {len(results)} repo(s) checked, no ambiguous spec docs")
+            print(
+                f"dashboard_selfcheck: {len(results)} repo(s) checked, no ambiguous spec docs"
+            )
         for r in flagged:
             print(f"{r['repo']}:")
             for f in r["findings"]:

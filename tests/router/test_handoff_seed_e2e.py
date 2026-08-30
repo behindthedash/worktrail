@@ -65,9 +65,9 @@ The sdd-workflow conductor's teardown step leaves orphan git worktrees when inte
 - `specs-sdd-workflow` -- the sdd-workflow conductor skill itself.
 """
 
-_BRIEF_B = _BRIEF_A.replace("20260531-180000-teardown-cleanup", "20260530-141200-auth-middleware").replace(
-    "Teardown leaves orphan worktrees", "Auth middleware swallows errors"
-)
+_BRIEF_B = _BRIEF_A.replace(
+    "20260531-180000-teardown-cleanup", "20260530-141200-auth-middleware"
+).replace("Teardown leaves orphan worktrees", "Auth middleware swallows errors")
 
 
 def _write(path: Path, content: str, mtime: float | None = None) -> Path:
@@ -82,7 +82,10 @@ def _wq(args: list[str], base: Path) -> tuple[int, Any]:
     env = {**os.environ, "WORK_QUEUE_DIR": str(base)}
     r = subprocess.run(
         [sys.executable, "-m", "worktrail.workqueue.work_queue"] + args,
-        capture_output=True, text=True, env=env
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
     )
     out = r.stdout.strip()
     try:
@@ -94,7 +97,9 @@ def _wq(args: list[str], base: Path) -> tuple[int, Any]:
 def _seed_cli(path: str) -> tuple[int, dict]:
     r = subprocess.run(
         [sys.executable, "-m", "worktrail.router.handoff_seed", "--json", "seed", path],
-        capture_output=True, text=True
+        check=False,
+        capture_output=True,
+        text=True,
     )
     return r.returncode, json.loads(r.stdout)
 
@@ -113,13 +118,19 @@ class E2EBase(unittest.TestCase):
 
 class TestListClaimSeed(E2EBase):
     def test_full_flow_list_claim_seed_done(self):
-        _write(self.queue / "20260530-141200-auth-middleware.md", _BRIEF_B, mtime=1_000.0)
-        _write(self.queue / "20260531-180000-teardown-cleanup.md", _BRIEF_A, mtime=2_000.0)
+        _write(
+            self.queue / "20260530-141200-auth-middleware.md", _BRIEF_B, mtime=1_000.0
+        )
+        _write(
+            self.queue / "20260531-180000-teardown-cleanup.md", _BRIEF_A, mtime=2_000.0
+        )
 
         # list newest-first
         rc, listing = _wq(["list", "--json"], self.base)
         self.assertEqual(rc, 0)
-        self.assertEqual(listing["briefs"][0]["filename"], "20260531-180000-teardown-cleanup.md")
+        self.assertEqual(
+            listing["briefs"][0]["filename"], "20260531-180000-teardown-cleanup.md"
+        )
         self.assertIn("Teardown leaves orphan worktrees", listing["briefs"][0]["focus"])
 
         # claim the newest (atomic queue -> picked)
@@ -148,7 +159,9 @@ class TestListClaimSeed(E2EBase):
 
     def test_seed_field_mapping_from_claimed_brief(self):
         _write(self.queue / "20260531-180000-teardown-cleanup.md", _BRIEF_A)
-        rc, claim = _wq(["claim", "20260531-180000-teardown-cleanup.md", "--json"], self.base)
+        _rc, claim = _wq(
+            ["claim", "20260531-180000-teardown-cleanup.md", "--json"], self.base
+        )
         self.assertEqual(claim["status"], "claimed")
         seed = hs.build_seed(Path(claim["path"]))
         self.assertIn("orphan worktrees", seed["feature_idea"])
@@ -175,7 +188,9 @@ class TestSelectionBranches(E2EBase):
         self.assertEqual(claim["status"], "none")
 
     def test_ambiguous_prefix_claim_is_ambiguous(self):
-        _write(self.queue / "20260531-180000-teardown-cleanup.md", _BRIEF_A, mtime=2_000.0)
+        _write(
+            self.queue / "20260531-180000-teardown-cleanup.md", _BRIEF_A, mtime=2_000.0
+        )
         _write(self.queue / "20260531-183000-another.md", _BRIEF_B, mtime=1_000.0)
         rc, claim = _wq(["claim", "20260531", "--json"], self.base)
         self.assertEqual(rc, 3)  # ambiguous
@@ -204,7 +219,9 @@ class TestLifecycle(E2EBase):
         rc2, c2 = _wq(["claim", "20260531-180000", "--json"], self.base)
         self.assertEqual(c1["status"], "claimed")
         self.assertEqual(rc1, 0)
-        self.assertIn(c2["status"], ("none", "already-claimed"))  # not claimable a second time
+        self.assertIn(
+            c2["status"], ("none", "already-claimed")
+        )  # not claimable a second time
         self.assertNotEqual(rc2, 0)
 
     def test_release_returns_to_queue(self):

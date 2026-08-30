@@ -19,8 +19,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest import mock
 from pathlib import Path
+from unittest import mock
 
 from worktrail.router import skill_dispatch
 
@@ -34,7 +34,9 @@ def _install_fake_agents(bin_dir: Path) -> None:
     bin_dir.mkdir(exist_ok=True)
     for agent in SUPPORTED_AGENTS:
         shim = bin_dir / agent
-        shim.write_text(f"#!/bin/sh\nexec {sys.executable} {_FAKE_AGENT} {agent} \"$@\"\n")
+        shim.write_text(
+            f'#!/bin/sh\nexec {sys.executable} {_FAKE_AGENT} {agent} "$@"\n'
+        )
         shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
 
 
@@ -44,6 +46,7 @@ class ProposeSpawnLandsChangeDirTests(unittest.TestCase):
 
     def setUp(self):
         import tempfile
+
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         tmp = Path(self._tmp.name)
@@ -80,8 +83,15 @@ class ProposeSpawnLandsChangeDirTests(unittest.TestCase):
         for agent in SUPPORTED_AGENTS:
             with self.subTest(agent=agent):
                 arguments = [
-                    "--agent", agent, "--skill", "openspec-propose",
-                    "--args", "probe", "--cwd", str(self.wt), "--write",
+                    "--agent",
+                    agent,
+                    "--skill",
+                    "openspec-propose",
+                    "--args",
+                    "probe",
+                    "--cwd",
+                    str(self.wt),
+                    "--write",
                 ]
                 if agent == "codex":
                     arguments.append("--no-inherit-codex-auth")
@@ -100,18 +110,35 @@ class ProposeSpawnLandsChangeDirTests(unittest.TestCase):
         proof of success -- callers MUST assert the change dir exists."""
         for agent in ("claude", "opencode"):
             with self.subTest(agent=agent):
-                result = skill_dispatch.main([
-                    "--agent", agent, "--skill", "openspec-propose",
-                    "--args", "probe", "--cwd", str(self.wt),
-                ])
+                result = skill_dispatch.main(
+                    [
+                        "--agent",
+                        agent,
+                        "--skill",
+                        "openspec-propose",
+                        "--args",
+                        "probe",
+                        "--cwd",
+                        str(self.wt),
+                    ]
+                )
                 self.assertEqual(result, 0)
                 self.assertFalse(self._change_dir().exists())
 
     def test_codex_needs_no_write_flag_because_it_always_has_full_access(self):
-        result = skill_dispatch.main([
-            "--agent", "codex", "--skill", "openspec-propose",
-            "--args", "probe", "--cwd", str(self.wt), "--no-inherit-codex-auth",
-        ])
+        result = skill_dispatch.main(
+            [
+                "--agent",
+                "codex",
+                "--skill",
+                "openspec-propose",
+                "--args",
+                "probe",
+                "--cwd",
+                str(self.wt),
+                "--no-inherit-codex-auth",
+            ]
+        )
         self.assertEqual(result, 0)
         self.assertTrue((self._change_dir() / "proposal.md").exists())
 
@@ -157,15 +184,23 @@ class RealAuthenticatedCodexLifecycleTests(unittest.TestCase):
                 {"WORKTRAIL_SKILL_ROOT": str(skills), "CODEX_HOME": str(parent_home)},
                 clear=False,
             ):
-                result = skill_dispatch.main([
-                    "--agent", "codex",
-                    "--skill", "authenticated-lifecycle-probe",
-                    "--cwd", str(cwd),
-                    "--codex-home", str(child_home),
-                    "--add-dir", str(runs),
-                    "--add-dir", str(worktrees),
-                    "--write",
-                ])
+                result = skill_dispatch.main(
+                    [
+                        "--agent",
+                        "codex",
+                        "--skill",
+                        "authenticated-lifecycle-probe",
+                        "--cwd",
+                        str(cwd),
+                        "--codex-home",
+                        str(child_home),
+                        "--add-dir",
+                        str(runs),
+                        "--add-dir",
+                        str(worktrees),
+                        "--write",
+                    ]
+                )
             self.assertEqual(result, 0)
             self.assertEqual((runs / "run-record-proof").read_text(), "ok")
             self.assertEqual((worktrees / "worktree-proof").read_text(), "ok")

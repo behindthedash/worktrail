@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Unit tests for the `sdd-workflow` conductor target-repo resolver (stdlib unittest)."""
+
 from __future__ import annotations
 
 import contextlib
@@ -234,6 +235,7 @@ class MainCLITests(unittest.TestCase):
             repo = _mkrepo(Path(t), "app")
             buf = io.StringIO()
             import sys
+
             old = sys.stdout
             sys.stdout = buf
             try:
@@ -247,6 +249,7 @@ class MainCLITests(unittest.TestCase):
             _mkrepo(root, "myapp")
             buf = io.StringIO()
             import sys
+
             old = sys.stdout
             sys.stdout = buf
             try:
@@ -262,6 +265,7 @@ class MainCLITests(unittest.TestCase):
             _mkrepo(root, "repo-b")
             buf = io.StringIO()
             import sys
+
             old = sys.stdout
             sys.stdout = buf
             try:
@@ -275,6 +279,7 @@ class MainCLITests(unittest.TestCase):
             _mkplain(root, "not-a-repo")
             buf = io.StringIO()
             import sys
+
             old = sys.stdout
             sys.stdout = buf
             try:

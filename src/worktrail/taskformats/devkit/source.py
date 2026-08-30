@@ -41,7 +41,7 @@ from __future__ import annotations
 import difflib
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 _VALID_COMPLEXITY_TIERS = {"trivial", "standard", "hard"}
 
@@ -74,7 +74,7 @@ KNOWN_TASK_FRONTMATTER_KEYS = {
 }
 
 
-def validate_frontmatter_keys(fm: Dict[str, Any], label: str = "") -> List[str]:
+def validate_frontmatter_keys(fm: dict[str, Any], label: str = "") -> list[str]:
     """Return one warning string per frontmatter key that looks like a typo
     of a known task field -- e.g. `depend_on` for `dependencies`, `reveiw`
     for `review` -- so a future field-name mismatch is loud instead of a
@@ -92,11 +92,13 @@ def validate_frontmatter_keys(fm: Dict[str, Any], label: str = "") -> List[str]:
     unrecognized frontmatter key with no warning anywhere downstream,
     defeating dependency-ordered fan-out with no visible error.
     """
-    warnings: List[str] = []
+    warnings: list[str] = []
     for key in fm:
         if key in KNOWN_TASK_FRONTMATTER_KEYS:
             continue
-        close = difflib.get_close_matches(key, KNOWN_TASK_FRONTMATTER_KEYS, n=1, cutoff=0.75)
+        close = difflib.get_close_matches(
+            key, KNOWN_TASK_FRONTMATTER_KEYS, n=1, cutoff=0.75
+        )
         if close:
             prefix = f"{label}: " if label else ""
             warnings.append(
@@ -106,7 +108,9 @@ def validate_frontmatter_keys(fm: Dict[str, Any], label: str = "") -> List[str]:
     return warnings
 
 
-def validate_external_dependencies(raw_entries: List[str], label: str = "") -> List[str]:
+def validate_external_dependencies(
+    raw_entries: list[str], label: str = ""
+) -> list[str]:
     """Return one warning string per malformed `external-dependencies:` entry.
 
     An External Dependency Reference is expected in `<spec-id>/<task-id>` shape
@@ -116,7 +120,7 @@ def validate_external_dependencies(raw_entries: List[str], label: str = "") -> L
     keeps them in `external_deps` so a downstream unresolved-reference
     reporter can name the offending entry.
     """
-    warnings: List[str] = []
+    warnings: list[str] = []
     prefix = f"{label}: " if label else ""
     for entry in raw_entries:
         spec_id, sep, task_id = entry.partition("/")
@@ -128,11 +132,11 @@ def validate_external_dependencies(raw_entries: List[str], label: str = "") -> L
     return warnings
 
 
-def parse_frontmatter(text: str) -> Dict[str, Any]:
+def parse_frontmatter(text: str) -> dict[str, Any]:
     m = re.match(r"^---\s*\n(.*?)\n---\s*\n", text, re.DOTALL)
     if not m:
         return {}
-    fm: Dict[str, Any] = {}
+    fm: dict[str, Any] = {}
     lines = m.group(1).splitlines()
     i = 0
     while i < len(lines):
@@ -153,7 +157,7 @@ def parse_frontmatter(text: str) -> Dict[str, Any]:
             # collect the following indented lines as the value. Without this,
             # the literal marker ("|-") was returned as the value and the
             # block's text was dropped entirely.
-            block: List[str] = []
+            block: list[str] = []
             while i < len(lines):
                 nxt = lines[i]
                 if not nxt.strip():
@@ -167,7 +171,7 @@ def parse_frontmatter(text: str) -> Dict[str, Any]:
             fm[key] = "\n".join(block).strip()
         elif not val:
             # Multi-line block list: collect following `  - value` lines
-            items: List[str] = []
+            items: list[str] = []
             while i < len(lines):
                 nxt = lines[i].rstrip()
                 stripped = nxt.lstrip()
@@ -206,7 +210,7 @@ def _find_tasks_dir(p: Path) -> Path:
 _FILES_HEADING_RE = re.compile(r"^\*\*Files to (Create|Modify)\*\*", re.IGNORECASE)
 
 
-def parse_files_sections(text: str) -> Tuple[List[str], List[str]]:
+def parse_files_sections(text: str) -> tuple[list[str], list[str]]:
     """Extract (create_files, modify_files) from a TASK-*.md BODY's
     `**Files to Create**:` / `**Files to Modify**:` bulleted sections (written
     by the spec-to-tasks task template's "## Implementation Details" section --
@@ -219,9 +223,9 @@ def parse_files_sections(text: str) -> Tuple[List[str], List[str]]:
     line of the same bullet (no leading `- `) is ignored, not treated as the
     end of the section -- only a new `##`/`**Files to ...**` heading ends it.
     """
-    create: List[str] = []
-    modify: List[str] = []
-    current: List[str] | None = None
+    create: list[str] = []
+    modify: list[str] = []
+    current: list[str] | None = None
     for raw_line in text.splitlines():
         line = raw_line.strip()
         heading = _FILES_HEADING_RE.match(line)
@@ -233,7 +237,7 @@ def parse_files_sections(text: str) -> Tuple[List[str], List[str]]:
             continue
         if current is None:
             continue
-        if line.startswith("- ") or line.startswith("* "):
+        if line.startswith(("- ", "* ")):
             item = line[2:].strip()
             m = re.match(r"`([^`]+)`", item)
             path = m.group(1) if m else item.split(" - ")[0].strip()
@@ -242,7 +246,7 @@ def parse_files_sections(text: str) -> Tuple[List[str], List[str]]:
     return create, modify
 
 
-def load_spec(spec_folder: str) -> Tuple[str, List[Dict[str, Any]]]:
+def load_spec(spec_folder: str) -> tuple[str, list[dict[str, Any]]]:
     """Return (spec_id, tasks) from a docs/specs/[id]/ folder (brainstorm- or
     change-spec-originated)."""
     p = Path(spec_folder)
@@ -250,14 +254,16 @@ def load_spec(spec_folder: str) -> Tuple[str, List[Dict[str, Any]]]:
     if not tasks_dir.is_dir():
         raise FileNotFoundError(f"no task files under {p} (looked in {tasks_dir})")
 
-    tasks: List[Dict[str, Any]] = []
+    tasks: list[dict[str, Any]] = []
     for f in sorted(tasks_dir.glob("TASK-*.md")):
         if "--" in f.stem:  # skip TASK-XXX--review.md and aux files
             continue
         fm = parse_frontmatter(f.read_text())
         _fm_warnings = validate_frontmatter_keys(fm, label=f.name)
         _external_deps = fm.get("external-dependencies", [])
-        _external_deps_warnings = validate_external_dependencies(_external_deps, label=f.name)
+        _external_deps_warnings = validate_external_dependencies(
+            _external_deps, label=f.name
+        )
         _raw_timeout = fm.get("timeout")
         try:
             _timeout: Any = int(_raw_timeout) if _raw_timeout is not None else None
@@ -309,7 +315,7 @@ _DECISION_STATUS_RE = re.compile(r"^\s*Status:\s*(.+?)\s*$", re.IGNORECASE)
 DECIDED_STATUSES = {"decided", "resolved"}
 
 
-def parse_decision_log(text: str) -> Dict[str, str]:
+def parse_decision_log(text: str) -> dict[str, str]:
     """Parse a `decision-log.md`'s `## D<n>: <title>` headings into
     `{decision_id: status}` (e.g. `{"D1": "decided"}`).
 
@@ -318,8 +324,8 @@ def parse_decision_log(text: str) -> Dict[str, str]:
     or before EOF -- has no entry, which callers treat the same as "id not
     found in the log" (see `DevkitSpecTaskSource.validate_dependencies`).
     """
-    statuses: Dict[str, str] = {}
-    current_id: Optional[str] = None
+    statuses: dict[str, str] = {}
+    current_id: str | None = None
     for raw_line in text.splitlines():
         heading = _DECISION_HEADING_RE.match(raw_line.strip())
         if heading:
@@ -337,7 +343,9 @@ def parse_decision_log(text: str) -> Dict[str, str]:
 DEFAULT_SPEC_ROOT = "docs/specs"
 
 
-def resolve_external_dependency(repo_root: Path, ref: str, spec_root: str = DEFAULT_SPEC_ROOT) -> dict:
+def resolve_external_dependency(
+    repo_root: Path, ref: str, spec_root: str = DEFAULT_SPEC_ROOT
+) -> dict:
     """Resolve one raw `<spec-id>/<task-id>` External Dependency Reference
     (from a task's `external_deps`, produced by `validate_external_dependencies`)
     against `repo_root`'s spec tree (`docs/specs/` by default -- pass
@@ -352,8 +360,14 @@ def resolve_external_dependency(repo_root: Path, ref: str, spec_root: str = DEFA
     uses, before any filesystem check runs on the escaped path).
     """
 
-    def _unresolved(reason: str) -> Dict[str, Any]:
-        return {"ref": ref, "resolved": False, "satisfied": False, "status": None, "reason": reason}
+    def _unresolved(reason: str) -> dict[str, Any]:
+        return {
+            "ref": ref,
+            "resolved": False,
+            "satisfied": False,
+            "status": None,
+            "reason": reason,
+        }
 
     spec_id, sep, task_id = ref.partition("/")
     if not sep or not spec_id or not task_id:
@@ -379,7 +393,13 @@ def resolve_external_dependency(repo_root: Path, ref: str, spec_root: str = DEFA
 
     status = parse_frontmatter(task_file.read_text()).get("status")
     satisfied = status in ("done", "completed")
-    return {"ref": ref, "resolved": True, "satisfied": satisfied, "status": status, "reason": None}
+    return {
+        "ref": ref,
+        "resolved": True,
+        "satisfied": satisfied,
+        "status": status,
+        "reason": None,
+    }
 
 
 class DevkitSpecTaskSource:
@@ -394,10 +414,12 @@ class DevkitSpecTaskSource:
         self.repo_root = Path(repo_root)
         self._spec_root = spec_root
 
-    def load(self, spec_ref: str) -> Tuple[str, List[Dict[str, Any]]]:
+    def load(self, spec_ref: str) -> tuple[str, list[dict[str, Any]]]:
         return load_spec(str(self.repo_root / self._spec_root / spec_ref))
 
-    def mark_status(self, task_id: str, status: str, *, spec_ref: Optional[str] = None) -> bool:
+    def mark_status(
+        self, task_id: str, status: str, *, spec_ref: str | None = None
+    ) -> bool:
         """Persist *status* for one task. Returns True if the file changed.
 
         ``completed`` takes the surgical path (`schema.set_status_completed`):
@@ -428,10 +450,14 @@ class DevkitSpecTaskSource:
         write_task_file(path, frontmatter, body)
         return True
 
-    def resolve_external_dependency(self, dep_ref: str) -> Dict[str, Any]:
-        return resolve_external_dependency(self.repo_root, dep_ref, spec_root=self._spec_root)
+    def resolve_external_dependency(self, dep_ref: str) -> dict[str, Any]:
+        return resolve_external_dependency(
+            self.repo_root, dep_ref, spec_root=self._spec_root
+        )
 
-    def validate_dependencies(self, spec_id: str, tasks: List[Dict[str, Any]]) -> List[str]:
+    def validate_dependencies(
+        self, spec_id: str, tasks: list[dict[str, Any]]
+    ) -> list[str]:
         """Report unresolved same-spec `deps` entries and unsettled `decision-refs:`.
 
         `external-dependencies:` entries are a separate field (see module
@@ -446,7 +472,7 @@ class DevkitSpecTaskSource:
         one, is a "missing decision"; a referenced id present but not
         `decided`/`resolved` (case-insensitive) is an "open decision".
         """
-        diagnostics: List[str] = []
+        diagnostics: list[str] = []
         task_ids = {t["id"] for t in tasks}
         for task in tasks:
             for dep in task.get("deps", []):
@@ -457,7 +483,9 @@ class DevkitSpecTaskSource:
 
         if any(task.get("decision_refs") for task in tasks):
             log_path = self.spec_root(spec_id) / "decision-log.md"
-            decisions = parse_decision_log(log_path.read_text()) if log_path.is_file() else {}
+            decisions = (
+                parse_decision_log(log_path.read_text()) if log_path.is_file() else {}
+            )
             for task in tasks:
                 for decision_id in task.get("decision_refs", []):
                     status = decisions.get(decision_id)

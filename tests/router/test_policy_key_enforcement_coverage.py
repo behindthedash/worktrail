@@ -18,6 +18,7 @@ doesn't transfer) -- but `test_registered_consumers_actually_enforce` at least
 guarantees the two keys named in this audit can never silently regress back to
 parse-only.
 """
+
 import unittest
 
 from worktrail.router.policy import automerge_eligible
@@ -39,18 +40,22 @@ def _proves_protected_paths():
     automerge eligibility, independent of risk/gates."""
     policy = _policy(protected_paths=["migrations/"])
     eligible, _ = automerge_eligible(
-        policy, "low", [], "main", changed_paths=["migrations/0001_init.sql"])
+        policy, "low", [], "main", changed_paths=["migrations/0001_init.sql"]
+    )
     if eligible is not False:
         raise AssertionError(
             "protected_paths did not block automerge eligibility for a matching "
-            "changed path")
+            "changed path"
+        )
     # And a non-matching path must NOT be blocked by the same policy.
     eligible, _ = automerge_eligible(
-        policy, "low", [], "main", changed_paths=["README.md"])
+        policy, "low", [], "main", changed_paths=["README.md"]
+    )
     if eligible is not True:
         raise AssertionError(
             "protected_paths blocked a changed path that does not match any "
-            "configured pattern")
+            "configured pattern"
+        )
 
 
 def _proves_require_human_routes():
@@ -61,13 +66,14 @@ def _proves_require_human_routes():
     if eligible is not False:
         raise AssertionError(
             "require_human_routes did not block automerge eligibility for a "
-            "listed route")
+            "listed route"
+        )
     # And an unlisted route must NOT be blocked by the same policy.
     eligible, _ = automerge_eligible(policy, "low", [], "main", route="F")
     if eligible is not True:
         raise AssertionError(
-            "require_human_routes blocked a route that is not in the "
-            "configured list")
+            "require_human_routes blocked a route that is not in the configured list"
+        )
 
 
 # go-policy.yaml key -> callable proving a real, behavior-changing consumer
@@ -79,7 +85,6 @@ POLICY_KEY_CONSUMERS = {
 
 
 class TestPolicyKeyEnforcementCoverage(unittest.TestCase):
-
     def test_registered_consumers_actually_enforce(self):
         for key, proof in POLICY_KEY_CONSUMERS.items():
             with self.subTest(key=key):

@@ -8,6 +8,7 @@ CI gate. See docs/specs/research/skill-prose-enforcement-coverage-design.md
 for why the same generic pairing was rejected as a *hard-gating* primary
 mechanism (near-zero recall at safe precision, one confirmed false pairing).
 """
+
 import json
 import tempfile
 import unittest
@@ -20,7 +21,6 @@ from worktrail.router.label_family_markers import LABEL_FAMILY_MARKERS
 
 
 class TestScan(unittest.TestCase):
-
     def _write(self, root: Path, relpath: str, text: str) -> None:
         p = root / relpath
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -29,10 +29,14 @@ class TestScan(unittest.TestCase):
     def test_detects_mandate_cue_paired_with_named_action(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            self._write(root, "example/SKILL.md", (
-                "Before merging, it is **mandatory** to run "
-                "`worktrail-prevent-destructive-commands.py` against the diff.\n"
-            ))
+            self._write(
+                root,
+                "example/SKILL.md",
+                (
+                    "Before merging, it is **mandatory** to run "
+                    "`worktrail-prevent-destructive-commands.py` against the diff.\n"
+                ),
+            )
             res = scan_mod.scan(root)
             self.assertEqual(res["files_scanned"], 1)
             self.assertEqual(len(res["candidates"]), 1)
@@ -45,33 +49,45 @@ class TestScan(unittest.TestCase):
         marker = LABEL_FAMILY_MARKERS[0]
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            self._write(root, "example/SKILL.md", (
-                f"It is mandatory to run `some_corrective_action.py`, which also "
-                f"self-heals {marker} labels.\n"
-            ))
+            self._write(
+                root,
+                "example/SKILL.md",
+                (
+                    f"It is mandatory to run `some_corrective_action.py`, which also "
+                    f"self-heals {marker} labels.\n"
+                ),
+            )
             res = scan_mod.scan(root)
             self.assertEqual(res["candidates"], [])
 
     def test_no_mandate_cue_yields_no_candidates(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            self._write(root, "example/SKILL.md", "Run `some_helper.py` whenever convenient.\n")
+            self._write(
+                root, "example/SKILL.md", "Run `some_helper.py` whenever convenient.\n"
+            )
             res = scan_mod.scan(root)
             self.assertEqual(res["candidates"], [])
 
     def test_no_named_action_yields_no_candidates(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            self._write(root, "example/SKILL.md",
-                        "It is mandatory to review this section carefully before proceeding.\n")
+            self._write(
+                root,
+                "example/SKILL.md",
+                "It is mandatory to review this section carefully before proceeding.\n",
+            )
             res = scan_mod.scan(root)
             self.assertEqual(res["candidates"], [])
 
     def test_cli_always_exits_zero_even_with_candidates(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            self._write(root, "example/SKILL.md",
-                        "It is **mandatory** to run `dangerous_thing.py` first.\n")
+            self._write(
+                root,
+                "example/SKILL.md",
+                "It is **mandatory** to run `dangerous_thing.py` first.\n",
+            )
             out = StringIO()
             with patch("sys.stdout", out):
                 rc = scan_mod.main(["--skills-root", str(root), "--json"])

@@ -33,7 +33,7 @@ import os
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 # Status-string classification, kept in sync with coordinator semantics WITHOUT
 # importing coordinator (this module must stay a dependency-free leaf).
@@ -41,7 +41,7 @@ _DONE = {"done", "completed"}
 _FAILED = {"failed", "escalated"}
 
 
-def heartbeat_path(journal_path: "str | Path") -> Path:
+def heartbeat_path(journal_path: str | Path) -> Path:
     """Sidecar status file beside the journal: ``run-X.json`` -> ``run-X.status.json``."""
     p = Path(journal_path)
     return p.with_name(p.stem + ".status.json")
@@ -51,7 +51,7 @@ def _now() -> float:
     return time.time()
 
 
-def atomic_write_text(path: "str | Path", text: str) -> None:
+def atomic_write_text(path: str | Path, text: str) -> None:
     """Write *text* to *path* atomically: sibling temp file + ``os.replace``.
 
     The run journal and heartbeat are the state a resume relies on, and a run is
@@ -79,7 +79,7 @@ def atomic_write_text(path: "str | Path", text: str) -> None:
         raise
 
 
-def _pid_alive(pid: Optional[int]) -> bool:
+def _pid_alive(pid: int | None) -> bool:
     """True if *pid* is a live process (best-effort POSIX ``kill -0``).
 
     Tells a genuinely-slow in-flight worker (orchestrator process still alive)
@@ -96,14 +96,14 @@ def _pid_alive(pid: Optional[int]) -> bool:
     return True
 
 
-def _safe_load(path: "str | Path") -> Dict[str, Any]:
+def _safe_load(path: str | Path) -> dict[str, Any]:
     try:
         return json.loads(Path(path).read_text())
     except (OSError, json.JSONDecodeError):
         return {}
 
 
-def _safe_write(path: "str | Path", data: Dict[str, Any]) -> None:
+def _safe_write(path: str | Path, data: dict[str, Any]) -> None:
     """Best-effort atomic JSON write. Never raises into a running orchestration."""
     try:
         atomic_write_text(path, json.dumps(data, indent=2, sort_keys=True) + "\n")
@@ -111,7 +111,9 @@ def _safe_write(path: "str | Path", data: Dict[str, Any]) -> None:
         pass
 
 
-def append_safety_net_events(journal_path: "str | Path", events: "list[Dict[str, Any]]") -> None:
+def append_safety_net_events(
+    journal_path: str | Path, events: list[dict[str, Any]]
+) -> None:
     """Merge structured "took the safety net" observability events into the run
     journal's dedicated `safety_net_events` list, preserving every other key
     (`spec_id`, `entries`, `run_id`, ...) already on disk.
@@ -136,14 +138,14 @@ def append_safety_net_events(journal_path: "str | Path", events: "list[Dict[str,
 
 
 def begin_step(
-    journal_path: "str | Path",
+    journal_path: str | Path,
     *,
-    run_id: Optional[str],
+    run_id: str | None,
     spec_id: str,
     task_id: str,
     role: str,
     phase: str = "fanout",
-    started_at: Optional[float] = None,
+    started_at: float | None = None,
 ) -> None:
     """Record the step now starting as the single in-flight worker (heartbeat).
 
@@ -170,11 +172,11 @@ def begin_step(
 
 
 def write_actives(
-    journal_path: "str | Path",
+    journal_path: str | Path,
     *,
-    run_id: Optional[str],
+    run_id: str | None,
     spec_id: str,
-    actives: List[Dict[str, Any]],
+    actives: list[dict[str, Any]],
     phase: str = "fanout",
 ) -> None:
     """Heartbeat for N concurrent in-flight workers (parallel fan-out).
@@ -201,7 +203,7 @@ def write_actives(
 
 
 def set_phase(
-    journal_path: "str | Path", phase: str, detail: "Dict[str, Any] | None" = None
+    journal_path: str | Path, phase: str, detail: dict[str, Any] | None = None
 ) -> None:
     """Mark a phase change (e.g. fanout -> integrate -> verify -> done) and clear
     the in-flight workers, preserving run_id/spec_id when the sidecar exists."""
@@ -221,14 +223,12 @@ def set_phase(
     _safe_write(hb, payload)
 
 
-def set_idle(journal_path: "str | Path", phase: str = "idle") -> None:
+def set_idle(journal_path: str | Path, phase: str = "idle") -> None:
     """No worker in flight (alias of set_phase for end-of-fan-out clarity)."""
     set_phase(journal_path, phase)
 
 
-def set_group_phases(
-    journal_path: "str | Path", group_phases: Dict[str, str]
-) -> None:
+def set_group_phases(journal_path: str | Path, group_phases: dict[str, str]) -> None:
     """Write a concurrent-phase summary to the heartbeat (pipelined runs).
 
     group_phases maps each active group to its current phase string
@@ -257,10 +257,10 @@ def set_group_phases(
 # --------------------------------------------------------------------------- #
 # Rendering
 # --------------------------------------------------------------------------- #
-def _fmt_dur(seconds: Optional[float]) -> str:
+def _fmt_dur(seconds: float | None) -> str:
     if seconds is None:
         return "?"
-    s = int(round(seconds))
+    s = round(seconds)
     if s < 60:
         return f"{s}s"
     if s < 3600:
@@ -268,7 +268,7 @@ def _fmt_dur(seconds: Optional[float]) -> str:
     return f"{s // 3600}h{(s % 3600) // 60:02d}m"
 
 
-def _marker(status: Optional[str], *, active: bool) -> str:
+def _marker(status: str | None, *, active: bool) -> str:
     if active:
         return "▶"
     if status in _DONE:
@@ -293,12 +293,12 @@ _USAGE_FIELDS = (
 )
 
 
-def summarize_usage(journal: Dict[str, Any]) -> Dict[str, Any]:
+def summarize_usage(journal: dict[str, Any]) -> dict[str, Any]:
     """Aggregate journal entries' per-spawn `usage` into a per-role + grand-total
     breakdown. Returns roles -> {<token fields>, cost, spawns}, a matching `total`,
     and how many entries actually carried usage (older runs carry none)."""
-    roles: Dict[str, Dict[str, Any]] = {}
-    total: Dict[str, Any] = {f: 0 for f in _USAGE_FIELDS}
+    roles: dict[str, dict[str, Any]] = {}
+    total: dict[str, Any] = {f: 0 for f in _USAGE_FIELDS}
     total.update(cost=0.0, spawns=0, turns=0)
     entries = journal.get("entries", []) or []
     with_usage = 0
@@ -344,7 +344,7 @@ def summarize_usage(journal: Dict[str, Any]) -> Dict[str, Any]:
 # claude/codex are subscription CLIs, opencode is free, and any other agent
 # name is assumed to be a raw API key (the opt-in, per-token-billed path) --
 # defined once here so the mapping has a single source of truth (task DoD).
-_POOL_BY_AGENT: Dict[str, str] = {
+_POOL_BY_AGENT: dict[str, str] = {
     "claude": "subscription",
     "codex": "subscription",
     "opencode": "free",
@@ -356,7 +356,7 @@ def _pool_for_agent(agent: str) -> str:
     return _POOL_BY_AGENT.get(agent, _DEFAULT_POOL)
 
 
-def summarize_pool_usage(journal: Dict[str, Any]) -> Dict[str, Any]:
+def summarize_pool_usage(journal: dict[str, Any]) -> dict[str, Any]:
     """Aggregate journal entries' per-spawn `usage` into a per-pool -> per-agent
     breakdown, reading the `agent` label TASK-007 writes onto each entry.
 
@@ -367,7 +367,7 @@ def summarize_pool_usage(journal: Dict[str, Any]) -> Dict[str, Any]:
     labeled/unlabeled journals: unlabeled entries are omitted from the pool
     section rather than guessed at.
     """
-    pools: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    pools: dict[str, dict[str, dict[str, Any]]] = {}
     with_agent = 0
     for e in journal.get("entries", []) or []:
         agent = e.get("agent")
@@ -377,7 +377,8 @@ def summarize_pool_usage(journal: Dict[str, Any]) -> Dict[str, Any]:
         with_agent += 1
         pool = _pool_for_agent(agent)
         bucket = pools.setdefault(pool, {}).setdefault(
-            agent, {**{f: 0 for f in _USAGE_FIELDS}, "cost": 0.0, "spawns": 0, "turns": 0}
+            agent,
+            {**{f: 0 for f in _USAGE_FIELDS}, "cost": 0.0, "spawns": 0, "turns": 0},
         )
         for f in _USAGE_FIELDS:
             bucket[f] += int(u.get(f, 0) or 0)
@@ -387,7 +388,7 @@ def summarize_pool_usage(journal: Dict[str, Any]) -> Dict[str, Any]:
     return {"pools": pools, "entries_with_agent_label": with_agent}
 
 
-def _cache_hit_ratio(d: Dict[str, Any]) -> float:
+def _cache_hit_ratio(d: dict[str, Any]) -> float:
     """Share of input-side tokens served from cache: cache_read / (input + cache_read
     + cache_creation). High = the cold-spawn boot prefix is being reused, not re-paid."""
     read = d.get("cache_read_input_tokens", 0)
@@ -395,7 +396,7 @@ def _cache_hit_ratio(d: Dict[str, Any]) -> float:
     return (read / base) if base else 0.0
 
 
-def _ctx_per_turn(d: Dict[str, Any]) -> int:
+def _ctx_per_turn(d: dict[str, Any]) -> int:
     """Average cached context re-read per agentic turn: cache_read / turns. This is
     the per-spawn fixed prefix (harness system prompt + tools + CLAUDE.md + the
     worker brief) as the model actually pays for it -- once per turn, not once per
@@ -404,7 +405,7 @@ def _ctx_per_turn(d: Dict[str, Any]) -> int:
     return int(d.get("cache_read_input_tokens", 0) / turns) if turns else 0
 
 
-def render_usage(journal: Dict[str, Any]) -> str:
+def render_usage(journal: dict[str, Any]) -> str:
     """Human-readable per-role token + cost table for a finished (or in-flight) run."""
     s = summarize_usage(journal)
     t = s["total"]
@@ -470,7 +471,7 @@ def render_usage(journal: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def summarize_tools(journal: Dict[str, Any]) -> Dict[str, Any]:
+def summarize_tools(journal: dict[str, Any]) -> dict[str, Any]:
     """Aggregate journal entries' tools_used and skills_used into run-wide sorted lists."""
     tools: set = set()
     skills: set = set()
@@ -484,7 +485,7 @@ def summarize_tools(journal: Dict[str, Any]) -> Dict[str, Any]:
     return {"tools_used": sorted(tools), "skills_used": sorted(skills)}
 
 
-def render_tools_used(journal: Dict[str, Any]) -> str:
+def render_tools_used(journal: dict[str, Any]) -> str:
     """Human-readable tools + skills footprint for a finished (or in-flight) run."""
     s = summarize_tools(journal)
     tools = s["tools_used"]
@@ -505,15 +506,15 @@ def render_tools_used(journal: Dict[str, Any]) -> str:
 _CONTEXT_QUALITY_VALUES = ("sufficient", "too_much", "insufficient")
 
 
-def summarize_context_quality(journal: Dict[str, Any]) -> Dict[str, Any]:
+def summarize_context_quality(journal: dict[str, Any]) -> dict[str, Any]:
     """Aggregate each worker report-back's self-assessed `context_quality` and
     `missing_context`. dispatch.build_worker_prompt asks every worker whether the
     context it was handed was sufficient / too much / insufficient; this is where
     that signal is finally read back. Returns per-value `counts`, how many reports
     carried the signal, and the attributed `missing` items (task + role) workers
     flagged as absent."""
-    counts: Dict[str, int] = {}
-    missing: List[Dict[str, Any]] = []
+    counts: dict[str, int] = {}
+    missing: list[dict[str, Any]] = []
     with_signal = 0
     for e in journal.get("entries", []) or []:
         rep = e.get("report") or {}
@@ -523,11 +524,13 @@ def summarize_context_quality(journal: Dict[str, Any]) -> Dict[str, Any]:
             counts[q] = counts.get(q, 0) + 1
         items = [m for m in (rep.get("missing_context") or []) if m]
         if items:
-            missing.append({"task": e.get("task"), "role": e.get("role"), "items": items})
+            missing.append(
+                {"task": e.get("task"), "role": e.get("role"), "items": items}
+            )
     return {"counts": counts, "entries_with_signal": with_signal, "missing": missing}
 
 
-def render_context_quality(journal: Dict[str, Any]) -> str:
+def render_context_quality(journal: dict[str, Any]) -> str:
     """Human-readable worker context-fit footprint: how many workers judged their
     handed context sufficient / too_much / insufficient, plus any missing-context
     items. Turns the previously-discarded report-back signal into a tuning hint for
@@ -543,7 +546,9 @@ def render_context_quality(journal: Dict[str, Any]) -> str:
     extra = sorted(v for v in counts if v not in _CONTEXT_QUALITY_VALUES)
     parts = [f"{counts[v]} {v}" for v in ordered + extra]
     n = s["entries_with_signal"]
-    lines = [f"context quality: {' · '.join(parts)} (of {n} report{'s' if n != 1 else ''})"]
+    lines = [
+        f"context quality: {' · '.join(parts)} (of {n} report{'s' if n != 1 else ''})"
+    ]
     if counts.get("too_much"):
         lines.append(
             f"  {counts['too_much']} worker(s) reported too_much context — "
@@ -556,9 +561,9 @@ def render_context_quality(journal: Dict[str, Any]) -> str:
 
 
 def render(
-    journal_path: "str | Path",
-    tasks: Optional[List[Dict[str, Any]]] = None,
-    now: Optional[float] = None,
+    journal_path: str | Path,
+    tasks: list[dict[str, Any]] | None = None,
+    now: float | None = None,
 ) -> str:
     """Build a checklist string from the journal (+ heartbeat sidecar).
 
@@ -580,14 +585,14 @@ def render(
         actives = [single] if single else []
     active_by_task = {a.get("task"): a for a in actives if a and a.get("task")}
 
-    def _is_stale(a: Dict[str, Any]) -> bool:
+    def _is_stale(a: dict[str, Any]) -> bool:
         # Only judge staleness when a pid was recorded; legacy sidecars (no pid)
         # are taken at face value.
         return "pid" in a and not _pid_alive(a.get("pid"))
 
     # Per-task ordered list of completed (role, duration_s) steps.
-    by_task: Dict[str, List[Dict[str, Any]]] = {}
-    journal_order: List[str] = []
+    by_task: dict[str, list[dict[str, Any]]] = {}
+    journal_order: list[str] = []
     for e in entries:
         tid = e.get("task")
         if tid is None:
@@ -616,19 +621,26 @@ def render(
     if (
         phase == "done"
         and tasks
-        and any(t.get("status") not in _DONE and t.get("status") not in _FAILED for t in tasks)
+        and any(
+            t.get("status") not in _DONE and t.get("status") not in _FAILED
+            for t in tasks
+        )
         and journal.get("integrate_complete")
         and not journal.get("groups")
     ):
         phase = "fanout_failed"
 
-    lines: List[str] = []
+    lines: list[str] = []
     if group_phases and isinstance(group_phases, dict):
         # Pipelined run: show concurrent-phase summary (AC-016/AC-017).
         # Falls back to single phase line if summary computation fails (AC-018).
         try:
-            _PHASE_DISPLAY = {"fanout": "fanning", "integrating": "integrating", "verifying": "verifying"}
-            counts: Dict[str, int] = {}
+            _PHASE_DISPLAY = {
+                "fanout": "fanning",
+                "integrating": "integrating",
+                "verifying": "verifying",
+            }
+            counts: dict[str, int] = {}
             for ph in group_phases.values():
                 counts[ph] = counts.get(ph, 0) + 1
             ordered = ["fanout", "integrating", "verifying"]
@@ -642,7 +654,7 @@ def render(
                     parts.append(f"{n} {ph}")
             phase_summary = " / ".join(parts) if parts else "idle"
             lines.append(f"spec {spec_id}   run {run_id}   {phase_summary}")
-        except Exception:
+        except Exception:  # noqa: BLE001
             lines.append(f"spec {spec_id}   run {run_id}   phase: {phase}")
     else:
         lines.append(f"spec {spec_id}   run {run_id}   phase: {phase}")
@@ -666,7 +678,7 @@ def render(
         stale = is_active and _is_stale(act)
         steps = by_task.get(tid, [])
 
-        parts: List[str] = []
+        parts: list[str] = []
         for e in steps:
             role = e.get("role", "?")
             dur = e.get("duration_s")
@@ -693,7 +705,9 @@ def render(
         elif mark == "▶":
             inflight_ct += 1
 
-        status_txt = (status or ("pending" if not steps and not is_active else "")).ljust(10)
+        status_txt = (
+            status or ("pending" if not steps and not is_active else "")
+        ).ljust(10)
         detail = "  ·  ".join(parts)
         lines.append(f"  [{mark}] {tid:14} {status_txt} {detail}".rstrip())
 

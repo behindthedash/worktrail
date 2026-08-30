@@ -23,8 +23,10 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from worktrail.orchestrator import live  # noqa: E402
-from worktrail.orchestrator import spawnlib  # noqa: E402
+from worktrail.orchestrator import (
+    live,
+    spawnlib,
+)
 
 
 def _init_repo(root: Path) -> Path:
@@ -44,9 +46,13 @@ def _init_repo(root: Path) -> Path:
     )
     (repo / "docs" / "specs" / "001-x" / "tasks" / "TASK-001.md").write_text(fm)
     (repo / "README.md").write_text("x\n")
-    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True)
     subprocess.run(
-        ["git", "-C", str(repo), "commit", "-q", "-m", "init"], check=True, capture_output=True
+        ["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-q", "-m", "init"],
+        check=True,
+        capture_output=True,
     )
     return repo
 
@@ -57,14 +63,21 @@ def _commit_file(wt: Path, name: str, content: str) -> str:
     f.write_text(content)
     subprocess.run(["git", "-C", str(wt), "add", "-A"], check=True, capture_output=True)
     subprocess.run(
-        ["git", "-C", str(wt), "commit", "-q", "-m", name], check=True, capture_output=True
+        ["git", "-C", str(wt), "commit", "-q", "-m", name],
+        check=True,
+        capture_output=True,
     )
     return subprocess.run(
-        ["git", "-C", str(wt), "rev-parse", "HEAD"], capture_output=True, text=True
+        ["git", "-C", str(wt), "rev-parse", "HEAD"],
+        check=False,
+        capture_output=True,
+        text=True,
     ).stdout.strip()
 
 
-def _report(task_id: str, role: str, sha: str, *, review_status=None) -> spawnlib.SpawnResult:
+def _report(
+    task_id: str, role: str, sha: str, *, review_status=None
+) -> spawnlib.SpawnResult:
     rs = f'"{review_status}"' if review_status else "null"
     return spawnlib.SpawnResult(
         text=(
@@ -97,7 +110,10 @@ class ReviewFailsThenFixDeclines:
 
     def __call__(self, role: str, task: dict, wt: Path) -> spawnlib.SpawnResult:
         sha = subprocess.run(
-            ["git", "-C", str(wt), "rev-parse", "HEAD"], capture_output=True, text=True
+            ["git", "-C", str(wt), "rev-parse", "HEAD"],
+            check=False,
+            capture_output=True,
+            text=True,
         ).stdout.strip()
         if role == "implement":
             self._commit_count += 1
@@ -150,7 +166,9 @@ class TestFixRoleFailedTerminalStatus(unittest.TestCase):
                 if e.get("task") == "TASK-001"
                 and (e.get("report") or {}).get("terminal_status") == "failed"
             ]
-            self.assertEqual(remaining_failed, [], "the failed entry should have been cleared")
+            self.assertEqual(
+                remaining_failed, [], "the failed entry should have been cleared"
+            )
             self.assertTrue(
                 any(e.get("task") == "TASK-001" for e in cleared_journal["entries"]),
                 "earlier successful TASK-001 history should be kept, not wiped",

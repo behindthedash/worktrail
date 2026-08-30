@@ -41,13 +41,13 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
-from . import work_queue as wq
 from ..shared.brief_frontmatter import validate_brief
+from . import work_queue as wq
 
 
-def _resolve_classify_command() -> Optional[List[str]]:
+def _resolve_classify_command() -> list[str] | None:
     """Argv prefix to invoke classify.py's `--request ... --json` CLI, or None if unavailable.
 
     Prefers worktrail's own `router.classify` once that sub-phase lands (installed console
@@ -65,12 +65,17 @@ def _resolve_classify_command() -> Optional[List[str]]:
     return None
 
 
-def classify_focus(classify_command: List[str], focus_text: str) -> Optional[Dict[str, Any]]:
+def classify_focus(
+    classify_command: list[str], focus_text: str
+) -> dict[str, Any] | None:
     """Run classify.py against `focus_text`; None on any failure (skip, don't guess)."""
     try:
         proc = subprocess.run(
             [*classify_command, "--request", focus_text, "--json"],
-            capture_output=True, text=True, timeout=30, check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -82,9 +87,9 @@ def classify_focus(classify_command: List[str], focus_text: str) -> Optional[Dic
         return None
 
 
-def build_preview(queue_dir: Path, classify_command: List[str]) -> Dict[str, Any]:
-    proposals: List[Dict[str, Any]] = []
-    skipped: List[Dict[str, Any]] = []
+def build_preview(queue_dir: Path, classify_command: list[str]) -> dict[str, Any]:
+    proposals: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
     for path in sorted(queue_dir.glob("*.md")):
         fm = wq._read_frontmatter(path)
         existing = fm.get("recommended-route")
@@ -98,32 +103,41 @@ def build_preview(queue_dir: Path, classify_command: List[str]) -> Dict[str, Any
 
         result = classify_focus(classify_command, focus_text)
         if result is None:
-            skipped.append({"id": path.stem, "reason": "classify.py errored or produced invalid JSON"})
+            skipped.append(
+                {
+                    "id": path.stem,
+                    "reason": "classify.py errored or produced invalid JSON",
+                }
+            )
             continue
 
         confidence = result.get("confidence")
         ambiguous = result.get("ambiguous_between") or []
         if confidence not in ("high", "medium") or ambiguous:
-            skipped.append({
-                "id": path.stem,
-                "reason": f"confidence={confidence!r} ambiguous_between={ambiguous!r}",
-            })
+            skipped.append(
+                {
+                    "id": path.stem,
+                    "reason": f"confidence={confidence!r} ambiguous_between={ambiguous!r}",
+                }
+            )
             continue
 
-        proposals.append({
-            "id": path.stem,
-            "path": str(path),
-            "focus": focus_text,
-            "proposed_route": result["route"],
-            "route_name": result.get("route_name"),
-            "confidence": confidence,
-            "classify_reason": result.get("reason"),
-        })
+        proposals.append(
+            {
+                "id": path.stem,
+                "path": str(path),
+                "focus": focus_text,
+                "proposed_route": result["route"],
+                "route_name": result.get("route_name"),
+                "confidence": confidence,
+                "classify_reason": result.get("reason"),
+            }
+        )
 
     return {"proposals": proposals, "skipped": skipped}
 
 
-def _resolve_preview_payload(raw: str) -> Dict[str, Any]:
+def _resolve_preview_payload(raw: str) -> dict[str, Any]:
     """Parse `--preview`, accepting either `preview`'s full payload or a bare
     `{"proposals": [...]}` dict -- same shape-tolerance rationale as
     consolidate_cluster.py's `_resolve_draft_payload`."""
@@ -132,27 +146,44 @@ def _resolve_preview_payload(raw: str) -> Dict[str, Any]:
     except json.JSONDecodeError as exc:
         raise ValueError(f"--preview is not valid JSON: {exc}") from exc
     if not isinstance(parsed, dict) or not isinstance(parsed.get("proposals"), list):
-        raise ValueError("--preview must be a JSON object with a 'proposals' list")
+        raise ValueError("--preview must be a JSON object with a 'proposals' list")  # noqa: TRY004 -- ValueError is this function's uniform malformed-input contract; callers catch ValueError specifically
     return parsed
 
 
-def execute_apply(preview: Dict[str, Any], queue_dir: Path, confirm: bool) -> Dict[str, Any]:
-    stamped: List[str] = []
-    skipped: List[Dict[str, Any]] = []
+def execute_apply(
+    preview: dict[str, Any], queue_dir: Path, confirm: bool
+) -> dict[str, Any]:
+    stamped: list[str] = []
+    skipped: list[dict[str, Any]] = []
 
     if not confirm:
-        return {"stamped": stamped, "skipped": [{"id": p["id"], "reason": "declined"} for p in preview["proposals"]]}
+        return {
+            "stamped": stamped,
+            "skipped": [
+                {"id": p["id"], "reason": "declined"} for p in preview["proposals"]
+            ],
+        }
 
     for item in preview["proposals"]:
         path = Path(item["path"])
         if not path.is_file() or path.parent.resolve() != queue_dir.resolve():
-            skipped.append({"id": item["id"], "reason": "brief no longer present in queue/ (claimed/moved since preview)"})
+            skipped.append(
+                {
+                    "id": item["id"],
+                    "reason": "brief no longer present in queue/ (claimed/moved since preview)",
+                }
+            )
             continue
 
         fm = wq._read_frontmatter(path)
         existing = fm.get("recommended-route")
         if isinstance(existing, str) and existing.strip():
-            skipped.append({"id": item["id"], "reason": "already stamped since preview -- not clobbering"})
+            skipped.append(
+                {
+                    "id": item["id"],
+                    "reason": "already stamped since preview -- not clobbering",
+                }
+            )
             continue
 
         try:
@@ -163,7 +194,9 @@ def execute_apply(preview: Dict[str, Any], queue_dir: Path, confirm: bool) -> Di
 
         ok, verr = validate_brief(path)
         if not ok:
-            skipped.append({"id": item["id"], "reason": f"post-write validation failed: {verr}"})
+            skipped.append(
+                {"id": item["id"], "reason": f"post-write validation failed: {verr}"}
+            )
             continue
 
         stamped.append(item["id"])
@@ -171,20 +204,34 @@ def execute_apply(preview: Dict[str, Any], queue_dir: Path, confirm: bool) -> Di
     return {"stamped": stamped, "skipped": skipped}
 
 
-def main(argv: Optional[List[str]] = None) -> int:
-    p = argparse.ArgumentParser(description="backfill recommended-route: on existing queue briefs")
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(
+        description="backfill recommended-route: on existing queue briefs"
+    )
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--queue-dir", default=None, help="override queue/ (default: WORK_QUEUE_DIR/queue)")
+    common.add_argument(
+        "--queue-dir",
+        default=None,
+        help="override queue/ (default: WORK_QUEUE_DIR/queue)",
+    )
     subs = p.add_subparsers(dest="cmd")
     subs.required = True
 
-    subs.add_parser("preview", parents=[common], help="classify every un-stamped brief; write nothing")
+    subs.add_parser(
+        "preview",
+        parents=[common],
+        help="classify every un-stamped brief; write nothing",
+    )
 
-    execute_p = subs.add_parser("execute", parents=[common], help="stamp recommended-route from a preview")
+    execute_p = subs.add_parser(
+        "execute", parents=[common], help="stamp recommended-route from a preview"
+    )
     execute_p.add_argument("--preview", required=True, help="preview's JSON stdout")
     confirm_grp = execute_p.add_mutually_exclusive_group(required=True)
     confirm_grp.add_argument("--confirm", action="store_true", help="write the stamps")
-    confirm_grp.add_argument("--decline", action="store_true", help="perform zero writes")
+    confirm_grp.add_argument(
+        "--decline", action="store_true", help="perform zero writes"
+    )
 
     args = p.parse_args(argv)
     queue_dir = Path(args.queue_dir) if args.queue_dir else wq.queue_dir()

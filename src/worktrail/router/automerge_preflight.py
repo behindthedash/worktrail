@@ -28,6 +28,7 @@ means "not eligible", never "assume yes."
 
 Usage: automerge_preflight.py --repo /path/to/repo --branch main [--json]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -35,8 +36,9 @@ import json
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any
 
 Runner = Callable[..., "subprocess.CompletedProcess[str]"]
 Sleeper = Callable[[float], None]
@@ -48,7 +50,7 @@ Sleeper = Callable[[float], None]
 _QUERY_ERROR_MARKER = "gh api failed"
 
 
-def owner_repo_from_git(repo: Path, runner: Runner = subprocess.run) -> Optional[str]:
+def owner_repo_from_git(repo: Path, runner: Runner = subprocess.run) -> str | None:
     """`owner/repo` parsed from the `origin` remote, or None if unresolvable.
 
     Handles both the HTTPS form (`https://github.com/owner/repo.git`) and the
@@ -58,8 +60,12 @@ def owner_repo_from_git(repo: Path, runner: Runner = subprocess.run) -> Optional
     fails to strip the host for SSH remotes; splitting on bare "github.com"
     and stripping both separators handles either form.
     """
-    result = runner(["git", "remote", "get-url", "origin"], cwd=str(repo),
-                     capture_output=True, text=True)
+    result = runner(
+        ["git", "remote", "get-url", "origin"],
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+    )
     if result.returncode != 0:
         return None
     url = result.stdout.strip().rstrip("/").removesuffix(".git")
@@ -68,8 +74,9 @@ def owner_repo_from_git(repo: Path, runner: Runner = subprocess.run) -> Optional
     return url.split("github.com", 1)[-1].lstrip(":/")
 
 
-def required_status_check_contexts(owner_repo: str, branch: str,
-                                    runner: Runner = subprocess.run) -> Optional[List[str]]:
+def required_status_check_contexts(
+    owner_repo: str, branch: str, runner: Runner = subprocess.run
+) -> list[str] | None:
     """Required status check contexts for `branch`, or None if the query failed.
 
     An empty list is a real, meaningful answer: the branch has zero required
@@ -78,7 +85,8 @@ def required_status_check_contexts(owner_repo: str, branch: str,
     """
     result = runner(
         ["gh", "api", f"repos/{owner_repo}/rules/branches/{branch}"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     if result.returncode != 0:
         return None
@@ -86,7 +94,7 @@ def required_status_check_contexts(owner_repo: str, branch: str,
         rules = json.loads(result.stdout)
     except json.JSONDecodeError:
         return None
-    contexts: List[str] = []
+    contexts: list[str] = []
     for rule in rules:
         if rule.get("type") != "required_status_checks":
             continue
@@ -97,9 +105,13 @@ def required_status_check_contexts(owner_repo: str, branch: str,
     return contexts
 
 
-def repo_settings(owner_repo: str, runner: Runner = subprocess.run) -> Optional[Dict[str, Any]]:
+def repo_settings(
+    owner_repo: str, runner: Runner = subprocess.run
+) -> dict[str, Any] | None:
     """`GET /repos/{owner}/{repo}` as a dict, or None if the query failed."""
-    result = runner(["gh", "api", f"repos/{owner_repo}"], capture_output=True, text=True)
+    result = runner(
+        ["gh", "api", f"repos/{owner_repo}"], capture_output=True, text=True
+    )
     if result.returncode != 0:
         return None
     try:
@@ -131,7 +143,7 @@ def required_checks_gate(
     retries: int = 3,
     backoff_seconds: float = 2.0,
     sleep: Sleeper = time.sleep,
-) -> Tuple[bool, str]:
+) -> tuple[bool, str]:
     """True only when `branch` has at least one required status check AND the
     repo allows auto-merge. Fails closed on every unresolvable signal.
 
@@ -157,12 +169,14 @@ def required_checks_gate(
     if contexts is None:
         return False, (
             f"could not query required status checks for {owner_repo}@{branch} "
-            f"({_QUERY_ERROR_MARKER} after {retries} attempts)")
+            f"({_QUERY_ERROR_MARKER} after {retries} attempts)"
+        )
     if not contexts:
         return False, (
             f"{owner_repo}@{branch} has zero required status checks -- gh pr merge --auto "
             "(native or workflow-driven) would merge with no validation waited on. Add a "
-            "required check via a ruleset (.github/rulesets/protect-<branch>.json) first.")
+            "required check via a ruleset (.github/rulesets/protect-<branch>.json) first."
+        )
 
     settings = None
     for attempt in range(retries):
@@ -174,17 +188,22 @@ def required_checks_gate(
     if settings is None:
         return False, (
             f"could not query repo settings for {owner_repo} "
-            f"({_QUERY_ERROR_MARKER} after {retries} attempts)")
+            f"({_QUERY_ERROR_MARKER} after {retries} attempts)"
+        )
     if not settings.get("allow_auto_merge"):
         return False, (
             f"{owner_repo} has allow_auto_merge=false -- gh pr merge --auto falls back to an "
             f"immediate merge instead of waiting on required checks ({', '.join(contexts)}). "
-            "Enable 'Allow auto-merge' in repo settings.")
+            "Enable 'Allow auto-merge' in repo settings."
+        )
 
-    return True, f"required checks present ({', '.join(contexts)}); allow_auto_merge enabled"
+    return (
+        True,
+        f"required checks present ({', '.join(contexts)}); allow_auto_merge enabled",
+    )
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--repo", required=True)
     p.add_argument("--branch", default="main")

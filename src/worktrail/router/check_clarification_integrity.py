@@ -75,10 +75,12 @@ def check_text(text: str) -> list[str]:
         return []
 
     return [
-        f"inference-based Clarifications resolution ('{inference_hit}') co-occurs "
-        f"with an all-clear line ('{all_clear_hit}') — see Decision Classification "
-        "in specs.spec-check.md; an owner-escalated marker must be reported as "
-        "Decision needed, not None outstanding"
+        (
+            f"inference-based Clarifications resolution ('{inference_hit}') co-occurs "
+            f"with an all-clear line ('{all_clear_hit}') — see Decision Classification "
+            "in specs.spec-check.md; an owner-escalated marker must be reported as "
+            "Decision needed, not None outstanding"
+        )
     ]
 
 
@@ -98,11 +100,16 @@ def check_changed_specs(repo: Path, changed_paths: list[str]) -> list[str]:
 
 
 def _resolve_base_ref(repo: Path, configured: str | None) -> str | None:
-    candidates = (f"origin/{configured}", configured) if configured else CANDIDATE_BASE_REFS
+    candidates = (
+        (f"origin/{configured}", configured) if configured else CANDIDATE_BASE_REFS
+    )
     for ref in candidates:
         result = subprocess.run(
             ["git", "rev-parse", "--verify", "--quiet", ref],
-            cwd=str(repo), capture_output=True, text=True,
+            check=False,
+            cwd=str(repo),
+            capture_output=True,
+            text=True,
         )
         if result.returncode == 0:
             return ref
@@ -115,13 +122,19 @@ def _changed_paths_via_git(repo: Path, configured_base: str | None) -> list[str]
         return []
     merge_base = subprocess.run(
         ["git", "merge-base", "HEAD", base_ref],
-        cwd=str(repo), capture_output=True, text=True,
+        check=False,
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
     )
     if merge_base.returncode != 0:
         return []
     diff = subprocess.run(
         ["git", "diff", "--name-only", merge_base.stdout.strip(), "HEAD"],
-        cwd=str(repo), capture_output=True, text=True,
+        check=False,
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
     )
     if diff.returncode != 0:
         return []
@@ -132,7 +145,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     parser.add_argument("--repo", default=".", help="worktree root (default: cwd)")
     parser.add_argument(
-        "--base-branch", default=None,
+        "--base-branch",
+        default=None,
         help="base branch to diff against (default: try origin/main, origin/master, main, master)",
     )
     args = parser.parse_args()
@@ -142,7 +156,9 @@ def main() -> int:
     failures = check_changed_specs(repo, changed)
 
     if failures:
-        print(f"FAIL: {len(failures)} clarification-integrity issue(s) in changed spec files")
+        print(
+            f"FAIL: {len(failures)} clarification-integrity issue(s) in changed spec files"
+        )
         for failure in failures:
             print(f"  - {failure}")
         return 1

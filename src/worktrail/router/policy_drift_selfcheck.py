@@ -54,6 +54,7 @@ Usage:
   policy_drift_selfcheck.py --repo /path/to/repo [--json]
   policy_drift_selfcheck.py --repos-root ~/projects [--json]   # sweep every repo
 """
+
 from __future__ import annotations
 
 import argparse
@@ -62,7 +63,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .policy import policy_file_path
 from .policy_selfcheck import discover_repo_names
@@ -76,16 +77,19 @@ _WORKFLOWS_RELPATH = Path(".github") / "workflows"
 # Test-file naming conventions, matched against git-tracked repo-relative
 # POSIX paths. Tracked-only means gitignored build output and node_modules are
 # excluded for free, without maintaining an ignore list.
-_TEST_FILE_RES = tuple(re.compile(p) for p in (
-    r"(?:^|/)test_[^/]+\.py$",
-    r"(?:^|/)[^/]+_test\.py$",
-    r"\.test\.(?:ts|tsx|js|jsx|mjs|cjs)$",
-    r"\.spec\.(?:ts|tsx|js|jsx|mjs|cjs)$",
-    r"(?:^|/)test_[^/]+\.(?:mjs|cjs|js|ts)$",
-    r"(?:^|/)[^/]+_test\.go$",
-    r"(?:^|/)[^/]+_test\.rb$",
-    r"(?:^|/)[^/]+Test\.java$",
-))
+_TEST_FILE_RES = tuple(
+    re.compile(p)
+    for p in (
+        r"(?:^|/)test_[^/]+\.py$",
+        r"(?:^|/)[^/]+_test\.py$",
+        r"\.test\.(?:ts|tsx|js|jsx|mjs|cjs)$",
+        r"\.spec\.(?:ts|tsx|js|jsx|mjs|cjs)$",
+        r"(?:^|/)test_[^/]+\.(?:mjs|cjs|js|ts)$",
+        r"(?:^|/)[^/]+_test\.go$",
+        r"(?:^|/)[^/]+_test\.rb$",
+        r"(?:^|/)[^/]+Test\.java$",
+    )
+)
 
 # Vendored trees can be tracked, unlike node_modules; their tests aren't ours.
 _IGNORED_PARTS = frozenset({"node_modules", "vendor", "third_party", ".venv", "venv"})
@@ -115,33 +119,62 @@ _RUNNER_RE = re.compile(
 
 # Narrow, high-precision absence claims. Freeform prose will always be matched
 # only partially, so these must never be the sole signal a repo is judged on.
-_NO_TESTS_RES = tuple(re.compile(p, re.IGNORECASE) for p in (
-    r"\bno\s+test\s+suite\b",
-    r"\bno\s+tests?\s+in\s+this\s+repo\b",
-    r"\bno\s+test\s+or\s+standalone\b",
-))
-_NO_CI_RES = tuple(re.compile(p, re.IGNORECASE) for p in (
-    r"\bno\s+ci\s+workflows?\b",
-    r"\bno\s+ci\s+pipelines?\b",
-))
-_NO_LINT_RES = tuple(re.compile(p, re.IGNORECASE) for p in (
-    r"\bno\s+lint(?:ing)?\s+(?:config(?:uration)?|setup|script)\b",
-    r"\bno\s+linter\b",
-    r"\bno\s+eslint\b",
-))
+_NO_TESTS_RES = tuple(
+    re.compile(p, re.IGNORECASE)
+    for p in (
+        r"\bno\s+test\s+suite\b",
+        r"\bno\s+tests?\s+in\s+this\s+repo\b",
+        r"\bno\s+test\s+or\s+standalone\b",
+    )
+)
+_NO_CI_RES = tuple(
+    re.compile(p, re.IGNORECASE)
+    for p in (
+        r"\bno\s+ci\s+workflows?\b",
+        r"\bno\s+ci\s+pipelines?\b",
+    )
+)
+_NO_LINT_RES = tuple(
+    re.compile(p, re.IGNORECASE)
+    for p in (
+        r"\bno\s+lint(?:ing)?\s+(?:config(?:uration)?|setup|script)\b",
+        r"\bno\s+linter\b",
+        r"\bno\s+eslint\b",
+    )
+)
 
 # Lint configuration, by filename. A repo-root `package.json` with a `lint`
 # script and a pyproject `[tool.<linter>]` table are handled separately.
-_LINT_CONFIG_NAMES = frozenset({
-    ".eslintrc", ".eslintrc.js", ".eslintrc.cjs", ".eslintrc.json",
-    ".eslintrc.yml", ".eslintrc.yaml",
-    "eslint.config.js", "eslint.config.mjs", "eslint.config.cjs",
-    "eslint.config.ts",
-    "biome.json", "biome.jsonc", ".oxlintrc.json",
-    "ruff.toml", ".ruff.toml", ".flake8", ".pylintrc", "pylintrc",
-    "tslint.json", ".golangci.yml", ".golangci.yaml", ".golangci.toml",
-    ".rubocop.yml", ".credo.exs", ".stylelintrc", ".stylelintrc.json",
-})
+_LINT_CONFIG_NAMES = frozenset(
+    {
+        ".eslintrc",
+        ".eslintrc.js",
+        ".eslintrc.cjs",
+        ".eslintrc.json",
+        ".eslintrc.yml",
+        ".eslintrc.yaml",
+        "eslint.config.js",
+        "eslint.config.mjs",
+        "eslint.config.cjs",
+        "eslint.config.ts",
+        "biome.json",
+        "biome.jsonc",
+        ".oxlintrc.json",
+        "ruff.toml",
+        ".ruff.toml",
+        ".flake8",
+        ".pylintrc",
+        "pylintrc",
+        "tslint.json",
+        ".golangci.yml",
+        ".golangci.yaml",
+        ".golangci.toml",
+        ".rubocop.yml",
+        ".credo.exs",
+        ".stylelintrc",
+        ".stylelintrc.json",
+    }
+)
 _PYPROJECT_LINT_RE = re.compile(
     r"^\[tool\.(?:ruff|flake8|pylint|black|isort)\b", re.MULTILINE
 )
@@ -154,7 +187,7 @@ def _is_test_path(rel: str) -> bool:
     return any(r.search(rel) for r in _TEST_FILE_RES)
 
 
-def tracked_test_files(repo: Path) -> List[str]:
+def tracked_test_files(repo: Path) -> list[str]:
     """Git-tracked test files in `repo`, as repo-relative POSIX paths.
 
     One `git ls-files` beats globbing: it is a single subprocess, and it can't
@@ -163,7 +196,10 @@ def tracked_test_files(repo: Path) -> List[str]:
     try:
         proc = subprocess.run(
             ["git", "-C", str(repo), "ls-files", "-z"],
-            capture_output=True, text=True, timeout=30,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
     except (OSError, subprocess.SubprocessError):
         return []
@@ -172,7 +208,7 @@ def tracked_test_files(repo: Path) -> List[str]:
     return sorted(p for p in proc.stdout.split("\0") if p and _is_test_path(p))
 
 
-def _policy_text(repo: Path) -> Optional[str]:
+def _policy_text(repo: Path) -> str | None:
     src = policy_file_path(repo)
     if not src.is_file():
         return None
@@ -199,15 +235,16 @@ def _command_values(text: str) -> str:
     return "\n".join(vals)
 
 
-def workflow_files(repo: Path) -> List[Path]:
+def workflow_files(repo: Path) -> list[Path]:
     wf = repo / _WORKFLOWS_RELPATH
     if not wf.is_dir():
         return []
-    return sorted(p for p in wf.iterdir()
-                  if p.is_file() and p.suffix in (".yml", ".yaml"))
+    return sorted(
+        p for p in wf.iterdir() if p.is_file() and p.suffix in (".yml", ".yaml")
+    )
 
 
-def lint_config_evidence(repo: Path) -> Optional[str]:
+def lint_config_evidence(repo: Path) -> str | None:
     """The first piece of lint configuration found, or None.
 
     Returns the evidence itself rather than a bool so the finding can name what
@@ -221,7 +258,9 @@ def lint_config_evidence(repo: Path) -> Optional[str]:
     pkg = repo / "package.json"
     if pkg.is_file():
         try:
-            if _PKG_LINT_SCRIPT_RE.search(pkg.read_text(encoding="utf-8", errors="replace")):
+            if _PKG_LINT_SCRIPT_RE.search(
+                pkg.read_text(encoding="utf-8", errors="replace")
+            ):
                 return "package.json lint script"
         except OSError:
             pass
@@ -248,7 +287,7 @@ def _ci_runs_tests(repo: Path) -> bool:
     return False
 
 
-def orphaned_test_paths(repo: Path) -> List[str]:
+def orphaned_test_paths(repo: Path) -> list[str]:
     """Test files that no configured gate and no CI workflow appears to run.
 
     Empty when the repo is clean, has no policy file, or has no test files.
@@ -269,11 +308,15 @@ def orphaned_test_paths(repo: Path) -> List[str]:
     return tests
 
 
-def check_repo(repo: Path) -> Dict[str, Any]:
+def check_repo(repo: Path) -> dict[str, Any]:
     """Findings for one repo's worktrail-go-policy.yaml. Empty `findings` = clean."""
     repo = Path(repo)
-    result: Dict[str, Any] = {"repo": repo.name, "path": str(repo),
-                              "source": None, "findings": []}
+    result: dict[str, Any] = {
+        "repo": repo.name,
+        "path": str(repo),
+        "source": None,
+        "findings": [],
+    }
     text = _policy_text(repo)
     if text is None:
         return result
@@ -289,49 +332,57 @@ def check_repo(repo: Path) -> Dict[str, Any]:
     if tests and not gate_runs_tests and not ci_runs_tests:
         shown = ", ".join(tests[:3])
         more = f" (+{len(tests) - 3} more)" if len(tests) > 3 else ""
-        findings.append({
-            "signal": "orphaned-tests",
-            "detail": (
-                f"{len(tests)} git-tracked test file(s) run by no test runner in "
-                f"pre_pr_cmd/integrate_smoke_cmd and none in .github/workflows: "
-                f"{shown}{more}"
-            ),
-        })
+        findings.append(
+            {
+                "signal": "orphaned-tests",
+                "detail": (
+                    f"{len(tests)} git-tracked test file(s) run by no test runner in "
+                    f"pre_pr_cmd/integrate_smoke_cmd and none in .github/workflows: "
+                    f"{shown}{more}"
+                ),
+            }
+        )
 
     if tests and any(r.search(comments) for r in _NO_TESTS_RES):
-        findings.append({
-            "signal": "stale-claim-no-tests",
-            "detail": (
-                f"policy comments claim there is no test suite, but "
-                f"{len(tests)} test file(s) exist"
-            ),
-        })
+        findings.append(
+            {
+                "signal": "stale-claim-no-tests",
+                "detail": (
+                    f"policy comments claim there is no test suite, but "
+                    f"{len(tests)} test file(s) exist"
+                ),
+            }
+        )
 
     if any(r.search(comments) for r in _NO_LINT_RES):
         lint = lint_config_evidence(repo)
         if lint is not None:
-            findings.append({
-                "signal": "stale-claim-no-lint",
-                "detail": (
-                    f"policy comments claim there is no lint configuration, but "
-                    f"{lint} exists"
-                ),
-            })
+            findings.append(
+                {
+                    "signal": "stale-claim-no-lint",
+                    "detail": (
+                        f"policy comments claim there is no lint configuration, but "
+                        f"{lint} exists"
+                    ),
+                }
+            )
 
     if workflows and any(r.search(comments) for r in _NO_CI_RES):
-        findings.append({
-            "signal": "stale-claim-no-ci",
-            "detail": (
-                f"policy comments claim there are no CI workflows, but "
-                f"{len(workflows)} workflow file(s) exist: "
-                + ", ".join(f.name for f in workflows[:3])
-            ),
-        })
+        findings.append(
+            {
+                "signal": "stale-claim-no-ci",
+                "detail": (
+                    f"policy comments claim there are no CI workflows, but "
+                    f"{len(workflows)} workflow file(s) exist: "
+                    + ", ".join(f.name for f in workflows[:3])
+                ),
+            }
+        )
 
     return result
 
 
-def sweep(repos_root: Path) -> List[Dict[str, Any]]:
+def sweep(repos_root: Path) -> list[dict[str, Any]]:
     """check_repo() for every repo under `repos_root` that has a policy file."""
     results = []
     for name in discover_repo_names(repos_root):
@@ -341,7 +392,7 @@ def sweep(repos_root: Path) -> List[Dict[str, Any]]:
     return results
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--repo", help="single repo to check")
     p.add_argument("--repos-root", help="sweep every repo under this directory")
@@ -361,7 +412,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(json.dumps({"results": results, "flagged": len(flagged)}, indent=2))
     else:
         if not flagged:
-            print(f"policy_drift_selfcheck: {len(results)} repo(s) checked, no drift signals")
+            print(
+                f"policy_drift_selfcheck: {len(results)} repo(s) checked, no drift signals"
+            )
         for r in flagged:
             print(f"{r['repo']}:")
             for f in r["findings"]:

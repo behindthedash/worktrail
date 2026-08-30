@@ -31,9 +31,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from typing import Any, Dict, FrozenSet, List, Optional, Tuple
-
-
+from typing import Any
 
 # --------------------------------------------------------------------------- #
 # Fixture construction
@@ -44,10 +42,10 @@ def _write_brief(
     dirpath: Path,
     filename: str,
     *,
-    repo: Optional[str] = None,
-    target_spec: Optional[str] = None,
-    related: Optional[List[str]] = None,
-    blocked_by: Optional[List[str]] = None,
+    repo: str | None = None,
+    target_spec: str | None = None,
+    related: list[str] | None = None,
+    blocked_by: list[str] | None = None,
     focus: str = "",
 ) -> str:
     """Write a realistic queued-brief .md file; return its stem (brief id)."""
@@ -74,7 +72,7 @@ def _write_brief(
     return path.stem
 
 
-def _build_realistic_queue(queue_dir: Path) -> Dict[str, str]:
+def _build_realistic_queue(queue_dir: Path) -> dict[str, str]:
     """Materialize the realistic multi-brief fixture demanded by TASK-005's
     Test Instructions: (a) a 3-brief cluster via related + same-target-spec,
     (b) a literal duplicate-slug pair, (c) a high focus-overlap pair, (d) an
@@ -84,7 +82,7 @@ def _build_realistic_queue(queue_dir: Path) -> Dict[str, str]:
     (f) unrelated singleton briefs, (g) a genuinely below-threshold overlap
     pair that must NOT surface. Returns {label: stem}.
     """
-    ids: Dict[str, str] = {}
+    ids: dict[str, str] = {}
 
     # (a) 3-brief cluster: a1-a2 via same-target-spec, a2-a3 via related-link
     # (only transitively connected -- no direct a1-a3 edge -- to exercise
@@ -242,11 +240,14 @@ this file as unparseable (or empty-frontmatter) and skip it without raising.
 
 
 def _cluster_by_members(
-    clusters: List[Dict],
-) -> Dict[FrozenSet[str], Tuple[Tuple[str, ...], int]]:
+    clusters: list[dict],
+) -> dict[frozenset[str], tuple[tuple[str, ...], int]]:
     """Map each surfaced cluster's member set -> (sorted signals, size), so
     assertions are independent of the clusters list's own outer ordering."""
-    return {frozenset(c["members"]): (tuple(sorted(c["signals"])), c["size"]) for c in clusters}
+    return {
+        frozenset(c["members"]): (tuple(sorted(c["signals"])), c["size"])
+        for c in clusters
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -276,7 +277,7 @@ class ClusterDashboardE2E(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def _env(self, wq_base: Optional[Path] = None) -> Dict[str, str]:
+    def _env(self, wq_base: Path | None = None) -> dict[str, str]:
         env = dict(os.environ)
         env["WORK_QUEUE_DIR"] = str(wq_base or self.wq_base)
         # Isolate cluster_telemetry from this machine's real worktrail-home cluster-log.jsonl
@@ -286,11 +287,12 @@ class ClusterDashboardE2E(unittest.TestCase):
         env["GO_CLUSTER_LOG"] = str(self.tmp_path / "cluster-log.jsonl")
         return env
 
-    def _list_queue_json(self, env: Dict[str, str]) -> str:
+    def _list_queue_json(self, env: dict[str, str]) -> str:
         """Real `work_queue.py list --json` -- the same call `/go` makes
         before feeding the result into `dashboard.py --queue-json`."""
         r = subprocess.run(
             [sys.executable, "-m", "worktrail.workqueue.work_queue", "list", "--json"],
+            check=False,
             capture_output=True,
             text=True,
             env=env,
@@ -300,16 +302,22 @@ class ClusterDashboardE2E(unittest.TestCase):
 
     def _run_dashboard(
         self,
-        env: Dict[str, str],
+        env: dict[str, str],
         *,
-        root: Optional[Path] = None,
-        queue_json: Optional[str] = None,
-    ) -> Dict:
-        args = [sys.executable, "-m", "worktrail.router.dashboard",
-                "--root", str(root or self.specs_root), "--json"]
+        root: Path | None = None,
+        queue_json: str | None = None,
+    ) -> dict:
+        args = [
+            sys.executable,
+            "-m",
+            "worktrail.router.dashboard",
+            "--root",
+            str(root or self.specs_root),
+            "--json",
+        ]
         if queue_json is not None:
             args += ["--queue-json", queue_json]
-        r = subprocess.run(args, capture_output=True, text=True, env=env)
+        r = subprocess.run(args, check=False, capture_output=True, text=True, env=env)
         self.assertEqual(r.returncode, 0, msg=r.stderr)
         return json.loads(r.stdout)
 
@@ -355,7 +363,9 @@ class HappyPath(ClusterDashboardE2E):
         ]
         all_surfaced_members = set().union(*by_members.keys())
         for stem in excluded:
-            self.assertNotIn(stem, all_surfaced_members, msg=f"{stem} unexpectedly surfaced")
+            self.assertNotIn(
+                stem, all_surfaced_members, msg=f"{stem} unexpectedly surfaced"
+            )
 
     def test_signals_and_size_correct_per_cluster(self):
         """AC-010: every surfaced cluster/pair states the correct signal(s)
@@ -371,7 +381,8 @@ class HappyPath(ClusterDashboardE2E):
         d1, d2 = self.ids["d1"], self.ids["d2"]
 
         self.assertEqual(
-            by_members[frozenset({a1, a2, a3})], (("related-link", "same-target-spec"), 3)
+            by_members[frozenset({a1, a2, a3})],
+            (("related-link", "same-target-spec"), 3),
         )
         self.assertEqual(by_members[frozenset({b1, b2})], (("duplicate-slug",), 2))
         self.assertEqual(by_members[frozenset({c1, c2})], (("focus-overlap",), 2))
@@ -405,7 +416,8 @@ class HappyPath(ClusterDashboardE2E):
 
         # Exactly one trailing suggested-next-step line for the whole section.
         self.assertEqual(
-            lines[start + 5], "    → Review for consolidation before dispatching separately."
+            lines[start + 5],
+            "    → Review for consolidation before dispatching separately.",
         )
         # No second header (section appears once).
         self.assertEqual(lines.count("🔗 Consolidatable briefs (4)"), 1)
@@ -489,9 +501,12 @@ class DataIntegrityAndDeterminism(ClusterDashboardE2E):
         result of running cluster detection, even across repeated renders."""
         files = sorted(self.queue_dir.glob("*.md"))
 
-        def _fingerprint() -> Dict[str, Tuple[int, str]]:
+        def _fingerprint() -> dict[str, tuple[int, str]]:
             return {
-                f.name: (f.stat().st_mtime_ns, hashlib.sha256(f.read_bytes()).hexdigest())
+                f.name: (
+                    f.stat().st_mtime_ns,
+                    hashlib.sha256(f.read_bytes()).hexdigest(),
+                )
                 for f in sorted(self.queue_dir.glob("*.md"))
             }
 
@@ -514,7 +529,8 @@ class DataIntegrityAndDeterminism(ClusterDashboardE2E):
         d1 = self._run_dashboard(env, queue_json=qjson)
         d2 = self._run_dashboard(env, queue_json=qjson)
         self.assertEqual(
-            json.dumps(d1["clusters"], sort_keys=True), json.dumps(d2["clusters"], sort_keys=True)
+            json.dumps(d1["clusters"], sort_keys=True),
+            json.dumps(d2["clusters"], sort_keys=True),
         )
         self.assertEqual(d1["rendered"], d2["rendered"])
 
@@ -552,7 +568,8 @@ class DataIntegrityAndDeterminism(ClusterDashboardE2E):
         # carries all briefs, asserted below.
         self.assertIn(
             f"📥 Queued handoffs: none for this repo (+{total_queue_briefs} in other repos)",
-            full["rendered"])
+            full["rendered"],
+        )
         self.assertIn("clusters", full)
         self.assertIsInstance(full["category_actions"], list)
         self.assertIsInstance(full["category_items"], dict)
@@ -573,18 +590,31 @@ class ConsolidateClusterE2E(ClusterDashboardE2E):
     def _picked_dir(self) -> Path:
         return self.wq_base / "picked"
 
-    def _cluster_item(self, data: Dict, members: FrozenSet[str]) -> Dict:
+    def _cluster_item(self, data: dict, members: frozenset[str]) -> dict:
         """The `type: "cluster"` picker item whose members == `members`, from
         a dashboard.py --json run's category_items['workqueue']."""
         for item in data["category_items"]["workqueue"]:
-            if item.get("type") == "cluster" and frozenset(item.get("members", [])) == members:
+            if (
+                item.get("type") == "cluster"
+                and frozenset(item.get("members", [])) == members
+            ):
                 return item
-        self.fail(f"no cluster item for {sorted(members)} in {data['category_items']['workqueue']}")
+        self.fail(
+            f"no cluster item for {sorted(members)} in {data['category_items']['workqueue']}"
+        )
 
-    def _preview(self, member_ids: List[str], env: Dict[str, str]) -> Dict:
+    def _preview(self, member_ids: list[str], env: dict[str, str]) -> dict:
         """Real `consolidate_cluster.py preview` subprocess call."""
         r = subprocess.run(
-            [sys.executable, "-m", "worktrail.router.consolidate_cluster", "preview", *member_ids, "--json"],
+            [
+                sys.executable,
+                "-m",
+                "worktrail.router.consolidate_cluster",
+                "preview",
+                *member_ids,
+                "--json",
+            ],
+            check=False,
             capture_output=True,
             text=True,
             env=env,
@@ -594,19 +624,20 @@ class ConsolidateClusterE2E(ClusterDashboardE2E):
 
     def _execute(
         self,
-        member_ids: List[str],
-        draft: Optional[Dict],
-        env: Dict[str, str],
+        member_ids: list[str],
+        draft: dict | None,
+        env: dict[str, str],
         *,
         confirm: bool,
-    ) -> Dict:
+    ) -> dict:
         """Real `consolidate_cluster.py execute` subprocess call -- the
         confirm/decline boundary is exercised as a CLI flag, exactly the
         non-interactive boundary the change spec's Testing Strategy calls
         for (no AskUserQuestion is driven here)."""
         args = [
             sys.executable,
-            "-m", "worktrail.router.consolidate_cluster",
+            "-m",
+            "worktrail.router.consolidate_cluster",
             "execute",
             *member_ids,
             "--draft",
@@ -614,16 +645,24 @@ class ConsolidateClusterE2E(ClusterDashboardE2E):
             "--confirm" if confirm else "--decline",
             "--json",
         ]
-        r = subprocess.run(args, capture_output=True, text=True, env=env)
+        r = subprocess.run(args, check=False, capture_output=True, text=True, env=env)
         self.assertEqual(r.returncode, 0, msg=r.stderr)
         return json.loads(r.stdout)
 
-    def _claim(self, identifier: str, env: Dict[str, str]) -> Dict:
+    def _claim(self, identifier: str, env: dict[str, str]) -> dict:
         """Real `work_queue.py claim` subprocess call -- simulates a second
         session claiming a cluster member out-of-band between the dashboard
         snapshot and preview/execute."""
         r = subprocess.run(
-            [sys.executable, "-m", "worktrail.workqueue.work_queue", "claim", identifier, "--json"],
+            [
+                sys.executable,
+                "-m",
+                "worktrail.workqueue.work_queue",
+                "claim",
+                identifier,
+                "--json",
+            ],
+            check=False,
             capture_output=True,
             text=True,
             env=env,
@@ -631,7 +670,7 @@ class ConsolidateClusterE2E(ClusterDashboardE2E):
         self.assertEqual(r.returncode, 0, msg=r.stderr)
         return json.loads(r.stdout)
 
-    def _consolidate_cluster_a(self, env: Dict[str, str]) -> Dict[str, Any]:
+    def _consolidate_cluster_a(self, env: dict[str, str]) -> dict[str, Any]:
         """Full happy-path pipeline for the 3-member cluster "a"
         (a1/a2/a3): snapshot -> preview -> execute --confirm. Returns the
         dashboard snapshot, cluster item, preview, and execute result, for
@@ -643,7 +682,9 @@ class ConsolidateClusterE2E(ClusterDashboardE2E):
         preview = self._preview(cluster_item["members"], env)
         self.assertFalse(preview["withdrawn"])
         self.assertIsNotNone(preview["draft"])
-        execute = self._execute(preview["resolvable_members"], preview["draft"], env, confirm=True)
+        execute = self._execute(
+            preview["resolvable_members"], preview["draft"], env, confirm=True
+        )
         self.assertEqual(execute["status"], "written")
         return {
             "dash": dash,
@@ -683,7 +724,9 @@ class HappyPathConsolidation(ConsolidateClusterE2E):
         self.assertFalse(preview["withdrawn"])
         self.assertIsNotNone(preview["draft"])
 
-        execute = self._execute(preview["resolvable_members"], preview["draft"], env, confirm=True)
+        execute = self._execute(
+            preview["resolvable_members"], preview["draft"], env, confirm=True
+        )
         self.assertEqual(execute["status"], "written")
         self.assertEqual(sorted(execute["members_completed"]), sorted([a1, a2, a3]))
         self.assertEqual(execute["members_skipped"], [])
@@ -692,13 +735,17 @@ class HappyPathConsolidation(ConsolidateClusterE2E):
         new_files = after_queue - before_queue
         self.assertEqual(len(new_files), 1, msg=new_files)
         new_brief_name = next(iter(new_files))
-        self.assertEqual(str(self.queue_dir / new_brief_name), execute["new_brief_path"])
+        self.assertEqual(
+            str(self.queue_dir / new_brief_name), execute["new_brief_path"]
+        )
         new_brief_id = new_brief_name[:-3]
 
         picked_dir = self._picked_dir()
         for member_id in (a1, a2, a3):
             picked_path = picked_dir / f"{member_id}.md"
-            self.assertTrue(picked_path.exists(), msg=f"{member_id} missing from picked/")
+            self.assertTrue(
+                picked_path.exists(), msg=f"{member_id} missing from picked/"
+            )
             body = picked_path.read_text(encoding="utf-8")
             self.assertIn("status: done", body)
             self.assertIn("## Superseded", body)
@@ -732,7 +779,9 @@ class DeclineConsolidation(ConsolidateClusterE2E):
         before_queue = {f.name: f.read_bytes() for f in self.queue_dir.glob("*.md")}
         before_picked = {f.name: f.read_bytes() for f in picked_dir.glob("*.md")}
 
-        execute = self._execute(preview["resolvable_members"], preview["draft"], env, confirm=False)
+        execute = self._execute(
+            preview["resolvable_members"], preview["draft"], env, confirm=False
+        )
         self.assertEqual(execute["status"], "declined")
         self.assertIsNone(execute["new_brief_path"])
 
@@ -790,7 +839,9 @@ class RaceStalenessConsolidation(ConsolidateClusterE2E):
         self.assertIsNotNone(preview["draft"])
         self.assertEqual(sorted(preview["resolvable_members"]), sorted([a1, a3]))
 
-        execute = self._execute(preview["resolvable_members"], preview["draft"], env, confirm=True)
+        execute = self._execute(
+            preview["resolvable_members"], preview["draft"], env, confirm=True
+        )
         self.assertEqual(execute["status"], "written")
         self.assertEqual(sorted(execute["members_completed"]), sorted([a1, a3]))
         self.assertEqual(execute["members_skipped"], [])
@@ -943,7 +994,15 @@ class SupplementalPerformance(unittest.TestCase):
             env["WORK_QUEUE_DIR"] = str(wq_base)
             started = time.monotonic()
             r = subprocess.run(
-                [sys.executable, "-m", "worktrail.router.dashboard", "--root", str(specs_root), "--json"],
+                [
+                    sys.executable,
+                    "-m",
+                    "worktrail.router.dashboard",
+                    "--root",
+                    str(specs_root),
+                    "--json",
+                ],
+                check=False,
                 capture_output=True,
                 text=True,
                 env=env,

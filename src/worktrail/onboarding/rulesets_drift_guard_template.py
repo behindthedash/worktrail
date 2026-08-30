@@ -12,6 +12,7 @@ Source of truth: behindthedash/devops, `scripts/ci/rulesets/`. Update these
 constants by hand if that script changes upstream -- there is no automated
 sync back to devops.
 """
+
 from __future__ import annotations
 
 RULESETS_SYNC_PY = '''\
@@ -247,7 +248,7 @@ if __name__ == "__main__":
     sys.exit(main())
 '''
 
-RULESETS_REQUIREMENTS_TXT = '''\
+RULESETS_REQUIREMENTS_TXT = """\
 requests>=2.34.2
 pytest>=8.3.0
-'''
+"""

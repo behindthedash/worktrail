@@ -28,10 +28,10 @@ Stdlib-only.
 from __future__ import annotations
 
 import json
-import os
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any
 
 from ..shared.homedir import env_setting, worktrail_home
 
@@ -47,7 +47,7 @@ def default_log_path() -> Path:
     return worktrail_home() / "cluster-log.jsonl"
 
 
-def _append(record: Dict[str, Any], log_path: Optional[Path] = None) -> None:
+def _append(record: dict[str, Any], log_path: Path | None = None) -> None:
     path = log_path or default_log_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -57,7 +57,7 @@ def _append(record: Dict[str, Any], log_path: Optional[Path] = None) -> None:
         pass  # best-effort -- telemetry must never break the caller
 
 
-def log_shown(clusters: Iterable[Dict[str, Any]], log_path: Optional[Path] = None) -> None:
+def log_shown(clusters: Iterable[dict[str, Any]], log_path: Path | None = None) -> None:
     """Append one `"shown"` record per surfaced cluster, all sharing one
     timestamp (they were computed together, in one render)."""
     at = datetime.now(timezone.utc).isoformat()
@@ -74,7 +74,9 @@ def log_shown(clusters: Iterable[Dict[str, Any]], log_path: Optional[Path] = Non
         )
 
 
-def log_outcome(status: str, member_ids: Iterable[str], log_path: Optional[Path] = None) -> None:
+def log_outcome(
+    status: str, member_ids: Iterable[str], log_path: Path | None = None
+) -> None:
     """Append one `"outcome"` record for a `consolidate_cluster.py execute`
     decision. `status` is the caller's own vocabulary (`"consolidated"` or
     `"declined"`) -- this module does not validate or constrain it, so a
@@ -90,7 +92,7 @@ def log_outcome(status: str, member_ids: Iterable[str], log_path: Optional[Path]
     )
 
 
-def read_records(log_path: Optional[Path] = None) -> List[Dict[str, Any]]:
+def read_records(log_path: Path | None = None) -> list[dict[str, Any]]:
     """Read every record from the log, skipping any unparseable line.
     Returns `[]` if the log doesn't exist."""
     path = log_path or default_log_path()
@@ -100,7 +102,7 @@ def read_records(log_path: Optional[Path] = None) -> List[Dict[str, Any]]:
         text = path.read_text(encoding="utf-8")
     except OSError:
         return []
-    records: List[Dict[str, Any]] = []
+    records: list[dict[str, Any]] = []
     for line in text.splitlines():
         line = line.strip()
         if not line:
@@ -112,7 +114,7 @@ def read_records(log_path: Optional[Path] = None) -> List[Dict[str, Any]]:
     return records
 
 
-def summarize(log_path: Optional[Path] = None) -> Dict[str, Any]:
+def summarize(log_path: Path | None = None) -> dict[str, Any]:
     """Compute `shown`/`consolidated`/`declined` counts and the derived
     precision (`consolidated / (consolidated + declined)`) from the log.
 
@@ -122,10 +124,14 @@ def summarize(log_path: Optional[Path] = None) -> Dict[str, Any]:
     records = read_records(log_path)
     shown = sum(1 for r in records if r.get("kind") == "shown")
     consolidated = sum(
-        1 for r in records if r.get("kind") == "outcome" and r.get("status") == "consolidated"
+        1
+        for r in records
+        if r.get("kind") == "outcome" and r.get("status") == "consolidated"
     )
     declined = sum(
-        1 for r in records if r.get("kind") == "outcome" and r.get("status") == "declined"
+        1
+        for r in records
+        if r.get("kind") == "outcome" and r.get("status") == "declined"
     )
     decided = consolidated + declined
     precision = (consolidated / decided) if decided else None

@@ -42,6 +42,7 @@ way at claim time.
 The parser never shells out and never writes; it reads `queue/` only when a
 folder is supplied.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -49,8 +50,9 @@ import json
 import re
 import shlex
 import sys
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Dict, List, NamedTuple, Optional, Sequence
+from typing import Any, NamedTuple
 
 # v1 intent keywords, mapped to routes by the executor (see
 # skills/worktrail-sdd-workflow/SKILL.md's positional table):
@@ -100,22 +102,54 @@ class Form(NamedTuple):
 FORMS: tuple[Form, ...] = (
     Form("<front-door>", "dashboard and interactive picker", "dashboard", True),
     Form("<front-door> help", "show this reference", "help", True),
-    Form("<front-door> drain [max-items] [repo]", "drain multiple items in fresh contexts", "drain", True),
+    Form(
+        "<front-door> drain [max-items] [repo]",
+        "drain multiple items in fresh contexts",
+        "drain",
+        True,
+    ),
     Form("<front-door> auto", "auto-pick one ranked queue brief", "auto", True),
-    Form("<front-door> <repo> auto", "auto-pick one brief for that repository", "auto", True),
+    Form(
+        "<front-door> <repo> auto",
+        "auto-pick one brief for that repository",
+        "auto",
+        True,
+    ),
     Form("<front-door> route:<A-J>", "force a route", "route", True),
-    Form("<front-door> <repo> route:<A-J> <id>", "force a route for a repo/spec", "route", True),
+    Form(
+        "<front-door> <repo> route:<A-J> <id>",
+        "force a route for a repo/spec",
+        "route",
+        True,
+    ),
     Form("<front-door> new <request>", "plan a new feature", "intent", True),
     Form("<front-door> implement spec <id>", "execute a specification", "intent", True),
-    Form("<front-door> <repo> implement spec <id>", "execute a specification in that repo", "intent", True),
+    Form(
+        "<front-door> <repo> implement spec <id>",
+        "execute a specification in that repo",
+        "intent",
+        True,
+    ),
     Form("<front-door> continue", "resume in-flight work", "intent", True),
     Form("<front-door> pr", "PR / CI repair", "intent", True),
     Form("<front-door> brainstorm", "idea discovery", "intent", True),
-    Form("<front-door> handoff:<id>", "claim or resume a queued handoff", "brief", True),
+    Form(
+        "<front-door> handoff:<id>", "claim or resume a queued handoff", "brief", True
+    ),
     Form("<front-door> <brief-id>", "claim or resume a queued handoff", "brief", True),
     Form("<front-door> <repo>", "show active work for a repository", "dashboard", True),
-    Form("<front-door> fix <request>", "classify and route a defect/request", "free_text", False),
-    Form("<front-door> <free text>", "classify and route any other request", "free_text", False),
+    Form(
+        "<front-door> fix <request>",
+        "classify and route a defect/request",
+        "free_text",
+        False,
+    ),
+    Form(
+        "<front-door> <free text>",
+        "classify and route any other request",
+        "free_text",
+        False,
+    ),
 )
 
 _FOOTNOTE = "* not a parsed form -- reaches the route classifier as free text"
@@ -133,13 +167,13 @@ def render_forms() -> str:
     return "\n".join(lines)
 
 
-def _result(raw: str, mode: str, reason: str, **fields: Any) -> Dict[str, Any]:
+def _result(raw: str, mode: str, reason: str, **fields: Any) -> dict[str, Any]:
     """Build a complete result dict so every key is always present.
 
     Callers act on this in shell (`jq`-style field reads); a key that is present
     only for some modes would make every consumer write existence checks.
     """
-    out: Dict[str, Any] = {
+    out: dict[str, Any] = {
         "raw": raw,
         "mode": mode,
         "repo": None,
@@ -162,7 +196,7 @@ def _result(raw: str, mode: str, reason: str, **fields: Any) -> Dict[str, Any]:
     return out
 
 
-def _tokens(raw: str) -> List[str]:
+def _tokens(raw: str) -> list[str]:
     """Split a raw argument string the way a shell would, tolerating bad quoting.
 
     A user typing an unbalanced quote should still get a parse rather than a
@@ -178,9 +212,9 @@ def parse(
     raw: str,
     *,
     known_repos: Sequence[str] = (),
-    queue_folder: Optional[Path] = None,
+    queue_folder: Path | None = None,
     picker_active: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Classify a raw front-door argument string.
 
     Args:
@@ -209,12 +243,14 @@ def parse(
         return _result(raw, "dashboard", "no arguments -- orientation dashboard")
 
     # A leading known repo name is a scope modifier, not the invocation itself.
-    repo: Optional[str] = None
+    repo: str | None = None
     if known_repos and tokens[0].lower() in {r.lower() for r in known_repos}:
         repo = tokens[0]
         tokens = tokens[1:]
         if not tokens:
-            return _result(raw, "dashboard", "repo only -- that repo's dashboard", repo=repo)
+            return _result(
+                raw, "dashboard", "repo only -- that repo's dashboard", repo=repo
+            )
 
     head = tokens[0].lower()
     rest = tokens[1:]
@@ -226,8 +262,8 @@ def parse(
 
     # 3. drain [max-items] [repo]
     if head == "drain":
-        max_items: Optional[int] = None
-        drain_repo: Optional[str] = None
+        max_items: int | None = None
+        drain_repo: str | None = None
         remaining = list(rest)
         if remaining and _INT_RE.match(remaining[0]):
             max_items = int(remaining[0])
@@ -261,7 +297,7 @@ def parse(
 
     # 6. v1 intent keywords -- skip classification, map straight to routes.
     if head in V1_INTENTS:
-        spec: Optional[str] = None
+        spec: str | None = None
         remaining = list(rest)
         # `implement spec <id>` carries a literal filler token; `implement <id>`
         # is equally valid and both are documented.
@@ -284,43 +320,59 @@ def parse(
     if handoff_match:
         candidate = handoff_match.group(1)
         return _resolve_brief(
-            raw, candidate, repo=repo, queue_folder=queue_folder,
-            reason="explicit handoff:<id>", require_match=False,
+            raw,
+            candidate,
+            repo=repo,
+            queue_folder=queue_folder,
+            reason="explicit handoff:<id>",
+            require_match=False,
         )
 
     # 8. Bare integer -- a picker index only while a picker is open.
     if _INT_RE.match(tokens[0]) and len(tokens) == 1:
         if picker_active:
             return _result(
-                raw, "picker_index", "bare integer with a picker open",
-                repo=repo, picker_index=int(tokens[0]),
+                raw,
+                "picker_index",
+                "bare integer with a picker open",
+                repo=repo,
+                picker_index=int(tokens[0]),
             )
         return _result(
-            raw, "free_text", "bare integer with no picker open -- free text",
-            repo=repo, free_text=raw,
+            raw,
+            "free_text",
+            "bare integer with no picker open -- free text",
+            repo=repo,
+            free_text=raw,
         )
 
     # 9. Bare or prefix brief id -- resolved against queue/ before anything else
     #    is done with it. Only a single token can be one.
     if len(tokens) == 1:
         return _resolve_brief(
-            raw, tokens[0], repo=repo, queue_folder=queue_folder,
-            reason="bare or prefix brief id", require_match=True,
+            raw,
+            tokens[0],
+            repo=repo,
+            queue_folder=queue_folder,
+            reason="bare or prefix brief id",
+            require_match=True,
         )
 
     # 10. Free text -- classified downstream by classify.py (Phase 5).
-    return _result(raw, "free_text", "unstructured request", repo=repo, free_text=" ".join(tokens))
+    return _result(
+        raw, "free_text", "unstructured request", repo=repo, free_text=" ".join(tokens)
+    )
 
 
 def _resolve_brief(
     raw: str,
     candidate: str,
     *,
-    repo: Optional[str],
-    queue_folder: Optional[Path],
+    repo: str | None,
+    queue_folder: Path | None,
     reason: str,
     require_match: bool,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Resolve a brief-id candidate through `work_queue.resolve()`.
 
     `require_match` distinguishes the two callers. A bare token is only a brief
@@ -334,8 +386,11 @@ def _resolve_brief(
         # candidate and let the caller resolve rather than guessing either way.
         mode = "brief" if not require_match else "free_text"
         return _result(
-            raw, mode, f"{reason} (unresolved -- no queue folder supplied)",
-            repo=repo, brief_id=candidate,
+            raw,
+            mode,
+            f"{reason} (unresolved -- no queue folder supplied)",
+            repo=repo,
+            brief_id=candidate,
             free_text=raw if mode == "free_text" else None,
         )
 
@@ -347,23 +402,39 @@ def _resolve_brief(
 
     if status == "match":
         return _result(
-            raw, "brief", reason, repo=repo, brief_id=candidate,
-            brief_path=candidates[0], brief_status=status, brief_candidates=candidates,
+            raw,
+            "brief",
+            reason,
+            repo=repo,
+            brief_id=candidate,
+            brief_path=candidates[0],
+            brief_status=status,
+            brief_candidates=candidates,
         )
 
     if require_match:
         return _result(
-            raw, "free_text", f"{reason} did not resolve ({status}) -- free text",
-            repo=repo, brief_status=status, brief_candidates=candidates, free_text=raw,
+            raw,
+            "free_text",
+            f"{reason} did not resolve ({status}) -- free text",
+            repo=repo,
+            brief_status=status,
+            brief_candidates=candidates,
+            free_text=raw,
         )
 
     return _result(
-        raw, "brief", f"{reason} ({status})", repo=repo, brief_id=candidate,
-        brief_status=status, brief_candidates=candidates,
+        raw,
+        "brief",
+        f"{reason} ({status})",
+        repo=repo,
+        brief_id=candidate,
+        brief_status=status,
+        brief_candidates=candidates,
     )
 
 
-def main(argv: Optional[list] = None) -> int:
+def main(argv: list | None = None) -> int:
     """CLI entry point.
 
     Args:
@@ -413,7 +484,7 @@ def main(argv: Optional[list] = None) -> int:
         print(render_forms())
         return 0
 
-    queue_folder: Optional[Path] = None
+    queue_folder: Path | None = None
     if not args.no_resolve:
         if args.queue_dir:
             queue_folder = Path(args.queue_dir).expanduser() / "queue"

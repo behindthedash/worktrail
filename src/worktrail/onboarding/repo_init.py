@@ -44,6 +44,7 @@ Usage:
   worktrail-repo-init propose --repo /path/to/repo [--branch-model 2|3] [--check] [--json]
   worktrail-repo-init apply --repo /path/to/repo [--json]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -51,7 +52,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import yaml
 
@@ -69,18 +70,23 @@ OPENSPEC_PACKAGE = "@fission-ai/openspec@latest"
 # AGENTS.md / CLAUDE.md split
 # --------------------------------------------------------------------------
 
-def split_claude_md(repo: Path) -> Tuple[bool, Optional[str]]:
+
+def split_claude_md(repo: Path) -> tuple[bool, str | None]:
     """Move CLAUDE.md's real content into AGENTS.md, replacing CLAUDE.md with
     the `@AGENTS.md` import line (the repo-standards doctrine's single-
     source-of-truth pattern). Returns (changed, warning)."""
     claude_md = repo / "CLAUDE.md"
     agents_md = repo / "AGENTS.md"
-    if claude_md.is_file() and claude_md.read_text(encoding="utf-8").strip() == "@AGENTS.md":
+    if (
+        claude_md.is_file()
+        and claude_md.read_text(encoding="utf-8").strip() == "@AGENTS.md"
+    ):
         return False, None
     if agents_md.is_file():
         return False, (
             "AGENTS.md already exists and CLAUDE.md is not yet '@AGENTS.md' -- "
-            "left both alone, resolve by hand")
+            "left both alone, resolve by hand"
+        )
     if claude_md.is_file():
         agents_md.write_text(claude_md.read_text(encoding="utf-8"), encoding="utf-8")
     else:
@@ -93,7 +99,8 @@ def split_claude_md(repo: Path) -> Tuple[bool, Optional[str]]:
 # CI job discovery (reporting only -- never auto-required)
 # --------------------------------------------------------------------------
 
-def discover_ci_checks(repo: Path) -> List[str]:
+
+def discover_ci_checks(repo: Path) -> list[str]:
     """Job display names from `.github/workflows/*.yml` -- a
     `required_status_checks` `context` must be the job's `name:` (falling
     back to its id when `name:` is absent, matching GitHub's own default
@@ -101,8 +108,10 @@ def discover_ci_checks(repo: Path) -> List[str]:
     workflows_dir = repo / ".github" / "workflows"
     if not workflows_dir.is_dir():
         return []
-    checks: List[str] = []
-    for wf in sorted(workflows_dir.glob("*.yml")) + sorted(workflows_dir.glob("*.yaml")):
+    checks: list[str] = []
+    for wf in sorted(workflows_dir.glob("*.yml")) + sorted(
+        workflows_dir.glob("*.yaml")
+    ):
         try:
             doc = yaml.safe_load(wf.read_text(encoding="utf-8"))
         except yaml.YAMLError:
@@ -122,7 +131,8 @@ def discover_ci_checks(repo: Path) -> List[str]:
 # Ruleset generation
 # --------------------------------------------------------------------------
 
-def _pull_request_rule(allowed_merge_methods: List[str]) -> Dict[str, Any]:
+
+def _pull_request_rule(allowed_merge_methods: list[str]) -> dict[str, Any]:
     return {
         "type": "pull_request",
         "parameters": {
@@ -138,10 +148,13 @@ def _pull_request_rule(allowed_merge_methods: List[str]) -> Dict[str, Any]:
 
 
 def build_ruleset(
-    name: str, branch: str, allowed_merge_methods: List[str],
-    required_status_checks: List[str], linear_history: bool = False,
-) -> Dict[str, Any]:
-    rules: List[Dict[str, Any]] = [
+    name: str,
+    branch: str,
+    allowed_merge_methods: list[str],
+    required_status_checks: list[str],
+    linear_history: bool = False,
+) -> dict[str, Any]:
+    rules: list[dict[str, Any]] = [
         _pull_request_rule(allowed_merge_methods),
         {"type": "non_fast_forward"},
     ]
@@ -149,29 +162,35 @@ def build_ruleset(
         rules.append({"type": "required_linear_history"})
     rules.append({"type": "deletion"})
     if required_status_checks:
-        rules.append({
-            "type": "required_status_checks",
-            "parameters": {
-                "strict_required_status_checks_policy": False,
-                "do_not_enforce_on_create": False,
-                "required_status_checks": [
-                    {"context": c} for c in required_status_checks
-                ],
-            },
-        })
+        rules.append(
+            {
+                "type": "required_status_checks",
+                "parameters": {
+                    "strict_required_status_checks_policy": False,
+                    "do_not_enforce_on_create": False,
+                    "required_status_checks": [
+                        {"context": c} for c in required_status_checks
+                    ],
+                },
+            }
+        )
     return {
         "name": name,
         "target": "branch",
         "enforcement": "active",
         "bypass_actors": [],
-        "conditions": {"ref_name": {"include": [f"refs/heads/{branch}"], "exclude": []}},
+        "conditions": {
+            "ref_name": {"include": [f"refs/heads/{branch}"], "exclude": []}
+        },
         "rules": rules,
     }
 
 
 def build_ruleset_for_branch(
-    branch: str, branch_model: str, extra_required_status_check: Optional[str] = None,
-) -> Dict[str, Any]:
+    branch: str,
+    branch_model: str,
+    extra_required_status_check: str | None = None,
+) -> dict[str, Any]:
     """branch_model "2" = dev/prd (GGB pattern); "3" = dev/stg/prd (datalena
     pattern, dev is squash + required_linear_history).
 
@@ -185,7 +204,12 @@ def build_ruleset_for_branch(
     checks = [extra_required_status_check] if extra_required_status_check else []
     if branch == "dev":
         return build_ruleset(
-            "protect-dev", "dev", ["squash"], checks, linear_history=(branch_model == "3"))
+            "protect-dev",
+            "dev",
+            ["squash"],
+            checks,
+            linear_history=(branch_model == "3"),
+        )
     if branch == "stg":
         return build_ruleset("protect-stg", "stg", ["merge"], checks)
     if branch == "prd":
@@ -193,7 +217,7 @@ def build_ruleset_for_branch(
     raise ValueError(f"unknown branch {branch!r}")
 
 
-def _ruleset_structural_view(ruleset: Dict[str, Any]) -> Dict[str, Any]:
+def _ruleset_structural_view(ruleset: dict[str, Any]) -> dict[str, Any]:
     """`ruleset` with any `required_status_checks` rule removed entirely, so
     drift detection can compare merge methods, review-thread resolution, and
     linear-history policy independent of the required-check list -- operators
@@ -215,7 +239,9 @@ def patch_ruleset_required_check(path: Path, job_name: str) -> bool:
     file was changed (and thus rewritten), False on a no-op."""
     data = json.loads(path.read_text(encoding="utf-8"))
     rules = data.setdefault("rules", [])
-    rsc_rule = next((r for r in rules if r.get("type") == "required_status_checks"), None)
+    rsc_rule = next(
+        (r for r in rules if r.get("type") == "required_status_checks"), None
+    )
     if rsc_rule is None:
         rsc_rule = {
             "type": "required_status_checks",
@@ -226,7 +252,9 @@ def patch_ruleset_required_check(path: Path, job_name: str) -> bool:
             },
         }
         rules.append(rsc_rule)
-    checks = rsc_rule.setdefault("parameters", {}).setdefault("required_status_checks", [])
+    checks = rsc_rule.setdefault("parameters", {}).setdefault(
+        "required_status_checks", []
+    )
     if any(c.get("context") == job_name for c in checks):
         return False
     checks.append({"context": job_name})
@@ -255,12 +283,16 @@ RULESETS_REQUIREMENTS_RELPATH = f"{RULESETS_SCRIPT_DIR_RELPATH}/requirements.txt
 
 DEPENDABOT_CHECK_WORKFLOW_RELPATH = ".github/workflows/dependabot_manifest_check.yml"
 DEPENDABOT_CHECK_SCRIPT_DIR_RELPATH = "scripts/ci/dependabot"
-DEPENDABOT_CHECK_SCRIPT_RELPATH = f"{DEPENDABOT_CHECK_SCRIPT_DIR_RELPATH}/test_dependabot_config.py"
-DEPENDABOT_CHECK_REQUIREMENTS_RELPATH = f"{DEPENDABOT_CHECK_SCRIPT_DIR_RELPATH}/requirements.txt"
+DEPENDABOT_CHECK_SCRIPT_RELPATH = (
+    f"{DEPENDABOT_CHECK_SCRIPT_DIR_RELPATH}/test_dependabot_config.py"
+)
+DEPENDABOT_CHECK_REQUIREMENTS_RELPATH = (
+    f"{DEPENDABOT_CHECK_SCRIPT_DIR_RELPATH}/requirements.txt"
+)
 DEPENDABOT_CHECK_JOB_NAME = "Dependabot manifest check"
 
 
-def build_dependabot_manifest_check_workflow(branches: List[str]) -> str:
+def build_dependabot_manifest_check_workflow(branches: list[str]) -> str:
     """A "CI: Dependabot Manifest Check" workflow targeting the repo's actual
     branch model, running the vendored `test_dependabot_config.py`
     (dependabot_manifest_check_template) against `.github/dependabot.yml`.
@@ -277,7 +309,7 @@ def build_dependabot_manifest_check_workflow(branches: List[str]) -> str:
     needs no minted token and no elevated permissions beyond the default
     `permissions: contents: read`."""
     branches_yaml = "[" + ", ".join(branches) + "]"
-    return f'''\
+    return f"""\
 name: "CI: Dependabot Manifest Check"
 
 on:
@@ -309,10 +341,10 @@ jobs:
 
       - name: Check dependabot.yml manifests
         run: python {DEPENDABOT_CHECK_SCRIPT_RELPATH}
-'''
+"""
 
 
-_AUTOMERGE_WORKFLOW = '''\
+_AUTOMERGE_WORKFLOW = """\
 name: "CI: Auto-merge on open"
 on:
   pull_request:
@@ -371,7 +403,7 @@ jobs:
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-'''
+"""
 
 
 def build_automerge_workflow() -> str:
@@ -392,16 +424,28 @@ def build_automerge_workflow() -> str:
 # Colors/descriptions match the live label sets already in use on
 # behindthedash/gracefully-giving-back and behindthedash/datalena (checked via
 # `gh label list --search "go:"` -- both repos agree on this scheme).
-AUTOMERGE_LABELS: List[Dict[str, str]] = [
+AUTOMERGE_LABELS: list[dict[str, str]] = [
     {"name": "go:risk-low", "color": "0e8a16", "description": "GO v2: low risk tier"},
-    {"name": "go:risk-medium", "color": "fbca04", "description": "GO v2: medium risk tier"},
+    {
+        "name": "go:risk-medium",
+        "color": "fbca04",
+        "description": "GO v2: medium risk tier",
+    },
     {"name": "go:risk-high", "color": "d93f0b", "description": "GO v2: high risk tier"},
-    {"name": "go:risk-critical", "color": "b60205", "description": "GO v2: critical risk tier"},
-    {"name": "go:no-automerge", "color": "5319e7", "description": "GO v2: not eligible for auto-merge"},
+    {
+        "name": "go:risk-critical",
+        "color": "b60205",
+        "description": "GO v2: critical risk tier",
+    },
+    {
+        "name": "go:no-automerge",
+        "color": "5319e7",
+        "description": "GO v2: not eligible for auto-merge",
+    },
 ]
 
 
-def ensure_automerge_labels(gh_repo: str) -> Dict[str, str]:
+def ensure_automerge_labels(gh_repo: str) -> dict[str, str]:
     """Idempotently create (or update in place) the go:risk-*/go:no-automerge
     labels the generated auto-merge workflow (build_automerge_workflow())
     depends on. `gh label create --force` create-or-updates in a single call,
@@ -412,18 +456,30 @@ def ensure_automerge_labels(gh_repo: str) -> Dict[str, str]:
     ensure_pr_no_automerge_label() (router/pr_labels.py) log a stderr warning
     and silently no-op on a freshly onboarded repo -- PRs never get labeled at
     all until an operator notices and creates the labels by hand."""
-    result: Dict[str, str] = {}
+    result: dict[str, str] = {}
     for label in AUTOMERGE_LABELS:
-        p = _run([
-            "gh", "label", "create", label["name"], "--force",
-            "--color", label["color"], "--description", label["description"],
-            "--repo", gh_repo,
-        ])
-        result[label["name"]] = "ok" if p.returncode == 0 else f"FAILED: {p.stderr.strip()}"
+        p = _run(
+            [
+                "gh",
+                "label",
+                "create",
+                label["name"],
+                "--force",
+                "--color",
+                label["color"],
+                "--description",
+                label["description"],
+                "--repo",
+                gh_repo,
+            ]
+        )
+        result[label["name"]] = (
+            "ok" if p.returncode == 0 else f"FAILED: {p.stderr.strip()}"
+        )
     return result
 
 
-def build_rulesets_drift_guard_workflow(branches: List[str]) -> str:
+def build_rulesets_drift_guard_workflow(branches: list[str]) -> str:
     """A "CI: Rulesets Drift Guard" workflow targeting the repo's actual
     branch model: `--check`s committed `.github/rulesets/*.json` against
     live GitHub rulesets on a PR touching them (plus a weekly schedule, to
@@ -442,7 +498,7 @@ def build_rulesets_drift_guard_workflow(branches: List[str]) -> str:
     `vars.RELEASE_NOTES_APP_ID` (respectively the minted token) being
     non-empty, so they report `skipped`, not `failure`."""
     branches_yaml = "[" + ", ".join(branches) + "]"
-    return f'''\
+    return f"""\
 name: 'CI: Rulesets Drift Guard'
 
 on:
@@ -514,7 +570,7 @@ jobs:
       - name: Note skipped run due to missing App credentials
         if: ${{{{ always() && (env.RULESETS_APP_ID == '' || env.RULESETS_APP_PRIVATE_KEY == '') }}}}
         run: echo "::notice::Rulesets drift guard skipped -- install the release-notes GitHub App and set vars.RELEASE_NOTES_APP_ID / secrets.RELEASE_NOTES_APP_PRIVATE_KEY to enable it."
-'''
+"""
 
 
 # --------------------------------------------------------------------------
@@ -531,7 +587,7 @@ OPENSPEC_VALIDATE_WORKFLOW_RELPATH = ".github/workflows/worktrail-openspec-valid
 # drifting apart.
 OPENSPEC_VALIDATE_JOB_NAME = "openspec-validate"
 
-_OPENSPEC_VALIDATE_WORKFLOW = '''\
+_OPENSPEC_VALIDATE_WORKFLOW = """\
 name: "CI: OpenSpec validate"
 on:
   pull_request:
@@ -551,7 +607,7 @@ jobs:
       # never going stale on an old CLI version.
       - name: openspec validate --all --strict
         run: npx --yes @fission-ai/openspec@latest validate --all --strict
-'''
+"""
 
 
 def build_openspec_validate_workflow() -> str:
@@ -568,6 +624,7 @@ def build_openspec_validate_workflow() -> str:
 # --------------------------------------------------------------------------
 # .worktrail/policy.yaml seed
 # --------------------------------------------------------------------------
+
 
 def default_policy_yaml(repo_name: str, *, enable_aspens: bool = False) -> str:
     header = (
@@ -586,7 +643,8 @@ def default_policy_yaml(repo_name: str, *, enable_aspens: bool = False) -> str:
 # Aspens add-on (opt-in)
 # --------------------------------------------------------------------------
 
-def enable_aspens(repo: Path) -> Tuple[bool, Optional[str]]:
+
+def enable_aspens(repo: Path) -> tuple[bool, str | None]:
     """Opt a repo into the `aspens` add-on at bootstrap time: install the CLI
     if needed and run its one-time `aspens doc init`
     (`AspensAddOn.install()`/`.configure()`), so a freshly onboarded repo
@@ -604,7 +662,9 @@ def enable_aspens(repo: Path) -> Tuple[bool, Optional[str]]:
     from ..addons.aspens import AspensAddOn
     from ..addons.runner import ADDON_TIMEOUT_DEFAULT, AddOnContext
 
-    ctx = AddOnContext(worktree=repo, repo=repo, config={}, timeout=ADDON_TIMEOUT_DEFAULT)
+    ctx = AddOnContext(
+        worktree=repo, repo=repo, config={}, timeout=ADDON_TIMEOUT_DEFAULT
+    )
     addon = AspensAddOn()
     addon.install(ctx)
     addon.configure(ctx)
@@ -612,14 +672,16 @@ def enable_aspens(repo: Path) -> Tuple[bool, Optional[str]]:
         return True, None
     return False, (
         "aspens doc init did not produce .aspens.json -- the aspens CLI may not be "
-        "installed/reachable; run `aspens doc init` by hand once it is")
+        "installed/reachable; run `aspens doc init` by hand once it is"
+    )
 
 
 # --------------------------------------------------------------------------
 # GitNexus add-on (opt-in)
 # --------------------------------------------------------------------------
 
-def enable_gitnexus(repo: Path) -> Tuple[bool, Optional[str]]:
+
+def enable_gitnexus(repo: Path) -> tuple[bool, str | None]:
     """Opt a repo into a GitNexus index at bootstrap time: run
     `gitnexus analyze --embeddings --index-only` so a freshly onboarded repo
     doesn't wait for its first orchestrated task to get indexed.
@@ -643,14 +705,16 @@ def enable_gitnexus(repo: Path) -> Tuple[bool, Optional[str]]:
     return False, (
         "gitnexus analyze did not produce .gitnexus/ -- the gitnexus CLI may not be "
         "installed/reachable; run `gitnexus analyze --embeddings --index-only` by hand "
-        "once it is")
+        "once it is"
+    )
 
 
 # --------------------------------------------------------------------------
 # Machine-wide routing.yaml (D3 fail-closed mitigation)
 # --------------------------------------------------------------------------
 
-def ensure_routing_config() -> Tuple[bool, Optional[str]]:
+
+def ensure_routing_config() -> tuple[bool, str | None]:
     """Bootstrap the machine-wide `routing.yaml` (see `routing_cli.STARTER_ROUTING_YAML`)
     if this machine doesn't already have one -- write-if-absent, matching every other
     propose step; never overwrites an operator's existing file. Without this, a
@@ -674,7 +738,8 @@ def ensure_routing_config() -> Tuple[bool, Optional[str]]:
 # OpenSpec scaffold
 # --------------------------------------------------------------------------
 
-def init_openspec(repo: Path) -> Tuple[bool, Optional[str]]:
+
+def init_openspec(repo: Path) -> tuple[bool, str | None]:
     """`openspec init --tools none` -- just the openspec/{config.yaml,specs/,
     changes/} scaffold. Deliberately `--tools none`: worktrail's own plugin
     already bundles the OpenSpec Claude Code integration (commands/opsx/*.md,
@@ -685,11 +750,22 @@ def init_openspec(repo: Path) -> Tuple[bool, Optional[str]]:
     if (repo / "openspec" / "config.yaml").is_file():
         return False, None
     proc = _run(
-        ["npx", "--yes", OPENSPEC_PACKAGE, "init", "--tools", "none",
-         "--no-animation", str(repo)],
+        [
+            "npx",
+            "--yes",
+            OPENSPEC_PACKAGE,
+            "init",
+            "--tools",
+            "none",
+            "--no-animation",
+            str(repo),
+        ],
     )
     if proc.returncode != 0:
-        return False, f"openspec init failed: {proc.stderr.strip() or proc.stdout.strip()}"
+        return (
+            False,
+            f"openspec init failed: {proc.stderr.strip() or proc.stdout.strip()}",
+        )
     return True, None
 
 
@@ -697,11 +773,13 @@ def init_openspec(repo: Path) -> Tuple[bool, Optional[str]]:
 # gh / git helpers
 # --------------------------------------------------------------------------
 
-def _run(cmd: List[str], **kw: Any) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, capture_output=True, text=True, **kw)
+
+def _run(cmd: list[str], **kw: Any) -> subprocess.CompletedProcess:
+    kw.setdefault("check", False)
+    return subprocess.run(cmd, capture_output=True, text=True, **kw)  # noqa: PLW1510 -- check defaulted via setdefault above
 
 
-def resolve_gh_repo(repo: Path) -> Optional[str]:
+def resolve_gh_repo(repo: Path) -> str | None:
     p = _run(["git", "-C", str(repo), "remote", "get-url", "origin"])
     if p.returncode != 0:
         return None
@@ -722,18 +800,18 @@ def resolve_repo_display_name(repo: Path) -> str:
     return repo.name
 
 
-def _gh_raw(args: List[str]) -> Optional[str]:
+def _gh_raw(args: list[str]) -> str | None:
     p = _run(["gh", *args])
     if p.returncode != 0:
         return None
     return p.stdout.strip() or None
 
 
-def current_default_branch(gh_repo: str) -> Optional[str]:
+def current_default_branch(gh_repo: str) -> str | None:
     return _gh_raw(["api", f"repos/{gh_repo}", "-q", ".default_branch"])
 
 
-def branch_sha(gh_repo: str, branch: str) -> Optional[str]:
+def branch_sha(gh_repo: str, branch: str) -> str | None:
     return _gh_raw(["api", f"repos/{gh_repo}/branches/{branch}", "-q", ".commit.sha"])
 
 
@@ -742,24 +820,53 @@ def branch_exists(gh_repo: str, branch: str) -> bool:
 
 
 def create_branch(gh_repo: str, branch: str, sha: str) -> bool:
-    p = _run(["gh", "api", "--method", "POST", f"repos/{gh_repo}/git/refs",
-              "-f", f"ref=refs/heads/{branch}", "-f", f"sha={sha}"])
+    p = _run(
+        [
+            "gh",
+            "api",
+            "--method",
+            "POST",
+            f"repos/{gh_repo}/git/refs",
+            "-f",
+            f"ref=refs/heads/{branch}",
+            "-f",
+            f"sha={sha}",
+        ]
+    )
     return p.returncode == 0
 
 
 def rename_branch(gh_repo: str, old: str, new: str) -> bool:
-    p = _run(["gh", "api", "--method", "POST", f"repos/{gh_repo}/branches/{old}/rename",
-              "-f", f"new_name={new}"])
+    p = _run(
+        [
+            "gh",
+            "api",
+            "--method",
+            "POST",
+            f"repos/{gh_repo}/branches/{old}/rename",
+            "-f",
+            f"new_name={new}",
+        ]
+    )
     return p.returncode == 0
 
 
 def set_default_branch(gh_repo: str, branch: str) -> bool:
-    p = _run(["gh", "api", "--method", "PATCH", f"repos/{gh_repo}",
-              "-f", f"default_branch={branch}"])
+    p = _run(
+        [
+            "gh",
+            "api",
+            "--method",
+            "PATCH",
+            f"repos/{gh_repo}",
+            "-f",
+            f"default_branch={branch}",
+        ]
+    )
     return p.returncode == 0
 
 
-def get_delete_branch_on_merge(gh_repo: str) -> Optional[bool]:
+def get_delete_branch_on_merge(gh_repo: str) -> bool | None:
     raw = _gh_raw(["api", f"repos/{gh_repo}", "-q", ".delete_branch_on_merge"])
     if raw is None:
         return None
@@ -767,12 +874,21 @@ def get_delete_branch_on_merge(gh_repo: str) -> Optional[bool]:
 
 
 def set_delete_branch_on_merge(gh_repo: str) -> bool:
-    p = _run(["gh", "api", "--method", "PATCH", f"repos/{gh_repo}",
-              "-f", "delete_branch_on_merge=true"])
+    p = _run(
+        [
+            "gh",
+            "api",
+            "--method",
+            "PATCH",
+            f"repos/{gh_repo}",
+            "-f",
+            "delete_branch_on_merge=true",
+        ]
+    )
     return p.returncode == 0
 
 
-def _list_live_rulesets(gh_repo: str) -> List[Dict[str, Any]]:
+def _list_live_rulesets(gh_repo: str) -> list[dict[str, Any]]:
     p = _run(["gh", "api", f"repos/{gh_repo}/rulesets"])
     if p.returncode != 0:
         return []
@@ -783,7 +899,7 @@ def _list_live_rulesets(gh_repo: str) -> List[Dict[str, Any]]:
     return data if isinstance(data, list) else []
 
 
-def apply_ruleset(gh_repo: str, ruleset: Dict[str, Any]) -> Tuple[bool, str]:
+def apply_ruleset(gh_repo: str, ruleset: dict[str, Any]) -> tuple[bool, str]:
     """PUT-then-reverify, mirroring ruleset-fleet-rollout.py's live-apply
     idiom: create if no live ruleset shares this name, else update in place,
     then re-fetch to confirm it actually landed."""
@@ -791,25 +907,43 @@ def apply_ruleset(gh_repo: str, ruleset: Dict[str, Any]) -> Tuple[bool, str]:
     existing = next((r for r in live if r.get("name") == ruleset.get("name")), None)
     payload = json.dumps(ruleset)
     if existing:
-        action, args = "updated", [
-            "api", "--method", "PUT", f"repos/{gh_repo}/rulesets/{existing['id']}",
-            "--input", "-",
-        ]
+        action, args = (
+            "updated",
+            [
+                "api",
+                "--method",
+                "PUT",
+                f"repos/{gh_repo}/rulesets/{existing['id']}",
+                "--input",
+                "-",
+            ],
+        )
     else:
-        action, args = "created", [
-            "api", "--method", "POST", f"repos/{gh_repo}/rulesets", "--input", "-",
-        ]
+        action, args = (
+            "created",
+            [
+                "api",
+                "--method",
+                "POST",
+                f"repos/{gh_repo}/rulesets",
+                "--input",
+                "-",
+            ],
+        )
     p = _run(["gh", *args], input=payload)
     if p.returncode != 0:
         return False, f"{action} FAILED: {p.stderr.strip()}"
     live_after = _list_live_rulesets(gh_repo)
     match = next((r for r in live_after if r.get("name") == ruleset.get("name")), None)
     if not match:
-        return False, f"{action} succeeded but re-fetch found no ruleset named {ruleset.get('name')!r}"
+        return (
+            False,
+            f"{action} succeeded but re-fetch found no ruleset named {ruleset.get('name')!r}",
+        )
     return True, f"{action} and verified live"
 
 
-def _gh_json_names(args: List[str]) -> List[str]:
+def _gh_json_names(args: list[str]) -> list[str]:
     p = _run(["gh", *args])
     if p.returncode != 0:
         return []
@@ -826,23 +960,32 @@ def app_credentials_configured(gh_repo: str) -> bool:
     """True only if both `RELEASE_NOTES_APP_ID` (a repo variable) and
     `RELEASE_NOTES_APP_PRIVATE_KEY` (a repo secret) are present -- the two
     credentials the rulesets drift-guard workflow's App-token mint step needs."""
-    variable_names = _gh_json_names(["variable", "list", "--json", "name", "-R", gh_repo])
+    variable_names = _gh_json_names(
+        ["variable", "list", "--json", "name", "-R", gh_repo]
+    )
     secret_names = _gh_json_names(["secret", "list", "--json", "name", "-R", gh_repo])
-    return "RELEASE_NOTES_APP_ID" in variable_names and "RELEASE_NOTES_APP_PRIVATE_KEY" in secret_names
+    return (
+        "RELEASE_NOTES_APP_ID" in variable_names
+        and "RELEASE_NOTES_APP_PRIVATE_KEY" in secret_names
+    )
 
 
 # --------------------------------------------------------------------------
 # propose
 # --------------------------------------------------------------------------
 
-def detect_state(repo: Path) -> Dict[str, Any]:
+
+def detect_state(repo: Path) -> dict[str, Any]:
     claude_md = repo / "CLAUDE.md"
     already_split = (
-        claude_md.is_file() and claude_md.read_text(encoding="utf-8").strip() == "@AGENTS.md"
+        claude_md.is_file()
+        and claude_md.read_text(encoding="utf-8").strip() == "@AGENTS.md"
     )
     rulesets_dir = repo / ".github" / "rulesets"
     existing_rulesets = (
-        sorted(p.name for p in rulesets_dir.glob("*.json")) if rulesets_dir.is_dir() else []
+        sorted(p.name for p in rulesets_dir.glob("*.json"))
+        if rulesets_dir.is_dir()
+        else []
     )
     policy_exists = has_policy_file(repo)
     from ..router.routing_cli import _routing_file_path
@@ -859,8 +1002,12 @@ def detect_state(repo: Path) -> Dict[str, Any]:
             repo / RULESETS_DRIFT_GUARD_WORKFLOW_RELPATH
         ).is_file(),
         "rulesets_sync_script_exists": (repo / RULESETS_SYNC_SCRIPT_RELPATH).is_file(),
-        "rulesets_requirements_exists": (repo / RULESETS_REQUIREMENTS_RELPATH).is_file(),
-        "openspec_validate_workflow_exists": (repo / OPENSPEC_VALIDATE_WORKFLOW_RELPATH).is_file(),
+        "rulesets_requirements_exists": (
+            repo / RULESETS_REQUIREMENTS_RELPATH
+        ).is_file(),
+        "openspec_validate_workflow_exists": (
+            repo / OPENSPEC_VALIDATE_WORKFLOW_RELPATH
+        ).is_file(),
         "dependabot_manifest_check_workflow_exists": (
             repo / DEPENDABOT_CHECK_WORKFLOW_RELPATH
         ).is_file(),
@@ -874,18 +1021,20 @@ def detect_state(repo: Path) -> Dict[str, Any]:
     }
 
 
-def _content_drift(repo: Path, relpath: str, current_content: str) -> Optional[Dict[str, str]]:
+def _content_drift(
+    repo: Path, relpath: str, current_content: str
+) -> dict[str, str] | None:
     on_disk = (repo / relpath).read_text(encoding="utf-8")
     if on_disk == current_content:
         return None
     return {
         "path": relpath,
         "detail": "content differs from what today's template would generate -- delete "
-                   "the file and re-run propose to regenerate it",
+        "the file and re-run propose to regenerate it",
     }
 
 
-def _ruleset_drift(repo: Path, branch: str, branch_model: str) -> Optional[Dict[str, str]]:
+def _ruleset_drift(repo: Path, branch: str, branch_model: str) -> dict[str, str] | None:
     relpath = f".github/rulesets/protect-{branch}.json"
     try:
         on_disk = json.loads((repo / relpath).read_text(encoding="utf-8"))
@@ -897,15 +1046,18 @@ def _ruleset_drift(repo: Path, branch: str, branch_model: str) -> Optional[Dict[
     return {
         "path": relpath,
         "detail": "ruleset structure (merge methods, review-thread resolution, linear "
-                   "history) differs from today's template -- required_status_checks is "
-                   "intentionally excluded from this comparison since operators are "
-                   "expected to grow it over time; review the rest by hand",
+        "history) differs from today's template -- required_status_checks is "
+        "intentionally excluded from this comparison since operators are "
+        "expected to grow it over time; review the rest by hand",
     }
 
 
 def compute_drift(
-    repo: Path, state: Dict[str, Any], branches: List[str], branch_model: str,
-) -> List[Dict[str, str]]:
+    repo: Path,
+    state: dict[str, Any],
+    branches: list[str],
+    branch_model: str,
+) -> list[dict[str, str]]:
     """Report-only: files `propose` owns and skips when already present,
     whose on-disk content no longer matches what today's generator would
     produce. Never auto-applied and `propose` never regenerates a file on
@@ -916,7 +1068,7 @@ def compute_drift(
     third-party-tool state (`openspec/`, `.aspens.json`, `.gitnexus/`) are
     out of scope -- there is no single "current" content to diff them
     against."""
-    drift: List[Dict[str, str]] = []
+    drift: list[dict[str, str]] = []
     for branch in branches:
         if f"protect-{branch}.json" in state["existing_rulesets"]:
             found = _ruleset_drift(repo, branch, branch_model)
@@ -927,22 +1079,29 @@ def compute_drift(
         if found:
             drift.append(found)
     if state["rulesets_requirements_exists"]:
-        found = _content_drift(repo, RULESETS_REQUIREMENTS_RELPATH, RULESETS_REQUIREMENTS_TXT)
+        found = _content_drift(
+            repo, RULESETS_REQUIREMENTS_RELPATH, RULESETS_REQUIREMENTS_TXT
+        )
         if found:
             drift.append(found)
     if state["rulesets_drift_guard_exists"]:
         found = _content_drift(
-            repo, RULESETS_DRIFT_GUARD_WORKFLOW_RELPATH,
-            build_rulesets_drift_guard_workflow(branches))
+            repo,
+            RULESETS_DRIFT_GUARD_WORKFLOW_RELPATH,
+            build_rulesets_drift_guard_workflow(branches),
+        )
         if found:
             drift.append(found)
     if state["automerge_workflow_exists"]:
-        found = _content_drift(repo, AUTOMERGE_WORKFLOW_RELPATH, build_automerge_workflow())
+        found = _content_drift(
+            repo, AUTOMERGE_WORKFLOW_RELPATH, build_automerge_workflow()
+        )
         if found:
             drift.append(found)
     if state["openspec_validate_workflow_exists"]:
         found = _content_drift(
-            repo, OPENSPEC_VALIDATE_WORKFLOW_RELPATH, build_openspec_validate_workflow())
+            repo, OPENSPEC_VALIDATE_WORKFLOW_RELPATH, build_openspec_validate_workflow()
+        )
         if found:
             drift.append(found)
     return drift
@@ -956,14 +1115,18 @@ def cmd_propose(args: argparse.Namespace) -> int:
 
     state = detect_state(repo)
     if args.check:
-        check_branches = ["dev", "stg", "prd"] if args.branch_model == "3" else ["dev", "prd"]
-        check_result = dict(state, drift=compute_drift(repo, state, check_branches, args.branch_model))
+        check_branches = (
+            ["dev", "stg", "prd"] if args.branch_model == "3" else ["dev", "prd"]
+        )
+        check_result = dict(
+            state, drift=compute_drift(repo, state, check_branches, args.branch_model)
+        )
         print(json.dumps(check_result, indent=2) if args.as_json else check_result)
         return 0
 
-    written: List[str] = []
-    skipped: List[str] = []
-    warnings: List[str] = []
+    written: list[str] = []
+    skipped: list[str] = []
+    warnings: list[str] = []
 
     changed, warn = split_claude_md(repo)
     if warn:
@@ -985,13 +1148,16 @@ def cmd_propose(args: argparse.Namespace) -> int:
             ):
                 written.append(
                     f"{path.relative_to(repo)} (patched: added "
-                    f"{OPENSPEC_VALIDATE_JOB_NAME} to required_status_checks)")
+                    f"{OPENSPEC_VALIDATE_JOB_NAME} to required_status_checks)"
+                )
                 required_check_configured = True
             else:
                 skipped.append(str(path.relative_to(repo)))
             continue
         rulesets_dir.mkdir(parents=True, exist_ok=True)
-        extra_check = OPENSPEC_VALIDATE_JOB_NAME if openspec_validate_newly_written else None
+        extra_check = (
+            OPENSPEC_VALIDATE_JOB_NAME if openspec_validate_newly_written else None
+        )
         if extra_check:
             required_check_configured = True
         ruleset = build_ruleset_for_branch(branch, args.branch_model, extra_check)
@@ -1020,7 +1186,8 @@ def cmd_propose(args: argparse.Namespace) -> int:
     else:
         drift_guard_path.parent.mkdir(parents=True, exist_ok=True)
         drift_guard_path.write_text(
-            build_rulesets_drift_guard_workflow(branches), encoding="utf-8")
+            build_rulesets_drift_guard_workflow(branches), encoding="utf-8"
+        )
         written.append(str(drift_guard_path.relative_to(repo)))
 
     dependabot_check_script_path = repo / DEPENDABOT_CHECK_SCRIPT_RELPATH
@@ -1028,7 +1195,9 @@ def cmd_propose(args: argparse.Namespace) -> int:
         skipped.append(f"{DEPENDABOT_CHECK_SCRIPT_RELPATH} (already exists)")
     else:
         dependabot_check_script_path.parent.mkdir(parents=True, exist_ok=True)
-        dependabot_check_script_path.write_text(DEPENDABOT_MANIFEST_CHECK_PY, encoding="utf-8")
+        dependabot_check_script_path.write_text(
+            DEPENDABOT_MANIFEST_CHECK_PY, encoding="utf-8"
+        )
         written.append(str(dependabot_check_script_path.relative_to(repo)))
 
     dependabot_check_requirements_path = repo / DEPENDABOT_CHECK_REQUIREMENTS_RELPATH
@@ -1037,7 +1206,8 @@ def cmd_propose(args: argparse.Namespace) -> int:
     else:
         dependabot_check_requirements_path.parent.mkdir(parents=True, exist_ok=True)
         dependabot_check_requirements_path.write_text(
-            DEPENDABOT_MANIFEST_CHECK_REQUIREMENTS_TXT, encoding="utf-8")
+            DEPENDABOT_MANIFEST_CHECK_REQUIREMENTS_TXT, encoding="utf-8"
+        )
         written.append(str(dependabot_check_requirements_path.relative_to(repo)))
 
     dependabot_check_workflow_path = repo / DEPENDABOT_CHECK_WORKFLOW_RELPATH
@@ -1046,7 +1216,8 @@ def cmd_propose(args: argparse.Namespace) -> int:
     else:
         dependabot_check_workflow_path.parent.mkdir(parents=True, exist_ok=True)
         dependabot_check_workflow_path.write_text(
-            build_dependabot_manifest_check_workflow(branches), encoding="utf-8")
+            build_dependabot_manifest_check_workflow(branches), encoding="utf-8"
+        )
         written.append(str(dependabot_check_workflow_path.relative_to(repo)))
 
     policy_path = repo / POLICY_RELPATH
@@ -1055,8 +1226,11 @@ def cmd_propose(args: argparse.Namespace) -> int:
     else:
         policy_path.parent.mkdir(parents=True, exist_ok=True)
         policy_path.write_text(
-            default_policy_yaml(resolve_repo_display_name(repo), enable_aspens=args.with_aspens),
-            encoding="utf-8")
+            default_policy_yaml(
+                resolve_repo_display_name(repo), enable_aspens=args.with_aspens
+            ),
+            encoding="utf-8",
+        )
         written.append(str(policy_path.relative_to(repo)))
 
     changed, warn = ensure_routing_config()
@@ -1065,7 +1239,8 @@ def cmd_propose(args: argparse.Namespace) -> int:
     elif changed:
         written.append(
             "routing.yaml (machine-wide, worktrail-routing --init -- run "
-            "`worktrail-routing --check` to validate)")
+            "`worktrail-routing --check` to validate)"
+        )
     else:
         skipped.append("routing.yaml (machine-wide, already exists)")
 
@@ -1108,14 +1283,17 @@ def cmd_propose(args: argparse.Namespace) -> int:
                 "No CI jobs discovered and no required_status_checks configured -- the "
                 "auto-merge workflow just written will merge any go:risk-low/medium-labeled "
                 "PR with nothing else to gate it. Add required checks to "
-                ".github/rulesets/*.json before applying risk labels to real PRs.")
+                ".github/rulesets/*.json before applying risk labels to real PRs."
+            )
 
     openspec_validate_path = repo / OPENSPEC_VALIDATE_WORKFLOW_RELPATH
     if state["openspec_validate_workflow_exists"]:
         skipped.append(f"{OPENSPEC_VALIDATE_WORKFLOW_RELPATH} (already exists)")
     else:
         openspec_validate_path.parent.mkdir(parents=True, exist_ok=True)
-        openspec_validate_path.write_text(build_openspec_validate_workflow(), encoding="utf-8")
+        openspec_validate_path.write_text(
+            build_openspec_validate_workflow(), encoding="utf-8"
+        )
         written.append(str(openspec_validate_path.relative_to(repo)))
 
     drift = compute_drift(repo, state, branches, args.branch_model)
@@ -1140,17 +1318,27 @@ def cmd_propose(args: argparse.Namespace) -> int:
         for w in warnings:
             print(f"  warning: {w}")
         if drift:
-            print("  Drift found (skipped files that no longer match today's template --")
-            print("  never auto-upgraded; review each and decide whether to regenerate):")
+            print(
+                "  Drift found (skipped files that no longer match today's template --"
+            )
+            print(
+                "  never auto-upgraded; review each and decide whether to regenerate):"
+            )
             for d in drift:
                 print(f"    - {d['path']}: {d['detail']}")
         if state["ci_jobs_discovered"]:
-            print("  CI jobs discovered (NOT auto-required -- review and add the ones that")
-            print("  should gate merges to .github/rulesets/*.json before opening the PR):")
+            print(
+                "  CI jobs discovered (NOT auto-required -- review and add the ones that"
+            )
+            print(
+                "  should gate merges to .github/rulesets/*.json before opening the PR):"
+            )
             for c in state["ci_jobs_discovered"]:
                 print(f"    - {c}")
         print()
-        print("Next: review the diff, commit, push, and open a PR. Run `apply` once it merges.")
+        print(
+            "Next: review the diff, commit, push, and open a PR. Run `apply` once it merges."
+        )
     return 0
 
 
@@ -1158,32 +1346,45 @@ def cmd_propose(args: argparse.Namespace) -> int:
 # apply
 # --------------------------------------------------------------------------
 
+
 def cmd_apply(args: argparse.Namespace) -> int:
     repo = Path(args.repo).expanduser().resolve()
     rulesets_dir = repo / ".github" / "rulesets"
-    ruleset_files = sorted(rulesets_dir.glob("protect-*.json")) if rulesets_dir.is_dir() else []
+    ruleset_files = (
+        sorted(rulesets_dir.glob("protect-*.json")) if rulesets_dir.is_dir() else []
+    )
     declared = {f.stem.removeprefix("protect-") for f in ruleset_files}
     if not {"dev", "prd"} <= declared:
         print(
             f"error: expected protect-dev.json and protect-prd.json under {rulesets_dir} "
-            "-- run `propose` first and merge its PR", file=sys.stderr)
+            "-- run `propose` first and merge its PR",
+            file=sys.stderr,
+        )
         return 1
     branch_model = "3" if "stg" in declared else "2"
 
     gh_repo = resolve_gh_repo(repo)
     if not gh_repo:
-        print("error: could not resolve GitHub owner/repo from `git remote get-url origin`",
-              file=sys.stderr)
+        print(
+            "error: could not resolve GitHub owner/repo from `git remote get-url origin`",
+            file=sys.stderr,
+        )
         return 1
 
-    result: Dict[str, Any] = {
-        "repo": gh_repo, "branch_model": branch_model, "branches": {},
-        "rulesets": {}, "warnings": [],
+    result: dict[str, Any] = {
+        "repo": gh_repo,
+        "branch_model": branch_model,
+        "branches": {},
+        "rulesets": {},
+        "warnings": [],
     }
 
     current_default = current_default_branch(gh_repo)
     if current_default is None:
-        print(f"error: could not read the current default branch for {gh_repo}", file=sys.stderr)
+        print(
+            f"error: could not read the current default branch for {gh_repo}",
+            file=sys.stderr,
+        )
         return 1
 
     if current_default in ("dev", "prd"):
@@ -1194,20 +1395,26 @@ def cmd_apply(args: argparse.Namespace) -> int:
         # here would rename 'dev' itself.
         result["warnings"].append(
             f"default branch is already '{current_default}' -- branch setup looks "
-            "already done, skipping create/rename")
+            "already done, skipping create/rename"
+        )
     else:
         base_sha = branch_sha(gh_repo, current_default)
         if base_sha is None:
-            print(f"error: could not read the tip SHA of '{current_default}'", file=sys.stderr)
+            print(
+                f"error: could not read the tip SHA of '{current_default}'",
+                file=sys.stderr,
+            )
             return 1
-        for branch in (["dev", "stg"] if branch_model == "3" else ["dev"]):
+        for branch in ["dev", "stg"] if branch_model == "3" else ["dev"]:
             if branch_exists(gh_repo, branch):
                 result["branches"][branch] = "already existed"
                 continue
             ok = create_branch(gh_repo, branch, base_sha)
             result["branches"][branch] = "created" if ok else "FAILED to create"
         ok = rename_branch(gh_repo, current_default, "prd")
-        result["branches"][current_default] = "renamed to prd" if ok else "FAILED to rename to prd"
+        result["branches"][current_default] = (
+            "renamed to prd" if ok else "FAILED to rename to prd"
+        )
 
     new_default = current_default_branch(gh_repo)
     if new_default == "dev":
@@ -1244,7 +1451,8 @@ def cmd_apply(args: argparse.Namespace) -> int:
         result["warnings"].append(
             "rulesets drift-guard workflow will skip -- install the release-notes GitHub App "
             "on this repo and set the RELEASE_NOTES_APP_ID variable / "
-            "RELEASE_NOTES_APP_PRIVATE_KEY secret to enable it")
+            "RELEASE_NOTES_APP_PRIVATE_KEY secret to enable it"
+        )
 
     if args.as_json:
         print(json.dumps(result, indent=2))
@@ -1279,36 +1487,50 @@ def cmd_apply(args: argparse.Namespace) -> int:
 # CLI
 # --------------------------------------------------------------------------
 
-def main(argv: Optional[List[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     subs = parser.add_subparsers(dest="command", required=True)
 
     propose_p = subs.add_parser(
         "propose",
         help="write AGENTS.md/CLAUDE.md, .github/rulesets/*.json, .worktrail/policy.yaml, "
-             "an OpenSpec scaffold, and an auto-merge workflow into --repo")
+        "an OpenSpec scaffold, and an auto-merge workflow into --repo",
+    )
     propose_p.add_argument("--repo", required=True)
     propose_p.add_argument(
-        "--branch-model", choices=("2", "3"), default="2",
+        "--branch-model",
+        choices=("2", "3"),
+        default="2",
         help="2 = dev/prd (default -- use unless the repo has a real staging environment "
-             "to gate against); 3 = dev/stg/prd")
-    propose_p.add_argument("--check", action="store_true", help="report current state only; write nothing")
+        "to gate against); 3 = dev/stg/prd",
+    )
     propose_p.add_argument(
-        "--with-aspens", action="store_true",
+        "--check", action="store_true", help="report current state only; write nothing"
+    )
+    propose_p.add_argument(
+        "--with-aspens",
+        action="store_true",
         help="opt into the aspens skill-doc-sync add-on: declares add_ons.aspens in the "
-             "seeded policy file and runs `aspens doc init` now instead of waiting for the "
-             "repo's first orchestrated task")
+        "seeded policy file and runs `aspens doc init` now instead of waiting for the "
+        "repo's first orchestrated task",
+    )
     propose_p.add_argument(
-        "--with-gitnexus", action="store_true",
+        "--with-gitnexus",
+        action="store_true",
         help="opt into bootstrap GitNexus indexing: runs `gitnexus analyze --embeddings "
-             "--index-only` now instead of waiting for the repo's first orchestrated task")
+        "--index-only` now instead of waiting for the repo's first orchestrated task",
+    )
     propose_p.add_argument("--json", action="store_true", dest="as_json")
 
     apply_p = subs.add_parser(
         "apply",
         help="after propose's PR merges: create branches, rename to prd, set the default "
-             "branch to dev, enable delete-branch-on-merge, live-apply and verify the "
-             "committed rulesets")
+        "branch to dev, enable delete-branch-on-merge, live-apply and verify the "
+        "committed rulesets",
+    )
     apply_p.add_argument("--repo", required=True)
     apply_p.add_argument("--json", action="store_true", dest="as_json")
 

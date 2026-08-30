@@ -109,7 +109,9 @@ def test_requirement_title_wrapped_across_line_break_is_still_covered(
     assert uncovered == []
 
 
-def test_requirement_declared_only_under_removed_requirements_is_never_enforced(tmp_path: Path):
+def test_requirement_declared_only_under_removed_requirements_is_never_enforced(
+    tmp_path: Path,
+):
     change = _change_dir(tmp_path)
     _write(
         change / "tasks.md",
@@ -163,7 +165,9 @@ def test_brand_new_capability_path_every_requirement_newly_declared_and_enforced
     assert uncovered == ["Brand New Behavior"]
 
 
-def test_modified_requirement_already_in_main_spec_is_not_newly_declared(tmp_path: Path):
+def test_modified_requirement_already_in_main_spec_is_not_newly_declared(
+    tmp_path: Path,
+):
     change = _change_dir(tmp_path)
     repo = change.parents[2]
     _write(
@@ -218,7 +222,9 @@ def test_change_with_no_tasks_md_every_declared_requirement_uncovered(tmp_path: 
 
 def test_devkit_format_spec_directory_is_a_no_op(tmp_path: Path):
     spec_dir = tmp_path / "repo" / "docs" / "specs" / "001-widget"
-    _write(spec_dir / "spec.md", "## Requirements\n\n### Requirement: Widget Rendering\n")
+    _write(
+        spec_dir / "spec.md", "## Requirements\n\n### Requirement: Widget Rendering\n"
+    )
     (spec_dir / "tasks").mkdir(parents=True)
 
     uncovered = req_coverage.find_uncovered_requirements(spec_dir, tmp_path / "repo")

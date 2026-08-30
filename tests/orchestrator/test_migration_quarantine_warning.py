@@ -20,8 +20,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from worktrail.orchestrator import coordinator
-from worktrail.orchestrator import live
+from worktrail.orchestrator import coordinator, live
 
 
 def _task(tid, deps=None, files=None):
@@ -53,7 +52,9 @@ class MigrationQuarantineWarningTests(unittest.TestCase):
     def setUp(self):
         self.patterns = ["alembic/versions/*.py"]
         self.tasks = _datalena_shaped_tasks()
-        self.groups = coordinator.plan_groups(self.tasks, migration_patterns=self.patterns)
+        self.groups = coordinator.plan_groups(
+            self.tasks, migration_patterns=self.patterns
+        )
 
     def test_warns_when_base_quarantined_and_sibling_proceeded(self):
         quarantined = {"base": "integration smoke test failed"}
@@ -68,21 +69,29 @@ class MigrationQuarantineWarningTests(unittest.TestCase):
         self.assertIn(undeclared_group, note)
 
     def test_no_warning_when_nothing_quarantined(self):
-        note = live._format_migration_quarantine_warning(self.groups, self.tasks, self.patterns, {})
+        note = live._format_migration_quarantine_warning(
+            self.groups, self.tasks, self.patterns, {}
+        )
         self.assertIsNone(note)
 
     def test_no_warning_without_migration_patterns(self):
         quarantined = {"base": "integration smoke test failed"}
-        note = live._format_migration_quarantine_warning(self.groups, self.tasks, None, quarantined)
+        note = live._format_migration_quarantine_warning(
+            self.groups, self.tasks, None, quarantined
+        )
         self.assertIsNone(note)
-        note = live._format_migration_quarantine_warning(self.groups, self.tasks, (), quarantined)
+        note = live._format_migration_quarantine_warning(
+            self.groups, self.tasks, (), quarantined
+        )
         self.assertIsNone(note)
 
     def test_no_warning_when_quarantined_group_has_no_migration_task(self):
         """A non-migration group quarantined for unrelated reasons must not
         trigger this warning -- it's specifically about the migration-carrying
         group being unavailable while siblings proceed."""
-        non_migration_group = next(g["name"] for g in self.groups if g["name"] != "base")
+        non_migration_group = next(
+            g["name"] for g in self.groups if g["name"] != "base"
+        )
         quarantined = {non_migration_group: "merge conflict"}
         note = live._format_migration_quarantine_warning(
             self.groups, self.tasks, self.patterns, quarantined
@@ -107,7 +116,7 @@ class MigrationQuarantineWarningTests(unittest.TestCase):
         undeclared_group = next(g["name"] for g in self.groups if "3.1" in g["tasks"])
         quarantined = {
             "base": "integration smoke test failed",
-            dependent_group: f"base group 'base' quarantined",
+            dependent_group: "base group 'base' quarantined",
         }
         note = live._format_migration_quarantine_warning(
             self.groups, self.tasks, self.patterns, quarantined

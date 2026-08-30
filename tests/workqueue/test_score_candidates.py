@@ -7,13 +7,11 @@ Run: python3 -m pytest tests/workqueue/test_score_candidates.py -q
 from __future__ import annotations
 
 import json
-import os
 import tempfile
 import unittest
 from pathlib import Path
 
 from worktrail.workqueue import score_candidates as sc
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -24,10 +22,10 @@ def _brief(
     focus: str,
     repo: str = "null",
     status: str = "queued",
-    blocked_by: list = None,
+    blocked_by: list | None = None,
     extra_body: str = "",
-    target_spec: str = None,
-    related: list = None,
+    target_spec: str | None = None,
+    related: list | None = None,
 ) -> str:
     fm_lines = [
         f"focus: {focus}",
@@ -95,8 +93,8 @@ class TestSameRepoBoost(ScoreCandidatesTestBase):
         focus_shared = "sharp cloudinary bake writeback missing"
 
         new = self.write_new_brief("20260604-160000-new.md", focus=focus_new, repo=repo)
-        same = self.write_queue("20260604-112107-same-repo.md", focus=focus_shared, repo=repo)
-        diff = self.write_queue(
+        self.write_queue("20260604-112107-same-repo.md", focus=focus_shared, repo=repo)
+        self.write_queue(
             "20260604-154500-diff-repo.md",
             focus=focus_shared,
             repo="/home/user/projects/other",
@@ -125,9 +123,16 @@ class TestSameRepoBoost(ScoreCandidatesTestBase):
 
     def _score_raw(self, new_path: Path):
         """Internal helper to get raw scored list before split into auto/confirm."""
-        from worktrail.workqueue.score_candidates import _read_brief, _tokenize, _overlap_coefficient
-        from worktrail.workqueue.score_candidates import _normalize_repo, _is_blocked_by_pair, _md_files
-        from worktrail.workqueue.score_candidates import SAME_REPO_BOOST, MIN_OVERLAP
+        from worktrail.workqueue.score_candidates import (
+            MIN_OVERLAP,
+            SAME_REPO_BOOST,
+            _is_blocked_by_pair,
+            _md_files,
+            _normalize_repo,
+            _overlap_coefficient,
+            _read_brief,
+            _tokenize,
+        )
 
         new_fm, new_body = _read_brief(new_path)
         new_stem = new_path.stem
@@ -343,7 +348,9 @@ class TestEdgeCases(ScoreCandidatesTestBase):
         # Write the new brief outside queue/picked, then remove those dirs
         new = self.base / "20260604-160000-new.md"
         new.write_text(
-            _brief(focus="sharp cloudinary migration", repo="/home/user/projects/myapp"),
+            _brief(
+                focus="sharp cloudinary migration", repo="/home/user/projects/myapp"
+            ),
             encoding="utf-8",
         )
         # Remove queue/ and picked/ so scorer sees no candidate dirs
@@ -362,7 +369,9 @@ class TestEdgeCases(ScoreCandidatesTestBase):
         )
         # Malformed brief (no frontmatter at all)
         bad = self.queue / "20260604-111111-bad.md"
-        bad.write_text("This is not a valid brief — no frontmatter.\n", encoding="utf-8")
+        bad.write_text(
+            "This is not a valid brief — no frontmatter.\n", encoding="utf-8"
+        )
 
         # Good candidate (should still be found)
         self.write_queue(
@@ -639,12 +648,7 @@ class TestBatchModeIdentifierOverlap(ScoreCandidatesTestBase):
         # above). The plain-scalar `_brief()` helper breaks on this text's
         # colons/brackets, which isn't the defect under test here.
         content = (
-            "---\n"
-            "focus: |-\n"
-            f"  {focus_text}\n"
-            f"repo: {self.REPO}\n"
-            "status: queued\n"
-            "---\n"
+            f"---\nfocus: |-\n  {focus_text}\nrepo: {self.REPO}\nstatus: queued\n---\n"
         )
         p = self.queue / name
         p.write_text(content, encoding="utf-8")
@@ -680,7 +684,7 @@ class TestBatchModeIdentifierOverlap(ScoreCandidatesTestBase):
         self.assertNotIn("20260821-070329-b2", ids)
 
     def test_eg_abbreviation_is_not_an_identifier(self):
-        """"e.g" (from "e.g." in prose) matches the compound-token shape
+        """ "e.g" (from "e.g." in prose) matches the compound-token shape
         (letter + '.' + letter) but is not an identifier — a live-queue false
         positive found while validating this fix: two otherwise-unrelated
         datalena briefs both used "e.g." and were spuriously batched on it."""
@@ -688,7 +692,9 @@ class TestBatchModeIdentifierOverlap(ScoreCandidatesTestBase):
         self.assertEqual(sc._identifier_tokens("i.e. this one specifically"), set())
         # Real two-char-segment identifiers must still match.
         self.assertIn("ast.walk", sc._identifier_tokens("an ast.walk check"))
-        self.assertIn("s3_watchers", sc._identifier_tokens("across s3_watchers and others"))
+        self.assertIn(
+            "s3_watchers", sc._identifier_tokens("across s3_watchers and others")
+        )
 
 
 class TestReadBriefYamlParsing(unittest.TestCase):
@@ -732,7 +738,9 @@ class TestReadBriefYamlParsing(unittest.TestCase):
 
     def test_block_scalar_stops_at_next_key(self):
         with tempfile.TemporaryDirectory() as tmp:
-            content = "---\nfocus: |-\n  the focus text\nrepo: /a/b\nstatus: queued\n---\n"
+            content = (
+                "---\nfocus: |-\n  the focus text\nrepo: /a/b\nstatus: queued\n---\n"
+            )
             fm = self._fm(Path(tmp), content)
         self.assertEqual(fm["focus"], "the focus text")
         self.assertEqual(fm["repo"], "/a/b")
@@ -788,7 +796,9 @@ class TestBatchModeBlockScalarFocusRegression(ScoreCandidatesTestBase):
         primary = self._write_block_scalar_brief(
             "20260701-000001-primary.md", primary_focus, self.REPO
         )
-        self._write_block_scalar_brief("20260701-000002-cand.md", companion_focus, self.REPO)
+        self._write_block_scalar_brief(
+            "20260701-000002-cand.md", companion_focus, self.REPO
+        )
 
         result = sc.batch_candidates(primary, self.base)
         self.assertEqual([c["id"] for c in result["batch"]], ["20260701-000002-cand"])
@@ -804,7 +814,9 @@ class TestCLIOutput(unittest.TestCase):
             (base / "picked").mkdir()
             new = base / "queue" / "20260604-160000-new.md"
             new.write_text(
-                _brief(focus="sharp cloudinary migration", repo="/home/user/projects/myapp"),
+                _brief(
+                    focus="sharp cloudinary migration", repo="/home/user/projects/myapp"
+                ),
                 encoding="utf-8",
             )
             result = sc.score_candidates(new, base)

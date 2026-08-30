@@ -21,7 +21,7 @@ GIT_HISTORY_RE = re.compile(r"\bgit (log|status|diff|show|blame)\b")
 EXPLORE_TOOLS = {"Read", "Grep", "Glob"}
 
 
-def classify_turn(tool_uses: "list[tuple[str | None, str | None]]") -> str:
+def classify_turn(tool_uses: list[tuple[str | None, str | None]]) -> str:
     """tool_uses: [(tool_name, bash_command_or_None), ...] for one assistant turn.
     Priority order below picks one dominant bucket per turn when several tools
     were used in the same turn."""
@@ -39,15 +39,21 @@ def classify_turn(tool_uses: "list[tuple[str | None, str | None]]") -> str:
             buckets.add("other_bash")
     if not buckets:
         return "final_report"
-    for b in ("test_execution", "edit", "git_history_exploration", "repo_exploration", "other_bash"):
+    for b in (
+        "test_execution",
+        "edit",
+        "git_history_exploration",
+        "repo_exploration",
+        "other_bash",
+    ):
         if b in buckets:
             return b
     return "other"
 
 
 def analyze_transcript(path: Path) -> dict:
-    turns: "dict[str, list[tuple[str | None, str | None]]]" = {}
-    order: "list[str]" = []
+    turns: dict[str, list[tuple[str | None, str | None]]] = {}
+    order: list[str] = []
     num_turns_reported = None
     for line in path.read_text().strip().split("\n"):
         event = json.loads(line)
@@ -76,14 +82,15 @@ def analyze_transcript(path: Path) -> dict:
     }
 
 
-def match_journal(transcripts_dir: Path, journal_path: Path) -> "list[dict]":
+def match_journal(transcripts_dir: Path, journal_path: Path) -> list[dict]:
     """Match each transcript file to its (task, role) by nearest finish
     timestamp (started_at + duration_s) in the run journal -- the transcript
     filename only carries the spawn's cwd basename, agent, and finish epoch,
     not its role."""
     journal = json.loads(journal_path.read_text())
     spawns = [
-        e for e in journal["entries"]
+        e
+        for e in journal["entries"]
         if e.get("usage") and e["usage"].get("num_turns") is not None
     ]
     files = sorted(transcripts_dir.glob("*.jsonl"))

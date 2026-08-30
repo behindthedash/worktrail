@@ -29,7 +29,6 @@ import subprocess
 import sys
 import tempfile
 import threading
-import time
 import unittest
 from collections import namedtuple
 from pathlib import Path
@@ -37,9 +36,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from worktrail.orchestrator import coordinator  # noqa: E402
-from worktrail.orchestrator import live  # noqa: E402
-from worktrail.orchestrator import spawnlib  # noqa: E402
+from worktrail.orchestrator import live, spawnlib
 
 
 def _init_repo(root: Path, tasks_frontmatter: dict) -> Path:
@@ -51,9 +48,13 @@ def _init_repo(root: Path, tasks_frontmatter: dict) -> Path:
     for tid, fm in tasks_frontmatter.items():
         (repo / "docs" / "specs" / "001-x" / "tasks" / f"{tid}.md").write_text(fm)
     (repo / "README.md").write_text("x\n")
-    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True)
     subprocess.run(
-        ["git", "-C", str(repo), "commit", "-q", "-m", "init"], check=True, capture_output=True
+        ["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-q", "-m", "init"],
+        check=True,
+        capture_output=True,
     )
     return repo
 
@@ -89,14 +90,23 @@ class FakeSpawn:
             f = Path(wt) / "src" / f"{tid.lower()}.txt"
             f.parent.mkdir(parents=True, exist_ok=True)
             f.write_text(f"{tid} {role}\n")
-            subprocess.run(["git", "-C", str(wt), "add", "-A"], check=True, capture_output=True)
+            subprocess.run(
+                ["git", "-C", str(wt), "add", "-A"], check=True, capture_output=True
+            )
             subprocess.run(
                 ["git", "-C", str(wt), "commit", "-q", "-m", f"{role} {tid}"],
-                check=True, capture_output=True,
+                check=True,
+                capture_output=True,
             )
-        sha = subprocess.run(
-            ["git", "-C", str(wt), "rev-parse", "HEAD"], capture_output=True, text=True
-        ).stdout.strip()[:8] or "00000000"
+        sha = (
+            subprocess.run(
+                ["git", "-C", str(wt), "rev-parse", "HEAD"],
+                check=False,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()[:8]
+            or "00000000"
+        )
         rs = '"PASSED"' if role == "review" else "null"
         paused = self.paused_s_per_task.get(tid, 0.0)
         return spawnlib.SpawnResult(
@@ -127,9 +137,12 @@ class BudgetExhaustionLeavesTasksPending(unittest.TestCase):
             journal = str(Path(tmp) / "run-001-x.json")
             fake = FakeSpawn()
             res = live.live_run_real(
-                repo, "docs/specs/001-x",
-                max_workers=2, out_cassette=journal,
-                run_id="budget-test", spawn=fake,
+                repo,
+                "docs/specs/001-x",
+                max_workers=2,
+                out_cassette=journal,
+                run_id="budget-test",
+                spawn=fake,
                 run_budget=0.001,  # near-zero: fires after tick 1
             )
             by_id = {t["id"]: t for t in res["tasks"]}
@@ -163,17 +176,24 @@ class ResumeAfterBudgetStop(unittest.TestCase):
             fake1 = FakeSpawn()
             # Phase 1: tiny budget -> TASK-001 runs, stops before TASK-002.
             live.live_run_real(
-                repo, "docs/specs/001-x",
-                max_workers=2, out_cassette=journal,
-                run_id="budget-test", spawn=fake1,
-                run_budget=0.001, resume=True,
+                repo,
+                "docs/specs/001-x",
+                max_workers=2,
+                out_cassette=journal,
+                run_id="budget-test",
+                spawn=fake1,
+                run_budget=0.001,
+                resume=True,
             )
             # Phase 2: resume with unlimited budget -> TASK-002 must be dispatched.
             fake2 = FakeSpawn()
             res = live.live_run_real(
-                repo, "docs/specs/001-x",
-                max_workers=2, out_cassette=journal,
-                run_id="budget-test", spawn=fake2,
+                repo,
+                "docs/specs/001-x",
+                max_workers=2,
+                out_cassette=journal,
+                run_id="budget-test",
+                spawn=fake2,
                 run_budget=0,  # 0 disables budget (unlimited)
                 resume=True,
             )
@@ -199,7 +219,9 @@ class SpawnlibPausedSeconds(unittest.TestCase):
     def test_no_session_limit_returns_zero_paused(self):
         Proc = namedtuple("Proc", "returncode stdout stderr")
         spawnlib.subprocess.run = lambda *a, **k: Proc(0, "ok output", "")
-        out = spawnlib.spawn_claude_p("p", "/tmp", tier="t2-build", retries=1, sleep=lambda *_: None)
+        out = spawnlib.spawn_claude_p(
+            "p", "/tmp", tier="t2-build", retries=1, sleep=lambda *_: None
+        )
         self.assertEqual(out.paused_s, 0.0)
 
     @staticmethod
@@ -236,9 +258,12 @@ class SpawnlibPausedSeconds(unittest.TestCase):
         # keeps both call sites -- reset-time parsing and the capacity gate --
         # sharing the same real clock, so this never rots.
         Proc = namedtuple("Proc", "returncode stdout stderr")
-        reset_at = (datetime.datetime.now() + datetime.timedelta(minutes=5)).strftime(
-            "%I:%M%p"
-        ).lstrip("0").lower()
+        reset_at = (
+            (datetime.datetime.now() + datetime.timedelta(minutes=5))  # noqa: DTZ005
+            .strftime("%I:%M%p")
+            .lstrip("0")
+            .lower()
+        )
         limit_msg = f"You've hit your session limit. Your limit resets at {reset_at}."
 
         # Script: 1 session-limit response, then 1 success.
@@ -254,7 +279,11 @@ class SpawnlibPausedSeconds(unittest.TestCase):
             with mock.patch.dict(os.environ, {"GO_ROUTING_FILE": str(routing_file)}):
                 slept = []
                 out = spawnlib.spawn_claude_p(
-                    "p", "/tmp", tier="solo", retries=1, sleep=lambda s: slept.append(s),
+                    "p",
+                    "/tmp",
+                    tier="solo",
+                    retries=1,
+                    sleep=lambda s: slept.append(s),
                     session_limit_waits=2,
                 )
 
@@ -267,9 +296,12 @@ class SpawnlibPausedSeconds(unittest.TestCase):
         Proc = namedtuple("Proc", "returncode stdout stderr")
         # See test_session_limit_sleep_accumulates_paused for why this uses
         # the real clock rather than a hardcoded fixed "now".
-        reset_at = (datetime.datetime.now() + datetime.timedelta(minutes=5)).strftime(
-            "%I:%M%p"
-        ).lstrip("0").lower()
+        reset_at = (
+            (datetime.datetime.now() + datetime.timedelta(minutes=5))  # noqa: DTZ005
+            .strftime("%I:%M%p")
+            .lstrip("0")
+            .lower()
+        )
         limit_msg = f"hit your session limit, resets {reset_at}"
         # 3 session-limit hits then success: all 3 sleeps accumulate.
         outcomes = [
@@ -286,7 +318,11 @@ class SpawnlibPausedSeconds(unittest.TestCase):
             with mock.patch.dict(os.environ, {"GO_ROUTING_FILE": str(routing_file)}):
                 slept = []
                 out = spawnlib.spawn_claude_p(
-                    "p", "/tmp", tier="solo", retries=1, sleep=lambda s: slept.append(s),
+                    "p",
+                    "/tmp",
+                    tier="solo",
+                    retries=1,
+                    sleep=lambda s: slept.append(s),
                     session_limit_waits=5,
                 )
 
@@ -316,11 +352,20 @@ class BudgetClockExcludesPausedTime(unittest.TestCase):
             journal = str(Path(tmp) / "run-001-x.json")
             # Every spawn reports 1000s of paused time: without the fix this would
             # blow the 10s budget by tick 2.
-            fake = FakeSpawn(paused_s_per_task={"TASK-001": 1000.0, "TASK-002": 1000.0, "TASK-003": 1000.0})
+            fake = FakeSpawn(
+                paused_s_per_task={
+                    "TASK-001": 1000.0,
+                    "TASK-002": 1000.0,
+                    "TASK-003": 1000.0,
+                }
+            )
             res = live.live_run_real(
-                repo, "docs/specs/001-x",
-                max_workers=3, out_cassette=journal,
-                run_id="test-pause", spawn=fake,
+                repo,
+                "docs/specs/001-x",
+                max_workers=3,
+                out_cassette=journal,
+                run_id="test-pause",
+                spawn=fake,
                 run_budget=10,  # 10s budget, but paused time excludes ~3000s
             )
             by_id = {t["id"]: t for t in res["tasks"]}
@@ -352,12 +397,19 @@ class PipelineBudgetStopLeavesTasksPending(unittest.TestCase):
             journal = str(Path(tmp) / "run-001-x.json")
             fake = FakeSpawn()
             live._pipeline_scheduler(
-                repo=repo, spec_rel="docs/specs/001-x",
-                remote="origin", base="main", model="haiku",
-                max_workers=2, timeout=60, resume=False,
-                only=None, role_models=None,
+                repo=repo,
+                spec_rel="docs/specs/001-x",
+                remote="origin",
+                base="main",
+                model="haiku",
+                max_workers=2,
+                timeout=60,
+                resume=False,
+                only=None,
+                role_models=None,
                 run_budget=0.001,
-                journal_path=journal, run_id="pipe-bud",
+                journal_path=journal,
+                run_id="pipe-bud",
                 _spawn=fake,
                 _integrate_one=lambda *a, **kw: None,
                 _make_verifier=lambda: _FakeVerifier(),
@@ -371,7 +423,9 @@ class PipelineBudgetStopLeavesTasksPending(unittest.TestCase):
             task_ids = {e["task"] for e in data.get("entries", [])}
             self.assertNotIn("TASK-002", task_ids)
             # Confirm no entry carries the telltale failure reason either.
-            reasons = [e.get("report", {}).get("notes", "") for e in data.get("entries", [])]
+            reasons = [
+                e.get("report", {}).get("notes", "") for e in data.get("entries", [])
+            ]
             self.assertFalse(
                 any("run budget" in r for r in reasons),
                 f"journal entries must not carry run-budget failure reason; got: {reasons}",
@@ -434,27 +488,40 @@ class TailGateSurvivesBlockerCompletion(unittest.TestCase):
             # TASK-002 dispatches.
             fake1 = FakeSpawn()
             live.live_run_real(
-                repo, "docs/specs/001-x",
-                max_workers=2, out_cassette=journal,
-                run_id="tail-gate-test", spawn=fake1,
-                run_budget=0.001, with_tail=True, resume=True,
+                repo,
+                "docs/specs/001-x",
+                max_workers=2,
+                out_cassette=journal,
+                run_id="tail-gate-test",
+                spawn=fake1,
+                run_budget=0.001,
+                with_tail=True,
+                resume=True,
             )
             data = json.loads(Path(journal).read_text())
-            self.assertIn("budget_stopped_at", data, "test setup: budget must have fired")
+            self.assertIn(
+                "budget_stopped_at", data, "test setup: budget must have fired"
+            )
 
             # Call 2: resume, unlimited budget -- TASK-002 now completes.
             fake2 = FakeSpawn()
             res = live.live_run_real(
-                repo, "docs/specs/001-x",
-                max_workers=2, out_cassette=journal,
-                run_id="tail-gate-test", spawn=fake2,
-                run_budget=0, with_tail=True, resume=True,
+                repo,
+                "docs/specs/001-x",
+                max_workers=2,
+                out_cassette=journal,
+                run_id="tail-gate-test",
+                spawn=fake2,
+                run_budget=0,
+                with_tail=True,
+                resume=True,
             )
             by_id = {t["id"]: t for t in res["tasks"]}
             self.assertEqual(by_id["TASK-002"]["status"], "done")
             # The real blocker is done -- TASK-003 must not be stuck failed.
             self.assertEqual(
-                by_id["TASK-003"]["status"], "done",
+                by_id["TASK-003"]["status"],
+                "done",
                 "TASK-003 stayed stuck on a stale dependency-gate entry even "
                 "though its real blocker (TASK-002) completed this resume",
             )

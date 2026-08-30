@@ -95,8 +95,13 @@ formatters, the JSON contract, and the skill doc's table all keep working and th
 is untouched. The transcript rides along in a new optional key:
 
 ```python
-{"still_true": [...], "resolved": [...],
- "evidence": [{"path": ..., "command": "<shlex-joined>", "exit": 0, "output": "<truncated>"}]}
+{
+    "still_true": [...],
+    "resolved": [...],
+    "evidence": [
+        {"path": ..., "command": "<shlex-joined>", "exit": 0, "output": "<truncated>"}
+    ],
+}
 ```
 
 A recheck function may return `evidence`; `recheck()` passes it through, defaulting to `[]`.

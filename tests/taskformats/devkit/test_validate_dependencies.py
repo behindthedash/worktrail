@@ -8,7 +8,13 @@ from worktrail.taskformats.devkit.source import DevkitSpecTaskSource, load_spec
 
 
 def _write_task(
-    tasks_dir, task_id, *, deps=None, external_deps=None, decision_refs=None, title="Task"
+    tasks_dir,
+    task_id,
+    *,
+    deps=None,
+    external_deps=None,
+    decision_refs=None,
+    title="Task",
 ):
     lines = ["---", f"id: {task_id}", f"title: {title}", "status: pending"]
     if deps:

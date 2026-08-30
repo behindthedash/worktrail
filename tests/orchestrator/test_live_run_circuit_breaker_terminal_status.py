@@ -24,8 +24,10 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from worktrail.orchestrator import live  # noqa: E402
-from worktrail.orchestrator import spawnlib  # noqa: E402
+from worktrail.orchestrator import (
+    live,
+    spawnlib,
+)
 
 
 def _commit_file(wt: Path, name: str, content: str) -> str:
@@ -34,14 +36,21 @@ def _commit_file(wt: Path, name: str, content: str) -> str:
     f.write_text(content)
     subprocess.run(["git", "-C", str(wt), "add", "-A"], check=True, capture_output=True)
     subprocess.run(
-        ["git", "-C", str(wt), "commit", "-q", "-m", name], check=True, capture_output=True
+        ["git", "-C", str(wt), "commit", "-q", "-m", name],
+        check=True,
+        capture_output=True,
     )
     return subprocess.run(
-        ["git", "-C", str(wt), "rev-parse", "HEAD"], capture_output=True, text=True
+        ["git", "-C", str(wt), "rev-parse", "HEAD"],
+        check=False,
+        capture_output=True,
+        text=True,
     ).stdout.strip()
 
 
-def _report(task_id: str, role: str, sha: str, *, review_status=None) -> spawnlib.SpawnResult:
+def _report(
+    task_id: str, role: str, sha: str, *, review_status=None
+) -> spawnlib.SpawnResult:
     rs = f'"{review_status}"' if review_status else "null"
     return spawnlib.SpawnResult(
         text=(
@@ -62,7 +71,10 @@ class AlwaysFailReviewSpawn:
 
     def __call__(self, role: str, task: dict, wt: Path) -> spawnlib.SpawnResult:
         sha = subprocess.run(
-            ["git", "-C", str(wt), "rev-parse", "HEAD"], capture_output=True, text=True
+            ["git", "-C", str(wt), "rev-parse", "HEAD"],
+            check=False,
+            capture_output=True,
+            text=True,
         ).stdout.strip()
         if role in ("implement", "fix"):
             self._commit_count += 1
@@ -86,7 +98,9 @@ class TestLiveRunCircuitBreakerTerminalStatus(unittest.TestCase):
             )
 
             journal = json.loads(cassette.read_text())
-            review_entries = [e for e in journal["entries"] if e.get("role") == "review"]
+            review_entries = [
+                e for e in journal["entries"] if e.get("role") == "review"
+            ]
             self.assertEqual(len(review_entries), 3, "expected exactly 3 strikes")
             escalating_entry = review_entries[-1]
             self.assertEqual(

@@ -67,8 +67,9 @@ import json
 import os
 import sys
 from collections import defaultdict
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any
 
 import yaml
 
@@ -84,7 +85,7 @@ MAX_SAMPLES = 5
 # trips classify()'s D-demotion and `handoff_queue == 0` suppresses its E bump,
 # so a zeroed state would silently audit a configuration the front door almost
 # never actually dispatches under.
-REPLAY_STATE: Dict[str, Any] = {"active_specs": 1, "handoff_queue": 1}
+REPLAY_STATE: dict[str, Any] = {"active_specs": 1, "handoff_queue": 1}
 
 SKIP_NO_FOCUS = "no focus text"
 SKIP_NO_EXPECTED = "no recorded route"
@@ -115,7 +116,7 @@ def _iter_brief_files(queue_root: Path) -> Iterator[Path]:
                 yield path
 
 
-def _normalize_route(value: Any) -> Optional[str]:
+def _normalize_route(value: Any) -> str | None:
     """Return a canonical ``A``-``J`` letter, or None if it isn't one.
 
     Tolerates the trailing-rationale form authors use in practice
@@ -128,7 +129,7 @@ def _normalize_route(value: Any) -> Optional[str]:
     return route if route in ROUTE_NAMES else None
 
 
-def _focus_text(frontmatter: Dict[str, Any], body: str) -> str:
+def _focus_text(frontmatter: dict[str, Any], body: str) -> str:
     """The text the audit classifies: the brief's ``focus``.
 
     Falls back to the ``## Focus`` body section for briefs written before
@@ -144,7 +145,7 @@ def _focus_text(frontmatter: Dict[str, Any], body: str) -> str:
     for index, line in enumerate(lines):
         if line.strip().lower() != "## focus":
             continue
-        collected: List[str] = []
+        collected: list[str] = []
         for following in lines[index + 1 :]:
             if following.startswith("## "):
                 break
@@ -153,9 +154,9 @@ def _focus_text(frontmatter: Dict[str, Any], body: str) -> str:
     return ""
 
 
-def load_briefs(queue_root: Path) -> List[Dict[str, Any]]:
+def load_briefs(queue_root: Path) -> list[dict[str, Any]]:
     """Read every brief in the queue, newest-first by ``created`` then id."""
-    briefs: List[Dict[str, Any]] = []
+    briefs: list[dict[str, Any]] = []
     for path in _iter_brief_files(queue_root):
         try:
             text = path.read_text(encoding="utf-8")
@@ -171,7 +172,9 @@ def load_briefs(queue_root: Path) -> List[Dict[str, Any]]:
                 "path": str(path),
                 "created": str(frontmatter.get("created") or ""),
                 "focus": _focus_text(frontmatter, body),
-                "recommended_route": _normalize_route(frontmatter.get("recommended-route")),
+                "recommended_route": _normalize_route(
+                    frontmatter.get("recommended-route")
+                ),
                 "raw_recommended": frontmatter.get("recommended-route"),
             }
         )
@@ -184,7 +187,7 @@ def load_briefs(queue_root: Path) -> List[Dict[str, Any]]:
 # --------------------------------------------------------------------------- #
 
 
-def _consumed_ids(value: Any) -> List[str]:
+def _consumed_ids(value: Any) -> list[str]:
     """Normalize ``handoffs_consumed`` — written as both a string and a list."""
     if not value:
         return []
@@ -195,7 +198,7 @@ def _consumed_ids(value: Any) -> List[str]:
     return []
 
 
-def load_actual_routes(runs_root: Path) -> Dict[str, str]:
+def load_actual_routes(runs_root: Path) -> dict[str, str]:
     """Map ``brief_id -> selected_route`` from run records that consumed it.
 
     Run records live at ``<runs_root>/<repo-name>/<run-id>.yaml``. When more
@@ -205,7 +208,7 @@ def load_actual_routes(runs_root: Path) -> Dict[str, str]:
     if not runs_root.is_dir():
         return {}
 
-    newest: Dict[str, Tuple[str, str]] = {}
+    newest: dict[str, tuple[str, str]] = {}
     for path in sorted(runs_root.glob("*/*.yaml")):
         try:
             record = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -233,10 +236,10 @@ def audit_coverage(
     queue_root: Path,
     runs_root: Path,
     limit: int = DEFAULT_LIMIT,
-    since: Optional[str] = None,
-    state: Optional[Dict[str, Any]] = None,
-    resumable_state: Optional[bool] = None,
-) -> Dict[str, Any]:
+    since: str | None = None,
+    state: dict[str, Any] | None = None,
+    resumable_state: bool | None = None,
+) -> dict[str, Any]:
     """Replay the classifier over the brief corpus and cluster disagreements."""
     replay_state = REPLAY_STATE if state is None else state
     briefs = load_briefs(queue_root)
@@ -248,8 +251,8 @@ def audit_coverage(
     if limit and limit > 0:
         briefs = briefs[:limit]
 
-    comparisons: List[Dict[str, Any]] = []
-    skipped: Dict[str, int] = defaultdict(int)
+    comparisons: list[dict[str, Any]] = []
+    skipped: dict[str, int] = defaultdict(int)
 
     for brief in briefs:
         focus = brief["focus"]
@@ -285,7 +288,9 @@ def audit_coverage(
                 "predicted": result["route"],
                 "confidence": result["confidence"],
                 "agrees": result["route"] == expected,
-                "no_signal": _scored_nothing(focus, replay_state, resumable_state, result),
+                "no_signal": _scored_nothing(
+                    focus, replay_state, resumable_state, result
+                ),
             }
         )
 
@@ -313,9 +318,9 @@ def audit_coverage(
 
 def _scored_nothing(
     focus: str,
-    replay_state: Dict[str, Any],
-    resumable_state: Optional[bool],
-    result: Dict[str, Any],
+    replay_state: dict[str, Any],
+    resumable_state: bool | None,
+    result: dict[str, Any],
 ) -> bool:
     """True when the signal tables matched nothing in ``focus``.
 
@@ -337,12 +342,16 @@ def _scored_nothing(
     if resumable_state is not False:
         return True
     undisqualified = classify(
-        focus, state=replay_state, handoff_route=None, pr_states=None, resumable_state=None
+        focus,
+        state=replay_state,
+        handoff_route=None,
+        pr_states=None,
+        resumable_state=None,
     )
     return not undisqualified["scores"]
 
 
-def _agreement(comparisons: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _agreement(comparisons: list[dict[str, Any]]) -> dict[str, Any]:
     total = len(comparisons)
     agreed = sum(1 for c in comparisons if c["agrees"])
     return {
@@ -353,7 +362,7 @@ def _agreement(comparisons: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
-def _no_signal(comparisons: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _no_signal(comparisons: list[dict[str, Any]]) -> dict[str, Any]:
     """Split the corpus by whether the classifier had any evidence at all."""
     items = [c for c in comparisons if c["no_signal"]]
     disagreed = [c for c in items if not c["agrees"]]
@@ -361,7 +370,9 @@ def _no_signal(comparisons: List[Dict[str, Any]]) -> Dict[str, Any]:
     return {
         "count": len(items),
         "disagreed": len(disagreed),
-        "share_of_corpus": round(len(items) / len(comparisons), 4) if comparisons else None,
+        "share_of_corpus": round(len(items) / len(comparisons), 4)
+        if comparisons
+        else None,
         "share_of_disagreements": (
             round(len(disagreed) / all_disagreements, 4) if all_disagreements else None
         ),
@@ -369,12 +380,12 @@ def _no_signal(comparisons: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
-def _by_expected_route(comparisons: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    buckets: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+def _by_expected_route(comparisons: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    buckets: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for comparison in comparisons:
         buckets[comparison["expected"]].append(comparison)
 
-    rows: List[Dict[str, Any]] = []
+    rows: list[dict[str, Any]] = []
     for route in sorted(buckets):
         items = buckets[route]
         agreed = sum(1 for c in items if c["agrees"])
@@ -390,14 +401,16 @@ def _by_expected_route(comparisons: List[Dict[str, Any]]) -> List[Dict[str, Any]
     return rows
 
 
-def _clusters(comparisons: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _clusters(comparisons: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Group disagreements by ``(expected, predicted)``, most frequent first."""
-    buckets: Dict[Tuple[str, str], List[Dict[str, Any]]] = defaultdict(list)
+    buckets: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for comparison in comparisons:
         if not comparison["agrees"]:
-            buckets[(comparison["expected"], comparison["predicted"])].append(comparison)
+            buckets[(comparison["expected"], comparison["predicted"])].append(
+                comparison
+            )
 
-    clusters: List[Dict[str, Any]] = []
+    clusters: list[dict[str, Any]] = []
     for (expected, predicted), items in buckets.items():
         confident = [c for c in items if c["confidence"] == "high"]
         from_actual = sum(1 for c in items if c["expected_source"] == "actual")
@@ -425,7 +438,7 @@ def _clusters(comparisons: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 # --------------------------------------------------------------------------- #
 
 
-def render_report(report: Dict[str, Any]) -> str:
+def render_report(report: dict[str, Any]) -> str:
     corpus = report["corpus"]
     replay = report["replay"]
     agreement = report["agreement"]
@@ -573,7 +586,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     raw = list(sys.argv[1:] if argv is None else argv)
     emit_json = "--json" in raw
     args = _build_parser().parse_args([arg for arg in raw if arg != "--json"])
@@ -589,7 +602,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"error: work-queue root not found: {queue_root}", file=sys.stderr)
         return 2
 
-    state: Optional[Dict[str, Any]] = None
+    state: dict[str, Any] | None = None
     if args.state:
         try:
             state = json.loads(args.state)

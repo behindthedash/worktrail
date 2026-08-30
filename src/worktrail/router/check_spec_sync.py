@@ -148,8 +148,8 @@ def find_task_statuses(tasks_dir: Path) -> dict[str, str]:
     statuses: dict[str, str] = {}
     for tf in sorted(tasks_dir.glob("TASK-*.md")):
         text = tf.read_text(encoding="utf-8", errors="replace")
-        fm_id = re.search(r"^id:\s*(\S+)", text, re.M)
-        fm_status = re.search(r"^status:\s*(\S+)", text, re.M)
+        fm_id = re.search(r"^id:\s*(\S+)", text, re.MULTILINE)
+        fm_status = re.search(r"^status:\s*(\S+)", text, re.MULTILINE)
         if fm_id and fm_status:
             statuses[fm_id.group(1)] = fm_status.group(1).strip()
     return statuses
@@ -200,7 +200,9 @@ def find_parent_spec(spec_dir: Path) -> Path | None:
     candidates = [
         p
         for p in spec_dir.glob("*.md")
-        if p.name not in AUX_FILENAMES and not p.name.endswith("--tasks.md") and not p.name.endswith("--technical-plan.md")
+        if p.name not in AUX_FILENAMES
+        and not p.name.endswith("--tasks.md")
+        and not p.name.endswith("--technical-plan.md")
     ]
     if not candidates:
         return None
@@ -217,7 +219,7 @@ def find_parent_spec(spec_dir: Path) -> Path | None:
     # Multiple dated revisions of the same spec (e.g. a later rewrite) ->
     # the lexicographically latest filename is the current one (date-prefixed
     # naming sorts chronologically).
-    return sorted(pool)[-1]
+    return max(pool)
 
 
 def parent_spec_status(parent_spec: Path) -> str | None:
@@ -225,7 +227,7 @@ def parent_spec_status(parent_spec: Path) -> str | None:
     # Accept both "**Status**: X" and "**Status:** X" (colon inside vs.
     # outside the closing bold markers) -- both are equally common across
     # consuming repos' spec corpora.
-    m = re.search(r"^\*\*Status(?:\*\*:|:\*\*)\s*(.+?)\s*$", text, re.M)
+    m = re.search(r"^\*\*Status(?:\*\*:|:\*\*)\s*(.+?)\s*$", text, re.MULTILINE)
     return m.group(1).strip() if m else None
 
 
@@ -239,7 +241,7 @@ def _rewrite_parent_status(parent_spec: Path, new_status: str) -> bool:
         lambda m: m.group(1) + new_status,
         text,
         count=1,
-        flags=re.M,
+        flags=re.MULTILINE,
     )
     if n and new_text != text:
         parent_spec.write_text(new_text, encoding="utf-8")
@@ -258,6 +260,7 @@ def _git_tracked(repo: Path, paths: list[str]) -> set[str]:
     try:
         result = subprocess.run(
             ["git", "-C", str(repo), "ls-files", "-z", "--"] + paths,
+            check=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
@@ -291,7 +294,7 @@ def _looks_repo_relative(entry: str) -> bool:
     plain non-file descriptions (e.g. "crontab (user-level)") -- real fleet
     `files:` data carries all of these, and naively checking every entry
     against git would false-positive on them fleet-wide."""
-    return not (entry.startswith("~") or entry.startswith("/") or any(ch.isspace() for ch in entry))
+    return not (entry.startswith(("~", "/")) or any(ch.isspace() for ch in entry))
 
 
 def check_spec(spec_dir: Path, repo: Path | None = None) -> list[str]:
@@ -314,7 +317,9 @@ def check_spec(spec_dir: Path, repo: Path | None = None) -> list[str]:
     summary_candidates = sorted(spec_dir.glob("*--tasks.md"))
     if summary_candidates:
         summary_path = summary_candidates[-1]
-        table = parse_summary_table(summary_path.read_text(encoding="utf-8", errors="replace"))
+        table = parse_summary_table(
+            summary_path.read_text(encoding="utf-8", errors="replace")
+        )
         if table is not None and all(v in TASK_STATUS_VOCAB for v in table.values()):
             for task_id, fm_status in task_statuses.items():
                 table_status = table.get(task_id)
@@ -352,9 +357,17 @@ def check_spec(spec_dir: Path, repo: Path | None = None) -> list[str]:
                 continue
             if frontmatter.get("kind", "impl") != "impl":
                 continue
-            exempt = {e for e in (frontmatter.get("files-sync-exempt") or []) if isinstance(e, str)}
+            exempt = {
+                e
+                for e in (frontmatter.get("files-sync-exempt") or [])
+                if isinstance(e, str)
+            }
             for entry in frontmatter.get("files") or []:
-                if isinstance(entry, str) and _looks_repo_relative(entry) and entry not in exempt:
+                if (
+                    isinstance(entry, str)
+                    and _looks_repo_relative(entry)
+                    and entry not in exempt
+                ):
                     candidates.append((tf.name, entry))
         if candidates:
             tracked = _git_tracked(repo, [entry for _, entry in candidates])
@@ -381,7 +394,9 @@ def fix_spec(spec_dir: Path) -> list[str]:
         return []
 
     task_statuses = find_task_statuses(tasks_dir)
-    if not task_statuses or not all(s in TERMINAL_STATUSES for s in task_statuses.values()):
+    if not task_statuses or not all(
+        s in TERMINAL_STATUSES for s in task_statuses.values()
+    ):
         return []
 
     parent_spec = find_parent_spec(spec_dir)
@@ -393,7 +408,9 @@ def fix_spec(spec_dir: Path) -> list[str]:
         return []
 
     if _rewrite_parent_status(parent_spec, "Implemented"):
-        return [f"{parent_spec.name}: Status header updated '{status}' -> 'Implemented'"]
+        return [
+            f"{parent_spec.name}: Status header updated '{status}' -> 'Implemented'"
+        ]
     return []
 
 
@@ -404,7 +421,11 @@ def main() -> int:
         default="docs/specs",
         help="Path to the docs/specs directory (default: docs/specs, relative to cwd)",
     )
-    parser.add_argument("--spec", default=None, help="Check only this spec folder name (e.g. 026-authenticated-feedback-capture)")
+    parser.add_argument(
+        "--spec",
+        default=None,
+        help="Check only this spec folder name (e.g. 026-authenticated-feedback-capture)",
+    )
     parser.add_argument(
         "--repo",
         default=None,
@@ -431,7 +452,10 @@ def main() -> int:
     if args.spec:
         spec_dirs = [d for d in spec_dirs if d.name == args.spec]
         if not spec_dirs:
-            print(f"error: spec not found under {specs_root}: {args.spec}", file=sys.stderr)
+            print(
+                f"error: spec not found under {specs_root}: {args.spec}",
+                file=sys.stderr,
+            )
             return 2
 
     repo = Path(args.repo) if args.repo else None
@@ -458,7 +482,9 @@ def main() -> int:
         print(f"\n{total_fixed} spec(s) auto-fixed.")
 
     if total_failures:
-        print(f"\n{total_failures} drift issue(s) across {checked} spec(s). Run worktrail-check-spec-sync --fix on the affected spec(s) to fix what's fixable, or fix the rest by hand.")
+        print(
+            f"\n{total_failures} drift issue(s) across {checked} spec(s). Run worktrail-check-spec-sync --fix on the affected spec(s) to fix what's fixable, or fix the rest by hand."
+        )
         return 1
 
     print(f"spec sync guard: no drift detected across {len(spec_dirs)} spec(s).")

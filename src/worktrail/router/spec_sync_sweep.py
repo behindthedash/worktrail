@@ -59,19 +59,19 @@ import json
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
-from .spec_sync_sweep_discovery import discover_repos_with_specs
-from .spec_sync_sweep_check import check_repo_drift
-from .spec_sync_sweep_dedup import find_unresolved_drift_brief
 from .spec_sync_sweep_brief import file_drift_brief
-from .spec_sync_sweep_checkbox_check import check_repo_checkbox_drift
+from .spec_sync_sweep_check import check_repo_drift
 from .spec_sync_sweep_checkbox_brief import file_checkbox_drift_brief
+from .spec_sync_sweep_checkbox_check import check_repo_checkbox_drift
+from .spec_sync_sweep_dedup import find_unresolved_drift_brief
+from .spec_sync_sweep_discovery import discover_repos_with_specs
 
 _DEFAULT_LOCK_FILE = str(Path(tempfile.gettempdir()) / "spec-sync-sweep.lock")
 
 
-def _empty_record(skipped_overlap: bool) -> Dict[str, Any]:
+def _empty_record(skipped_overlap: bool) -> dict[str, Any]:
     return {
         "skipped_overlap": skipped_overlap,
         "checked": [],
@@ -86,7 +86,7 @@ def _empty_record(skipped_overlap: bool) -> Dict[str, Any]:
     }
 
 
-def run_sweep(repos_root: Path, queue_base: Path, lock_path: Path) -> Dict[str, Any]:
+def run_sweep(repos_root: Path, queue_base: Path, lock_path: Path) -> dict[str, Any]:
     """Run one unattended spec-sync drift sweep.
 
     Acquires a non-blocking exclusive lock on `lock_path` first; if it is
@@ -112,7 +112,7 @@ def run_sweep(repos_root: Path, queue_base: Path, lock_path: Path) -> Dict[str, 
     lock_path = Path(lock_path)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
 
-    lock_file = open(lock_path, "a+")
+    lock_file = open(lock_path, "a+")  # noqa: SIM115 -- held across the surrounding scope as a lock file
     try:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
@@ -148,7 +148,9 @@ def run_sweep(repos_root: Path, queue_base: Path, lock_path: Path) -> Dict[str, 
                 if existing_checkbox is not None:
                     record["checkbox_skipped_existing"].append(repo_str)
                 else:
-                    file_checkbox_drift_brief(repo, checkbox_result["findings"], queue_base)
+                    file_checkbox_drift_brief(
+                        repo, checkbox_result["findings"], queue_base
+                    )
                     record["checkbox_filed"].append(repo_str)
 
         return record
@@ -157,11 +159,17 @@ def run_sweep(repos_root: Path, queue_base: Path, lock_path: Path) -> Dict[str, 
         lock_file.close()
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repos-root", required=True, help="directory containing candidate repos")
-    parser.add_argument("--queue-dir", required=True, help="deferred-work queue base directory")
-    parser.add_argument("--lock-file", default=_DEFAULT_LOCK_FILE, help="single-flight lock file path")
+    parser.add_argument(
+        "--repos-root", required=True, help="directory containing candidate repos"
+    )
+    parser.add_argument(
+        "--queue-dir", required=True, help="deferred-work queue base directory"
+    )
+    parser.add_argument(
+        "--lock-file", default=_DEFAULT_LOCK_FILE, help="single-flight lock file path"
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 

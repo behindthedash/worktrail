@@ -22,9 +22,7 @@ being suppressed by the other.
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
-from typing import Optional
 
 from ..shared.brief_frontmatter import read_frontmatter
 
@@ -46,7 +44,7 @@ def find_unresolved_drift_brief(
     repo: Path,
     queue_base: Path,
     drift_source: str = DRIFT_SOURCE,
-) -> Optional[Path]:
+) -> Path | None:
     """Return the path of an unresolved Drift Brief for `repo`, or None.
 
     Scans `queue_base/queue/` (any status counts as unresolved) and

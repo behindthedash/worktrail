@@ -11,7 +11,6 @@ Run: python3 scripts/test_precheck_e2e.py
 """
 
 import json
-import os
 import subprocess
 import sys
 import tempfile
@@ -32,8 +31,8 @@ def _make_task_file(
     task_id: str,
     status: str = "pending",
     kind: str = "impl",
-    files: list = None,
-    external_deps: list = None,
+    files: list | None = None,
+    external_deps: list | None = None,
 ) -> None:
     files_yaml = str(files or [])
     lines = [
@@ -71,6 +70,7 @@ def _write_status_file(repo_dir: Path, spec_id: str, payload: dict) -> None:
 def _run_precheck(repo_dir: Path, spec_rel: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         _live_module_argv() + ["precheck", "--repo", str(repo_dir), spec_rel],
+        check=False,
         capture_output=True,
         text=True,
     )
@@ -144,7 +144,9 @@ class TestPrecheckE2EInfo(unittest.TestCase):
             tasks_dir = repo / spec_rel / "tasks"
             tasks_dir.mkdir(parents=True)
 
-            _make_task_file(tasks_dir, "TASK-001", files=["src/present.py", "src/absent.py"])
+            _make_task_file(
+                tasks_dir, "TASK-001", files=["src/present.py", "src/absent.py"]
+            )
             _make_files(repo, ["src/present.py"])
 
             result = _run_precheck(repo, spec_rel)
@@ -165,7 +167,9 @@ class TestPrecheckE2EKindFilter(unittest.TestCase):
             tasks_dir.mkdir(parents=True)
 
             _make_task_file(tasks_dir, "TASK-001", kind="e2e", files=["src/exists.py"])
-            _make_task_file(tasks_dir, "TASK-002", kind="cleanup", files=["src/exists.py"])
+            _make_task_file(
+                tasks_dir, "TASK-002", kind="cleanup", files=["src/exists.py"]
+            )
             _make_files(repo, ["src/exists.py"])
 
             result = _run_precheck(repo, spec_rel)
@@ -180,7 +184,9 @@ class TestPrecheckE2EKindFilter(unittest.TestCase):
             tasks_dir = repo / spec_rel / "tasks"
             tasks_dir.mkdir(parents=True)
 
-            _make_task_file(tasks_dir, "TASK-001", kind="cleanup", files=["src/exists.py"])
+            _make_task_file(
+                tasks_dir, "TASK-001", kind="cleanup", files=["src/exists.py"]
+            )
             _make_files(repo, ["src/exists.py"])
 
             result = _run_precheck(repo, spec_rel)
@@ -199,7 +205,9 @@ class TestPrecheckE2EAllCompleted(unittest.TestCase):
             tasks_dir = repo / spec_rel / "tasks"
             tasks_dir.mkdir(parents=True)
 
-            _make_task_file(tasks_dir, "TASK-001", status="completed", files=["src/done.py"])
+            _make_task_file(
+                tasks_dir, "TASK-001", status="completed", files=["src/done.py"]
+            )
             _make_files(repo, ["src/done.py"])
 
             result = _run_precheck(repo, spec_rel)

@@ -29,7 +29,9 @@ from worktrail.orchestrator import integrate
 
 
 def _run_git(cwd, *args):
-    r = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True)
+    r = subprocess.run(
+        ["git", *args], check=False, cwd=str(cwd), capture_output=True, text=True
+    )
     assert r.returncode == 0, f"git {' '.join(args)} failed: {r.stderr}"
     return r.stdout.strip()
 
@@ -43,8 +45,18 @@ class DeliveryLedgerInvariant(unittest.TestCase):
         repo = Path(tmpdir) / "myrepo"
         repo.mkdir()
         _run_git(repo, "init", "-q", "-b", "main")
-        _run_git(repo, "-c", "user.email=t@example.com", "-c", "user.name=T",
-                 "commit", "-q", "--allow-empty", "-m", "init")
+        _run_git(
+            repo,
+            "-c",
+            "user.email=t@example.com",
+            "-c",
+            "user.name=T",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        )
         # Local stand-in for the remote-tracking ref the detector compares
         # against -- no real remote needed for these tests.
         _run_git(repo, "update-ref", "refs/remotes/origin/main", "main")
@@ -54,14 +66,31 @@ class DeliveryLedgerInvariant(unittest.TestCase):
 
     def _add_task_worktree(self, repo, wt_base, spec_id, task_id):
         wt = wt_base / f"{spec_id}-{task_id.lower()}"
-        _run_git(repo, "worktree", "add", "-B", f"{spec_id}/{task_id.lower()}", str(wt), "main")
+        _run_git(
+            repo,
+            "worktree",
+            "add",
+            "-B",
+            f"{spec_id}/{task_id.lower()}",
+            str(wt),
+            "main",
+        )
         return wt
 
     def _commit_in(self, wt, filename, body, message):
         (wt / filename).write_text(body)
         _run_git(wt, "add", filename)
-        _run_git(wt, "-c", "user.email=t@example.com", "-c", "user.name=T",
-                 "commit", "-q", "-m", message)
+        _run_git(
+            wt,
+            "-c",
+            "user.email=t@example.com",
+            "-c",
+            "user.name=T",
+            "commit",
+            "-q",
+            "-m",
+            message,
+        )
 
     def test_flags_done_impl_task_with_unmerged_commit(self):
         """The 20260815-115257 shape: kind='impl', status='done', a real
@@ -69,11 +98,20 @@ class DeliveryLedgerInvariant(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             repo, wt_base = self._init_repo(tmpdir)
             wt = self._add_task_worktree(repo, wt_base, "auto-dod", "1.3")
-            self._commit_in(wt, "check.py", "STUB_MARKER_PATTERN = 'TODO'\n",
-                            "feat: add no_stub_markers check")
+            self._commit_in(
+                wt,
+                "check.py",
+                "STUB_MARKER_PATTERN = 'TODO'\n",
+                "feat: add no_stub_markers check",
+            )
 
             findings = integrate.detect_unreconciled_evidence(
-                repo, "origin", "main", "auto-dod", wt_base, [_task("1.3")],
+                repo,
+                "origin",
+                "main",
+                "auto-dod",
+                wt_base,
+                [_task("1.3")],
             )
 
             self.assertEqual(len(findings), 1)
@@ -88,14 +126,23 @@ class DeliveryLedgerInvariant(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             repo, wt_base = self._init_repo(tmpdir)
             wt = self._add_task_worktree(repo, wt_base, "auto-dod", "1.1")
-            self._commit_in(wt, "check.py", "def file_tracked(): pass\n",
-                            "feat: add file_tracked check")
+            self._commit_in(
+                wt,
+                "check.py",
+                "def file_tracked(): pass\n",
+                "feat: add file_tracked check",
+            )
             # Land the task branch on base, exactly as a merged group PR would.
             _run_git(repo, "merge", "-q", "--no-edit", "auto-dod/1.1")
             _run_git(repo, "update-ref", "refs/remotes/origin/main", "main")
 
             findings = integrate.detect_unreconciled_evidence(
-                repo, "origin", "main", "auto-dod", wt_base, [_task("1.1")],
+                repo,
+                "origin",
+                "main",
+                "auto-dod",
+                wt_base,
+                [_task("1.1")],
             )
             self.assertEqual(findings, [])
 
@@ -108,7 +155,11 @@ class DeliveryLedgerInvariant(unittest.TestCase):
             self._commit_in(wt, "check.py", "partial\n", "wip")
 
             findings = integrate.detect_unreconciled_evidence(
-                repo, "origin", "main", "auto-dod", wt_base,
+                repo,
+                "origin",
+                "main",
+                "auto-dod",
+                wt_base,
                 [_task("1.3", status="implementing")],
             )
             self.assertEqual(findings, [])
@@ -123,7 +174,11 @@ class DeliveryLedgerInvariant(unittest.TestCase):
                 self._commit_in(wt, f"f{tid}.txt", "x\n", f"work for {tid}")
 
             findings = integrate.detect_unreconciled_evidence(
-                repo, "origin", "main", "auto-dod", wt_base,
+                repo,
+                "origin",
+                "main",
+                "auto-dod",
+                wt_base,
                 [_task("1.3", kind="impl"), _task("3.3", kind="cleanup")],
             )
             self.assertEqual({f["task"] for f in findings}, {"1.3", "3.3"})

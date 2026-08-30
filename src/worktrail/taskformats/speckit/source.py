@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from worktrail.orchestrator.coordinator import TAIL_KINDS
+
 from . import schema
 
 DEFAULT_SPEC_ROOT = ".specify/specs"
@@ -18,40 +19,54 @@ class SpecKitTaskSource:
         self.repo_root = Path(repo_root)
         self._spec_root = spec_root
 
-    def load(self, spec_ref: str) -> tuple[str, List[Dict[str, Any]]]:
+    def load(self, spec_ref: str) -> tuple[str, list[dict[str, Any]]]:
         tasks_path = self.task_file_path("", spec_ref)
         if not tasks_path.is_file():
-            raise FileNotFoundError(f"no tasks.md for Spec Kit feature {spec_ref!r} at {tasks_path}")
+            raise FileNotFoundError(
+                f"no tasks.md for Spec Kit feature {spec_ref!r} at {tasks_path}"
+            )
         parsed = schema.parse_tasks_md(tasks_path.read_text())
         rel = str(tasks_path.relative_to(self.repo_root))
         previous_by_group: dict[str, str] = {}
         non_tail_ids: list[str] = []
-        tasks: list[Dict[str, Any]] = []
+        tasks: list[dict[str, Any]] = []
         for task in parsed.tasks:
-            deps = [previous_by_group[task.group]] if task.group in previous_by_group else []
+            deps = (
+                [previous_by_group[task.group]]
+                if task.group in previous_by_group
+                else []
+            )
             previous_by_group[task.group] = task.id
             if task.kind in TAIL_KINDS:
                 deps = sorted(set(deps) | set(non_tail_ids))
             else:
                 non_tail_ids.append(task.id)
-            tasks.append({
-                "id": task.id,
-                "title": task.title,
-                "status": task.status,
-                "deps": deps,
-                "external_deps": [],
-                "files": [],
-                "kind": task.kind,
-                "tags": list(task.tags),
-                "group": task.group,
-                "group_title": task.group_title,
-                "path": rel,
-                "frontmatter_warnings": list(parsed.warnings),
-            })
+            tasks.append(
+                {
+                    "id": task.id,
+                    "title": task.title,
+                    "status": task.status,
+                    "deps": deps,
+                    "external_deps": [],
+                    "files": [],
+                    "kind": task.kind,
+                    "tags": list(task.tags),
+                    "group": task.group,
+                    "group_title": task.group_title,
+                    "path": rel,
+                    "frontmatter_warnings": list(parsed.warnings),
+                }
+            )
         return spec_ref, tasks
 
-    def resolve_external_dependency(self, dep_ref: str) -> Dict[str, Any]:
-        unresolved = {"ref": dep_ref, "resolved": False, "satisfied": False, "status": None, "reason": "malformed"}
+    def resolve_external_dependency(self, dep_ref: str) -> dict[str, Any]:
+        unresolved = {
+            "ref": dep_ref,
+            "resolved": False,
+            "satisfied": False,
+            "status": None,
+            "reason": "malformed",
+        }
         feature, separator, task_id = dep_ref.partition("/")
         if not separator or not feature or not task_id:
             return unresolved
@@ -74,12 +89,16 @@ class SpecKitTaskSource:
             "reason": None,
         }
 
-    def mark_status(self, task_id: str, status: str, *, spec_ref: Optional[str] = None) -> bool:
+    def mark_status(
+        self, task_id: str, status: str, *, spec_ref: str | None = None
+    ) -> bool:
         if spec_ref is None:
             raise ValueError("SpecKitTaskSource.mark_status requires spec_ref")
         if status != "completed":
             return False
-        return schema.set_task_checked(self.task_file_path(task_id, spec_ref), task_id, True)
+        return schema.set_task_checked(
+            self.task_file_path(task_id, spec_ref), task_id, True
+        )
 
     def task_brief_ref(self, task_id: str, spec_ref: str) -> tuple[str, str]:
         return f"{self._spec_root}/{spec_ref}/tasks.md", task_id
@@ -93,5 +112,5 @@ class SpecKitTaskSource:
     def spec_root_prefix(self) -> str:
         return ".specify/"
 
-    def file_sections(self, text: str) -> tuple[List[str], List[str]]:
+    def file_sections(self, text: str) -> tuple[list[str], list[str]]:
         return [], []

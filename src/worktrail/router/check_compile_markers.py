@@ -20,14 +20,16 @@ passing local/agent compile wrote into the change directory. This catches
 passed" -- not a fresh scope-gap discovery a live compile might surface for
 content nobody has compiled yet.
 """
+
 from __future__ import annotations
 
 import argparse
 import json
 import subprocess
 import sys
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any
 
 from worktrail.conductor import compile as conductor_compile
 from worktrail.conductor import runplan
@@ -35,10 +37,14 @@ from worktrail.conductor import runplan
 TASKS_GLOB_SUFFIX = ("openspec", "changes")
 
 
-def _run_git(repo: Path, args: Sequence[str], timeout: int = 15) -> Optional[str]:
+def _run_git(repo: Path, args: Sequence[str], timeout: int = 15) -> str | None:
     try:
         out = subprocess.run(
-            ["git", "-C", str(repo), *args], capture_output=True, text=True, timeout=timeout
+            ["git", "-C", str(repo), *args],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -47,7 +53,9 @@ def _run_git(repo: Path, args: Sequence[str], timeout: int = 15) -> Optional[str
     return out.stdout
 
 
-def changed_change_dirs(repo: "str | Path", base_ref: str, head_ref: str = "HEAD") -> List[Path]:
+def changed_change_dirs(
+    repo: str | Path, base_ref: str, head_ref: str = "HEAD"
+) -> list[Path]:
     """OpenSpec change directories touched by `tasks.md` changes between two refs.
 
     Best-effort: an unresolvable `base_ref` (shallow clone missing history,
@@ -58,10 +66,19 @@ def changed_change_dirs(repo: "str | Path", base_ref: str, head_ref: str = "HEAD
     # A single `*` (not `**`) -- git pathspec glob matching for `**` needs
     # `:(glob)` magic, and every real change directory is exactly one level
     # deep (`openspec/changes/<id>/tasks.md`) anyway.
-    out = _run_git(repo, ["diff", "--name-only", f"{base_ref}...{head_ref}", "--", "openspec/changes/*/tasks.md"])
+    out = _run_git(
+        repo,
+        [
+            "diff",
+            "--name-only",
+            f"{base_ref}...{head_ref}",
+            "--",
+            "openspec/changes/*/tasks.md",
+        ],
+    )
     if out is None:
         return []
-    dirs: List[Path] = []
+    dirs: list[Path] = []
     seen = set()
     for line in out.splitlines():
         line = line.strip()
@@ -69,7 +86,11 @@ def changed_change_dirs(repo: "str | Path", base_ref: str, head_ref: str = "HEAD
             continue
         change_dir = repo / Path(line).parent
         parts = change_dir.relative_to(repo).parts
-        if len(parts) < 3 or parts[0] != TASKS_GLOB_SUFFIX[0] or parts[1] != TASKS_GLOB_SUFFIX[1]:
+        if (
+            len(parts) < 3
+            or parts[0] != TASKS_GLOB_SUFFIX[0]
+            or parts[1] != TASKS_GLOB_SUFFIX[1]
+        ):
             continue
         # `openspec archive` moves a change one level deeper, under
         # openspec/changes/archive/<name>/ -- matches dashboard.py's own
@@ -87,7 +108,7 @@ def changed_change_dirs(repo: "str | Path", base_ref: str, head_ref: str = "HEAD
     return dirs
 
 
-def check_marker(change_dir: "str | Path") -> Dict[str, Any]:
+def check_marker(change_dir: str | Path) -> dict[str, Any]:
     """Does `change_dir` carry a compile marker matching its current content?
 
     Returns `{"change": str, "status": "ok"|"missing"|"stale",
@@ -118,15 +139,23 @@ def check_marker(change_dir: "str | Path") -> Dict[str, Any]:
     }
 
 
-def check(repo: "str | Path", base_ref: str, head_ref: str = "HEAD",
-          change_dirs: Optional[Sequence["str | Path"]] = None) -> Dict[str, Any]:
+def check(
+    repo: str | Path,
+    base_ref: str,
+    head_ref: str = "HEAD",
+    change_dirs: Sequence[str | Path] | None = None,
+) -> dict[str, Any]:
     """Check every OpenSpec change touched between `base_ref` and `head_ref`.
 
     `change_dirs`, when given, replaces git-diff discovery entirely (tests,
     or a caller that already knows the touched changes) -- `base_ref`/`head_ref`
     are then unused for discovery but still echoed back for context.
     """
-    dirs = [Path(d) for d in change_dirs] if change_dirs is not None else changed_change_dirs(repo, base_ref, head_ref)
+    dirs = (
+        [Path(d) for d in change_dirs]
+        if change_dirs is not None
+        else changed_change_dirs(repo, base_ref, head_ref)
+    )
     results = [check_marker(d) for d in dirs]
     failing = [r for r in results if r["status"] != "ok"]
     return {
@@ -137,7 +166,7 @@ def check(repo: "str | Path", base_ref: str, head_ref: str = "HEAD",
     }
 
 
-def _report_errors(result: Dict[str, Any]) -> None:
+def _report_errors(result: dict[str, Any]) -> None:
     """Stderr only -- shared by both output modes, same convention as
     `compile.py`'s own `_print_scope_gap_error`, so `--json` stdout stays a
     clean, parseable payload even when the exit code reports failure."""
@@ -158,22 +187,24 @@ def _report_errors(result: Dict[str, Any]) -> None:
             )
 
 
-def _report_summary(result: Dict[str, Any]) -> None:
+def _report_summary(result: dict[str, Any]) -> None:
     if not result["checked"]:
         print("no openspec/changes/*/tasks.md changes in this diff -- nothing to check")
     elif result["passed"]:
         print(f"OK: {len(result['checked'])} change(s) carry a fresh compile marker")
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--repo", required=True)
     ap.add_argument("--base-ref", required=True, help="e.g. origin/main")
     ap.add_argument("--head-ref", default="HEAD")
     ap.add_argument(
-        "--change-dir", action="append", default=None,
+        "--change-dir",
+        action="append",
+        default=None,
         help="check this change directory instead of discovering from git diff "
-             "(repeatable)",
+        "(repeatable)",
     )
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)

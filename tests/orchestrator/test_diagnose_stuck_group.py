@@ -32,7 +32,9 @@ def _group(name, tasks):
 class DiagnoseStuckGroup(unittest.TestCase):
     def test_all_terminal_returns_empty(self):
         by_id = {"1.1": {"status": "done"}, "1.2": {"status": "failed"}}
-        self.assertEqual(diagnose_stuck_group(_group("base", ["1.1", "1.2"]), by_id, TERMINAL), "")
+        self.assertEqual(
+            diagnose_stuck_group(_group("base", ["1.1", "1.2"]), by_id, TERMINAL), ""
+        )
 
     def test_tail_kind_blocker_named_explicitly(self):
         """THE DEFECT this fixes: task 1.2 depends on tail-kind task 1.1, which
@@ -56,7 +58,9 @@ class DiagnoseStuckGroup(unittest.TestCase):
             "1.2": {"status": "pending", "kind": "impl", "deps": ["1.1"]},
             "1.3": {"status": "pending", "kind": "impl", "deps": ["1.2"]},
         }
-        msg = diagnose_stuck_group(_group("feature-1", ["1.1", "1.2", "1.3"]), by_id, TERMINAL)
+        msg = diagnose_stuck_group(
+            _group("feature-1", ["1.1", "1.2", "1.3"]), by_id, TERMINAL
+        )
         self.assertIn("task 1.3 blocked", msg)
         self.assertIn("tail task(s) 1.1", msg)
 

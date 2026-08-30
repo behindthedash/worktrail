@@ -106,8 +106,14 @@ def record_and_detect(
             streak = prior.get(ident, {}).get("streak", 0) + 1
             updated[ident] = {"streak": streak, "last_seen": now.isoformat()}
             if streak >= threshold:
-                stuck.append({"key": key, "repo_name": repo_name,
-                              "spec_id": spec_id, "streak": streak})
+                stuck.append(
+                    {
+                        "key": key,
+                        "repo_name": repo_name,
+                        "spec_id": spec_id,
+                        "streak": streak,
+                    }
+                )
     # Anything not re-affirmed this sweep resets: either the finder stopped
     # returning it (genuinely fixed) or the action raised this time (already
     # logged separately) -- either way its streak does not carry forward.
@@ -149,11 +155,13 @@ the existing `--consecutive-failures` circuit-breaker flag's shape
 ```python
 from ..orchestrator.agent_capacity import write_lock  # reuse the flock helper
 
+
 def history_path() -> Path:
     override = env_setting("WORKTRAIL_STUCK_REMEDIATION_HISTORY")
     if override:
         return Path(override).expanduser()
     return worktrail_home() / "remediation-history.json"
+
 
 def load(path: Path) -> Dict[str, Any]:
     try:
@@ -163,6 +171,7 @@ def load(path: Path) -> Dict[str, Any]:
     if not isinstance(value, dict) or not isinstance(value.get("identities"), dict):
         return {"version": 1, "identities": {}}
     return value
+
 
 def save(value: Dict[str, Any], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -178,6 +187,7 @@ def save(value: Dict[str, Any], path: Path) -> None:
         except FileNotFoundError:
             pass
 
+
 def sweep_and_record(
     resumed: Dict[str, List[Dict[str, Any]]],
     path: Path,
@@ -188,7 +198,9 @@ def sweep_and_record(
     now = now or datetime.now(timezone.utc)
     with write_lock(path):
         history = load(path)
-        new_history, stuck = record_and_detect(history, resumed, now, threshold, retention)
+        new_history, stuck = record_and_detect(
+            history, resumed, now, threshold, retention
+        )
         save(new_history, path)
     return stuck
 ```
@@ -220,12 +232,15 @@ and the call naturally only fires when `resumed` could be non-empty:
 stuck: List[Dict[str, Any]] = []
 if slot == 0 and config.repos_root is not None and not config.dry_run:
     stuck = stuck_remediation.sweep_and_record(
-        resumed, config.stuck_history_path, threshold=config.stuck_threshold)
+        resumed, config.stuck_history_path, threshold=config.stuck_threshold
+    )
     for item in stuck:
-        log(f"stuck remediation: {item['key']} {item['repo_name']} "
+        log(
+            f"stuck remediation: {item['key']} {item['repo_name']} "
             f"{item['spec_id']} recurred {item['streak']} consecutive sweeps "
             "despite apparent success -- the action is not actually "
-            "resolving the finding, investigate directly")
+            "resolving the finding, investigate directly"
+        )
 summary["stuck_remediations"] = stuck
 ```
 

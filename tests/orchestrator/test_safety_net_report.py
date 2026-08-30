@@ -26,10 +26,13 @@ def test_scan_ignores_journals_with_no_events(tmp_path):
     repo.mkdir()
     wt = tmp_path / "myrepo-worktrees"
     wt.mkdir()
-    _write_journal(wt / "run-001-feature.json", {
-        "spec_id": "001-feature",
-        "entries": [{"task": "TASK-001", "role": "implement", "report": {}}],
-    })
+    _write_journal(
+        wt / "run-001-feature.json",
+        {
+            "spec_id": "001-feature",
+            "entries": [{"task": "TASK-001", "role": "implement", "report": {}}],
+        },
+    )
 
     summary = safety_net_report.scan(repo)
 
@@ -43,22 +46,38 @@ def test_scan_aggregates_dependency_file_drift_across_runs(tmp_path):
     repo.mkdir()
     wt = tmp_path / "myrepo-worktrees"
     wt.mkdir()
-    _write_journal(wt / "run-001-feature.json", {
-        "spec_id": "001-feature",
-        "entries": [
-            {"event": "dependency_file_drift", "task": "TASK-002",
-             "dep_id": "TASK-001", "declared_path": "helper_v1.py",
-             "dep_head_sha": "abc123", "at": 1.0},
-        ],
-    })
-    _write_journal(wt / "run-002-feature.json", {
-        "spec_id": "002-feature",
-        "entries": [
-            {"event": "dependency_file_drift", "task": "TASK-005",
-             "dep_id": "TASK-001", "declared_path": "helper.py",
-             "dep_head_sha": "def456", "at": 2.0},
-        ],
-    })
+    _write_journal(
+        wt / "run-001-feature.json",
+        {
+            "spec_id": "001-feature",
+            "entries": [
+                {
+                    "event": "dependency_file_drift",
+                    "task": "TASK-002",
+                    "dep_id": "TASK-001",
+                    "declared_path": "helper_v1.py",
+                    "dep_head_sha": "abc123",
+                    "at": 1.0,
+                },
+            ],
+        },
+    )
+    _write_journal(
+        wt / "run-002-feature.json",
+        {
+            "spec_id": "002-feature",
+            "entries": [
+                {
+                    "event": "dependency_file_drift",
+                    "task": "TASK-005",
+                    "dep_id": "TASK-001",
+                    "declared_path": "helper.py",
+                    "dep_head_sha": "def456",
+                    "at": 2.0,
+                },
+            ],
+        },
+    )
 
     summary = safety_net_report.scan(repo)
 
@@ -73,24 +92,39 @@ def test_scan_aggregates_automerge_preflight_fallback(tmp_path):
     repo.mkdir()
     wt = tmp_path / "myrepo-worktrees"
     wt.mkdir()
-    _write_journal(wt / "run-001-feature.json", {
-        "spec_id": "001-feature",
-        "entries": [],
-        "safety_net_events": [
-            {"event": "automerge_preflight_fallback", "group": "base",
-             "pr": "run/base", "reason": "gh api failed", "outcome": "queued",
-             "at": 1.0},
-            {"event": "automerge_preflight_fallback", "group": "feature-1",
-             "pr": "run/feature-1", "reason": "gh api failed",
-             "outcome": "fallback_failed", "fallback_error": "boom", "at": 2.0},
-        ],
-    })
+    _write_journal(
+        wt / "run-001-feature.json",
+        {
+            "spec_id": "001-feature",
+            "entries": [],
+            "safety_net_events": [
+                {
+                    "event": "automerge_preflight_fallback",
+                    "group": "base",
+                    "pr": "run/base",
+                    "reason": "gh api failed",
+                    "outcome": "queued",
+                    "at": 1.0,
+                },
+                {
+                    "event": "automerge_preflight_fallback",
+                    "group": "feature-1",
+                    "pr": "run/feature-1",
+                    "reason": "gh api failed",
+                    "outcome": "fallback_failed",
+                    "fallback_error": "boom",
+                    "at": 2.0,
+                },
+            ],
+        },
+    )
 
     summary = safety_net_report.scan(repo)
 
     assert summary["by_event"] == {"automerge_preflight_fallback": 2}
     assert summary["automerge_preflight_fallback_by_outcome"] == {
-        "queued": 1, "fallback_failed": 1,
+        "queued": 1,
+        "fallback_failed": 1,
     }
 
 
@@ -99,25 +133,40 @@ def test_scan_combines_both_event_kinds_in_one_journal(tmp_path):
     repo.mkdir()
     wt = tmp_path / "myrepo-worktrees"
     wt.mkdir()
-    _write_journal(wt / "run-001-feature.json", {
-        "spec_id": "001-feature",
-        "entries": [
-            {"event": "dependency_file_drift", "task": "TASK-002",
-             "dep_id": "TASK-001", "declared_path": "helper_v1.py",
-             "dep_head_sha": "abc123", "at": 1.0},
-        ],
-        "safety_net_events": [
-            {"event": "automerge_preflight_fallback", "group": "base",
-             "pr": "run/base", "reason": "x", "outcome": "queued", "at": 2.0},
-        ],
-    })
+    _write_journal(
+        wt / "run-001-feature.json",
+        {
+            "spec_id": "001-feature",
+            "entries": [
+                {
+                    "event": "dependency_file_drift",
+                    "task": "TASK-002",
+                    "dep_id": "TASK-001",
+                    "declared_path": "helper_v1.py",
+                    "dep_head_sha": "abc123",
+                    "at": 1.0,
+                },
+            ],
+            "safety_net_events": [
+                {
+                    "event": "automerge_preflight_fallback",
+                    "group": "base",
+                    "pr": "run/base",
+                    "reason": "x",
+                    "outcome": "queued",
+                    "at": 2.0,
+                },
+            ],
+        },
+    )
 
     summary = safety_net_report.scan(repo)
 
     assert summary["runs_scanned"] == 1
     assert summary["runs_with_safety_net_events"] == 1
     assert summary["by_event"] == {
-        "dependency_file_drift": 1, "automerge_preflight_fallback": 1,
+        "dependency_file_drift": 1,
+        "automerge_preflight_fallback": 1,
     }
 
 
@@ -147,14 +196,22 @@ def test_render_includes_breakdowns(tmp_path):
     repo.mkdir()
     wt = tmp_path / "myrepo-worktrees"
     wt.mkdir()
-    _write_journal(wt / "run-001-feature.json", {
-        "spec_id": "001-feature",
-        "entries": [
-            {"event": "dependency_file_drift", "task": "TASK-002",
-             "dep_id": "TASK-001", "declared_path": "helper_v1.py",
-             "dep_head_sha": "abc123", "at": 1.0},
-        ],
-    })
+    _write_journal(
+        wt / "run-001-feature.json",
+        {
+            "spec_id": "001-feature",
+            "entries": [
+                {
+                    "event": "dependency_file_drift",
+                    "task": "TASK-002",
+                    "dep_id": "TASK-001",
+                    "declared_path": "helper_v1.py",
+                    "dep_head_sha": "abc123",
+                    "at": 1.0,
+                },
+            ],
+        },
+    )
 
     out = safety_net_report.render(safety_net_report.scan(repo), repo)
 
@@ -167,18 +224,24 @@ def test_scan_aggregates_worktree_drift_repaired_by_task(tmp_path):
     repo.mkdir()
     wt = tmp_path / "myrepo-worktrees"
     wt.mkdir()
-    _write_journal(wt / "run-001-feature.json", {
-        "spec_id": "001-feature",
-        "entries": [
-            {"event": "worktree_drift_repaired", "task": "TASK-002", "at": 1.0},
-        ],
-    })
-    _write_journal(wt / "run-002-feature.json", {
-        "spec_id": "002-feature",
-        "entries": [
-            {"event": "worktree_drift_repaired", "task": "TASK-002", "at": 2.0},
-        ],
-    })
+    _write_journal(
+        wt / "run-001-feature.json",
+        {
+            "spec_id": "001-feature",
+            "entries": [
+                {"event": "worktree_drift_repaired", "task": "TASK-002", "at": 1.0},
+            ],
+        },
+    )
+    _write_journal(
+        wt / "run-002-feature.json",
+        {
+            "spec_id": "002-feature",
+            "entries": [
+                {"event": "worktree_drift_repaired", "task": "TASK-002", "at": 2.0},
+            ],
+        },
+    )
 
     summary = safety_net_report.scan(repo)
 
@@ -191,12 +254,15 @@ def test_scan_aggregates_checklist_conflict_resolved_by_task(tmp_path):
     repo.mkdir()
     wt = tmp_path / "myrepo-worktrees"
     wt.mkdir()
-    _write_journal(wt / "run-001-feature.json", {
-        "spec_id": "001-feature",
-        "entries": [
-            {"event": "checklist_conflict_resolved", "task": "TASK-005", "at": 1.0},
-        ],
-    })
+    _write_journal(
+        wt / "run-001-feature.json",
+        {
+            "spec_id": "001-feature",
+            "entries": [
+                {"event": "checklist_conflict_resolved", "task": "TASK-005", "at": 1.0},
+            ],
+        },
+    )
 
     summary = safety_net_report.scan(repo)
 
@@ -204,7 +270,9 @@ def test_scan_aggregates_checklist_conflict_resolved_by_task(tmp_path):
     assert summary["checklist_conflict_resolved_by_task"] == {"TASK-005": 1}
 
 
-def test_scan_combines_repair_events_with_dependency_file_drift_in_one_journal(tmp_path):
+def test_scan_combines_repair_events_with_dependency_file_drift_in_one_journal(
+    tmp_path,
+):
     """`_require_dependency_files_with_repair` can return both
     `worktree_drift_repaired` and a `dependency_file_drift` in the same
     returned list (the retry succeeded but the re-check still detected
@@ -213,20 +281,29 @@ def test_scan_combines_repair_events_with_dependency_file_drift_in_one_journal(t
     repo.mkdir()
     wt = tmp_path / "myrepo-worktrees"
     wt.mkdir()
-    _write_journal(wt / "run-001-feature.json", {
-        "spec_id": "001-feature",
-        "entries": [
-            {"event": "worktree_drift_repaired", "task": "TASK-002", "at": 1.0},
-            {"event": "dependency_file_drift", "task": "TASK-002",
-             "dep_id": "TASK-001", "declared_path": "helper.py",
-             "dep_head_sha": "abc123", "at": 1.0},
-        ],
-    })
+    _write_journal(
+        wt / "run-001-feature.json",
+        {
+            "spec_id": "001-feature",
+            "entries": [
+                {"event": "worktree_drift_repaired", "task": "TASK-002", "at": 1.0},
+                {
+                    "event": "dependency_file_drift",
+                    "task": "TASK-002",
+                    "dep_id": "TASK-001",
+                    "declared_path": "helper.py",
+                    "dep_head_sha": "abc123",
+                    "at": 1.0,
+                },
+            ],
+        },
+    )
 
     summary = safety_net_report.scan(repo)
 
     assert summary["by_event"] == {
-        "worktree_drift_repaired": 1, "dependency_file_drift": 1,
+        "worktree_drift_repaired": 1,
+        "dependency_file_drift": 1,
     }
     assert summary["worktree_drift_repaired_by_task"] == {"TASK-002": 1}
     assert summary["dependency_file_drift_by_dep_id"] == {"TASK-001": 1}
@@ -237,13 +314,16 @@ def test_render_includes_repair_event_breakdowns(tmp_path):
     repo.mkdir()
     wt = tmp_path / "myrepo-worktrees"
     wt.mkdir()
-    _write_journal(wt / "run-001-feature.json", {
-        "spec_id": "001-feature",
-        "entries": [
-            {"event": "worktree_drift_repaired", "task": "TASK-002", "at": 1.0},
-            {"event": "checklist_conflict_resolved", "task": "TASK-005", "at": 2.0},
-        ],
-    })
+    _write_journal(
+        wt / "run-001-feature.json",
+        {
+            "spec_id": "001-feature",
+            "entries": [
+                {"event": "worktree_drift_repaired", "task": "TASK-002", "at": 1.0},
+                {"event": "checklist_conflict_resolved", "task": "TASK-005", "at": 2.0},
+            ],
+        },
+    )
 
     out = safety_net_report.render(safety_net_report.scan(repo), repo)
 
