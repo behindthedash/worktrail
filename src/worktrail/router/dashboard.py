@@ -1529,6 +1529,24 @@ def _epic_gate_pairwise_re(next_n: int) -> re.Pattern[str]:
     return re.compile(_EPIC_GATE_PAIRWISE_TEMPLATE.format(next_n=next_n), re.IGNORECASE)
 
 
+def _epic_gate_candidates(next_n: int, epic_text: str) -> set[int]:
+    """Candidate gating feature numbers for `next_n`, from both gate shapes.
+
+    Pairwise matches name `next_n` exactly, so every match is a candidate.
+    Blanket matches name only the gating feature and cover every later
+    feature, so a blanket match only counts if it precedes `next_n`
+    (`< next_n`) -- a blanket gate on `next_n` itself or a later feature
+    does not block `next_n`.
+    """
+    candidates: set[int] = {
+        int(m) for m in _epic_gate_pairwise_re(next_n).findall(epic_text)
+    }
+    candidates.update(
+        int(m) for m in _EPIC_GATE_BLANKET_RE.findall(epic_text) if int(m) < next_n
+    )
+    return candidates
+
+
 def _epic_status_header(text: str) -> str | None:
     match = _EPIC_STATUS_LINE_RE.search(text)
     return match.group(1).strip() if match else None
