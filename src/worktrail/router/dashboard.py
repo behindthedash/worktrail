@@ -530,6 +530,76 @@ def _declared_file_targets(repo: Path, declared: str) -> list[tuple[Path, str]]:
     return targets
 
 
+@functools.lru_cache(maxsize=32)
+def _dir_creation_timestamp(repo_value: str, directory_value: str) -> int | None:
+    """Epoch timestamp of the oldest commit touching `directory_value`, the
+    bookkeeping baseline a "shipped" file's own last commit must postdate."""
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                repo_value,
+                "log",
+                "--format=%ct",
+                "--reverse",
+                "--",
+                directory_value,
+            ],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=5,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if line:
+            try:
+                return int(line)
+            except ValueError:
+                return None
+    return None
+
+
+@functools.lru_cache(maxsize=32)
+def _latest_commit_timestamp(repo_value: str, relative_value: str) -> int | None:
+    """Epoch timestamp of the most recent commit touching `relative_value`."""
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                repo_value,
+                "log",
+                "-1",
+                "--format=%ct",
+                "--",
+                relative_value,
+            ],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=5,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    line = result.stdout.strip()
+    if not line:
+        return None
+    try:
+        return int(line)
+    except ValueError:
+        return None
+
+
 def _task_files_are_shipped(repo: Path, files: list[str], tracked: set) -> bool:
     for declared in files:
         shipped = False
