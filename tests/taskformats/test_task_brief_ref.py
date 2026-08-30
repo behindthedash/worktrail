@@ -105,6 +105,7 @@ class TestEndToEndPrompt:
             "spec_folder": rel + "/",
             "worktree_path": "/wt",
             "branch": "b",
+            "base_commit": "abc1234",
             "spec_root_prefix": resolve.spec_root_prefix_for(rel),
             "task_brief": live.LiveSpawn._task_brief_ctx(
                 types.SimpleNamespace(spec_folder_rel=rel)

@@ -133,6 +133,38 @@ class TestReviewPathRendering(unittest.TestCase):
         with self.assertRaises(KeyError):
             build_worker_prompt(ROLE_REVIEW, task, ctx)
 
+    def test_missing_base_commit_raises_instead_of_head_sentinel_fallback(self):
+        """A bare 'HEAD' base_commit is worktree-relative and renders ROLE_REVIEW's
+        `git diff {base_commit}..HEAD` as a silent no-op inside the review worker's
+        own worktree -- the defect fixed in PR #825 and PR #837. build_worker_prompt
+        must fail fast instead of silently defaulting to it (regression guard against
+        a third recurrence)."""
+        ctx = {
+            "spec_id": "004-test",
+            "spec_folder": "docs/specs/004-test/",
+            "worktree_path": "/tmp/worktrees/004-test",
+            "branch": "task/TASK-001",
+            # base_commit intentionally omitted
+        }
+        task = _make_task("TASK-001")
+        with self.assertRaises(ValueError) as cm:
+            build_worker_prompt(ROLE_REVIEW, task, ctx)
+        self.assertIn("base_commit", str(cm.exception))
+
+    def test_non_review_roles_do_not_require_base_commit(self):
+        """Only ROLE_REVIEW's template consumes base_commit; other roles must not
+        be gated on it."""
+        ctx = {
+            "spec_id": "004-test",
+            "spec_folder": "docs/specs/004-test/",
+            "worktree_path": "/tmp/worktrees/004-test",
+            "branch": "task/TASK-001",
+        }
+        task = _make_task("TASK-001")
+        build_worker_prompt(ROLE_IMPLEMENT, task, ctx)  # must not raise
+        build_worker_prompt(ROLE_FIX, task, ctx)  # must not raise
+        build_worker_prompt(ROLE_CLEANUP, task, ctx)  # must not raise
+
 
 class TestReviewChecksAcDodCheckboxes(unittest.TestCase):
     """AC-CHG-009 through AC-CHG-013: reviewer ticks AC/DoD checkboxes in its
