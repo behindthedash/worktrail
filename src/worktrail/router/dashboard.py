@@ -1672,6 +1672,90 @@ def _epic_citing_spec_ids(repo: Path, patterns: list[re.Pattern]) -> list[str]:
     return citing
 
 
+# A citing spec/change in one of these stages counts the gating feature as
+# *closed* -- the work it named is finished, so a feature it gates is
+# unblocked. `done` is the devkit terminal stage, `complete` the OpenSpec one.
+# An archived OpenSpec change is closed too, but it never appears in a
+# `scan()` row at all (archived changes are excluded from the scan), so
+# `_epic_gate_resolution` checks the archive directory directly instead of
+# looking for a stage here.
+_EPIC_GATE_CLOSED_STAGES = frozenset({"done", "complete"})
+
+
+def _epic_gate_resolution(
+    feature_n: int,
+    epic_text: str,
+    repo: Path,
+    stage_by_id: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Resolve one candidate gating feature number to closed/open.
+
+    A gate is only a real block while the feature it names is still *open*.
+    Resolution walks from the gating feature to whatever spec/change actually
+    carries it, per design.md Decision 4:
+
+      - No `**Future spec id:**` on feature `feature_n`'s block -> **open**:
+        the gating feature has not even been named, so nothing can have
+        closed it.
+      - A future spec id with no citing spec/change at all -> **open**: the
+        gating feature is unspecced.
+      - Otherwise **closed iff** some citing folder resolves closed --
+        archived under `openspec/changes/archive/<name>/`, or carrying a
+        `scan()` stage in `_EPIC_GATE_CLOSED_STAGES`. A citing folder that
+        merely exists (e.g. `ready-to-implement` with 0/16 tasks done) leaves
+        the gate **open**.
+
+    The citation pattern is the escaped future spec id -- the same signal
+    `_epic_citation_patterns` contributes for each `**Future spec id:**` in an
+    epic, but built for one feature's id alone so a match attributes to that
+    feature instead of any of the epic's others.
+
+    Returns the per-gate detail dict `detect_epic_stage()` reports for
+    logging: `{feature, spec_id, resolved_name, closed}`. `resolved_name` is
+    the citing folder that closed the gate, or the first citing folder found
+    when none did (`None` when there is no future spec id or no citation).
+
+    `stage_by_id` is an optional precomputed id -> stage map (as built from
+    `scan(repo / "docs" / "specs")`); callers resolving several candidate
+    gates for one epic pass it so the repo is scanned once, not per gate. It
+    is only consulted -- and, when omitted, only computed -- once a citing
+    folder exists that the archive check did not already close.
+    """
+    repo = Path(repo)
+    block = _epic_feature_blocks(epic_text).get(feature_n)
+    spec_id = _epic_block_future_spec_id(block) if block is not None else None
+    detail: dict[str, Any] = {
+        "feature": feature_n,
+        "spec_id": spec_id,
+        "resolved_name": None,
+        "closed": False,
+    }
+    if not spec_id:
+        return detail
+
+    citing = _epic_citing_spec_ids(repo, [re.compile(re.escape(spec_id))])
+    if not citing:
+        return detail
+    detail["resolved_name"] = citing[0]
+
+    archive_root = repo / "openspec" / "changes" / "archive"
+    for name in citing:
+        if (archive_root / name).is_dir():
+            detail.update(resolved_name=name, closed=True)
+            return detail
+
+    if stage_by_id is None:
+        stage_by_id = {
+            row.get("id"): row.get("stage") for row in scan(repo / "docs" / "specs")
+        }
+    for name in citing:
+        if stage_by_id.get(name) in _EPIC_GATE_CLOSED_STAGES:
+            detail.update(resolved_name=name, closed=True)
+            return detail
+
+    return detail
+
+
 def detect_epic_stage(epic_file: Path, repo: Path) -> dict[str, Any]:
     """Stage-detect one `docs/specs/epics/*.md` decomposition document.
 
