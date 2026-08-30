@@ -547,6 +547,34 @@ def test_modify_pipeline_runs_scope_check_before_uncommitted_output_guard():
     )
 
 
+def test_sibling_diff_overlap_scan_also_checks_untracked_files():
+    """`#fix-branch-worktree-setup`'s sibling diff overlap scan must catch a
+    sibling worktree that created a brand-new file overlapping $EXPECTED_FILES,
+    not just one with an uncommitted diff to an existing tracked file.
+
+    `git diff --name-only HEAD` only ever reports tracked-file changes -- a
+    freshly created file is untracked and never appears in that diff, the same
+    blind spot `#sync-before-teardown`'s step 4 already documents and works
+    around with `git status --porcelain`. Two concurrent /go dispatches that
+    each independently create the SAME NEW file for the same unspecced fix
+    would previously produce no overlap signal at all and ship the collision
+    silently (queue brief 20260829-221627-untracked-file-collision-blind-spot)."""
+    doc = SKILLS_DIR / "worktrail-go" / "references" / "subagent-prompts.md"
+    text = doc.read_text()
+    heading = "**Sibling diff overlap scan (advisory).**"
+    section_start = text.index(heading)
+    next_heading = text.index("This is **advisory, not a hard stop**", section_start)
+    section = text[section_start:next_heading]
+
+    assert "status --porcelain" in section and "untracked" in section, (
+        "sibling diff overlap scan only diffs tracked files via "
+        "`git diff --name-only HEAD` -- it never checks "
+        "`git status --porcelain` for untracked ('??') files, so two sibling "
+        "worktrees independently creating the same new file produce no "
+        "overlap signal"
+    )
+
+
 def _h2_sections(text: str) -> dict[str, str]:
     """Split a markdown body into h2-delimited sections, keyed by heading line.
 
