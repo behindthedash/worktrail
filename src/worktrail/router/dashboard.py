@@ -620,11 +620,16 @@ def _task_files_are_shipped(
                     final_relative_path = moved
             if final_relative_path is None:
                 continue
-            if since_ts is not None and (
-                commit_ts := _latest_commit_timestamp(
-                    str(target_repo), final_relative_path
+            if (
+                since_ts is not None
+                and (
+                    commit_ts := _latest_commit_timestamp(
+                        str(target_repo), final_relative_path
+                    )
                 )
-            ) is not None and commit_ts >= since_ts:
+                is not None
+                and commit_ts >= since_ts
+            ):
                 shipped = True
                 break
         if not shipped:

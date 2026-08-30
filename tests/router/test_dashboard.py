@@ -834,7 +834,14 @@ class OpenSpecStaleBookkeeping(unittest.TestCase):
         (change / "tasks.md").write_text(f"## 1. Export\n\n{tasks}")
         rel = change.relative_to(self.repo)
         subprocess.run(
-            ["git", "-C", str(self.repo), "add", str(rel / "proposal.md"), str(rel / "tasks.md")],
+            [
+                "git",
+                "-C",
+                str(self.repo),
+                "add",
+                str(rel / "proposal.md"),
+                str(rel / "tasks.md"),
+            ],
             check=True,
         )
         subprocess.run(
@@ -2971,7 +2978,13 @@ class StaleBookkeeping(unittest.TestCase):
         spec.mkdir(parents=True)
         (spec / "2026-05-29--feature.md").write_text(SPEC_CLARIFIED)
         subprocess.run(
-            ["git", "-C", str(primary), "add", "docs/specs/001-cross-repo/2026-05-29--feature.md"],
+            [
+                "git",
+                "-C",
+                str(primary),
+                "add",
+                "docs/specs/001-cross-repo/2026-05-29--feature.md",
+            ],
             check=True,
         )
         subprocess.run(
