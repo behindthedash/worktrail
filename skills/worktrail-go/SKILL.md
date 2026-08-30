@@ -664,9 +664,29 @@ whether this host has it. An embedded Codex session resolves `agent_cli: codex` 
 `Skill(...)` at all, which is exactly this branch. On it,
 generate the seeded-dispatch prompt first so the child attaches to this front door's
 existing run record instead of treating raw `handoff:<id> route:<X>` arguments as a
-fresh handoff-seed invocation and opening a second run:
+fresh handoff-seed invocation and opening a second run. **Before spawning, fail fast if
+the one resolved agent is already capacity-gated** — `worktrail-skill-dispatch` builds a
+single-provider command with no fallback of its own (`build_command(agent, ...)`), so a
+gated `$INVOCATION_CONTEXT_AGENT` otherwise dies at launch, burning a doomed child and
+landing the run on `blocked_external_dependency` after the fact instead of before it
+(live incident: run `worktrail/go-20260825-163910`, a `claude` weekly-limit refusal
+killed the dispatch instantly while `opencode` sat healthy in the capacity cache). This
+checks only the one already-resolved agent — it never substitutes a different provider,
+preserving the "never silently falls back" contract below:
 
 ```bash
+GATE_JSON=$(worktrail-agent-capacity check-agent --agent "$INVOCATION_CONTEXT_AGENT" --routing "$ROUTING_JSON")
+if [ $? -ne 0 ]; then
+  TARGET=$(echo "$GATE_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin).get('target') or '')")
+  FAILURE_CLASS=$(echo "$GATE_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin).get('failure_class') or '')")
+  RETRY_AFTER=$(echo "$GATE_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin).get('retry_after') or '')")
+  worktrail-run-record capacity-gate "$RUN" \
+    --provider "${TARGET:-$INVOCATION_CONTEXT_AGENT}" --failure-class "${FAILURE_CLASS:-unknown}" \
+    ${RETRY_AFTER:+--retry-after "$RETRY_AFTER"} --note "resolved agent gated before adapter spawn"
+  worktrail-run-record finish "$RUN" --status blocked_external_dependency \
+    --merge-result "resolved agent capacity-gated; no child launched"
+  exit 1
+fi
 DISPATCH_SPEC="${SPEC_ID:-none}"
 if [ -n "${BRIEF_PATH:-}" ]; then
   DISPATCH_SPEC="${SPEC_ID:-handoff:$HANDOFF_ID}"
