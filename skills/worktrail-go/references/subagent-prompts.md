@@ -1396,15 +1396,38 @@ spec-id alone is insufficient for the live `full` path.
 anywhere outside `$WT`), not `$WT` itself — `cd` back first if an earlier step left you
 inside it. See the worktree-lifecycle note above for why.
 
-- **All group PRs auto-merged green:**
+- **All group PRs auto-merged green AND no tail tasks pending:**
 
-  Before removing `$WT`, run `#worktree-deletion-liveness-guard` with `$RUN_RECORDS_DIR`
+  "All group PRs merged" and "the change is actually done" are different states by
+  design — see the "Tail tasks (E2E / cleanup) are not auto-run" note above:
+  `integrate_complete: true` can co-exist with unrun `pending_tail_tasks`. Before
+  removing `$WT`, confirm the run journal reports none outstanding:
+
+  ```bash
+  JOURNAL="$REPO-worktrees/run-$SPEC_ID.json"   # modify/chg pipeline: run-$CHANGE_ID.json
+  PENDING_TAIL=$(python3 -c "
+import json
+try:
+    data = json.load(open('$JOURNAL'))
+except (OSError, json.JSONDecodeError):
+    data = {}
+print(json.dumps(data.get('pending_tail_tasks', [])))
+")
+  if [ "$PENDING_TAIL" != "[]" ]; then
+    echo "BLOCKED: pending tail tasks remain, do not tear down \$WT: $PENDING_TAIL" >&2
+    # Stop here — run those tasks (or mark them completed/backfill per the
+    # "Tail tasks (E2E / cleanup) are not auto-run" note) instead of tearing
+    # down $WT. Do not run the commands below.
+  fi
+  ```
+
+  Then run `#worktree-deletion-liveness-guard` with `$RUN_RECORDS_DIR`
   set to `"$(dirname "$(dirname "$RUN")")"` and `$INVOCATION_CONTEXT_DISPATCH_ID` carried
   through from the invoking shell. If it blocks, stop here — do not run the commands below.
 
   ```bash
   git -C "$REPO" worktree remove "$WT"
-  git -C "$REPO" branch -D "spec/$SPEC_ID"   # only after confirmed merge
+  git -C "$REPO" branch -D "spec/$SPEC_ID"   # modify pipeline: "chg/$CHANGE_ID" — only after confirmed merge
 
   # Sweep leftover orchestrator branches — verify.py deletes green groups' branches but
   # intentionally keeps quarantined/split groups' branches. The sweep below is a backstop
