@@ -602,7 +602,7 @@ def _run_command_with_sigterm_forwarding(
 ) -> int:
     """Run a provider child, forwarding wrapper SIGTERM and reaping it."""
     if isinstance(subprocess.run, mock.Mock):
-        return subprocess.run(command, check=False, **run_kwargs).returncode
+        return subprocess.run(command, **run_kwargs).returncode  # noqa: PLW1510 -- run_kwargs already carries check
     child_kwargs = {key: value for key, value in run_kwargs.items() if key != "check"}
     interrupted = False
     child: subprocess.Popen[str] | None = None
