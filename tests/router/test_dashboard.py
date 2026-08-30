@@ -5212,6 +5212,54 @@ class EpicStageDetection(unittest.TestCase):
         self.assertEqual(len(citing_spec_rows), 1)
         self.assertEqual(citing_spec_rows[0]["stage"], "done")
 
+    def test_epic_sequencing_gated_pairwise_prose_citing_spec_archived(self):
+        # Same epic as 4.1, 4.2, 4.3: Feature 2 depends on Feature 1's contract.
+        # But now Feature 1's future spec id is cited by a spec folder
+        # that exists only under openspec/changes/archive/<date-prefixed-name>/
+        # (folder name does not match the future spec id, but content does).
+        # The archived folder is treated as closed, so the result is epic-gap.
+        epics = self.repo / "docs" / "specs" / "epics"
+        epics.mkdir(parents=True, exist_ok=True)
+        body = [
+            "# Epic: 008-sequenced-archived",
+            "",
+            "### Feature 1",
+            "Feature 1 body.",
+            "**Future spec id:** `feature-1-contract`",
+            "",
+            "### Feature 2",
+            "Feature 2 depends on Feature 1's contract to be finalized.",
+            "",
+        ]
+        epic_file = epics / "008-sequenced-archived.md"
+        epic_file.write_text("\n".join(body), encoding="utf-8")
+
+        # Create an archived folder under openspec/changes/archive/ with a date prefix.
+        # The folder name does not match the future spec id, but the content does.
+        archived_change_dir = (
+            self.repo / "openspec" / "changes" / "archive"
+            / "2026-08-29-old-feature-1-implementation"
+        )
+        spec_dir = archived_change_dir / "specs" / "feature-1-contract"
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        (spec_dir / "spec.md").write_text(
+            (
+                "# Feature 1 Contract\n\n"
+                "Implements Epic 008 Feature 1's contract (feature-1-contract).\n"
+            ),
+            encoding="utf-8",
+        )
+
+        result = dashboard.detect_epic_stage(epic_file, self.repo)
+
+        # The gate for Feature 2 is closed because the citing folder exists in archive,
+        # so the result is epic-gap, not epic-sequencing-gated.
+        self.assertEqual(result["stage"], "epic-gap")
+        self.assertEqual(result["features"], 2)
+        self.assertEqual(result["cited"], 1)
+        self.assertNotIn("blocked_feature", result)
+        self.assertNotIn("gates", result)
+
     def test_non_epic_named_file_is_ignored_by_epic_id_pattern_against_real_directory(
         self,
     ):
