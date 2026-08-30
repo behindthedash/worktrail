@@ -600,7 +600,9 @@ def _latest_commit_timestamp(repo_value: str, relative_value: str) -> int | None
         return None
 
 
-def _task_files_are_shipped(repo: Path, files: list[str], tracked: set) -> bool:
+def _task_files_are_shipped(
+    repo: Path, files: list[str], tracked: set, since_ts: int | None
+) -> bool:
     for declared in files:
         shipped = False
         for target_repo, relative in _declared_file_targets(repo, declared):
@@ -609,10 +611,25 @@ def _task_files_are_shipped(repo: Path, files: list[str], tracked: set) -> bool:
                 if target_repo == repo and relative == str(declared)
                 else _git_tracked(target_repo, [relative])
             )
+            final_relative_path: str | None = None
             if relative in target_tracked and (target_repo / relative).is_file():
-                shipped = True
-                break
-            if _moved_tracked_path(target_repo, relative) is not None:
+                final_relative_path = relative
+            else:
+                moved = _moved_tracked_path(target_repo, relative)
+                if moved is not None:
+                    final_relative_path = moved
+            if final_relative_path is None:
+                continue
+            if (
+                since_ts is not None
+                and (
+                    commit_ts := _latest_commit_timestamp(
+                        str(target_repo), final_relative_path
+                    )
+                )
+                is not None
+                and commit_ts >= since_ts
+            ):
                 shipped = True
                 break
         if not shipped:
@@ -654,10 +671,11 @@ def _pending_impl_stale(
         return []
     all_files = sorted({f for t in candidates for f in t["files"]})
     tracked = _git_tracked(repo, all_files)
+    since_ts = _dir_creation_timestamp(str(repo), str(spec_dir))
     stale: list[str] = []
     for t in candidates:
         files = t["files"]
-        if _task_files_are_shipped(repo, files, tracked):
+        if _task_files_are_shipped(repo, files, tracked, since_ts):
             stale.append(t["id"])
     return stale
 
@@ -694,10 +712,11 @@ def _pending_openspec_stale(
 
     all_files = sorted({file for task in candidates for file in task["files"]})
     tracked = _git_tracked(repo, all_files)
+    since_ts = _dir_creation_timestamp(str(repo), str(change_dir))
     return [
         task["id"]
         for task in candidates
-        if _task_files_are_shipped(repo, task["files"], tracked)
+        if _task_files_are_shipped(repo, task["files"], tracked, since_ts)
     ]
 
 
@@ -745,10 +764,11 @@ def _pending_tail_stale(
         return [t["id"] for t in empty_cleanup]
     all_files = sorted({f for t in candidates for f in t["files"]})
     tracked = _git_tracked(repo, all_files)
+    since_ts = _dir_creation_timestamp(str(repo), str(spec_dir))
     stale: list[str] = [t["id"] for t in empty_cleanup]
     for t in candidates:
         files = t["files"]
-        if _task_files_are_shipped(repo, files, tracked):
+        if _task_files_are_shipped(repo, files, tracked, since_ts):
             stale.append(t["id"])
     return stale
 
@@ -1487,11 +1507,6 @@ TERMINAL_EPIC_STATUSES = frozenset(
 
 _EPIC_STATUS_LINE_RE = re.compile(r"^\*\*Status:\*\*\s*(.+?)\s*$", re.MULTILINE)
 _EPIC_FEATURE_HEADING_RE = re.compile(r"^###\s+Feature\b", re.MULTILINE)
-# Same heading shape as `_EPIC_FEATURE_HEADING_RE`, but capturing the feature
-# number so a heading can be keyed instead of merely counted (`### Feature 2:
-# Foo` -> 2). Kept as a separate pattern so the counting regex stays a bare
-# `findall`-able heading matcher.
-_EPIC_FEATURE_HEADING_NUM_RE = re.compile(r"^###\s+Feature\s+(\d+)\b", re.MULTILINE)
 _EPIC_NUMBER_RE = re.compile(r"^(\d{3})-")
 _EPIC_FUTURE_SPEC_ID_RE = re.compile(
     r"\*\*Future spec id:\*\*\s*`([a-z][a-z0-9-]*)`", re.IGNORECASE
@@ -1554,45 +1569,6 @@ def _epic_status_header(text: str) -> str | None:
 
 def _count_epic_features(text: str) -> int:
     return len(_EPIC_FEATURE_HEADING_RE.findall(text))
-
-
-def _epic_feature_blocks(text: str) -> dict[int, str]:
-    """Split epic text into per-`### Feature N` blocks, keyed by feature number.
-
-    A block runs from its own heading up to the next `### Feature` heading (or
-    end of document), so per-feature signals -- `**Future spec id:**`, gate
-    prose -- can be read from one feature instead of the whole document.
-
-    Headings are delimited by `_EPIC_FEATURE_HEADING_RE` (the same matcher
-    `_count_epic_features` counts) so block boundaries never disagree with the
-    feature count; a heading whose number is unparseable (`### Feature A`) is
-    dropped from the mapping but still ends the preceding block, and repeated
-    numbers are concatenated so no feature text is silently lost.
-    """
-    headings = list(_EPIC_FEATURE_HEADING_RE.finditer(text))
-    blocks: dict[int, str] = {}
-    for index, heading in enumerate(headings):
-        end = headings[index + 1].start() if index + 1 < len(headings) else len(text)
-        block = text[heading.start() : end]
-        number_match = _EPIC_FEATURE_HEADING_NUM_RE.match(block)
-        if not number_match:
-            continue
-        number = int(number_match.group(1))
-        blocks[number] = blocks[number] + block if number in blocks else block
-    return blocks
-
-
-def _epic_block_future_spec_id(block: str) -> str | None:
-    """Extract one feature block's `**Future spec id:**` value, if present.
-
-    Reuses `_EPIC_FUTURE_SPEC_ID_RE`, the same matcher `_epic_citation_patterns`
-    applies to a whole epic's text, but scoped to a single block returned by
-    `_epic_feature_blocks` so a gate can be resolved against the specific
-    feature it names instead of the first (or any) `**Future spec id:**` in
-    the document.
-    """
-    match = _EPIC_FUTURE_SPEC_ID_RE.search(block)
-    return match.group(1) if match else None
 
 
 def _epic_citation_patterns(epic_id: str, epic_text: str) -> list[re.Pattern]:

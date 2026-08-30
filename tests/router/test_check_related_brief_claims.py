@@ -308,6 +308,24 @@ class TestFailsOpen:
         assert res["checked"] is True
         assert res["active"] == []
 
+    def test_directory_claimed_path_is_checked_false_not_a_silent_pass(
+        self, tmp_path, queue_dirs
+    ):
+        """A picked-brief directory passes a bare `.stat()`, so without the
+        shape check this used to fall through to `read_frontmatter`
+        (swallowing the resulting OSError into `{}`) and report
+        `checked: true, active: []` -- indistinguishable from "nothing
+        collides" even though the input itself was wrong."""
+        picked_dir, queue_dir = queue_dirs
+        claimed_dir = tmp_path / "20260101-000000-some-brief"
+        claimed_dir.mkdir()
+
+        res = crbc.check(claimed_dir, picked_dir, queue_dir)
+
+        assert res["checked"] is False
+        assert res["active"] == []
+        assert "directory" in res["warning"]
+
     def test_check_never_raises_for_a_variety_of_degraded_inputs(self, tmp_path):
         cases = [
             Path("/nonexistent/path/claimed.md"),

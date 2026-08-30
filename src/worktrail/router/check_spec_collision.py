@@ -60,6 +60,7 @@ from pathlib import Path
 from typing import Any
 
 from .dashboard import (
+    _dir_creation_timestamp,
     _git_tracked,
     _load_tasks,
     _task_files_are_shipped,
@@ -422,7 +423,8 @@ def verify(
 
     try:
         tracked = _git_tracked(repo, files)
-        shipped = _task_files_are_shipped(repo, files, tracked)
+        since_ts = _dir_creation_timestamp(str(repo), str(spec_dir))
+        shipped = _task_files_are_shipped(repo, files, tracked, since_ts)
     except Exception as exc:  # noqa: BLE001 - best-effort, never raise to caller
         result["warning"] = f"artifact verification failed: {exc!r}"
         return result
