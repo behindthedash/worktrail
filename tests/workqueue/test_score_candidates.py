@@ -804,6 +804,73 @@ class TestBatchModeBlockScalarFocusRegression(ScoreCandidatesTestBase):
         self.assertEqual([c["id"] for c in result["batch"]], ["20260701-000002-cand"])
 
 
+class TestPrecheckDuplicate(ScoreCandidatesTestBase):
+    """precheck_duplicate() -- the pre-write counterpart to score_candidates()'s
+    post-write auto_link tier (same repo AND total_score >= HIGH_CONFIDENCE)."""
+
+    REPO = "/home/user/projects/myapp"
+
+    def test_finds_high_confidence_same_repo_match(self):
+        focus = "handoff capture dedup gap durable artifact overlap score candidates"
+        self.write_queue(
+            "20260830-090000-existing.md",
+            focus=focus,
+            repo=self.REPO,
+        )
+        match = sc.precheck_duplicate(focus, "", self.REPO, self.base)
+        self.assertIsNotNone(match)
+        self.assertEqual(match["id"], "20260830-090000-existing")
+        self.assertGreaterEqual(match["total_score"], sc.HIGH_CONFIDENCE)
+
+    def test_returns_none_below_threshold(self):
+        self.write_queue(
+            "20260830-090000-existing.md",
+            focus="totally unrelated database migration script",
+            repo=self.REPO,
+        )
+        match = sc.precheck_duplicate(
+            "handoff capture dedup gap overlap scoring", "", self.REPO, self.base
+        )
+        self.assertIsNone(match)
+
+    def test_returns_none_for_cross_repo_match(self):
+        focus = "handoff capture dedup gap durable artifact overlap score candidates"
+        self.write_queue(
+            "20260830-090000-existing.md", focus=focus, repo="/home/user/projects/other"
+        )
+        match = sc.precheck_duplicate(focus, "", self.REPO, self.base)
+        self.assertIsNone(match)
+
+    def test_returns_none_for_null_repo(self):
+        """Matches score_candidates()'s own behavior: a null-repo new brief
+        can never satisfy same_repo, so precheck never matches either."""
+        focus = "handoff capture dedup gap durable artifact overlap score candidates"
+        self.write_queue("20260830-090000-existing.md", focus=focus, repo="null")
+        match = sc.precheck_duplicate(focus, "", None, self.base)
+        self.assertIsNone(match)
+
+    def test_agrees_with_post_write_auto_link_tier(self):
+        """precheck_duplicate() run before writing agrees with score_candidates()
+        run after writing the identical content -- the refactor that shares
+        _score_against_queue() between them must not change either's answer."""
+        focus = "handoff capture dedup gap durable artifact overlap score candidates"
+        body = "\n## Discovery context\n\ncreate_handoff.py and work_queue.py\n"
+        self.write_queue("20260830-090000-existing.md", focus=focus, repo=self.REPO)
+
+        precheck = sc.precheck_duplicate(focus, body, self.REPO, self.base)
+        self.assertIsNotNone(precheck)
+
+        new_path = self.queue / "20260830-151114-new.md"
+        new_path.write_text(
+            f"---\nfocus: {focus}\nrepo: {self.REPO}\nstatus: queued\n---\n" + body,
+            encoding="utf-8",
+        )
+        post_write = sc.score_candidates(new_path, self.base)
+        auto_link_ids = [c["id"] for c in post_write["auto_link"]]
+        self.assertIn("20260830-090000-existing", auto_link_ids)
+        self.assertEqual(precheck["id"], "20260830-090000-existing")
+
+
 class TestCLIOutput(unittest.TestCase):
     """Verify the CLI emits valid JSON."""
 

@@ -9,7 +9,13 @@ import pytest
 
 from worktrail.router.cluster_detect import OVERLAP_THRESHOLD
 from worktrail.shared.brief_frontmatter import read_frontmatter, validate_brief
-from worktrail.workqueue.create_handoff import _slugify, create_handoff, main
+from worktrail.workqueue.create_handoff import (
+    _slugify,
+    append_duplicate_signal,
+    check_duplicate,
+    create_handoff,
+    main,
+)
 
 
 def test_create_handoff_writes_valid_brief_and_classifies(tmp_path: Path):
@@ -618,3 +624,61 @@ def test_cli_human_mode_reports_overlap_warning_to_stderr_without_blocking(
     brief_path = Path(captured.out.strip())
     assert brief_path.is_file()
     assert validate_brief(brief_path)[0]
+
+
+def test_check_duplicate_finds_pre_write_match(tmp_path: Path):
+    repo = "/tmp/example"
+    created = create_handoff(
+        "Handoff capture dedup gap durable artifact overlap score candidates",
+        queue_base=tmp_path,
+        repo=repo,
+    )
+
+    result = check_duplicate(
+        "Handoff capture dedup gap durable artifact overlap score candidates",
+        queue_base=tmp_path,
+        repo=repo,
+    )
+
+    assert result["match"] is not None
+    assert result["match"]["id"] == created["id"]
+
+
+def test_check_duplicate_no_match_when_nothing_overlaps(tmp_path: Path):
+    result = check_duplicate(
+        "A totally unrelated one-off request",
+        queue_base=tmp_path,
+        repo="/tmp/example",
+    )
+    assert result["match"] is None
+
+
+def test_append_duplicate_signal_appends_without_creating_new_file(tmp_path: Path):
+    created = create_handoff(
+        "Original focus text describing the duplicate work",
+        queue_base=tmp_path,
+        repo="/tmp/example",
+    )
+    existing_path = Path(created["path"])
+    before_files = set((tmp_path / "queue").iterdir())
+
+    result = append_duplicate_signal(
+        existing_path,
+        "New capture describing the same underlying issue",
+        context="Discovered while investigating a related bug.",
+    )
+
+    assert result["status"] == "appended"
+    assert result["id"] == existing_path.stem
+    after_files = set((tmp_path / "queue").iterdir())
+    assert before_files == after_files  # no new file was written
+
+    content = existing_path.read_text(encoding="utf-8")
+    assert "## Additional signal (potential duplicate)" in content
+    assert "New capture describing the same underlying issue" in content
+    assert "Discovered while investigating a related bug." in content
+
+
+def test_append_duplicate_signal_reports_not_found_for_missing_path(tmp_path: Path):
+    result = append_duplicate_signal(tmp_path / "queue" / "nope.md", "focus text")
+    assert result["status"] == "not-found"

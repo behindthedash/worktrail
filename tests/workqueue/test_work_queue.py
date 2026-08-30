@@ -2136,6 +2136,74 @@ class TestRelatedAndLink(QueueTestBase):
         self.assertEqual(briefs[0].get("related"), ["id-x", "id-y"])
 
 
+class TestDoneSurfacesRelatedStillOpen(QueueTestBase):
+    """Closing a brief with `related:` entries surfaces siblings still open
+    in queue/ or picked/ (non-blocking, advisory only)."""
+
+    def test_done_surfaces_related_sibling_still_in_queue(self):
+        self.write(
+            "20260824-164124-alpha.md",
+            focus="alpha",
+            brief_id="20260824-164124-alpha",
+            related=["20260825-152530-beta"],
+        )
+        self.write("20260825-152530-beta.md", focus="beta")
+        q.claim("20260824-164124-alpha")
+        res = q.done("20260824-164124-alpha")
+        self.assertEqual(res["status"], "done")
+        self.assertEqual(len(res["related_still_open"]), 1)
+        sibling = res["related_still_open"][0]
+        self.assertEqual(sibling["id"], "20260825-152530-beta")
+        self.assertEqual(sibling["status"], "queued")
+
+    def test_done_surfaces_related_sibling_still_picked(self):
+        self.write(
+            "20260824-164124-alpha.md",
+            focus="alpha",
+            related=["20260825-152530-beta"],
+        )
+        self.write("20260825-152530-beta.md", focus="beta")
+        q.claim("20260824-164124-alpha")
+        q.claim("20260825-152530-beta")
+        res = q.done("20260824-164124-alpha")
+        self.assertEqual(res["status"], "done")
+        sibling = res["related_still_open"][0]
+        self.assertEqual(sibling["id"], "20260825-152530-beta")
+        self.assertEqual(sibling["status"], "picked")
+
+    def test_done_omits_field_when_related_sibling_already_done(self):
+        self.write(
+            "20260824-164124-alpha.md",
+            focus="alpha",
+            related=["20260825-152530-beta"],
+        )
+        self.write("20260825-152530-beta.md", focus="beta")
+        q.claim("20260825-152530-beta")
+        q.done("20260825-152530-beta")
+        q.claim("20260824-164124-alpha")
+        res = q.done("20260824-164124-alpha")
+        self.assertEqual(res["status"], "done")
+        self.assertNotIn("related_still_open", res)
+
+    def test_done_omits_field_when_no_related_entries(self):
+        self.write("20260824-164124-alpha.md", focus="alpha")
+        q.claim("20260824-164124-alpha")
+        res = q.done("20260824-164124-alpha")
+        self.assertEqual(res["status"], "done")
+        self.assertNotIn("related_still_open", res)
+
+    def test_done_skips_unresolvable_related_id(self):
+        self.write(
+            "20260824-164124-alpha.md",
+            focus="alpha",
+            related=["stale-id-that-does-not-resolve"],
+        )
+        q.claim("20260824-164124-alpha")
+        res = q.done("20260824-164124-alpha")
+        self.assertEqual(res["status"], "done")
+        self.assertNotIn("related_still_open", res)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)
 

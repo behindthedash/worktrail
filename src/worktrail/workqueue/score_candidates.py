@@ -165,27 +165,30 @@ def _md_files(d: Path) -> list[Path]:
 # ---------------------------------------------------------------------------
 
 
-def score_candidates(new_brief_path: Path, base_dir: Path) -> dict[str, Any]:
-    """Score non-done queue/picked briefs against new_brief_path.
+def _score_against_queue(
+    new_focus_tokens: set,
+    new_body_tokens: set,
+    new_repo: str | None,
+    base_dir: Path,
+    *,
+    exclude_path: Path | None = None,
+    new_fm: dict[str, Any] | None = None,
+    new_stem: str | None = None,
+) -> list[dict[str, Any]]:
+    """Score every non-done queue/picked brief against the given focus/body/repo.
 
-    Returns {"auto_link": [...], "confirm": [...]} where each entry is
-    {"path": str, "id": str, "focus": str}.
+    Shared core for `score_candidates()` (post-write: scores an existing brief
+    file, so it excludes itself and applies blocked-by filtering) and
+    `precheck_duplicate()` (pre-write: no file and no id yet to exclude or
+    filter blocked-by against, so `exclude_path`/`new_fm`/`new_stem` are all
+    optional). Returns entries sorted by `total_score` descending, uncapped —
+    callers apply their own TOP_N/threshold slicing.
     """
-    new_fm, new_body = _read_brief(new_brief_path)
-    if new_fm is None:
-        return {"auto_link": [], "confirm": []}
-
-    new_stem = new_brief_path.stem
-    new_focus = str(new_fm.get("focus") or "")
-    new_repo = _normalize_repo(new_fm.get("repo"))
-    new_focus_tokens = _tokenize(new_focus)
-    new_body_tokens = _tokenize(new_body or "")
-
     scored: list[dict[str, Any]] = []
 
     for subdir in ("queue", "picked"):
         for f in _md_files(base_dir / subdir):
-            if f.resolve() == new_brief_path.resolve():
+            if exclude_path is not None and f.resolve() == exclude_path.resolve():
                 continue  # skip self
 
             cand_fm, cand_body = _read_brief(f)
@@ -195,7 +198,11 @@ def score_candidates(new_brief_path: Path, base_dir: Path) -> dict[str, Any]:
             if cand_fm.get("status") == "done":
                 continue  # exclude done briefs (AC-012)
 
-            if _is_blocked_by_pair(new_fm, new_stem, cand_fm, f.stem):
+            if (
+                new_fm is not None
+                and new_stem is not None
+                and _is_blocked_by_pair(new_fm, new_stem, cand_fm, f.stem)
+            ):
                 continue  # exclude blocked-by pairs (AC-016)
 
             cand_focus = str(cand_fm.get("focus") or "")
@@ -225,9 +232,34 @@ def score_candidates(new_brief_path: Path, base_dir: Path) -> dict[str, Any]:
                 }
             )
 
-    # Sort by total_score descending, cap to TOP_N (AC-013)
     scored.sort(key=lambda c: c["total_score"], reverse=True)
-    scored = scored[:TOP_N]
+    return scored
+
+
+def score_candidates(new_brief_path: Path, base_dir: Path) -> dict[str, Any]:
+    """Score non-done queue/picked briefs against new_brief_path.
+
+    Returns {"auto_link": [...], "confirm": [...]} where each entry is
+    {"path": str, "id": str, "focus": str}.
+    """
+    new_fm, new_body = _read_brief(new_brief_path)
+    if new_fm is None:
+        return {"auto_link": [], "confirm": []}
+
+    new_stem = new_brief_path.stem
+    new_focus = str(new_fm.get("focus") or "")
+    new_repo = _normalize_repo(new_fm.get("repo"))
+
+    # Sort by total_score descending, cap to TOP_N (AC-013)
+    scored = _score_against_queue(
+        _tokenize(new_focus),
+        _tokenize(new_body or ""),
+        new_repo,
+        base_dir,
+        exclude_path=new_brief_path,
+        new_fm=new_fm,
+        new_stem=new_stem,
+    )[:TOP_N]
 
     auto_link = []
     confirm = []
@@ -239,6 +271,35 @@ def score_candidates(new_brief_path: Path, base_dir: Path) -> dict[str, Any]:
             confirm.append(entry)
 
     return {"auto_link": auto_link, "confirm": confirm}
+
+
+def precheck_duplicate(
+    focus: str, body: str, repo: str | None, base_dir: Path
+) -> dict[str, Any] | None:
+    """Best same-repo, high-confidence match for not-yet-written brief content.
+
+    Pre-write counterpart to `score_candidates()`'s post-write auto-link tier
+    (same repo AND `total_score >= HIGH_CONFIDENCE`) -- same threshold, same
+    scoring, just run before a brief file exists. No self-exclusion or
+    blocked-by filtering applies: there is no id/stem yet for a brief that
+    hasn't been written. Returns the single best match as
+    `{"path", "id", "focus", "total_score"}`, or `None` when nothing clears
+    the bar (including when `repo` is `None` -- same-repo can never be
+    established against a null repo, matching `score_candidates()`'s own
+    behavior for a null-repo new brief).
+    """
+    scored = _score_against_queue(
+        _tokenize(focus), _tokenize(body), _normalize_repo(repo), base_dir
+    )
+    for c in scored:
+        if c["same_repo"] and c["total_score"] >= HIGH_CONFIDENCE:
+            return {
+                "path": c["path"],
+                "id": c["id"],
+                "focus": c["focus"],
+                "total_score": c["total_score"],
+            }
+    return None
 
 
 def _coerce_id_list(val: Any) -> list[str]:

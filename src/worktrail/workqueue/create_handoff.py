@@ -461,6 +461,91 @@ def create_handoff(
             os.environ["WORK_QUEUE_DIR"] = previous_env
 
 
+def check_duplicate(
+    focus: str,
+    *,
+    queue_base: Path | None = None,
+    repo: str | None = None,
+    context: str | None = None,
+    approach: str | None = None,
+    artifacts: str | None = None,
+    questions: str | None = None,
+    suggested_skills: Iterable[str] | None = None,
+) -> dict[str, Any]:
+    """Pre-write brief-vs-brief duplicate check: is there already a same-repo,
+    high-confidence match for this not-yet-captured focus?
+
+    The brief-vs-brief overlap check (`score_candidates.score_candidates`)
+    previously only ever ran AFTER the new brief file was written
+    (`create_handoff`'s own post-write `auto_link`/`confirm` scoring), so a
+    high-confidence match could only be auto-linked or listed for confirmation
+    post-hoc -- never redirected before a duplicate file existed. This runs
+    the identical scoring (same tokenizer, same repo/overlap weighting, same
+    `HIGH_CONFIDENCE` bar as the post-write `auto_link` tier) against the
+    same focus/body content `create_handoff` would otherwise write, before
+    anything is written.
+
+    Returns `{"match": {"path", "id", "focus", "total_score"} | None}`. The
+    caller (an interactive skill) presents a three-way choice on a match:
+    confirm-as-duplicate (append via `append_duplicate_signal` instead of
+    creating), reject-as-false-positive (create normally, then
+    `work_queue.link()` for traceability), or no human present (create
+    normally, unchanged from today's behavior).
+    """
+    focus = focus.strip()
+    base = Path(queue_base or work_queue.base_dir()).expanduser()
+    resolved_repo = _normalize_repo(repo) or _infer_repo_from_focus(focus) or None
+    body = _brief_body(
+        context, approach, artifacts, questions, _clean_lines(suggested_skills)
+    )
+    match = score_candidates.precheck_duplicate(focus, body, resolved_repo, base)
+    return {"match": match}
+
+
+def append_duplicate_signal(
+    matched_path: str | Path,
+    focus: str,
+    *,
+    context: str | None = None,
+) -> dict[str, Any]:
+    """Append the new capture's focus/context onto an existing matched brief
+    as a dated `## Additional signal (potential duplicate)` section, in place
+    of writing a new brief file for it.
+
+    Mirrors `work_queue.done()`'s own `## Closure Note` append pattern: the
+    existing brief's frontmatter and status are untouched, only its body
+    grows a new dated section. Returns `{"status": "appended", "id", "path"}`
+    on success, or `{"status": "not-found"|"error", "error": ...}` otherwise
+    -- never raises.
+    """
+    path = Path(matched_path)
+    try:
+        original = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return {"status": "not-found", "error": str(exc)}
+
+    now = dt.datetime.now().astimezone()
+    lines = [
+        "## Additional signal (potential duplicate)",
+        "",
+        f"Captured: {now.isoformat(timespec='seconds')}",
+        "",
+        focus.strip(),
+    ]
+    if context and context.strip():
+        lines += ["", context.strip()]
+    section = "\n" + "\n".join(lines) + "\n"
+
+    try:
+        if not original.endswith("\n"):
+            original += "\n"
+        path.write_text(original + section, encoding="utf-8")
+    except OSError as exc:
+        return {"status": "error", "error": str(exc)}
+
+    return {"status": "appended", "id": path.stem, "path": str(path)}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Create a Worktrail handoff brief")
     parser.add_argument("--focus", required=True, help="the deferred work to capture")
@@ -522,6 +607,46 @@ def main(argv: list[str] | None = None) -> int:
             print(_format_overlap_warning(warning), file=sys.stderr)
     print(json.dumps(result) if args.json else result["path"])
     return 0
+
+
+def main_check_duplicate(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Pre-write check: is there already a high-confidence duplicate brief?"
+    )
+    parser.add_argument("--focus", required=True, help="the deferred work to capture")
+    parser.add_argument("--queue-dir", help="queue base containing queue/ and picked/")
+    parser.add_argument("--repo")
+    parser.add_argument("--context")
+    parser.add_argument("--approach")
+    parser.add_argument("--artifacts")
+    parser.add_argument("--questions")
+    parser.add_argument("--suggested-skill", action="append", default=[])
+    args = parser.parse_args(argv)
+    result = check_duplicate(
+        args.focus,
+        queue_base=Path(args.queue_dir) if args.queue_dir else None,
+        repo=args.repo,
+        context=args.context,
+        approach=args.approach,
+        artifacts=args.artifacts,
+        questions=args.questions,
+        suggested_skills=args.suggested_skill,
+    )
+    print(json.dumps(result))
+    return 0
+
+
+def main_append_duplicate_signal(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Append a new capture's focus/context onto an existing matched brief"
+    )
+    parser.add_argument("--path", required=True, help="matched brief's path")
+    parser.add_argument("--focus", required=True, help="the new capture's focus text")
+    parser.add_argument("--context")
+    args = parser.parse_args(argv)
+    result = append_duplicate_signal(args.path, args.focus, context=args.context)
+    print(json.dumps(result))
+    return 0 if result.get("status") == "appended" else 1
 
 
 if __name__ == "__main__":
