@@ -46,6 +46,6 @@
 
 ## 4. Verification
 
-- [ ] 4.1 [e2e] Run `PYTHONPATH=src pytest -q` and confirm the full suite is green.
-- [ ] 4.2 [e2e] Run `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`
+- [x] 4.1 [e2e] Run `PYTHONPATH=src pytest -q` and confirm the full suite is green.
+- [x] 4.2 [e2e] Run `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`
       (golden record/replay regression) and confirm it is unaffected.
